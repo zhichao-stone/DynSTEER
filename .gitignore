@@ -6,9 +6,27 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# Environments
+.env
 .venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# pyenv
+.python-version
+
+# Vscode
+.vscode/
+
+# Logs
+logs/
 
 # Docs of Vibe Coding
 docs/plans
 docs/constraints
+
+# Data
+data/
