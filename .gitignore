@@ -23,6 +23,7 @@ venv.bak/
 
 # Logs
 logs/
+.coverage
 
 # Docs of Vibe Coding
 docs/plans
@@ -36,5 +37,4 @@ runs/
 
 # Test
 test/
-tests/
 results/

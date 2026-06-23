@@ -13,3 +13,11 @@ uv run python main.py --input examples/minimal_experiment.json --output-dir outp
 ```bash
 uv run pytest tests -q --cov=dynsteer --cov-report=term-missing
 ```
+
+## 运行 Benchmark Harness
+
+ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 模式会先调用 benchmark adapter 运行场景，再把原始结果转换为 DynSTEER 轨迹并评估。
+
+```powershell
+uv run python main.py --benchmark toolsandbox --data-root data\toolsandbox --scenario cellular_off --agent GPT_4_o_2024_05_13 --user GPT_4_o_2024_05_13 --output-dir runs --pretty
+```

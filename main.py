@@ -14,9 +14,14 @@ from dynsteer.log import configure_logger, get_log_buffer
 
 def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="运行 DynSTEER 阶段式动态轨迹评估实验")
-    parser.add_argument("--input", required=True, help="实验输入 JSON 文件路径")
+    parser.add_argument("--input", default=None, help="离线实验输入 JSON 文件路径")
     parser.add_argument("--input-format", default="generic", choices=["generic", "toolsandbox"])
-    parser.add_argument("--output-dir", default="outputs")
+    parser.add_argument("--benchmark", default=None, help="benchmark harness 名称，例如 toolsandbox")
+    parser.add_argument("--data-root", default=None, help="benchmark 静态配置与 manifest 目录")
+    parser.add_argument("--scenario", default=None, help="benchmark 场景 ID")
+    parser.add_argument("--agent", default=None, help="benchmark agent 名称")
+    parser.add_argument("--user", default=None, help="benchmark user simulator 名称")
+    parser.add_argument("--output-dir", default="runs")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--pretty", action="store_true")
@@ -34,11 +39,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     """
     args = _parse_args(argv)
     logger = configure_logger(args.log_dir)
-    input_path = Path(args.input)
-    run_name = args.run_name or input_path.stem
-    run_dir = Path(args.output_dir) / run_name
 
     try:
+        if args.benchmark is not None:
+            if args.data_root is None:
+                raise ValueError("运行 benchmark harness 时 --data-root 不能为空")
+            from dynsteer.adapter.registry import get_harness
+            from dynsteer.harness.model import HarnessRunConfig
+            from dynsteer.harness.runner import run_harness_case
+
+            config = HarnessRunConfig(
+                benchmark=str(args.benchmark),
+                data_root=Path(args.data_root),
+                scenario=args.scenario,
+                agent=args.agent,
+                user=args.user,
+                output_dir=Path(args.output_dir),
+                pretty=bool(args.pretty),
+            )
+            output = run_harness_case(config=config, harness=get_harness(config.benchmark))
+            print(str(output.report_path))
+            return 0
+
+        if args.input is None:
+            raise ValueError("离线评估模式必须提供 --input")
+        input_path = Path(args.input)
+        run_name = args.run_name or input_path.stem
+        run_dir = Path(args.output_dir) / run_name
         if not input_path.exists():
             logger.error("实验输入文件不存在", extra={"input_path": str(input_path)})
             return 1

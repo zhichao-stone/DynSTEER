@@ -46,3 +46,7 @@ python main.py --input examples/minimal_experiment.json --output-dir outputs --p
 - `0`: 成功。
 - `1`: 输入文件、JSON 或字段解析失败。
 - `2`: 评估执行失败。
+
+## Harness 模式
+
+除离线 JSON 输入外，DynSTEER 支持通过 benchmark harness 运行场景并采集轨迹。Harness 运行后仍会转换为 `TaskCase` 与 `Trajectory`，再调用 `evaluate_trajectory()`。因此动态评估核心保持统一，差异只存在于 adapter 与 harness 层。
