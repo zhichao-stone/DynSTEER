@@ -30,3 +30,11 @@ docs/constraints
 
 # Data
 data/
+
+# Runtime
+runs/
+
+# Test
+test/
+tests/
+results/
