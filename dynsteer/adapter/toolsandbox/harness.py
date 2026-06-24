@@ -4,12 +4,14 @@ import importlib
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_task_case, load_trajectory
 from dynsteer.harness.model import BenchmarkCase, HarnessRunConfig, HarnessRunResult
-from dynsteer.model import JsonObject, JsonValue
+from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase, TrajectoryStep
 
 TOOL_SANDBOX_DEPENDENCY_ERROR = (
     "ToolSandbox harness 需要安装 ToolSandbox 及其依赖。"
@@ -45,10 +47,187 @@ def _json_safe(value: object) -> JsonValue:
     return str(value)
 
 
-class ToolSandboxHarness:
+@dataclass
+class ToolSandboxSession:
+    """ToolSandbox 原生执行 session。"""
+
+    scenario: object
+    roles: dict[object, object]
+    context: object | None
+    case_id: str
+    run_id: str
+    raw_output_dir: Path
+    last_sandbox_message_index: int = -1
+    finished: bool = False
+    stop_reason: str | None = None
+
+
+class ToolSandboxHarness(BaseBenchmarkHarness):
     """ToolSandbox benchmark harness 适配器。"""
 
     benchmark = "toolsandbox"
+
+    # override 基类的函数实现
+
+    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+        """列出 ToolSandbox 场景。
+
+        Args:
+            config: harness 运行配置。
+
+        Returns:
+            ToolSandbox 场景列表。
+        """
+        scenarios = self._named_scenarios(config)
+        cases: list[BenchmarkCase] = []
+        for case_id, scenario in sorted(scenarios.items()):
+            categories = [_enum_name(item) for item in getattr(scenario, "categories", [])]
+            cases.append(
+                BenchmarkCase(
+                    benchmark=self.benchmark,
+                    case_id=str(case_id),
+                    categories=categories,
+                    metadata={"source": "toolsandbox"},
+                )
+            )
+        return cases
+
+    def _start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> ToolSandboxSession:
+        """初始化 ToolSandbox 原生 session。
+
+        Args:
+            config: harness 运行配置。
+            case_id: ToolSandbox 场景 ID。
+            raw_output_dir: 原生输出目录。
+
+        Returns:
+            ToolSandbox session。
+        """
+        if raw_output_dir is None:
+            raise ValueError("raw_output_dir 不能为空")
+        scenarios = self._named_scenarios(config)
+        if case_id not in scenarios:
+            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
+        scenario = scenarios[case_id]
+        roles = self._toolsandbox_roles(config)
+        run_id = raw_output_dir.parent.parent.name
+        context = self._starting_context_from_scenario(scenario, roles, raw_output_dir, case_id)
+        last_index = self._max_sandbox_message_index(context)
+        return ToolSandboxSession(
+            scenario=scenario,
+            roles=roles,
+            context=context,
+            case_id=case_id,
+            run_id=run_id,
+            raw_output_dir=raw_output_dir,
+            last_sandbox_message_index=last_index,
+        )
+
+    def _task_case_from_session(self, session: object) -> TaskCase:
+        """从 ToolSandbox session 构造 DynSTEER 任务定义。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        rows = self._sandbox_rows_from_context(session.context)
+        steps = self.convert_sandbox_rows_to_steps(rows)
+        task_id = f"toolsandbox::{session.case_id}"
+        return load_task_case(
+            {
+                "task_id": task_id,
+                "task_description": self._task_description_from_steps(steps, session.case_id),
+                "task_types": self._task_types_from_categories(getattr(session.scenario, "categories", [])),
+                "environment_schema": {"source": "toolsandbox"},
+                "tool_schema": {"source": "toolsandbox"},
+                "initial_state": self._initial_state_from_context(session.context) if session.context is not None else {},
+                "metadata": {
+                    "benchmark": "toolsandbox",
+                    "scenario_name": session.case_id,
+                    "categories": [_enum_name(item) for item in getattr(session.scenario, "categories", [])],
+                },
+                "milestone_graph": self._milestone_graph_from_scenario(session.scenario),
+            }
+        )
+
+    def _advance_case(self, session: object) -> list[TrajectoryStep]:
+        """推进 ToolSandbox 一个可中断执行批次并返回新增步骤。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        if session.finished:
+            return []
+        self._advance_native_session(session)
+        rows = [
+            row
+            for row in self._sandbox_rows_from_context(session.context)
+            if self._sandbox_message_index(row) > session.last_sandbox_message_index
+        ]
+        if rows:
+            session.last_sandbox_message_index = max(self._sandbox_message_index(row) for row in rows)
+        steps = self.convert_sandbox_rows_to_steps(rows)
+        if self._native_session_finished(session):
+            session.finished = True
+        return load_trajectory(
+            {
+                "run_id": session.run_id,
+                "task_id": f"toolsandbox::{session.case_id}",
+                "steps": steps,
+            }
+        ).steps
+
+    def _case_finished(self, session: object) -> bool:
+        """判断 ToolSandbox session 是否自然完成。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        return session.finished
+
+    def _snapshots_from_session(self, session: object) -> list[StateSnapshot]:
+        """提取 ToolSandbox 当前状态快照。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        if session.context is None:
+            return []
+        rows = self._sandbox_rows_from_context(session.context)
+        steps = self.convert_sandbox_rows_to_steps(rows)
+        snapshot_data = self._snapshots_from_context(session.context, steps)
+        return load_trajectory(
+            {
+                "run_id": session.run_id,
+                "task_id": f"toolsandbox::{session.case_id}",
+                "steps": steps,
+                "snapshots": snapshot_data,
+            }
+        ).snapshots
+
+    def _metrics_from_session(self, session: object) -> JsonObject:
+        """返回 ToolSandbox 运行期 metrics。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        return {"native_evaluation_skipped": True}
+
+    def _raw_summary_from_session(self, session: object) -> JsonObject:
+        """返回 ToolSandbox 原生摘要。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        return {"native_evaluation_skipped": True, "case_id": session.case_id}
+
+    def _stop_case(self, session: object, reason: str) -> None:
+        """按 DynSTEER 策略终止 ToolSandbox session。"""
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        if not reason:
+            raise ValueError("reason 不能为空")
+        session.finished = True
+        session.stop_reason = reason
+
+    def _teardown_case(self, session: object) -> None:
+        """释放 ToolSandbox role 资源。"""
+        if not isinstance(session, ToolSandboxSession):
+            return
+        for role in session.roles.values():
+            teardown = getattr(role, "teardown", None)
+            if callable(teardown):
+                teardown()
+
+
+    # ToolSandboxHarness 独有函数实现
 
     def _validate_config(self, config: HarnessRunConfig) -> None:
         """校验 ToolSandbox harness 配置。
@@ -76,7 +255,7 @@ class ToolSandboxHarness:
             raise ValueError("data_root 不能为空")
         manifest_path = data_root / "benchmark.json"
         if not manifest_path.exists():
-            return {"source_root": None}
+            return {"benchmark": self.benchmark, "source_root": None, "tool_backend": "DEFAULT"}
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -130,47 +309,42 @@ class ToolSandboxHarness:
         self._validate_config(config)
         self._ensure_source_root(config.data_root)
         scenarios_module = self._import_module("tool_sandbox.scenarios")
-        discovery_module = self._import_module("tool_sandbox.common.tool_discovery")
-        tool_backend = getattr(discovery_module, "ToolBackend").DEFAULT
+        tool_backend = self._tool_backend(config)
         scenarios = scenarios_module.named_scenarios(preferred_tool_backend=tool_backend)
         if not isinstance(scenarios, dict):
             raise ValueError("ToolSandbox named_scenarios 必须返回字典")
         return scenarios
 
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
-        """列出 ToolSandbox 场景。
-
-        Args:
-            config: harness 运行配置。
-
-        Returns:
-            ToolSandbox 场景列表。
-        """
-        scenarios = self._named_scenarios(config)
-        cases: list[BenchmarkCase] = []
-        for case_id, scenario in sorted(scenarios.items()):
-            categories = [_enum_name(item) for item in getattr(scenario, "categories", [])]
-            cases.append(
-                BenchmarkCase(
-                    benchmark=self.benchmark,
-                    case_id=str(case_id),
-                    categories=categories,
-                    metadata={"source": "toolsandbox"},
-                )
-            )
-        return cases
-
-    def _role_impl_type(self, role_name: str | None, default_name: str) -> object:
-        cli_utils = self._import_module("tool_sandbox.cli.utils")
-        role_impl_type = getattr(cli_utils, "RoleImplType")
-        effective_name = role_name or default_name
-        if effective_name is None or not str(effective_name).strip():
-            raise ValueError("ToolSandbox role 名称不能为空")
+    def _tool_backend(self, config: HarnessRunConfig) -> object:
+        """读取 ToolSandbox 工具后端配置。"""
+        if config is None:
+            raise ValueError("config 不能为空")
+        manifest = self._load_manifest(config.data_root)
+        raw_backend = config.metadata.get("tool_backend", manifest.get("tool_backend", "DEFAULT"))
+        if not isinstance(raw_backend, str) or not raw_backend.strip():
+            raise ValueError("ToolSandbox tool_backend 不能为空")
+        discovery_module = self._import_module("tool_sandbox.common.tool_discovery")
+        tool_backend_type = getattr(discovery_module, "ToolBackend")
+        backend_name = raw_backend.strip()
         try:
-            return role_impl_type[str(effective_name)]
+            return tool_backend_type[backend_name]
         except KeyError:
             try:
-                return role_impl_type(str(effective_name))
+                return tool_backend_type(backend_name)
+            except ValueError as exc:
+                raise ValueError(f"不支持的 ToolSandbox tool_backend: {backend_name}") from exc
+
+    def _role_impl_type(self, role_name: object, role_label: str) -> object:
+        cli_utils = self._import_module("tool_sandbox.cli.utils")
+        role_impl_type = getattr(cli_utils, "RoleImplType")
+        if not isinstance(role_name, str) or not role_name.strip():
+            raise ValueError(f"ToolSandbox run_config.json 必须提供 {role_label}")
+        effective_name = role_name.strip()
+        try:
+            return role_impl_type[effective_name]
+        except KeyError:
+            try:
+                return role_impl_type(effective_name)
             except ValueError as exc:
                 raise ValueError(f"不支持的 ToolSandbox role: {effective_name}") from exc
 
@@ -187,8 +361,8 @@ class ToolSandboxHarness:
         execution_environment = self._import_module("tool_sandbox.roles.execution_environment")
         cli_utils = self._import_module("tool_sandbox.cli.utils")
         role_type = getattr(execution_context, "RoleType")
-        agent_type = self._role_impl_type(config.agent, "GPT_4_o_2024_05_13")
-        user_type = self._role_impl_type(config.user, "GPT_4_o_2024_05_13")
+        agent_type = self._role_impl_type(config.metadata.get("agent"), "agent")
+        user_type = self._role_impl_type(config.metadata.get("user"), "user")
         agent_factory = getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)
         user_factory = getattr(cli_utils, "USER_TYPE_TO_FACTORY").get(user_type)
         if agent_factory is None or user_factory is None:
@@ -210,44 +384,130 @@ class ToolSandboxHarness:
             raise ValueError("run_id 不能为空")
         return safe
 
-    def run_case(self, config: HarnessRunConfig, case_id: str) -> HarnessRunResult:
-        """运行 ToolSandbox 场景。
+    def _starting_context_from_scenario(
+        self,
+        scenario: object,
+        roles: dict[object, object],
+        raw_output_dir: Path,
+        case_id: str,
+    ) -> object | None:
+        """从 ToolSandbox scenario 获取起始 context。"""
+        for name in ("starting_context", "get_starting_context", "create_context"):
+            candidate = getattr(scenario, name, None)
+            if callable(candidate):
+                return self._call_native(candidate, roles=roles, output_directory=raw_output_dir, scenario_name=case_id)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def _advance_native_session(self, session: ToolSandboxSession) -> None:
+        """调用 ToolSandbox 原生单步执行入口。"""
+        for name in ("advance", "step", "play"):
+            candidate = getattr(session.scenario, name, None)
+            if not callable(candidate):
+                continue
+            result = self._call_native(
+                candidate,
+                roles=session.roles,
+                context=session.context,
+                output_directory=session.raw_output_dir,
+                scenario_name=session.case_id,
+            )
+            self._apply_native_result(session, result)
+            return
+        if not self._respond_roles_once(session):
+            session.finished = True
+
+    def _respond_roles_once(self, session: ToolSandboxSession) -> bool:
+        """按 role respond 接口推进一次 ToolSandbox 对话。
 
         Args:
-            config: harness 运行配置。
-            case_id: ToolSandbox 场景 ID。
+            session: ToolSandbox session。
 
         Returns:
-            转换后的 harness 运行结果。
+            至少调用过一个 role respond 时返回 True。
         """
-        if case_id is None or not str(case_id).strip():
-            raise ValueError("case_id 不能为空")
-        scenarios = self._named_scenarios(config)
-        if case_id not in scenarios:
-            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
-        scenario = scenarios[case_id]
-        roles = self._toolsandbox_roles(config)
-        run_id = self._run_id(config, case_id)
-        raw_output_dir = config.output_dir / config.benchmark / run_id / case_id / "raw"
-        raw_output_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            result = scenario.play_and_evaluate(
-                roles=roles,
-                output_directory=raw_output_dir,
-                scenario_name=case_id,
+        if session is None:
+            raise ValueError("session 不能为空")
+        responded = False
+        for role in session.roles.values():
+            respond = getattr(role, "respond", None)
+            if not callable(respond):
+                continue
+            result = self._call_native(
+                respond,
+                roles=session.roles,
+                context=session.context,
+                output_directory=session.raw_output_dir,
+                scenario_name=session.case_id,
             )
-            return self._result_from_toolsandbox(
-                result=result,
-                scenario=scenario,
-                case_id=case_id,
-                run_id=run_id,
-                raw_output_dir=raw_output_dir,
-            )
-        finally:
-            for role in roles.values():
-                teardown = getattr(role, "teardown", None)
-                if callable(teardown):
-                    teardown()
+            self._apply_native_result(session, result)
+            responded = True
+            if self._native_session_finished(session):
+                break
+        return responded
+
+    def _apply_native_result(self, session: ToolSandboxSession, result: object) -> None:
+        """将原生 advance/play 返回值合并回 session。"""
+        if result is None:
+            return
+        ending_context = getattr(result, "ending_context", None)
+        context = getattr(result, "context", ending_context)
+        if context is None and not isinstance(result, (str, int, float, bool, list, tuple, dict)):
+            context = result
+        if context is not None:
+            session.context = context
+        finished = getattr(result, "finished", None)
+        if isinstance(finished, bool):
+            session.finished = finished
+        if ending_context is not None:
+            session.finished = True
+
+    def _call_native(self, func: object, **kwargs: object) -> object:
+        """按常见 ToolSandbox 参数名调用原生函数。"""
+        if not callable(func):
+            raise TypeError("func 必须可调用")
+        attempts = [
+            kwargs,
+            {key: value for key, value in kwargs.items() if key != "context"},
+            {key: value for key, value in kwargs.items() if key in {"roles", "context"}},
+            {key: value for key, value in kwargs.items() if key == "roles"},
+            {},
+        ]
+        last_error: TypeError | None = None
+        for candidate_kwargs in attempts:
+            try:
+                return func(**candidate_kwargs)
+            except TypeError as exc:
+                last_error = exc
+        raise last_error if last_error is not None else TypeError("无法调用 ToolSandbox 原生函数")
+
+    def _native_session_finished(self, session: ToolSandboxSession) -> bool:
+        """读取原生 scenario/session 的完成标记。"""
+        if session.finished:
+            return True
+        for source in (session.scenario, session.context):
+            if source is None:
+                continue
+            for name in ("finished", "is_finished", "done"):
+                value = getattr(source, name, None)
+                if callable(value):
+                    value = value()
+                if isinstance(value, bool) and value:
+                    return True
+        return False
+
+    def _sandbox_message_index(self, row: dict[str, object]) -> int:
+        """读取 ToolSandbox 行的 sandbox_message_index。"""
+        value = row.get("sandbox_message_index")
+        if isinstance(value, int):
+            return value
+        return -1
+
+    def _max_sandbox_message_index(self, context: object | None) -> int:
+        """读取当前 context 中最大的 sandbox_message_index。"""
+        rows = self._sandbox_rows_from_context(context)
+        return max((self._sandbox_message_index(row) for row in rows), default=-1)
 
     def _result_from_toolsandbox(
         self,
@@ -434,7 +694,9 @@ class ToolSandboxHarness:
             )
         return steps
 
-    def _sandbox_rows_from_context(self, context: object) -> list[dict[str, object]]:
+    def _sandbox_rows_from_context(self, context: object | None) -> list[dict[str, object]]:
+        if context is None:
+            return []
         execution_context = self._import_module("tool_sandbox.common.execution_context")
         database_namespace = getattr(execution_context, "DatabaseNamespace")
         dataframe = context.get_database(

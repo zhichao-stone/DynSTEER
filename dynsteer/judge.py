@@ -70,6 +70,10 @@ class LocalJudge:
             hard_pass = interval.milestone_score.hard_constraints_all_pass
         elif interval.status == StageStatus.MISSING:
             evidence.append("阶段缺少 milestone 匹配")
+        elif interval.status == StageStatus.PASS:
+            score = 1.0
+            missing_ratio = 0.0
+            hard_pass = True
         else:
             score = 0.0
         dimension_scores = self._dimension_scores(score, interval.status, weights)

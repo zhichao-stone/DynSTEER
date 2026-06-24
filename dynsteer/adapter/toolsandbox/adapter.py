@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_milestone_graph, load_task_case, load_trajectory
 from dynsteer.model import Actor, EventType, JsonObject, TaskCase, Trajectory, ensure_json_object
 
@@ -85,3 +86,34 @@ def load_toolsandbox_experiment(data: JsonObject) -> tuple[TaskCase, Trajectory]
     if graph_data is not None:
         task_case = replace(task_case, milestone_graph=load_milestone_graph(ensure_json_object(graph_data)))
     return task_case, trajectory
+
+
+class ToolSandboxAdapter(BaseBenchmarkAdapter):
+    """ToolSandbox 离线数据适配器。"""
+
+    benchmark = "toolsandbox"
+
+    # override 基类的函数实现
+
+    def load_experiment(self, data: JsonObject) -> tuple[TaskCase, Trajectory]:
+        """载入 ToolSandbox 风格实验数据。
+
+        Args:
+            data: ToolSandbox 导出或转换后的字典。
+
+        Returns:
+            DynSTEER 任务与轨迹。
+        """
+        return load_toolsandbox_experiment(data)
+
+    def create_harness(self) -> BaseBenchmarkHarness:
+        """创建 ToolSandbox 运行期 harness。
+
+        Returns:
+            ToolSandboxHarness 实例。
+        """
+        from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+
+        return ToolSandboxHarness()
+
+    # ToolSandboxAdapter 独有函数实现

@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# PyTest
+.pytest_cache/
+
 # Environments
 .env
 .venv
@@ -37,4 +40,9 @@ runs/
 
 # Test
 test/
+tests/
 results/
+
+# Agents
+.agents/
+AGENTS.md

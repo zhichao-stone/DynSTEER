@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
 from dynsteer.model import (
     Actor,
     Constraint,
@@ -299,3 +300,39 @@ def load_trajectory(data: JsonObject) -> Trajectory:
         metrics=metrics,
         raw=_unknown_fields(trajectory_data, known),
     )
+
+
+class GenericAdapter(BaseBenchmarkAdapter):
+    """通用 JSON benchmark 适配器。"""
+
+    benchmark = "generic"
+
+    # override 基类的函数实现
+
+    def load_experiment(self, data: JsonObject) -> tuple[TaskCase, Trajectory]:
+        """载入通用 JSON 实验数据。
+
+        Args:
+            data: 包含 task 与 trajectory 的实验字典。
+
+        Returns:
+            DynSTEER 任务与轨迹。
+        """
+        experiment = ensure_json_object(data)
+        if experiment.get("task") is None or experiment.get("trajectory") is None:
+            raise ValueError("通用实验数据必须包含 task 和 trajectory")
+        return load_task_case(ensure_json_object(experiment["task"])), load_trajectory(
+            ensure_json_object(experiment["trajectory"])
+        )
+
+    def create_harness(self) -> BaseBenchmarkHarness:
+        """创建通用逐步回放 harness。
+
+        Returns:
+            GenericHarness 实例。
+        """
+        from dynsteer.adapter.generic.harness import GenericHarness
+
+        return GenericHarness()
+
+    # GenericAdapter 独有函数实现

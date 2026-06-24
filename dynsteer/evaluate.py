@@ -244,7 +244,18 @@ def _top_two_scores(
     return scores[0], scores[1]
 
 
-def _evaluate_minefields(graph: MilestoneGraph, trajectory: Trajectory) -> tuple[list[JsonObject], float, bool]:
+def evaluate_minefields(graph: MilestoneGraph, trajectory: Trajectory) -> tuple[list[JsonObject], float, bool]:
+    """评估轨迹是否触发 minefield。
+
+    Args:
+        graph: milestone 图，包含 minefield 定义。
+        trajectory: 待检查的轨迹。
+
+    Returns:
+        三元组：命中的 minefield 列表、最高 minefield 分数、是否触发 fatal minefield。
+    """
+    if graph is None or trajectory is None:
+        raise ValueError("graph 和 trajectory 不能为空")
     matches: list[JsonObject] = []
     max_score = 0.0
     fatal = False
@@ -309,7 +320,7 @@ def evaluate_trajectory(
         graph = MilestoneGraph()
     effective_judge = judge or LocalJudge()
     effective_thresholds = thresholds or ThresholdConfig()
-    minefield_matches, minefield_score, fatal_minefield = _evaluate_minefields(graph, trajectory)
+    minefield_matches, minefield_score, fatal_minefield = evaluate_minefields(graph, trajectory)
     if fatal_minefield:
         return TrajectoryEvaluationReport(
             run_id=trajectory.run_id,
