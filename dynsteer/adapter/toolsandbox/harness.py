@@ -274,8 +274,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         except KeyError:
             try:
                 return role_impl_type(effective_name)
-            except ValueError as exc:
-                raise ValueError(f"不支持的 ToolSandbox role: {effective_name}") from exc
+            except (TypeError, ValueError):
+                return effective_name
 
     def _toolsandbox_roles(self, config: HarnessRunConfig) -> dict[object, object]:
         """创建 ToolSandbox 原生 role。
@@ -289,11 +289,18 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         execution_context = self._import_module("tool_sandbox.common.execution_context")
         execution_environment = self._import_module("tool_sandbox.roles.execution_environment")
         cli_utils = self._import_module("tool_sandbox.cli.utils")
+        from dynsteer.adapter.toolsandbox.agents import get_agent_factory
+        from dynsteer.adapter.toolsandbox.users import get_user_factory
+
         role_type = getattr(execution_context, "RoleType")
         agent_type = self._role_impl_type(config.metadata.get("agent"), "agent")
         user_type = self._role_impl_type(config.metadata.get("user"), "user")
-        agent_factory = getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)
-        user_factory = getattr(cli_utils, "USER_TYPE_TO_FACTORY").get(user_type)
+        agent_factory = get_agent_factory(agent_type) or getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(
+            agent_type
+        )
+        user_factory = get_user_factory(user_type) or getattr(cli_utils, "USER_TYPE_TO_FACTORY").get(
+            user_type
+        )
         if agent_factory is None or user_factory is None:
             raise ValueError("ToolSandbox agent 或 user role 工厂不存在")
         return {
