@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import json
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,10 +64,11 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     """ToolSandbox benchmark harness 适配器。"""
 
     benchmark = "toolsandbox"
+    dependency_error_message = TOOL_SANDBOX_DEPENDENCY_ERROR
 
     # override 基类的函数实现
 
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+    def _list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出 ToolSandbox 场景。
 
         Args:
@@ -229,74 +228,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     # ToolSandboxHarness 独有函数实现
 
-    def _validate_config(self, config: HarnessRunConfig) -> None:
-        """校验 ToolSandbox harness 配置。
-
-        Args:
-            config: harness 运行配置。
-        """
-        if config is None:
-            raise ValueError("config 不能为空")
-        if config.benchmark != self.benchmark:
-            raise ValueError("benchmark 必须是 toolsandbox")
-        if config.data_root is None:
-            raise ValueError("data_root 不能为空")
-
-    def _load_manifest(self, data_root: Path) -> dict[str, object]:
-        """加载 ToolSandbox 静态 manifest。
-
-        Args:
-            data_root: benchmark 静态配置目录。
-
-        Returns:
-            manifest 字典；文件不存在时返回默认配置。
-        """
-        if data_root is None:
-            raise ValueError("data_root 不能为空")
-        manifest_path = data_root / "benchmark.json"
-        if not manifest_path.exists():
-            return {"benchmark": self.benchmark, "source_root": None, "tool_backend": "DEFAULT"}
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"ToolSandbox benchmark.json 不是合法 JSON: {manifest_path}") from exc
-        if not isinstance(data, dict):
-            raise ValueError("ToolSandbox benchmark.json 必须是 JSON 对象")
-        return data
-
-    def _ensure_source_root(self, data_root: Path) -> None:
-        """按 manifest 将外部 ToolSandbox 源码目录加入导入路径。
-
-        Args:
-            data_root: benchmark 静态配置目录。
-        """
-        manifest = self._load_manifest(data_root)
-        raw_source_root = manifest.get("source_root")
-        if raw_source_root is None:
-            return
-        source_root = Path(str(raw_source_root))
-        if not source_root.is_absolute():
-            source_root = data_root / source_root
-        if not source_root.exists():
-            raise FileNotFoundError(f"ToolSandbox source_root 不存在: {source_root}")
-        source_text = str(source_root.resolve())
-        if source_text not in sys.path:
-            sys.path.insert(0, source_text)
-
-    def _import_module(self, module_name: str) -> Any:
-        """懒加载 ToolSandbox 模块。
-
-        Args:
-            module_name: 需要导入的模块名。
-
-        Returns:
-            Python 模块对象。
-        """
-        try:
-            return importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            raise ImportError(TOOL_SANDBOX_DEPENDENCY_ERROR) from exc
-
     def _named_scenarios(self, config: HarnessRunConfig) -> dict[str, Any]:
         """获取 ToolSandbox 原生场景字典。
 
@@ -306,8 +237,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         Returns:
             场景名到场景对象的映射。
         """
-        self._validate_config(config)
-        self._ensure_source_root(config.data_root)
         scenarios_module = self._import_module("tool_sandbox.scenarios")
         tool_backend = self._tool_backend(config)
         scenarios = scenarios_module.named_scenarios(preferred_tool_backend=tool_backend)

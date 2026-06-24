@@ -26,7 +26,7 @@ class GenericHarness(BaseBenchmarkHarness):
 
     # override 基类的函数实现
 
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+    def _list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出通用 benchmark case。
 
         Args:
@@ -35,8 +35,6 @@ class GenericHarness(BaseBenchmarkHarness):
         Returns:
             metadata 中声明的单个 case；未声明时返回空列表。
         """
-        if config is None:
-            raise ValueError("config 不能为空")
         case_id = config.metadata.get("case_id")
         if not isinstance(case_id, str) or not case_id.strip():
             return []

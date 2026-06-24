@@ -1,0 +1,25 @@
+name: dynsteer
+
+services:
+  dynsteer:
+    image: dynsteer:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace/DynSTEER
+    environment:
+      DYNSTEER_IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1"
+      UV_PROJECT_ENVIRONMENT: /opt/venv
+      DYNSTEER_BOOTSTRAP_VENV: /opt/bootstrap-venv
+      UV_CACHE_DIR: /root/.cache/uv
+      PATH: /opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - ./:/workspace/DynSTEER
+      - dynsteer-venv:/opt/venv
+      - uv-cache:/root/.cache/uv
+    entrypoint: ["bash", "/workspace/DynSTEER/scripts/start.sh"]
+
+volumes:
+  dynsteer-venv:
+  uv-cache:

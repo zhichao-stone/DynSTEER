@@ -5,7 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "tool-sandbox",
 ]
 
 [dependency-groups]
@@ -13,6 +12,3 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
 ]
-
-[tool.uv.sources]
-tool-sandbox = { path = "../ToolSandbox", editable = true }

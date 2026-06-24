@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import importlib
+import json
 import logging
 import re
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import DynamicWeightConfig, ThresholdConfig
@@ -64,6 +68,7 @@ class BaseBenchmarkHarness(ABC):
     """benchmark 运行期基类，负责 checkpoint、阶段评估与策略终止。"""
 
     benchmark: str
+    dependency_error_message: str | None = None
 
     def __init__(
         self,
@@ -78,15 +83,8 @@ class BaseBenchmarkHarness(ABC):
     # 子类需要继承并 override 的函数
 
     @abstractmethod
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
-        """列出当前 benchmark 可运行的测试任务。
-
-        Args:
-            config: harness 运行配置。
-
-        Returns:
-            benchmark case 列表。
-        """
+    def _list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+        """List runnable cases after base config preparation."""
 
     @abstractmethod
     def _start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object:
@@ -209,6 +207,76 @@ class BaseBenchmarkHarness(ABC):
 
     # 基类自身实现逻辑、子类不覆盖的函数
 
+    def _project_root(self) -> Path:
+        """Return the DynSTEER project root, where main.py lives."""
+        return Path(__file__).resolve().parents[2]
+
+    def _validate_config(self, config: HarnessRunConfig) -> None:
+        """Validate shared harness run configuration."""
+        if config is None:
+            raise ValueError("config cannot be None")
+        if config.benchmark.strip().lower() != self.benchmark:
+            raise ValueError(f"benchmark must be {self.benchmark}")
+        if config.data_root is None:
+            raise ValueError("data_root cannot be None")
+
+    def _load_manifest(self, data_root: Path) -> dict[str, object]:
+        """Load benchmark.json from data_root."""
+        if data_root is None:
+            raise ValueError("data_root cannot be None")
+        manifest_path = data_root / "benchmark.json"
+        if not manifest_path.exists():
+            return {"benchmark": self.benchmark, "source_root": None}
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"benchmark.json is not valid JSON: {manifest_path}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("benchmark.json must be a JSON object")
+        return data
+
+    def _ensure_source_root(self, data_root: Path) -> None:
+        """Add benchmark source_root from benchmark.json to sys.path."""
+        manifest = self._load_manifest(data_root)
+        raw_source_root = manifest.get("source_root")
+        if raw_source_root is None:
+            return
+        if not isinstance(raw_source_root, str) or not raw_source_root.strip():
+            raise ValueError("benchmark.json source_root must be a non-empty string")
+        source_root = Path(raw_source_root.strip())
+        if not source_root.is_absolute():
+            source_root = self._project_root() / source_root
+        if not source_root.exists():
+            raise FileNotFoundError(f"{self.benchmark} source_root does not exist: {source_root}")
+        source_text = str(source_root.resolve())
+        if source_text not in sys.path:
+            sys.path.insert(0, source_text)
+
+    def _import_module(self, module_name: str) -> Any:
+        """Import a benchmark runtime dependency lazily."""
+        if not isinstance(module_name, str) or not module_name.strip():
+            raise ValueError("module_name cannot be empty")
+        try:
+            return importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            message = self.dependency_error_message or (
+                f"{self.benchmark} harness requires the benchmark package and dependencies. "
+                "Ensure benchmark.json source_root is importable, or install the benchmark in the current uv environment."
+            )
+            raise ImportError(message) from exc
+
+    def _prepare_config(self, config: HarnessRunConfig) -> None:
+        """Validate config once at the harness entry and prepare imports."""
+        self._validate_config(config)
+        self._ensure_source_root(config.data_root)
+
+    ### 基类自身实现的对外开放接口
+
+    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+        """List runnable cases for this benchmark."""
+        self._prepare_config(config)
+        return self._list_cases(config)
+
     def run_case(self, config: HarnessRunConfig, case_id: str) -> HarnessRunResult:
         """运行一个 benchmark case，并在 milestone checkpoint 处阶段式评估。
 
@@ -223,8 +291,7 @@ class BaseBenchmarkHarness(ABC):
             raise ValueError("config 不能为空")
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
-        if config.benchmark.strip().lower() != self.benchmark:
-            raise ValueError(f"benchmark 必须是 {self.benchmark}")
+        self._prepare_config(config)
         
         run_id = self._build_run_id(config, case_id)
         raw_output_dir = config.runs_dir / config.benchmark / run_id / case_id / "raw"
@@ -310,6 +377,8 @@ class BaseBenchmarkHarness(ABC):
         finally:
             if session is not None:
                 self._teardown_case(session)
+
+    #### run_case依赖的内部功能函数
 
     def _build_run_id(self, config: HarnessRunConfig, case_id: str) -> str:
         """构造安全的运行 ID。
@@ -715,7 +784,3 @@ class BaseBenchmarkHarness(ABC):
                     f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
                 )
         return None
-
-
-BenchmarkAdapter = BaseBenchmarkAdapter
-BenchmarkHarness = BaseBenchmarkHarness
