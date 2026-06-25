@@ -1,5 +1,6 @@
 from dynsteer.harness.model import (
     BenchmarkCase,
+    HarnessAdvanceResult,
     HarnessRunConfig,
     HarnessRunResult,
     HarnessStageSettlement,
@@ -30,6 +31,7 @@ __all__ = [
     "BenchmarkCase",
     "BaseBenchmarkHarness",
     "HarnessEvaluationOutput",
+    "HarnessAdvanceResult",
     "HarnessRunConfig",
     "HarnessRunResult",
     "HarnessStageSettlement",

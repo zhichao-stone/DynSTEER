@@ -8,7 +8,8 @@ from typing import Optional
 
 from dynsteer.adapter.generic import load_milestone_graph, load_task_case, load_trajectory
 from dynsteer.adapter.toolsandbox import load_toolsandbox_experiment
-from dynsteer.evaluate import evaluate_trajectory
+from dynsteer.evaluate import DynSTEEREvaluator
+from dynsteer.judges.llm import LLMJudge
 from dynsteer.log import configure_logger, get_log_buffer
 
 
@@ -57,6 +58,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             from dynsteer.harness.config import load_harness_run_configs
             from dynsteer.harness.runner import run_harness_cases
 
+            evaluator = DynSTEEREvaluator(llm_judge=LLMJudge.from_env())
             configs = load_harness_run_configs(
                 benchmark=str(args.benchmark),
                 data_root=data_root,
@@ -66,7 +68,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             harness = get_harness(str(args.benchmark))
             outputs = []
             for config in configs:
-                outputs.extend(run_harness_cases(config=config, harness=harness))
+                outputs.extend(run_harness_cases(config=config, harness=harness, evaluator=evaluator))
             for output in outputs:
                 print(str(output.report_path))
             return 0
@@ -94,7 +96,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             task_case, trajectory = load_toolsandbox_experiment(data)
 
         logger.info("开始执行轨迹评估", extra={"run_id": trajectory.run_id, "task_id": task_case.task_id})
-        report = evaluate_trajectory(task_case, trajectory)
+        evaluator = DynSTEEREvaluator(llm_judge=LLMJudge.from_env())
+        report = evaluator.evaluate_trajectory(task_case, trajectory)
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "report.json").write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=4),

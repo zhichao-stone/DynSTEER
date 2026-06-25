@@ -1,11 +1,39 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject
+
+
+def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObject:
+    """从环境变量读取 LLMJudge 配置。
+
+    Args:
+        env: 环境变量映射；测试时可传入 fake env。
+
+    Returns:
+        不包含 API key 明文的 judge 配置摘要；未配置 provider 时返回空字典。
+    """
+    source = env or os.environ
+    provider = source.get("DYNSTEER_JUDGE_PROVIDER")
+    if provider is None or not provider.strip():
+        return {}
+    model = source.get("DYNSTEER_JUDGE_MODEL")
+    if model is None or not model.strip():
+        raise ValueError("DYNSTEER_JUDGE_MODEL 不能为空")
+    return {
+        "provider": provider.strip(),
+        "model": model.strip(),
+        "base_url": source.get("DYNSTEER_JUDGE_BASE_URL"),
+        "timeout_seconds": float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
+        "temperature": float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
+        "expensive_passes": int(source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES", "3")),
+        "api_key_configured": bool(source.get("DYNSTEER_JUDGE_API_KEY")),
+    }
 
 
 def _read_json_object(path: Path, label: str) -> JsonObject:
@@ -129,6 +157,7 @@ def load_harness_run_configs(
 
     configs: list[HarnessRunConfig] = []
     seen_run_ids: set[str] = set()
+    judge_config = load_judge_config_from_env()
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
             raise ValueError(f"run_config.json 第 {index} 项必须是 JSON 对象")
@@ -153,6 +182,8 @@ def load_harness_run_configs(
         name = _optional_str(raw_spec, "name")
         if name is not None:
             metadata["run_config_name"] = name
+        if judge_config:
+            metadata["judge"] = judge_config
         configs.append(
             HarnessRunConfig(
                 benchmark=normalized_benchmark,

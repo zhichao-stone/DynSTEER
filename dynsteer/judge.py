@@ -38,6 +38,8 @@ class Judge(Protocol):
 
 
 class LocalJudge:
+    """仅用于 cheap 层的本地结构化评估器。"""
+
     def evaluate_stage(
         self,
         interval: StageInterval,

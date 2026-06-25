@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.harness.model import BenchmarkCase, HarnessRunConfig
+from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryStep
 
 
@@ -26,7 +26,7 @@ class GenericHarness(BaseBenchmarkHarness):
 
     # override 基类的函数实现
 
-    def _list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出通用 benchmark case。
 
         Args:
@@ -35,12 +35,13 @@ class GenericHarness(BaseBenchmarkHarness):
         Returns:
             metadata 中声明的单个 case；未声明时返回空列表。
         """
+        self.prepare_config(config)
         case_id = config.metadata.get("case_id")
         if not isinstance(case_id, str) or not case_id.strip():
             return []
         return [BenchmarkCase(benchmark=self.benchmark, case_id=case_id)]
 
-    def _start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> GenericSession:
+    def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> GenericSession:
         """从 config.metadata 初始化通用回放 session。
 
         Args:
@@ -65,39 +66,44 @@ class GenericHarness(BaseBenchmarkHarness):
             metrics=dict(trajectory.metrics),
         )
 
-    def _task_case_from_session(self, session: object) -> TaskCase:
+    def task_case_from_session(self, session: object) -> TaskCase:
         """从回放 session 提取任务定义。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         return session.task_case
 
-    def _advance_case(self, session: object) -> list[TrajectoryStep]:
+    def advance_case(self, session: object) -> HarnessAdvanceResult:
         """回放一个轨迹步骤。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         if not session.remaining_steps:
-            return []
-        return [session.remaining_steps.pop(0)]
+            return HarnessAdvanceResult(steps=[], continue_running=False, reason="benchmark 已自然完成")
+        step = session.remaining_steps.pop(0)
+        return HarnessAdvanceResult(
+            steps=[step],
+            continue_running=bool(session.remaining_steps),
+            reason=None if session.remaining_steps else "benchmark 已自然完成",
+        )
 
-    def _case_finished(self, session: object) -> bool:
+    def case_finished(self, session: object) -> bool:
         """判断回放是否完成。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         return not session.remaining_steps
 
-    def _snapshots_from_session(self, session: object) -> list[StateSnapshot]:
+    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
         """返回离线轨迹快照。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         return list(session.snapshots)
 
-    def _metrics_from_session(self, session: object) -> JsonObject:
+    def metrics_from_session(self, session: object) -> JsonObject:
         """返回离线轨迹 metrics。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         return dict(session.metrics)
 
-    def _final_state_from_session(self, session: object) -> JsonObject | None:
+    def final_state_from_session(self, session: object) -> JsonObject | None:
         """返回离线轨迹 final_state。"""
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")

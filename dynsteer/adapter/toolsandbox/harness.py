@@ -8,7 +8,7 @@ from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_task_case, load_trajectory
-from dynsteer.harness.model import BenchmarkCase, HarnessRunConfig, HarnessRunResult
+from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig, HarnessRunResult
 from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase, TrajectoryStep
 
 TOOL_SANDBOX_DEPENDENCY_ERROR = (
@@ -68,7 +68,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     # override 基类的函数实现
 
-    def _list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出 ToolSandbox 场景。
 
         Args:
@@ -77,6 +77,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         Returns:
             ToolSandbox 场景列表。
         """
+        self.prepare_config(config)
         scenarios = self._named_scenarios(config)
         cases: list[BenchmarkCase] = []
         for case_id, scenario in sorted(scenarios.items()):
@@ -91,7 +92,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             )
         return cases
 
-    def _start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> ToolSandboxSession:
+    def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> ToolSandboxSession:
         """初始化 ToolSandbox 原生 session。
 
         Args:
@@ -122,7 +123,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             last_sandbox_message_index=last_index,
         )
 
-    def _task_case_from_session(self, session: object) -> TaskCase:
+    def task_case_from_session(self, session: object) -> TaskCase:
         """从 ToolSandbox session 构造 DynSTEER 任务定义。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
@@ -146,12 +147,12 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             }
         )
 
-    def _advance_case(self, session: object) -> list[TrajectoryStep]:
+    def advance_case(self, session: object) -> HarnessAdvanceResult:
         """推进 ToolSandbox 一个可中断执行批次并返回新增步骤。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         if session.finished:
-            return []
+            return HarnessAdvanceResult(steps=[], continue_running=False, reason="benchmark 已自然完成")
         self._advance_native_session(session)
         rows = [
             row
@@ -163,21 +164,28 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         steps = self.convert_sandbox_rows_to_steps(rows)
         if self._native_session_finished(session):
             session.finished = True
-        return load_trajectory(
+        trajectory_steps = load_trajectory(
             {
                 "run_id": session.run_id,
                 "task_id": f"toolsandbox::{session.case_id}",
                 "steps": steps,
             }
         ).steps
+        if not trajectory_steps and not session.finished:
+            raise RuntimeError("benchmark session 未完成但没有新增轨迹步骤")
+        return HarnessAdvanceResult(
+            steps=trajectory_steps,
+            continue_running=not session.finished,
+            reason="benchmark 已自然完成" if session.finished else None,
+        )
 
-    def _case_finished(self, session: object) -> bool:
+    def case_finished(self, session: object) -> bool:
         """判断 ToolSandbox session 是否自然完成。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         return session.finished
 
-    def _snapshots_from_session(self, session: object) -> list[StateSnapshot]:
+    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
         """提取 ToolSandbox 当前状态快照。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
@@ -195,19 +203,19 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             }
         ).snapshots
 
-    def _metrics_from_session(self, session: object) -> JsonObject:
+    def metrics_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 运行期 metrics。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         return {"native_evaluation_skipped": True}
 
-    def _raw_summary_from_session(self, session: object) -> JsonObject:
+    def raw_summary_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 原生摘要。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         return {"native_evaluation_skipped": True, "case_id": session.case_id}
 
-    def _stop_case(self, session: object, reason: str) -> None:
+    def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止 ToolSandbox session。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
@@ -216,7 +224,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         session.finished = True
         session.stop_reason = reason
 
-    def _teardown_case(self, session: object) -> None:
+    def teardown_case(self, session: object) -> None:
         """释放 ToolSandbox role 资源。"""
         if not isinstance(session, ToolSandboxSession):
             return
