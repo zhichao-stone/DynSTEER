@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from typing import Any
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_task_case, load_trajectory
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig, HarnessRunResult
-from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase, TrajectoryStep
+from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase
 
 TOOL_SANDBOX_DEPENDENCY_ERROR = (
     "ToolSandbox harness 需要安装 ToolSandbox 及其依赖。"
@@ -317,17 +318,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             role_type.AGENT: agent_factory(),
         }
 
-    def _run_id(self, config: HarnessRunConfig, case_id: str) -> str:
-        raw_run_id = config.metadata.get("run_id")
-        if isinstance(raw_run_id, str) and raw_run_id.strip():
-            candidate = raw_run_id.strip()
-        else:
-            candidate = f"{self.benchmark}_{case_id}_run"
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", candidate).strip("._")
-        if not safe:
-            raise ValueError("run_id 不能为空")
-        return safe
-
     def _starting_context_from_scenario(
         self,
         scenario: object,
@@ -418,13 +408,29 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             {key: value for key, value in kwargs.items() if key == "roles"},
             {},
         ]
-        last_error: TypeError | None = None
+        bind_errors: list[TypeError] = []
         for candidate_kwargs in attempts:
-            try:
+            if self._native_kwargs_bind(func, candidate_kwargs, bind_errors):
                 return func(**candidate_kwargs)
-            except TypeError as exc:
-                last_error = exc
-        raise last_error if last_error is not None else TypeError("无法调用 ToolSandbox 原生函数")
+        raise bind_errors[-1] if bind_errors else TypeError("无法调用 ToolSandbox 原生函数")
+
+    def _native_kwargs_bind(
+        self,
+        func: object,
+        kwargs: dict[str, object],
+        bind_errors: list[TypeError],
+    ) -> bool:
+        """判断候选关键字参数是否能绑定到原生函数签名。"""
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return True
+        try:
+            signature.bind(**kwargs)
+        except TypeError as exc:
+            bind_errors.append(exc)
+            return False
+        return True
 
     def _native_session_finished(self, session: ToolSandboxSession) -> bool:
         """读取原生 scenario/session 的完成标记。"""

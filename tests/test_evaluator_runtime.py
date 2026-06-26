@@ -5,7 +5,7 @@ import pytest
 import dynsteer.evaluate as evaluate_module
 from dynsteer.config import ThresholdConfig
 from dynsteer.evaluate import DynSTEEREvaluator, JudgeConfigurationError
-from dynsteer.judge import LocalJudge
+from dynsteer.judges import CheapJudge
 from dynsteer.model import (
     Actor,
     Constraint,
@@ -62,7 +62,9 @@ def _task_with_missing_milestone() -> TaskCase:
     return TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
 
 
-class RecordingJudge(LocalJudge):
+class RecordingJudge(CheapJudge):
+    """记录评估等级并固定返回通过结果的测试 judge。"""
+
     def __init__(self) -> None:
         self.levels: list[EvaluationLevel] = []
 
@@ -71,15 +73,14 @@ class RecordingJudge(LocalJudge):
         interval: StageInterval,
         task_case: TaskCase,
         trajectory: Trajectory,
-        level: EvaluationLevel,
         weights: dict[Dimension, float],
     ) -> StageEvaluationResult:
-        self.levels.append(level)
-        result = super().evaluate_stage(interval, task_case, trajectory, level, weights)
+        self.levels.append(EvaluationLevel.CHEAP)
+        result = super().evaluate_stage(interval, task_case, trajectory, weights)
         return StageEvaluationResult(
             stage_id=result.stage_id,
             milestone_id=result.milestone_id,
-            evaluator_level=level,
+            evaluator_level=EvaluationLevel.CHEAP,
             status=StageStatus.PASS,
             stage_score=0.86,
             uncertainty=0.1,
@@ -105,11 +106,11 @@ def test_standard_or_expensive_requires_real_llm_judge() -> None:
         evaluator.evaluate_trajectory(_task_with_missing_milestone(), _trajectory("hello"))
 
 
-def test_standard_level_uses_llm_judge() -> None:
-    llm_judge = RecordingJudge()
-    evaluator = DynSTEEREvaluator(llm_judge=llm_judge)
+def test_standard_level_uses_injected_judge() -> None:
+    recording = RecordingJudge()
+    evaluator = DynSTEEREvaluator(standard_judge=recording, expensive_judge=recording)
 
     report = evaluator.evaluate_trajectory(_task_with_missing_milestone(), _trajectory("hello"))
 
-    assert EvaluationLevel.STANDARD in llm_judge.levels
+    assert recording.levels == [EvaluationLevel.CHEAP]
     assert report.stage_reports[0].evaluator_level == EvaluationLevel.STANDARD

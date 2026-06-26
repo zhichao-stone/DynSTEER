@@ -58,8 +58,11 @@ def teardown_case(self, session: object) -> None: ...
 
 - `run_harness_case(config, harness, evaluator)`: 运行一个 case。
 - `run_harness_cases(config, harness, evaluator)`: 运行一个或多个 case。
+- `run_harness_configs(configs, max_workers=1)`: 运行多组配置并按 case 展开；`max_workers > 1` 时使用独立 harness/evaluator 实例并行执行，返回值按配置和 case 的原始顺序排列。
 
 Runner 只负责选择 case、调用 `evaluator.evaluate(harness, case_id, config)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
+
+`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于并行运行时定位失败样本。并行模式下日志缓冲和 logger 重配使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
 Harness 模式输出：
 
@@ -72,4 +75,8 @@ Harness 模式输出：
 
 ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER 核心包直接依赖 ToolSandbox。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。
 
+`data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。
+
 ToolSandbox harness 不调用原生 `play_and_evaluate()`。它通过原生 `advance()`、`step()`、`play()` 或 role 的 `respond()` 推进 session，返回增量 `HarnessAdvanceResult`。阶段评估、minefield 判断和 fail-fast 终止由 `DynSTEEREvaluator` 完成。
+
+ToolSandbox harness 复用基类 `build_run_id()` 构造 run_id，不再保留私有 `_run_id()`。它也不再导入未使用的 `TrajectoryStep`。`_result_from_toolsandbox()` 暂时保留为旧的整次运行转换能力，当前没有外部调用方，待确认无外部入口后再单独删除。

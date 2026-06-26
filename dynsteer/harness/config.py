@@ -100,10 +100,34 @@ def _required_str(data: dict[str, Any], key: str, label: str) -> str:
 
 
 def _optional_str(data: dict[str, Any], key: str) -> str | None:
+    """读取可选字符串字段。
+
+    Args:
+        data: 配置对象。
+        key: 字段名。
+
+    Returns:
+        去除首尾空白后的字符串；未配置时返回 None。
+    """
     value = data.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _manifest_language(manifest: dict[str, Any]) -> str:
+    """读取 benchmark prompt 语言配置。
+
+    Args:
+        manifest: benchmark.json 内容。
+
+    Returns:
+        prompt 语言代码，默认 en。
+    """
+    value = manifest.get("language", "en")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("benchmark.json language 必须是非空字符串")
+    return value.strip()
 
 
 def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | None:
@@ -150,6 +174,7 @@ def load_harness_run_configs(
         raise ValueError(f"benchmark.json 中的 benchmark 必须是 {normalized_benchmark}")
     _required_str(manifest, "source_root", "benchmark.json")
     tool_backend = _required_str(manifest, "tool_backend", "benchmark.json")
+    language = _manifest_language(manifest)
 
     raw_specs = _read_json_array(data_root / "run_config.json", "run_config.json")
     if not raw_specs:
@@ -162,6 +187,7 @@ def load_harness_run_configs(
         if not isinstance(raw_spec, dict):
             raise ValueError(f"run_config.json 第 {index} 项必须是 JSON 对象")
         metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key != "scenarios"}
+        metadata["language"] = language
         if normalized_benchmark == "toolsandbox":
             _required_str(raw_spec, "agent", f"run_config.json 第 {index} 项")
             _required_str(raw_spec, "user", f"run_config.json 第 {index} 项")

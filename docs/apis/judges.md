@@ -1,0 +1,74 @@
+# Judges API
+
+## 目标
+
+`dynsteer.judges` 包负责轨迹阶段评估器，定义统一接口和 cheap/standard/expensive 三档 Judge。LLM provider 的构建与交互不在本包，见 `docs/apis/llm.md`。
+
+## 包结构
+
+```text
+dynsteer/judges/
+- __init__.py    # 导出 BaseJudge、LLMJudge、CheapJudge、StandardJudge、ExpensiveJudge 及相关错误
+- base.py        # BaseJudge、LLMJudge、LLMJudgeConfig、LLMJudgeConfigurationError、LLMJudgeResponseError
+- prompt.py      # PromptTemplate、系统 prompt 与 standard/expensive 多语言 prompt 构造函数
+- cheap.py       # CheapJudge
+- standard.py    # StandardJudge
+- expensive.py   # ExpensiveJudge
+```
+
+`dynsteer/judge.py` 与 `dynsteer/judges/llm.py` 已删除，`from dynsteer.judge import ...` 和 `from dynsteer.judges.llm import ...` 不再可用。
+
+## 统一接口
+
+```python
+class BaseJudge(ABC):
+    @abstractmethod
+    def evaluate_stage(
+        self,
+        interval: StageInterval,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        weights: dict[Dimension, float],
+    ) -> StageEvaluationResult:
+        """评估单个阶段。"""
+```
+
+## CheapJudge
+
+`CheapJudge(BaseJudge)` 是本地结构化评估器，只用于 cheap 层，不访问网络。它根据 `StageInterval.milestone_score` 与 `status` 生成确定性阶段评估结果。
+
+## LLMJudge
+
+`LLMJudge(BaseJudge)` 是 LLM-as-a-Judge 抽象基类。它只封装入参检查、prompt 构造、JSON 调用、响应解析、结果转换和通用异常，依赖注入的 `BaseLLM.chat(...)`，不直接导入 `openai.OpenAI`。
+
+`LLMJudge` 不实现 `evaluate_stage(...)`，也不保留 `_evaluate_standard(...)`、`_evaluate_expensive(...)`，因此不能直接实例化。共用 helper 包括 `_call_json(...)`、`_result_from_payload(...)`、`_dimension_scores(...)`、`_float_in_unit(...)`、`_string_list(...)`。
+
+```python
+judge = StandardJudge(llm=llm)
+judge = ExpensiveJudge(llm=llm, expensive_passes=3)
+```
+
+## PromptTemplate
+
+`dynsteer.language` 提供 `TaskLanguage`、`normalize_task_language(...)`、`language_from_metadata(...)` 和 `language_from_task(...)`。外部配置中的 `en`、`english` 会归一为 `TaskLanguage.ENGLISH`；`zh`、`ch`、`chinese`、`zhongwen`、`中文` 会归一为 `TaskLanguage.CHINESE`。未知语言会抛出 `ValueError`，避免静默使用错误语言。
+
+`dynsteer.judges.prompt` 负责维护多语言 prompt。`PromptTemplate.render(language=TaskLanguage.ENGLISH, **kwargs)` 默认使用英文模板；模板渲染使用 `_safe_format(...)`，只替换 `{key}` 占位符，保留 JSON 示例中的 `{{` / `}}` 字面花括号。`build_judge_system_prompt(...)` 负责生成 LLMJudge 系统 prompt，避免在 `base.py` 中写死中文系统消息。
+
+benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配置，并在 `load_harness_run_configs(...)` 中写入 `HarnessRunConfig.metadata["language"]`；`DynSTEEREvaluator.evaluate(...)` 会合并到 `TaskCase.metadata`，judge 通过 `dynsteer.language.language_from_task(...)` 读取并归一为 `TaskLanguage`。
+
+## StandardJudge
+
+`StandardJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成单轮 prompt 构造、LLM JSON 调用和结果转换，固定返回 `EvaluationLevel.STANDARD` 结果。standard prompt 包含任务上下文、阶段轨迹、维度权重、证据规则、评分 rubric 和严格 JSON 输出 schema。
+
+## ExpensiveJudge
+
+`ExpensiveJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成多轮聚焦评估、一次风险复核和一次汇总裁决，记录 `metadata["judge_passes"]`，固定返回 `EvaluationLevel.EXPENSIVE` 结果。`expensive_passes` 控制聚焦评估轮数，必须大于 0。聚焦模板用于分维度深审，风险模板用于 fatal/minefield/约束风险复核，裁决模板基于前序 pass 形成最终 JSON 结果。
+
+## 分发约定
+
+评估等级分发由 `DynSTEEREvaluator` 根据 `EvaluationDecision` 完成：cheap 不足时调用 `StandardJudge`，standard 不足时调用 `ExpensiveJudge`。`LLMJudge` 基类不承担分发，避免出现只调用基类方法的一行中转函数。
+
+## 异常
+
+- `LLMJudgeConfigurationError`: judge 配置缺失或不合法。
+- `LLMJudgeResponseError`: LLM 返回内容无法解析为合法 JSON 或字段非法。

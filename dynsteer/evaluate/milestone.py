@@ -2,14 +2,22 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
+from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import MatchConfig
+from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Boundary,
+    Milestone,
     MilestoneGraph,
     MilestoneMapping,
     MilestoneMappingItem,
     MilestoneScore,
+    StageStatus,
+    TaskCase,
+    Trajectory,
+    TrajectoryStep,
 )
+from dynsteer.score import score_milestone
 
 
 def _node_ids(graph: MilestoneGraph) -> set[str]:
@@ -152,3 +160,130 @@ def match_milestones(
         objective=objective,
         evidence=evidence,
     )
+
+
+def milestone_score_matrix(
+    graph: MilestoneGraph,
+    boundaries: list[Boundary],
+    trajectory: Trajectory,
+) -> dict[tuple[str, str], MilestoneScore]:
+    """构造 milestone 与候选边界的评分矩阵。
+
+    Args:
+        graph: milestone DAG。
+        boundaries: 候选边界。
+        trajectory: Agent 轨迹。
+
+    Returns:
+        `(milestone_id, boundary_id)` 到 milestone 评分的矩阵。
+    """
+    if graph is None or boundaries is None or trajectory is None:
+        raise ValueError("milestone_score_matrix 入参不能为空")
+    matrix: dict[tuple[str, str], MilestoneScore] = {}
+    for milestone in graph.nodes:
+        for boundary in boundaries:
+            matrix[(milestone.milestone_id, boundary.boundary_id)] = score_milestone(
+                milestone,
+                boundary,
+                trajectory,
+                trajectory.snapshots,
+            )
+    return matrix
+
+
+def ready_milestones(
+    graph: MilestoneGraph,
+    matched: dict[str, HarnessStageSettlement],
+) -> list[Milestone]:
+    """返回前驱已命中、尚未结算的可命中 milestone。
+
+    Args:
+        graph: milestone DAG。
+        matched: 已结算 milestone 到结算节点的映射。
+
+    Returns:
+        当前可命中的 milestone 列表。
+    """
+    if graph is None or matched is None:
+        raise ValueError("graph 和 matched 不能为空")
+    matched_ids = set(matched)
+    predecessors: dict[str, list[str]] = {node.milestone_id: [] for node in graph.nodes}
+    for source, target in graph.edges:
+        if target in predecessors:
+            predecessors[target].append(source)
+    ready = []
+    for node in graph.nodes:
+        if node.milestone_id in matched_ids:
+            continue
+        if all(source in matched_ids for source in predecessors.get(node.milestone_id, [])):
+            ready.append(node)
+    return ready
+
+
+def stage_start_for_milestone(
+    graph: MilestoneGraph,
+    milestone_id: str,
+    matched: dict[str, HarnessStageSettlement],
+    start_settlement: HarnessStageSettlement | None,
+) -> int:
+    """根据前驱结算确定 milestone 阶段的起始步骤索引。
+
+    Args:
+        graph: milestone DAG。
+        milestone_id: 目标 milestone ID。
+        matched: 已结算 milestone 到结算节点的映射。
+        start_settlement: start 结算节点；无前驱命中时作为兜底。
+
+    Returns:
+        阶段起始步骤索引。
+    """
+    if graph is None or not milestone_id or matched is None:
+        raise ValueError("阶段起点参数不能为空")
+    predecessors = [source for source, target in graph.edges if target == milestone_id]
+    matched_predecessor_indexes = [
+        matched[source].end_step_index
+        for source in predecessors
+        if source in matched
+    ]
+    if matched_predecessor_indexes:
+        return max(matched_predecessor_indexes)
+    return start_settlement.end_step_index if start_settlement is not None else 0
+
+
+def find_hit_milestone(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    step: TrajectoryStep,
+    matched: dict[str, HarnessStageSettlement],
+) -> tuple[Milestone, Boundary, MilestoneScore] | None:
+    """判断当前步骤是否命中某个可命中 milestone。
+
+    Args:
+        task_case: 当前任务。
+        trajectory: Agent 轨迹。
+        step: 当前增量步骤。
+        matched: 已结算 milestone 到结算节点的映射。
+
+    Returns:
+        命中的 (milestone, boundary, score)；未命中时返回 None。
+    """
+    if task_case is None or trajectory is None or step is None or matched is None:
+        raise ValueError("milestone 判定参数不能为空")
+    graph = task_case.milestone_graph
+    if graph is None or not graph.nodes:
+        return None
+    boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
+    if not boundaries:
+        return None
+    best: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    for milestone in ready_milestones(graph, matched):
+        predecessor_start = stage_start_for_milestone(graph, milestone.milestone_id, matched, None)
+        for boundary in boundaries:
+            if boundary.step_index <= predecessor_start and predecessor_start > 0:
+                continue
+            score = score_milestone(milestone, boundary, trajectory, trajectory.snapshots)
+            if score.status != StageStatus.PASS:
+                continue
+            if best is None or score.score > best[2].score:
+                best = (milestone, boundary, score)
+    return best

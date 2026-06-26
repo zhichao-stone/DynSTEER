@@ -9,7 +9,6 @@ from typing import Optional
 from dynsteer.adapter.generic import load_milestone_graph, load_task_case, load_trajectory
 from dynsteer.adapter.toolsandbox import load_toolsandbox_experiment
 from dynsteer.evaluate import DynSTEEREvaluator
-from dynsteer.judges.llm import LLMJudge
 from dynsteer.log import configure_logger, get_log_buffer
 
 
@@ -26,6 +25,7 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--results-dir", default="results", help="最终 DynSTEER 评估结果目录")
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--log-dir", default="logs")
+    parser.add_argument("--max-workers", type=int, default=1, help="benchmark config/case 并行 worker 数，默认 1")
     return parser.parse_args(argv)
 
 
@@ -53,22 +53,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 data_root = Path(args.data_root)
             if not data_root.exists():
                 raise ValueError("运行 benchmark harness 时 需要提供可靠的data-root，通过--data-root提供或者data/{benchmark}")
+            if int(args.max_workers) < 1:
+                raise ValueError("--max-workers 必须大于 0")
             
-            from dynsteer.adapter.registry import get_harness
             from dynsteer.harness.config import load_harness_run_configs
-            from dynsteer.harness.runner import run_harness_cases
+            from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
 
-            evaluator = DynSTEEREvaluator(llm_judge=LLMJudge.from_env())
             configs = load_harness_run_configs(
                 benchmark=str(args.benchmark),
                 data_root=data_root,
                 runs_dir=runs_dir,
                 results_dir=results_dir,
             )
-            harness = get_harness(str(args.benchmark))
-            outputs = []
-            for config in configs:
-                outputs.extend(run_harness_cases(config=config, harness=harness, evaluator=evaluator))
+            outputs: list[HarnessEvaluationOutput] = run_harness_configs(
+                configs=configs,
+                max_workers=int(args.max_workers),
+            )
             for output in outputs:
                 print(str(output.report_path))
             return 0
@@ -96,7 +96,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             task_case, trajectory = load_toolsandbox_experiment(data)
 
         logger.info("开始执行轨迹评估", extra={"run_id": trajectory.run_id, "task_id": task_case.task_id})
-        evaluator = DynSTEEREvaluator(llm_judge=LLMJudge.from_env())
+        evaluator = DynSTEEREvaluator.from_env()
         report = evaluator.evaluate_trajectory(task_case, trajectory)
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "report.json").write_text(

@@ -1,23 +1,15 @@
 from __future__ import annotations
 
-import math
 import logging
-from dataclasses import dataclass, replace
-from typing import Optional, TYPE_CHECKING
+import os
+from dataclasses import replace
+from typing import Mapping, TYPE_CHECKING
 
 from dynsteer.boundary import generate_candidate_boundaries
-from dynsteer.config import (
-    DEFAULT_FOCUS,
-    DEFAULT_TARGETS,
-    TASK_TYPE_WEIGHTS,
-    DynamicWeightConfig,
-    MatchConfig,
-    ThresholdConfig,
-    default_dynamic_weight_config,
-)
-from dynsteer.judge import Judge, LocalJudge
+from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
-from dynsteer.match import match_milestones, validate_milestone_graph
+from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
+from dynsteer.llm import build_llm_from_env
 from dynsteer.model import (
     Boundary,
     ConstraintTarget,
@@ -37,8 +29,28 @@ from dynsteer.model import (
     TrajectoryStep,
     TrajectoryEvaluationReport,
 )
-from dynsteer.score import score_constraint, score_milestone
+from dynsteer.score import score_constraint
 from dynsteer.stage import build_stage_intervals
+from dynsteer.evaluate.milestone import (
+    find_hit_milestone,
+    match_milestones,
+    milestone_score_matrix,
+    stage_start_for_milestone,
+    validate_milestone_graph,
+)
+from dynsteer.evaluate.models import (
+    JudgeConfigurationError,
+    RuntimeEvaluationDecision,
+    RuntimeEvaluationState,
+)
+from dynsteer.evaluate.utils import (
+    build_trajectory,
+    enrich_stage_result,
+    first_failure_stage_id,
+    merge_snapshots,
+    overall_score,
+)
+from dynsteer.evaluate.weights import select_initial_weights, update_weights
 
 if TYPE_CHECKING:
     from dynsteer.adapter.base import BaseBenchmarkHarness
@@ -46,289 +58,139 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    if value < lower:
-        return lower
-    if value > upper:
-        return upper
-    return value
-
-
-def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]:
-    """归一化维度权重。
-
-    Args:
-        weights: 原始维度权重。
-
-    Returns:
-        覆盖全部维度且和为 1 的权重。
-    """
-    if weights is None:
-        raise ValueError("weights 不能为空")
-    normalized_source = {dimension: max(float(weights.get(dimension, 0.0)), 0.0) for dimension in Dimension}
-    total = sum(normalized_source.values())
-    if total <= 0:
-        return {dimension: 1 / len(Dimension) for dimension in Dimension}
-    return {dimension: value / total for dimension, value in normalized_source.items()}
-
-
-def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
-    """根据任务类型选择初始维度权重。
-
-    Args:
-        task_case: 任务定义。
-
-    Returns:
-        初始维度权重。
-    """
-    if task_case is None:
-        raise ValueError("task_case 不能为空")
-    task_types = task_case.task_types or []
-    if not task_types:
-        task_types = [next(iter(TASK_TYPE_WEIGHTS))]
-    merged = {dimension: 0.0 for dimension in Dimension}
-    valid_count = 0
-    for task_type in task_types:
-        weights = TASK_TYPE_WEIGHTS.get(task_type)
-        if weights is None:
-            continue
-        valid_count += 1
-        for dimension in Dimension:
-            merged[dimension] += weights.get(dimension, 0.0)
-    if valid_count == 0:
-        return normalize_weights(TASK_TYPE_WEIGHTS[next(iter(TASK_TYPE_WEIGHTS))])
-    return normalize_weights({dimension: value / valid_count for dimension, value in merged.items()})
-
-
-def update_weights(
-    current: dict[Dimension, float],
-    scores: dict[Dimension, float],
-    uncertainty: float,
-    config: Optional[DynamicWeightConfig] = None,
-) -> dict[Dimension, float]:
-    """根据低分维度与不确定性更新下一阶段权重。
-
-    Args:
-        current: 当前阶段权重。
-        scores: 当前阶段各维度分数。
-        uncertainty: 当前阶段不确定性。
-        config: 动态权重超参数；为空时使用默认配置。
-
-    Returns:
-        下一阶段归一化权重。
-    """
-    if current is None or scores is None:
-        raise ValueError("current 和 scores 不能为空")
-    effective_config = config or default_dynamic_weight_config()
-    next_weights: dict[Dimension, float] = {}
-    for dimension in Dimension:
-        base = max(float(current.get(dimension, 0.0)), 1e-9)
-        score = float(scores.get(dimension, 0.0))
-        target = effective_config.targets.get(dimension, DEFAULT_TARGETS[dimension])
-        focus = effective_config.focus.get(dimension, DEFAULT_FOCUS[dimension])
-        deficit = max(0.0, target - score)
-        next_weights[dimension] = base * math.exp(
-            effective_config.alpha * deficit + effective_config.beta * _clamp(uncertainty) * focus
-        )
-    return normalize_weights(next_weights)
-
-
-def compute_uncertainty(
-    top1_score: float,
-    top2_score: float,
-    missing_ratio: float,
-    stage_score: float,
-    evidence_conflict: bool,
-    judge_uncertainty: float,
-    thresholds: Optional[ThresholdConfig] = None,
-) -> float:
-    """计算阶段评估不确定性。
-
-    Args:
-        top1_score: 最优候选分数。
-        top2_score: 次优候选分数。
-        missing_ratio: 必要字段缺失比例。
-        stage_score: 阶段总分。
-        evidence_conflict: 证据是否冲突。
-        judge_uncertainty: judge 自身不确定性。
-        thresholds: 阈值配置。
-
-    Returns:
-        `[0, 1]` 区间的不确定性。
-    """
-    effective_thresholds = thresholds or ThresholdConfig()
-    margin = max(top1_score - top2_score, 0.0)
-    u_margin = 1.0 - _clamp(margin / 0.3)
-    u_missing = _clamp(missing_ratio)
-    threshold_distance = min(
-        abs(stage_score - effective_thresholds.pass_threshold),
-        abs(stage_score - effective_thresholds.warn_threshold),
-        abs(stage_score - effective_thresholds.fail_threshold),
-    )
-    u_threshold = 1.0 - _clamp(threshold_distance / effective_thresholds.threshold_margin)
-    u_conflict = 1.0 if evidence_conflict else 0.0
-    u_judge = _clamp(judge_uncertainty)
-    return _clamp(
-        0.30 * u_margin
-        + 0.25 * u_missing
-        + 0.20 * u_threshold
-        + 0.15 * u_conflict
-        + 0.10 * u_judge
-    )
-
-
-def select_evaluation_level(
-    result: StageEvaluationResult,
-    thresholds: Optional[ThresholdConfig] = None,
-) -> EvaluationDecision:
-    """根据阶段风险选择评估粒度。
-
-    Args:
-        result: 当前阶段已有评估结果。
-        thresholds: 阈值配置。
-
-    Returns:
-        评估粒度决策。
-    """
-    if result is None:
-        raise ValueError("result 不能为空")
-    effective_thresholds = thresholds or ThresholdConfig()
-    if result.fatal or result.fatal_minefield_score >= effective_thresholds.fatal_minefield_threshold:
-        return EvaluationDecision(EvaluationLevel.EXPENSIVE, "触发致命风险，需要最高粒度复核")
-    if result.evaluator_level == EvaluationLevel.EXPENSIVE:
-        return EvaluationDecision(EvaluationLevel.EXPENSIVE, "已处于最高评估粒度")
-    if result.evaluator_level == EvaluationLevel.STANDARD:
-        if result.judge_confidence < 0.45:
-            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "standard judge 置信度过低")
-        if result.uncertainty >= effective_thresholds.high_uncertainty:
-            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "standard 阶段不确定性过高")
-        if result.required_fields_missing_ratio > 0.3:
-            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "必要字段缺失比例过高")
-        if result.minefield_score >= effective_thresholds.risky_minefield_threshold:
-            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "风险约束接近 minefield")
-        return EvaluationDecision(EvaluationLevel.STANDARD, "standard 评估已足够")
-
-    cheap_pass = (
-        result.status == StageStatus.PASS
-        and result.stage_score >= effective_thresholds.pass_threshold + effective_thresholds.threshold_margin
-        and result.uncertainty <= effective_thresholds.low_uncertainty
-        and result.hard_constraints_all_pass
-        and result.required_fields_missing_ratio == 0
-        and result.minefield_score <= effective_thresholds.safe_minefield_threshold
-        and result.judge_confidence >= 0.7
-    )
-    if cheap_pass:
-        return EvaluationDecision(EvaluationLevel.CHEAP, "结构化证据充分，cheap 评估足够")
-    return EvaluationDecision(EvaluationLevel.STANDARD, "cheap 证据不足，升级到 standard")
-
-
-def _milestone_score_matrix(
-    graph: MilestoneGraph,
-    boundaries: list[Boundary],
-    trajectory: Trajectory,
-) -> dict[tuple[str, str], MilestoneScore]:
-    matrix: dict[tuple[str, str], MilestoneScore] = {}
-    for milestone in graph.nodes:
-        for boundary in boundaries:
-            matrix[(milestone.milestone_id, boundary.boundary_id)] = score_milestone(
-                milestone,
-                boundary,
-                trajectory,
-                trajectory.snapshots,
-            )
-    return matrix
-
-
-def evaluate_minefields(graph: MilestoneGraph, trajectory: Trajectory) -> tuple[list[JsonObject], float, bool]:
-    """评估轨迹是否触发 minefield。
-
-    Args:
-        graph: milestone 图，包含 minefield 定义。
-        trajectory: 待检查的轨迹。
-
-    Returns:
-        三元组：命中的 minefield 列表、最高 minefield 分数、是否触发 fatal minefield。
-    """
-    if graph is None or trajectory is None:
-        raise ValueError("graph 和 trajectory 不能为空")
-    matches: list[JsonObject] = []
-    max_score = 0.0
-    fatal = False
-    for minefield in graph.minefields:
-        if not minefield.constraints:
-            continue
-        scores = []
-        evidence: list[str] = []
-        for constraint in minefield.constraints:
-            source: object = trajectory.metrics if constraint.target == ConstraintTarget.METRIC else trajectory.final_state or {}
-            score = score_constraint(constraint, source, None)
-            scores.append(score.score)
-            evidence.extend(score.evidence)
-        minefield_score = sum(scores) / len(scores) if scores else 0.0
-        if minefield_score > 0:
-            matches.append(
-                {
-                    "minefield_id": minefield.minefield_id,
-                    "score": minefield_score,
-                    "severity": minefield.severity,
-                    "evidence": evidence,
-                }
-            )
-        max_score = max(max_score, minefield_score)
-        if minefield.severity == "fatal" and minefield_score >= 1.0:
-            fatal = True
-    return matches, max_score, fatal
-
-
-def _overall_score(stage_reports: list[StageEvaluationResult], minefield_score: float) -> float:
-    if not stage_reports:
-        return 1.0 if minefield_score == 0 else 0.0
-    raw = sum(stage.stage_score for stage in stage_reports) / len(stage_reports)
-    return _clamp(raw * (1.0 - _clamp(minefield_score)))
-
-
-@dataclass(frozen=True)
-class RuntimeEvaluationState:
-    """保存单个 case 运行期间的评估状态。"""
-
-    weights: dict[Dimension, float]
-    settlements: list[HarnessStageSettlement]
-    matched_settlements: dict[str, HarnessStageSettlement]
-    stage_reports: list[StageEvaluationResult]
-
-
-@dataclass(frozen=True)
-class RuntimeEvaluationDecision:
-    """单步运行期阶段评估决策。"""
-
-    checkpoint: HarnessStageSettlement | None
-    stage_result: StageEvaluationResult | None
-    next_state: RuntimeEvaluationState
-    should_stop: bool = False
-    termination_code: str | None = None
-    termination_reason: str | None = None
-
-
-class JudgeConfigurationError(RuntimeError):
-    """LLM judge 配置缺失或不合法时抛出。"""
-
-
 class DynSTEEREvaluator:
     """DynSTEER 执行编排与阶段式动态评估入口。"""
 
     def __init__(
         self,
-        cheap_judge: Judge | None = None,
-        llm_judge: Judge | None = None,
+        cheap_judge: BaseJudge | None = None,
+        standard_judge: BaseJudge | None = None,
+        expensive_judge: BaseJudge | None = None,
         thresholds: ThresholdConfig | None = None,
         match_config: MatchConfig | None = None,
         weight_config: DynamicWeightConfig | None = None,
     ) -> None:
-        self._cheap_judge = cheap_judge or LocalJudge()
-        self._llm_judge = llm_judge
+        self._cheap_judge = cheap_judge or CheapJudge()
+        self._standard_judge = standard_judge
+        self._expensive_judge = expensive_judge
         self._thresholds = thresholds or ThresholdConfig()
         self._match_config = match_config or MatchConfig()
         self._weight_config = weight_config
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "DynSTEEREvaluator":
+        """从环境变量构建评估器。
+
+        Args:
+            env: 环境变量映射；测试时可传入 fake env。
+
+        Returns:
+            未配置 LLM 时仅启用 CheapJudge；已配置 LLM 时共享同一个 BaseLLM
+            启用 StandardJudge 与 ExpensiveJudge。
+        """
+        source = env if env is not None else os.environ
+        llm = build_llm_from_env(source)
+        if llm is None:
+            return cls(cheap_judge=CheapJudge())
+        expensive_passes = int(source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES", "3"))
+        return cls(
+            cheap_judge=CheapJudge(),
+            standard_judge=StandardJudge(llm=llm),
+            expensive_judge=ExpensiveJudge(llm=llm, expensive_passes=expensive_passes),
+        )
+
+    def evaluate_minefields(
+        self,
+        graph: MilestoneGraph,
+        trajectory: Trajectory,
+    ) -> tuple[list[JsonObject], float, bool]:
+        """评估轨迹是否触发 minefield。
+
+        Args:
+            graph: milestone 图，包含 minefield 定义。
+            trajectory: 待检查的轨迹。
+
+        Returns:
+            三元组：命中的 minefield 列表、最高 minefield 分数、是否触发 fatal minefield。
+        """
+        if graph is None or trajectory is None:
+            raise ValueError("graph 和 trajectory 不能为空")
+        matches: list[JsonObject] = []
+        max_score = 0.0
+        fatal = False
+        for minefield in graph.minefields:
+            if not minefield.constraints:
+                continue
+            scores = []
+            evidence: list[str] = []
+            for constraint in minefield.constraints:
+                source: object = (
+                    trajectory.metrics
+                    if constraint.target == ConstraintTarget.METRIC
+                    else trajectory.final_state or {}
+                )
+                score = score_constraint(constraint, source, None)
+                scores.append(score.score)
+                evidence.extend(score.evidence)
+            minefield_score = sum(scores) / len(scores) if scores else 0.0
+            if minefield_score > 0:
+                matches.append(
+                    {
+                        "minefield_id": minefield.minefield_id,
+                        "score": minefield_score,
+                        "severity": minefield.severity,
+                        "evidence": evidence,
+                    }
+                )
+            max_score = max(max_score, minefield_score)
+            if minefield.severity == "fatal" and minefield_score >= 1.0:
+                fatal = True
+        return matches, max_score, fatal
+
+    def select_evaluation_level(
+        self,
+        result: StageEvaluationResult,
+        thresholds: ThresholdConfig | None = None,
+    ) -> EvaluationDecision:
+        """根据阶段风险选择评估粒度。
+
+        Args:
+            result: 当前阶段已有评估结果。
+            thresholds: 阈值配置；为空时使用评估器默认阈值。
+
+        Returns:
+            评估粒度决策。
+        """
+        if result is None:
+            raise ValueError("result 不能为空")
+        effective_thresholds = thresholds or self._thresholds
+        if result.fatal or result.fatal_minefield_score >= effective_thresholds.fatal_minefield_threshold:
+            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "触发致命风险，需要最高粒度复核")
+        if result.evaluator_level == EvaluationLevel.EXPENSIVE:
+            return EvaluationDecision(EvaluationLevel.EXPENSIVE, "已处于最高评估粒度")
+        if result.evaluator_level == EvaluationLevel.STANDARD:
+            if result.judge_confidence < 0.45:
+                return EvaluationDecision(EvaluationLevel.EXPENSIVE, "standard judge 置信度过低")
+            if result.uncertainty >= effective_thresholds.high_uncertainty:
+                return EvaluationDecision(EvaluationLevel.EXPENSIVE, "standard 阶段不确定性过高")
+            if result.required_fields_missing_ratio > 0.3:
+                return EvaluationDecision(EvaluationLevel.EXPENSIVE, "必要字段缺失比例过高")
+            if result.minefield_score >= effective_thresholds.risky_minefield_threshold:
+                return EvaluationDecision(EvaluationLevel.EXPENSIVE, "风险约束接近 minefield")
+            return EvaluationDecision(EvaluationLevel.STANDARD, "standard 评估已足够")
+
+        cheap_pass = (
+            result.status == StageStatus.PASS
+            and result.stage_score >= effective_thresholds.pass_threshold + effective_thresholds.threshold_margin
+            and result.uncertainty <= effective_thresholds.low_uncertainty
+            and result.hard_constraints_all_pass
+            and result.required_fields_missing_ratio == 0
+            and result.minefield_score <= effective_thresholds.safe_minefield_threshold
+            and result.judge_confidence >= 0.7
+        )
+        if cheap_pass:
+            return EvaluationDecision(EvaluationLevel.CHEAP, "结构化证据充分，cheap 评估足够")
+        return EvaluationDecision(EvaluationLevel.STANDARD, "cheap 证据不足，升级到 standard")
 
     def evaluate(
         self,
@@ -369,6 +231,7 @@ class DynSTEEREvaluator:
             )
             session = harness.start_case(config, case_id, raw_output_dir)
             task_case = harness.task_case_from_session(session)
+            task_case = self._task_case_with_run_metadata(task_case, config)
             state = RuntimeEvaluationState(
                 weights=select_initial_weights(task_case),
                 settlements=[self._start_settlement([])],
@@ -378,11 +241,11 @@ class DynSTEEREvaluator:
 
             while True:
                 advance = harness.advance_case(session)
-                snapshots = self._merge_snapshots(snapshots, harness.snapshots_from_session(session))
+                snapshots = merge_snapshots(snapshots, harness.snapshots_from_session(session))
 
                 for step in advance.steps:
                     steps.append(step)
-                    trajectory = self._build_trajectory(run_id, task_case, steps, snapshots, session, harness)
+                    trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
                     decision = self._evaluate_checkpoint_if_needed(config, task_case, trajectory, step, state)
                     state = decision.next_state
                     if decision.should_stop:
@@ -406,8 +269,8 @@ class DynSTEEREvaluator:
                 if terminated_by_policy or not advance.continue_running:
                     break
 
-            snapshots = self._merge_snapshots(snapshots, harness.snapshots_from_session(session))
-            trajectory = self._build_trajectory(run_id, task_case, steps, snapshots, session, harness)
+            snapshots = merge_snapshots(snapshots, harness.snapshots_from_session(session))
+            trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
             if not terminated_by_policy:
                 settlement, stage_result, next_weights = self._finish_settlement(
                     state.settlements,
@@ -459,7 +322,7 @@ class DynSTEEREvaluator:
         if task_case is None or trajectory is None:
             raise ValueError("task_case 和 trajectory 不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
-        minefield_matches, minefield_score, fatal_minefield = evaluate_minefields(graph, trajectory)
+        minefield_matches, minefield_score, fatal_minefield = self.evaluate_minefields(graph, trajectory)
         if fatal_minefield:
             return TrajectoryEvaluationReport(
                 run_id=trajectory.run_id,
@@ -477,14 +340,14 @@ class DynSTEEREvaluator:
                 run_id=trajectory.run_id,
                 task_id=trajectory.task_id,
                 milestone_coverage="none",
-                overall_score=_overall_score([], minefield_score),
+                overall_score=overall_score([], minefield_score),
                 stage_reports=[],
                 minefield_matches=minefield_matches,
             )
 
         validate_milestone_graph(graph)
         boundaries = generate_candidate_boundaries(trajectory)
-        matrix = _milestone_score_matrix(graph, boundaries, trajectory)
+        matrix = milestone_score_matrix(graph, boundaries, trajectory)
         mapping = match_milestones(graph, boundaries, matrix, self._match_config)
         intervals = build_stage_intervals(graph, mapping, trajectory)
         weights = select_initial_weights(task_case)
@@ -493,13 +356,13 @@ class DynSTEEREvaluator:
             stage_result, weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
             stage_reports.append(stage_result)
 
-        failed = self._first_failure_stage_id(stage_reports)
+        failed = first_failure_stage_id(stage_reports)
         coverage = "full" if not mapping.missing_required else "partial"
         return TrajectoryEvaluationReport(
             run_id=trajectory.run_id,
             task_id=trajectory.task_id,
             milestone_coverage=coverage,
-            overall_score=_overall_score(stage_reports, minefield_score),
+            overall_score=overall_score(stage_reports, minefield_score),
             stage_reports=stage_reports,
             minefield_matches=minefield_matches,
             first_failure_stage_id=failed,
@@ -513,7 +376,7 @@ class DynSTEEREvaluator:
         step: TrajectoryStep,
         state: RuntimeEvaluationState,
     ) -> RuntimeEvaluationDecision:
-        hit = self._find_hit_milestone(task_case, trajectory, step, state.matched_settlements)
+        hit = find_hit_milestone(task_case, trajectory, step, state.matched_settlements)
         if hit is None:
             return RuntimeEvaluationDecision(None, None, state)
         milestone, boundary, milestone_score = hit
@@ -555,30 +418,60 @@ class DynSTEEREvaluator:
         trajectory: Trajectory,
         weights: dict[Dimension, float],
     ) -> tuple[StageEvaluationResult, dict[Dimension, float]]:
-        stage_result = self._cheap_judge.evaluate_stage(interval, task_case, trajectory, EvaluationLevel.CHEAP, weights)
+        stage_result = self._cheap_judge.evaluate_stage(interval, task_case, trajectory, weights)
         stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
-        decision = select_evaluation_level(stage_result, self._thresholds)
+        decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.STANDARD:
-            stage_result = self._evaluate_with_llm(interval, task_case, trajectory, EvaluationLevel.STANDARD, weights)
+            stage_result = self._run_standard(interval, task_case, trajectory, weights)
             stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
-            decision = select_evaluation_level(stage_result, self._thresholds)
+            decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.EXPENSIVE and stage_result.evaluator_level != EvaluationLevel.EXPENSIVE:
-            stage_result = self._evaluate_with_llm(interval, task_case, trajectory, EvaluationLevel.EXPENSIVE, weights)
+            stage_result = self._run_expensive(interval, task_case, trajectory, weights)
             stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
         next_weights = update_weights(weights, stage_result.dimension_scores, stage_result.uncertainty, self._weight_config)
         return replace(stage_result, next_weights=next_weights), next_weights
 
-    def _evaluate_with_llm(
+    def _run_standard(
         self,
         interval: StageInterval,
         task_case: TaskCase,
         trajectory: Trajectory,
-        level: EvaluationLevel,
         weights: dict[Dimension, float],
     ) -> StageEvaluationResult:
-        if self._llm_judge is None:
-            raise JudgeConfigurationError("standard/expensive 评估需要配置真实 LLMJudge")
-        return self._llm_judge.evaluate_stage(interval, task_case, trajectory, level, weights)
+        if self._standard_judge is None:
+            raise JudgeConfigurationError("standard 评估需要配置真实 LLMJudge")
+        result = self._standard_judge.evaluate_stage(interval, task_case, trajectory, weights)
+        return replace(result, evaluator_level=EvaluationLevel.STANDARD)
+
+    def _run_expensive(
+        self,
+        interval: StageInterval,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        weights: dict[Dimension, float],
+    ) -> StageEvaluationResult:
+        if self._expensive_judge is None:
+            raise JudgeConfigurationError("expensive 评估需要配置真实 LLMJudge")
+        result = self._expensive_judge.evaluate_stage(interval, task_case, trajectory, weights)
+        return replace(result, evaluator_level=EvaluationLevel.EXPENSIVE)
+
+    def _task_case_with_run_metadata(self, task_case: TaskCase, config: HarnessRunConfig) -> TaskCase:
+        """将运行配置中的共享元数据合入任务定义。
+
+        Args:
+            task_case: harness 提取的任务定义。
+            config: 当前运行配置。
+
+        Returns:
+            合入 prompt 语言等运行元数据后的任务定义。
+        """
+        if task_case is None or config is None:
+            raise ValueError("task_case 和 config 不能为空")
+        metadata = dict(task_case.metadata)
+        language = config.metadata.get("language")
+        if isinstance(language, str) and language.strip():
+            metadata["language"] = language.strip()
+        return replace(task_case, metadata=metadata)
 
     def _enrich_stage_result(
         self,
@@ -588,23 +481,8 @@ class DynSTEEREvaluator:
         result: StageEvaluationResult,
     ) -> StageEvaluationResult:
         graph = task_case.milestone_graph or MilestoneGraph()
-        _, minefield_score, fatal_minefield = evaluate_minefields(graph, trajectory)
-        top1 = interval.milestone_score.score if interval.milestone_score is not None else result.stage_score
-        uncertainty = compute_uncertainty(
-            top1_score=top1,
-            top2_score=0.0,
-            missing_ratio=result.required_fields_missing_ratio,
-            stage_score=result.stage_score,
-            evidence_conflict=False,
-            judge_uncertainty=1.0 - result.judge_confidence,
-            thresholds=self._thresholds,
-        )
-        return replace(
-            result,
-            uncertainty=uncertainty,
-            minefield_score=minefield_score,
-            fatal_minefield_score=minefield_score if fatal_minefield else 0.0,
-        )
+        _, minefield_score, fatal_minefield = self.evaluate_minefields(graph, trajectory)
+        return enrich_stage_result(interval, result, minefield_score, fatal_minefield, self._thresholds)
 
     def _runtime_report(
         self,
@@ -613,7 +491,7 @@ class DynSTEEREvaluator:
         stage_reports: list[StageEvaluationResult],
     ) -> TrajectoryEvaluationReport:
         graph = task_case.milestone_graph or MilestoneGraph()
-        minefield_matches, minefield_score, _ = evaluate_minefields(graph, trajectory)
+        minefield_matches, minefield_score, _ = self.evaluate_minefields(graph, trajectory)
         matched_ids = {stage.milestone_id for stage in stage_reports if stage.milestone_id is not None}
         required_ids = {node.milestone_id for node in graph.nodes if node.required}
         if not graph.nodes:
@@ -626,53 +504,11 @@ class DynSTEEREvaluator:
             run_id=trajectory.run_id,
             task_id=trajectory.task_id,
             milestone_coverage=coverage,
-            overall_score=_overall_score(stage_reports, minefield_score),
+            overall_score=overall_score(stage_reports, minefield_score),
             stage_reports=stage_reports,
             minefield_matches=minefield_matches,
-            first_failure_stage_id=self._first_failure_stage_id(stage_reports),
+            first_failure_stage_id=first_failure_stage_id(stage_reports),
         )
-
-    def _first_failure_stage_id(self, stage_reports: list[StageEvaluationResult]) -> str | None:
-        return next(
-            (
-                stage.stage_id
-                for stage in stage_reports
-                if stage.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}
-            ),
-            None,
-        )
-
-    def _build_trajectory(
-        self,
-        run_id: str,
-        task_case: TaskCase,
-        steps: list[TrajectoryStep],
-        snapshots: list[StateSnapshot],
-        session: object,
-        harness: "BaseBenchmarkHarness",
-    ) -> Trajectory:
-        if not run_id or task_case is None or steps is None or snapshots is None or session is None or harness is None:
-            raise ValueError("构造轨迹所需参数不能为空")
-        return Trajectory(
-            run_id=run_id,
-            task_id=task_case.task_id,
-            steps=list(steps),
-            snapshots=list(snapshots),
-            final_state=harness.final_state_from_session(session),
-            metrics=harness.metrics_from_session(session),
-        )
-
-    def _merge_snapshots(
-        self,
-        current: list[StateSnapshot],
-        incoming: list[StateSnapshot],
-    ) -> list[StateSnapshot]:
-        if current is None or incoming is None:
-            raise ValueError("快照列表不能为空")
-        by_id = {snapshot.snapshot_id: snapshot for snapshot in current}
-        for snapshot in incoming:
-            by_id[snapshot.snapshot_id] = snapshot
-        return sorted(by_id.values(), key=lambda item: (item.after_step_index, item.snapshot_id))
 
     def _start_settlement(self, settlements: list[HarnessStageSettlement]) -> HarnessStageSettlement:
         if settlements is None:
@@ -729,73 +565,6 @@ class DynSTEEREvaluator:
         )
         return settlement, stage_result, next_weights
 
-    def _ready_milestones(
-        self,
-        graph: MilestoneGraph,
-        matched: dict[str, HarnessStageSettlement],
-    ) -> list[Milestone]:
-        if graph is None or matched is None:
-            raise ValueError("graph 和 matched 不能为空")
-        matched_ids = set(matched)
-        predecessors: dict[str, list[str]] = {node.milestone_id: [] for node in graph.nodes}
-        for source, target in graph.edges:
-            if target in predecessors:
-                predecessors[target].append(source)
-        ready = []
-        for node in graph.nodes:
-            if node.milestone_id in matched_ids:
-                continue
-            if all(source in matched_ids for source in predecessors.get(node.milestone_id, [])):
-                ready.append(node)
-        return ready
-
-    def _find_hit_milestone(
-        self,
-        task_case: TaskCase,
-        trajectory: Trajectory,
-        step: TrajectoryStep,
-        matched: dict[str, HarnessStageSettlement],
-    ) -> tuple[Milestone, Boundary, MilestoneScore] | None:
-        if task_case is None or trajectory is None or step is None or matched is None:
-            raise ValueError("milestone 判定参数不能为空")
-        graph = task_case.milestone_graph
-        if graph is None or not graph.nodes:
-            return None
-        boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
-        if not boundaries:
-            return None
-        best: tuple[Milestone, Boundary, MilestoneScore] | None = None
-        for milestone in self._ready_milestones(graph, matched):
-            predecessor_start = self._stage_start_for_milestone(graph, milestone.milestone_id, matched, None)
-            for boundary in boundaries:
-                if boundary.step_index <= predecessor_start and predecessor_start > 0:
-                    continue
-                score = score_milestone(milestone, boundary, trajectory, trajectory.snapshots)
-                if score.status != StageStatus.PASS:
-                    continue
-                if best is None or score.score > best[2].score:
-                    best = (milestone, boundary, score)
-        return best
-
-    def _stage_start_for_milestone(
-        self,
-        graph: MilestoneGraph,
-        milestone_id: str,
-        matched: dict[str, HarnessStageSettlement],
-        start_settlement: HarnessStageSettlement | None,
-    ) -> int:
-        if graph is None or not milestone_id or matched is None:
-            raise ValueError("阶段起点参数不能为空")
-        predecessors = [source for source, target in graph.edges if target == milestone_id]
-        matched_predecessor_indexes = [
-            matched[source].end_step_index
-            for source in predecessors
-            if source in matched
-        ]
-        if matched_predecessor_indexes:
-            return max(matched_predecessor_indexes)
-        return start_settlement.end_step_index if start_settlement is not None else 0
-
     def _append_milestone_settlement(
         self,
         settlements: list[HarnessStageSettlement],
@@ -820,7 +589,7 @@ class DynSTEEREvaluator:
             raise ValueError("milestone 结算参数不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
         start_settlement = settlements[0] if settlements else None
-        start_step_index = self._stage_start_for_milestone(graph, milestone.milestone_id, matched, start_settlement)
+        start_step_index = stage_start_for_milestone(graph, milestone.milestone_id, matched, start_settlement)
         interval = StageInterval(
             stage_id=f"runtime:st{len(settlements)}",
             milestone_id=milestone.milestone_id,
@@ -873,7 +642,7 @@ class DynSTEEREvaluator:
             raise ValueError("终止策略参数不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
         if config.stop_on_minefield:
-            matches, max_score, fatal = evaluate_minefields(graph, trajectory)
+            matches, max_score, fatal = self.evaluate_minefields(graph, trajectory)
             if matches and fatal:
                 minefield_id = str(matches[0].get("minefield_id", "minefield"))
                 return (

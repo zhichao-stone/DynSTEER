@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from dynsteer.model import JsonObject
 
 _LOG_BUFFER: list[JsonObject] = []
+_LOGGER_LOCK = threading.RLock()
+_LOG_BUFFER_LOCK = threading.RLock()
 
 
 class BufferLogHandler(logging.Handler):
@@ -55,7 +58,8 @@ class BufferLogHandler(logging.Handler):
                     continue
                 if isinstance(value, (str, int, float, bool)) or value is None:
                     entry[key] = value
-            _LOG_BUFFER.append(entry)
+            with _LOG_BUFFER_LOCK:
+                _LOG_BUFFER.append(entry)
         except Exception:
             self.handleError(record)
 
@@ -71,27 +75,28 @@ def configure_logger(log_dir: str | Path) -> logging.Logger:
     """
     if log_dir is None:
         raise ValueError("log_dir 不能为空")
-    directory = Path(log_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("dynsteer")
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-    for handler in list(logger.handlers):
-        handler.close()
-        logger.removeHandler(handler)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    file_path = directory / f"{datetime.now().date().isoformat()}.log"
-    file_handler = logging.FileHandler(file_path, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    buffer_handler = BufferLogHandler()
-    buffer_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    logger.addHandler(file_handler)
-    logger.addHandler(buffer_handler)
-    logger.info("DynSTEER 日志初始化完成", extra={"log_file": str(file_path)})
-    return logger
+    with _LOGGER_LOCK:
+        directory = Path(log_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        logger = logging.getLogger("dynsteer")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        file_path = directory / f"{datetime.now().date().isoformat()}.log"
+        file_handler = logging.FileHandler(file_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        buffer_handler = BufferLogHandler()
+        buffer_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        logger.addHandler(file_handler)
+        logger.addHandler(buffer_handler)
+        logger.info("DynSTEER 日志初始化完成", extra={"log_file": str(file_path)})
+        return logger
 
 
 def get_log_buffer() -> list[JsonObject]:
@@ -100,7 +105,8 @@ def get_log_buffer() -> list[JsonObject]:
     Returns:
         当前进程内的结构化日志列表。
     """
-    return list(_LOG_BUFFER)
+    with _LOG_BUFFER_LOCK:
+        return list(_LOG_BUFFER)
 
 
 def clear_log_buffer() -> None:
@@ -109,4 +115,5 @@ def clear_log_buffer() -> None:
     Returns:
         None。
     """
-    _LOG_BUFFER.clear()
+    with _LOG_BUFFER_LOCK:
+        _LOG_BUFFER.clear()

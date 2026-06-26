@@ -16,13 +16,27 @@ def __getattr__(name: str) -> object:
         from dynsteer.harness.config import load_harness_run_configs
 
         return load_harness_run_configs
-    if name in {"HarnessEvaluationOutput", "run_harness_case", "run_harness_cases"}:
-        from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_case, run_harness_cases
+    if name in {
+        "HarnessCaseExecutionError",
+        "HarnessEvaluationOutput",
+        "run_harness_case",
+        "run_harness_cases",
+        "run_harness_configs",
+    }:
+        from dynsteer.harness.runner import (
+            HarnessCaseExecutionError,
+            HarnessEvaluationOutput,
+            run_harness_case,
+            run_harness_cases,
+            run_harness_configs,
+        )
 
         return {
+            "HarnessCaseExecutionError": HarnessCaseExecutionError,
             "HarnessEvaluationOutput": HarnessEvaluationOutput,
             "run_harness_case": run_harness_case,
             "run_harness_cases": run_harness_cases,
+            "run_harness_configs": run_harness_configs,
         }[name]
     raise AttributeError(name)
 
@@ -30,6 +44,7 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "BenchmarkCase",
     "BaseBenchmarkHarness",
+    "HarnessCaseExecutionError",
     "HarnessEvaluationOutput",
     "HarnessAdvanceResult",
     "HarnessRunConfig",
@@ -38,4 +53,5 @@ __all__ = [
     "load_harness_run_configs",
     "run_harness_case",
     "run_harness_cases",
+    "run_harness_configs",
 ]

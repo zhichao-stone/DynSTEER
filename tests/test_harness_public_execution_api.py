@@ -103,3 +103,15 @@ def test_harness_owns_empty_step_error(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="没有新增轨迹步骤"):
         DynSTEEREvaluator().evaluate(harness, "case-1", _config(tmp_path))
+
+
+def test_toolsandbox_call_native_preserves_inner_type_error() -> None:
+    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+
+    def native(roles: object) -> object:
+        raise TypeError("inner failure")
+
+    harness = ToolSandboxHarness()
+
+    with pytest.raises(TypeError, match="inner failure"):
+        harness._call_native(native, roles={}, context={})

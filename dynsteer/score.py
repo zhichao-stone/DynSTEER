@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from difflib import SequenceMatcher
 from typing import Any, Optional
 
+from dynsteer.boundary import boundary_snapshot, boundary_step
 from dynsteer.model import (
     Boundary,
     Constraint,
@@ -17,55 +18,16 @@ from dynsteer.model import (
     StateSnapshot,
     Trajectory,
     TrajectoryStep,
+    MISSING,
 )
-
-_MISSING = object()
-
-
-def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    if value < lower:
-        return lower
-    if value > upper:
-        return upper
-    return value
-
-
-def _read_token(current: Any, token: str) -> Any:
-    value = current
-    rest = token
-    while rest:
-        if "[" in rest:
-            name, tail = rest.split("[", 1)
-            if name:
-                if not isinstance(value, dict) or name not in value:
-                    return _MISSING
-                value = value[name]
-            index_text, after = tail.split("]", 1)
-            if not isinstance(value, list):
-                return _MISSING
-            try:
-                index = int(index_text)
-            except ValueError:
-                return _MISSING
-            if index < 0 or index >= len(value):
-                return _MISSING
-            value = value[index]
-            rest = after.lstrip(".")
-            if rest and "[" not in rest:
-                if not isinstance(value, dict) or rest not in value:
-                    return _MISSING
-                value = value[rest]
-                rest = ""
-        else:
-            if not isinstance(value, dict) or rest not in value:
-                return _MISSING
-            value = value[rest]
-            rest = ""
-    return value
+from dynsteer.utils import clamp, read_token, json_subsumes
 
 
 def select_value(source: JsonValue, selector: str) -> JsonValue:
     """根据轻量 JSON selector 读取值。
+
+    selector 只支持当前评分模块需要的轻量路径语法，不尝试实现完整 JSONPath。
+    未命中时统一返回 None，便于评分层把缺失值计入 missing。
 
     Args:
         source: JSON 值，通常为 dict 或 list。
@@ -73,6 +35,10 @@ def select_value(source: JsonValue, selector: str) -> JsonValue:
 
     Returns:
         命中的 JSON 值；未命中时返回 None。
+
+    Example:
+        >>> select_value({"items": [{"name": "done"}]}, "$.items[0].name")
+        'done'
     """
     if selector is None or selector == "" or source is None:
         return None
@@ -84,29 +50,17 @@ def select_value(source: JsonValue, selector: str) -> JsonValue:
     for token in selector[2:].split("."):
         if token == "":
             return None
-        current = _read_token(current, token)
-        if current is _MISSING:
+        current = read_token(current, token)
+        if current is MISSING:
             return None
     return current
 
 
-def _json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
-    if isinstance(expected, dict):
-        if not isinstance(actual, dict):
-            return False
-        for key, expected_value in expected.items():
-            if key not in actual or not _json_subsumes(actual[key], expected_value):
-                return False
-        return True
-    if isinstance(expected, list):
-        if not isinstance(actual, list) or len(actual) < len(expected):
-            return False
-        return all(_json_subsumes(actual[index], value) for index, value in enumerate(expected))
-    return actual == expected
-
-
 def score_operator(actual: JsonValue, operator: Operator, expected: JsonValue) -> float:
     """计算单个 operator 的规则分数。
+
+    该函数只处理无上下文的值级比较；涉及 selector、reference snapshot 或
+    milestone 聚合的逻辑由上层评分函数负责。
 
     Args:
         actual: 实际值。
@@ -115,6 +69,10 @@ def score_operator(actual: JsonValue, operator: Operator, expected: JsonValue) -
 
     Returns:
         `[0, 1]` 区间内的规则分数。
+
+    Example:
+        >>> score_operator("任务完成", Operator.CONTAINS, "完成")
+        1.0
     """
     if operator == Operator.EQUALS:
         return 1.0 if actual == expected else 0.0
@@ -131,11 +89,11 @@ def score_operator(actual: JsonValue, operator: Operator, expected: JsonValue) -
     if operator == Operator.ONE_OF:
         return 1.0 if isinstance(expected, list) and actual in expected else 0.0
     if operator == Operator.JSON_SUBSUMES:
-        return 1.0 if _json_subsumes(actual, expected) else 0.0
+        return 1.0 if json_subsumes(actual, expected) else 0.0
     if operator == Operator.FUZZY_MATCH:
         if actual is None or expected is None:
             return 0.0
-        return _clamp(SequenceMatcher(None, str(actual), str(expected)).ratio())
+        return clamp(SequenceMatcher(None, str(actual), str(expected)).ratio())
     if operator == Operator.ADDED:
         return 1.0 if actual is not None and expected is None else 0.0
     if operator == Operator.UPDATED:
@@ -148,6 +106,15 @@ def score_operator(actual: JsonValue, operator: Operator, expected: JsonValue) -
 
 
 def _snapshot_namespace(snapshot: StateSnapshot, namespace: Optional[str]) -> JsonValue:
+    """从状态快照中读取指定命名空间的数据。
+
+    Args:
+        snapshot: 状态快照。
+        namespace: 目标命名空间；为空时使用 default。
+
+    Returns:
+        命中命名空间的数据；未命中时返回完整 namespaces 字典。
+    """
     selected_namespace = namespace or "default"
     if selected_namespace in snapshot.namespaces:
         return snapshot.namespaces[selected_namespace]
@@ -155,6 +122,14 @@ def _snapshot_namespace(snapshot: StateSnapshot, namespace: Optional[str]) -> Js
 
 
 def _step_to_source(step: TrajectoryStep) -> JsonValue:
+    """将轨迹步骤转换为评分 selector 可读取的 JSON 对象。
+
+    Args:
+        step: 轨迹步骤。
+
+    Returns:
+        包含基础字段、工具调用结果和 raw 扩展字段的 JSON 对象。
+    """
     data: dict[str, JsonValue] = {
         "step_id": step.step_id,
         "index": step.index,
@@ -173,6 +148,15 @@ def _step_to_source(step: TrajectoryStep) -> JsonValue:
 
 
 def _resolve_source(constraint: Constraint, source: object) -> JsonValue:
+    """根据约束目标把输入来源转换为 JSON 评分对象。
+
+    Args:
+        constraint: 当前评分约束，用于判断工具调用、工具结果或命名空间来源。
+        source: 原始来源，可为 StateSnapshot、TrajectoryStep、dataclass 或 dict。
+
+    Returns:
+        可供 selector 读取的 JSON 值；不支持的来源返回 None。
+    """
     if source is None:
         return None
     if isinstance(source, StateSnapshot):
@@ -198,6 +182,9 @@ def score_constraint(
 ) -> ConstraintScore:
     """计算单条约束在给定来源上的得分。
 
+    该函数负责解析 selector、选择状态变更类算子的参考值，并生成单条约束的
+    evidence。它不会决定 milestone 是否通过，聚合逻辑由 score_milestone 完成。
+
     Args:
         constraint: 待评分约束。
         source: 当前值来源，可为快照、步骤或字典。
@@ -205,6 +192,12 @@ def score_constraint(
 
     Returns:
         单条约束评分。
+
+    Example:
+        >>> constraint = Constraint("c1", ConstraintTarget.STEP, "$.content", Operator.CONTAINS, "完成")
+        >>> step = TrajectoryStep("s1", 1, Actor.AGENT, EventType.MESSAGE, content="任务完成")
+        >>> score_constraint(constraint, step, None).score
+        1.0
     """
     if constraint is None:
         raise ValueError("constraint 不能为空")
@@ -239,41 +232,43 @@ def score_constraint(
     )
 
 
-def _boundary_step(trajectory: Trajectory, boundary: Boundary) -> Optional[TrajectoryStep]:
-    for step in trajectory.steps:
-        if step.index == boundary.step_index:
-            return step
-    return None
-
-
-def _boundary_snapshot(boundary: Boundary, snapshots: list[StateSnapshot]) -> Optional[StateSnapshot]:
-    if boundary.snapshot_id is not None:
-        for snapshot in snapshots:
-            if snapshot.snapshot_id == boundary.snapshot_id:
-                return snapshot
-    candidates = [snapshot for snapshot in snapshots if snapshot.after_step_index <= boundary.step_index]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item.after_step_index)
-
-
 def _source_for_constraint(
     constraint: Constraint,
     boundary: Boundary,
     trajectory: Trajectory,
     snapshots: list[StateSnapshot],
 ) -> object:
+    """查找 milestone 约束在候选边界上的当前值来源。
+
+    Args:
+        constraint: 待评分约束。
+        boundary: 候选阶段边界。
+        trajectory: Agent 执行轨迹。
+        snapshots: 可用状态快照列表。
+
+    Returns:
+        与约束 target 匹配的当前值来源。
+    """
     if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
-        return _boundary_snapshot(boundary, snapshots)
+        return boundary_snapshot(boundary, snapshots)
     if constraint.target == ConstraintTarget.METRIC:
         return trajectory.metrics
-    return _boundary_step(trajectory, boundary)
+    return boundary_step(trajectory, boundary)
 
 
 def _reference_for_constraint(
     constraint: Constraint,
     snapshots: list[StateSnapshot],
 ) -> Optional[StateSnapshot]:
+    """查找状态变更类约束使用的参考快照。
+
+    Args:
+        constraint: 待评分约束。
+        snapshots: 可用状态快照列表。
+
+    Returns:
+        reference_milestone_id 对应的快照；未配置或未命中时返回 None。
+    """
     if constraint.reference_milestone_id is None:
         return None
     for snapshot in snapshots:
@@ -290,6 +285,9 @@ def score_milestone(
 ) -> MilestoneScore:
     """计算 milestone 在候选边界上的完成度。
 
+    函数会在候选边界上逐条计算约束分数，按权重聚合为 milestone 得分，并根据硬约束、
+    pass_threshold 和缺失比例生成最终状态。
+
     Args:
         milestone: 待评估 milestone。
         boundary: 候选阶段边界。
@@ -298,6 +296,11 @@ def score_milestone(
 
     Returns:
         milestone 匹配分数和状态。
+
+    Example:
+        >>> boundary = Boundary("b0", step_index=1, snapshot_id=None, reason="agent_message")
+        >>> score_milestone(milestone, boundary, trajectory, trajectory.snapshots).status
+        <StageStatus.PASS: 'pass'>
     """
     if milestone is None or boundary is None or trajectory is None:
         raise ValueError("milestone、boundary、trajectory 均不能为空")
@@ -343,7 +346,7 @@ def score_milestone(
     return MilestoneScore(
         milestone_id=milestone.milestone_id,
         boundary_id=boundary.boundary_id,
-        score=_clamp(score),
+        score=clamp(score),
         status=status,
         evidence=evidence,
         missing_ratio=missing_ratio,

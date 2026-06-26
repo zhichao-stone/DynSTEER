@@ -4,9 +4,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Union
 
+## JSON 类型
+
 JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
 JsonObject = dict[str, JsonValue]
 
+MISSING = object()
+
+
+## 枚举定义
 
 class Actor(str, Enum):
     SYSTEM = "system"
@@ -84,6 +90,8 @@ class StageStatus(str, Enum):
     INVALID = "invalid"
 
 
+## 轨迹与状态模型
+
 @dataclass(frozen=True)
 class ToolCall:
     name: str
@@ -126,6 +134,8 @@ class StateSnapshot:
     namespaces: dict[str, JsonValue] = field(default_factory=dict)
     raw: JsonObject = field(default_factory=dict)
 
+
+## Milestone 与约束模型
 
 @dataclass(frozen=True)
 class Constraint:
@@ -250,6 +260,8 @@ class MilestoneMapping:
     evidence: list[str] = field(default_factory=list)
 
 
+## 评估决策与结果模型
+
 @dataclass(frozen=True)
 class StageInterval:
     stage_id: str
@@ -345,6 +357,8 @@ class TrajectoryEvaluationReport:
             "first_failure_stage_id": self.first_failure_stage_id,
         }
 
+
+## 通用校验函数
 
 def ensure_json_object(value: Any) -> JsonObject:
     """校验输入是否为 JSON 对象。
