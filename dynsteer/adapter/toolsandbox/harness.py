@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import re
 from dataclasses import dataclass
@@ -112,7 +111,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         scenario = scenarios[case_id]
         roles = self._toolsandbox_roles(config)
         run_id = raw_output_dir.parent.parent.name
-        context = self._starting_context_from_scenario(scenario, roles, raw_output_dir, case_id)
+        context = self._starting_context_from_scenario(scenario)
         last_index = self._max_sandbox_message_index(context)
         return ToolSandboxSession(
             scenario=scenario,
@@ -318,68 +317,26 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             role_type.AGENT: agent_factory(),
         }
 
-    def _starting_context_from_scenario(
-        self,
-        scenario: object,
-        roles: dict[object, object],
-        raw_output_dir: Path,
-        case_id: str,
-    ) -> object | None:
-        """从 ToolSandbox scenario 获取起始 context。"""
-        for name in ("starting_context", "get_starting_context", "create_context"):
-            candidate = getattr(scenario, name, None)
-            if callable(candidate):
-                return self._call_native(candidate, roles=roles, output_directory=raw_output_dir, scenario_name=case_id)
-            if candidate is not None:
-                return candidate
-        return None
+    def _starting_context_from_scenario(self, scenario: object) -> object:
+        """从标准 ToolSandbox scenario 读取起始 context。"""
+        if scenario is None:
+            raise ValueError("scenario 不能为空")
+        starting_context = getattr(scenario, "starting_context", None)
+        if starting_context is None:
+            raise ValueError("ToolSandbox scenario 缺少 starting_context")
+        return starting_context
 
     def _advance_native_session(self, session: ToolSandboxSession) -> None:
-        """调用 ToolSandbox 原生单步执行入口。"""
-        for name in ("advance", "step", "play"):
-            candidate = getattr(session.scenario, name, None)
-            if not callable(candidate):
-                continue
-            result = self._call_native(
-                candidate,
-                roles=session.roles,
-                context=session.context,
-                output_directory=session.raw_output_dir,
-                scenario_name=session.case_id,
-            )
-            self._apply_native_result(session, result)
-            return
-        if not self._respond_roles_once(session):
-            session.finished = True
-
-    def _respond_roles_once(self, session: ToolSandboxSession) -> bool:
-        """按 role respond 接口推进一次 ToolSandbox 对话。
-
-        Args:
-            session: ToolSandbox session。
-
-        Returns:
-            至少调用过一个 role respond 时返回 True。
-        """
+        """调用标准 ToolSandbox Scenario.play 执行完整场景。"""
         if session is None:
             raise ValueError("session 不能为空")
-        responded = False
-        for role in session.roles.values():
-            respond = getattr(role, "respond", None)
-            if not callable(respond):
-                continue
-            result = self._call_native(
-                respond,
-                roles=session.roles,
-                context=session.context,
-                output_directory=session.raw_output_dir,
-                scenario_name=session.case_id,
-            )
-            self._apply_native_result(session, result)
-            responded = True
-            if self._native_session_finished(session):
-                break
-        return responded
+        play = getattr(session.scenario, "play", None)
+        if not callable(play):
+            raise TypeError("ToolSandbox scenario.play 必须可调用")
+        result = play(roles=session.roles, scenario_name=session.case_id)
+        self._apply_native_result(session, result)
+        session.finished = True
+        session.stop_reason = "ToolSandbox 原生 play 已完成整场执行"
 
     def _apply_native_result(self, session: ToolSandboxSession, result: object) -> None:
         """将原生 advance/play 返回值合并回 session。"""
@@ -396,41 +353,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             session.finished = finished
         if ending_context is not None:
             session.finished = True
-
-    def _call_native(self, func: object, **kwargs: object) -> object:
-        """按常见 ToolSandbox 参数名调用原生函数。"""
-        if not callable(func):
-            raise TypeError("func 必须可调用")
-        attempts = [
-            kwargs,
-            {key: value for key, value in kwargs.items() if key != "context"},
-            {key: value for key, value in kwargs.items() if key in {"roles", "context"}},
-            {key: value for key, value in kwargs.items() if key == "roles"},
-            {},
-        ]
-        bind_errors: list[TypeError] = []
-        for candidate_kwargs in attempts:
-            if self._native_kwargs_bind(func, candidate_kwargs, bind_errors):
-                return func(**candidate_kwargs)
-        raise bind_errors[-1] if bind_errors else TypeError("无法调用 ToolSandbox 原生函数")
-
-    def _native_kwargs_bind(
-        self,
-        func: object,
-        kwargs: dict[str, object],
-        bind_errors: list[TypeError],
-    ) -> bool:
-        """判断候选关键字参数是否能绑定到原生函数签名。"""
-        try:
-            signature = inspect.signature(func)
-        except (TypeError, ValueError):
-            return True
-        try:
-            signature.bind(**kwargs)
-        except TypeError as exc:
-            bind_errors.append(exc)
-            return False
-        return True
 
     def _native_session_finished(self, session: ToolSandboxSession) -> bool:
         """读取原生 scenario/session 的完成标记。"""

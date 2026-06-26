@@ -77,6 +77,6 @@ ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER �
 
 `data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。
 
-ToolSandbox harness 不调用原生 `play_and_evaluate()`。它通过原生 `advance()`、`step()`、`play()` 或 role 的 `respond()` 推进 session，返回增量 `HarnessAdvanceResult`。阶段评估、minefield 判断和 fail-fast 终止由 `DynSTEEREvaluator` 完成。
+ToolSandbox harness 不调用原生 `play_and_evaluate()`，也不再通过统一 kwargs 适配层猜测原生函数参数。它按标准 ToolSandbox 接口直接读取 `Scenario.starting_context`，并通过 `Scenario.play(roles, scenario_name)` 执行完整场景；`play()` 成功返回后将 session 标记为完成，避免重复执行同一场景。阶段评估、minefield 判断和 fail-fast 终止由 `DynSTEEREvaluator` 完成。
 
 ToolSandbox harness 复用基类 `build_run_id()` 构造 run_id，不再保留私有 `_run_id()`。它也不再导入未使用的 `TrajectoryStep`。`_result_from_toolsandbox()` 暂时保留为旧的整次运行转换能力，当前没有外部调用方，待确认无外部入口后再单独删除。

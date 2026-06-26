@@ -105,13 +105,73 @@ def test_harness_owns_empty_step_error(tmp_path: Path) -> None:
         DynSTEEREvaluator().evaluate(harness, "case-1", _config(tmp_path))
 
 
-def test_toolsandbox_call_native_preserves_inner_type_error() -> None:
+def test_toolsandbox_starting_context_uses_scenario_attribute() -> None:
     from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 
-    def native(roles: object) -> object:
-        raise TypeError("inner failure")
+    class NativeScenario:
+        def __init__(self) -> None:
+            self.starting_context = object()
 
-    harness = ToolSandboxHarness()
+        def get_starting_context(self) -> object:
+            raise AssertionError("不应调用非标准 get_starting_context")
 
-    with pytest.raises(TypeError, match="inner failure"):
-        harness._call_native(native, roles={}, context={})
+        def create_context(self) -> object:
+            raise AssertionError("不应调用非标准 create_context")
+
+    scenario = NativeScenario()
+    context = ToolSandboxHarness()._starting_context_from_scenario(scenario)
+
+    assert context is scenario.starting_context
+
+
+def test_toolsandbox_advance_calls_native_play_directly(tmp_path: Path) -> None:
+    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness, ToolSandboxSession
+
+    class NativeContext:
+        pass
+
+    class NativeScenario:
+        def __init__(self) -> None:
+            self.result = NativeContext()
+            self.calls: list[tuple[dict[object, object], str]] = []
+
+        def advance(self) -> object:
+            raise AssertionError("标准 ToolSandbox harness 不应调用 advance")
+
+        def step(self) -> object:
+            raise AssertionError("标准 ToolSandbox harness 不应调用 step")
+
+        def play(self, roles: dict[object, object], scenario_name: str) -> object:
+            self.calls.append((roles, scenario_name))
+            return self.result
+
+    roles: dict[object, object] = {}
+    scenario = NativeScenario()
+    session = ToolSandboxSession(
+        scenario=scenario,
+        roles=roles,
+        context=NativeContext(),
+        case_id="cellular_off",
+        run_id="run-1",
+        raw_output_dir=tmp_path,
+    )
+
+    ToolSandboxHarness()._advance_native_session(session)
+
+    assert scenario.calls == [(roles, "cellular_off")]
+    assert session.context is scenario.result
+    assert session.finished is True
+    assert session.stop_reason == "ToolSandbox 原生 play 已完成整场执行"
+
+
+def test_toolsandbox_harness_removes_call_native_adapter_layer() -> None:
+    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+
+    assert not hasattr(ToolSandboxHarness, "_call_native")
+    assert not hasattr(ToolSandboxHarness, "_native_kwargs_bind")
+
+
+def test_toolsandbox_harness_removes_unused_respond_roles_fallback() -> None:
+    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+
+    assert not hasattr(ToolSandboxHarness, "_respond_roles_once")
