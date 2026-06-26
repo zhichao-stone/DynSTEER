@@ -48,21 +48,22 @@ class FakeLLM(BaseLLM):
 
 
 def _valid_response(score: float = 0.82) -> str:
-    return (
-        "{"
-        f'"stage_score": {score},'
-        '"status": "pass",'
-        '"judge_confidence": 0.91,'
-        '"dimension_scores": {'
-        '"progress": 0.8, "state_consistency": 0.8, "tool_quality": 0.8,'
-        '"efficiency": 0.8, "safety": 0.8, "interaction_quality": 0.8, "recovery": 0.8'
-        "},"
-        '"evidence": ["证据"],'
-        '"diagnosis": ["诊断"],'
-        '"needs_expensive": false,'
-        '"first_error_location_required": false'
-        "}"
-    )
+    response = {
+        "status": "pass",
+        "judge_confidence": 0.91,
+        "dimension_scores": {
+            "progress": score,
+            "state_consistency": score,
+            "tool_quality": score,
+            "efficiency": score,
+            "safety": score,
+            "interaction_quality": score,
+            "recovery": score,
+        },
+        "evidence": ["证据"],
+        "diagnosis": ["overall: 诊断"],
+    }
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _interval() -> StageInterval:
@@ -83,6 +84,10 @@ def _trajectory() -> Trajectory:
 
 def _weights() -> dict[Dimension, float]:
     return {dimension: 1 / len(Dimension) for dimension in Dimension}
+
+
+def _context_from_prompt(prompt: str) -> dict[str, object]:
+    return json.loads(prompt.rsplit("Context:\n", 1)[1])
 
 
 def test_standard_judge_parses_single_json_response() -> None:
@@ -126,12 +131,46 @@ def test_standard_prompt_contains_rubric_schema_and_evidence_rules() -> None:
     judge.evaluate_stage(_interval(), _task_case_with_language("en"), _trajectory(), _weights())
 
     prompt = llm.messages[0][-1].content
-    assert "Standard Judge" in prompt
+    assert "Stage Review" in prompt
     assert "Evaluation objective" in prompt
     assert "Evidence rules" in prompt
     assert "dimension_scores" in prompt
     assert "progress" in prompt
     assert not prompt.lstrip().startswith("{")
+
+
+def test_prompt_context_excludes_evaluation_level() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+
+    prompt = prompt_module.build_standard_prompt(
+        interval=_interval(),
+        task_case=_task_case_with_language("en"),
+        trajectory=_trajectory(),
+        weights=_weights(),
+    )
+
+    context = _context_from_prompt(prompt)
+    assert "evaluation_level" not in context
+
+
+def test_prompt_context_keeps_only_evaluation_fields() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+
+    prompt = prompt_module.build_standard_prompt(
+        interval=_interval(),
+        task_case=_task_case_with_language("en"),
+        trajectory=_trajectory(),
+        weights=_weights(),
+    )
+
+    context = _context_from_prompt(prompt)
+    assert set(context["task"]) == {"task_description"}
+    assert "stage_id" not in context["interval"]
+    assert "milestone_id" not in context["interval"]
+    assert "weights" not in context
+    assert "stage_score" not in context["required_output"]
+    assert "needs_expensive" not in context["required_output"]
+    assert "first_error_location_required" not in context["required_output"]
 
 
 def test_standard_prompt_uses_chinese_output_schema_for_chinese_task() -> None:
@@ -141,20 +180,56 @@ def test_standard_prompt_uses_chinese_output_schema_for_chinese_task() -> None:
     judge.evaluate_stage(_interval(), _task_case_with_language("zhongwen"), _trajectory(), _weights())
 
     prompt = llm.messages[0][-1].content
-    context = json.loads(prompt.rsplit("Context:\n", 1)[1])
+    context = _context_from_prompt(prompt)
     required_output = context["required_output"]
     assert required_output["dimension_scores"].startswith("dict[str,float]，覆盖")
-    assert required_output["stage_score"] == "0 到 1 之间的浮点数"
+    assert "stage_score" not in required_output
+    assert "needs_expensive" not in required_output
+    assert "first_error_location_required" not in required_output
+    assert "每一项是一条独立诊断结论" in required_output["diagnosis"]
     assert "dict[str,float] covering" not in required_output["dimension_scores"]
 
 
-def test_llm_judge_system_prompt_uses_task_language() -> None:
+def test_standard_judge_computes_stage_score_from_dimension_scores() -> None:
+    response = {
+        "status": "pass",
+        "judge_confidence": 0.91,
+        "dimension_scores": {
+            "progress": 1.0,
+            "state_consistency": 0.5,
+            "tool_quality": 0.0,
+            "efficiency": 0.0,
+            "safety": 0.0,
+            "interaction_quality": 0.0,
+            "recovery": 0.0,
+        },
+        "evidence": ["step 1"],
+        "diagnosis": ["overall: dimension scores only"],
+    }
+    weights = {
+        Dimension.PROGRESS: 0.5,
+        Dimension.STATE_CONSISTENCY: 0.5,
+        Dimension.TOOL_QUALITY: 0.0,
+        Dimension.EFFICIENCY: 0.0,
+        Dimension.SAFETY: 0.0,
+        Dimension.INTERACTION_QUALITY: 0.0,
+        Dimension.RECOVERY: 0.0,
+    }
+    judge = StandardJudge(llm=FakeLLM([json.dumps(response)]))
+
+    result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), weights)
+
+    assert result.stage_score == pytest.approx(0.75)
+
+
+def test_llm_judge_system_prompt_uses_generic_judge_identity() -> None:
     llm = FakeLLM([_valid_response()])
     judge = StandardJudge(llm=llm)
 
     judge.evaluate_stage(_interval(), _task_case_with_language("english"), _trajectory(), _weights())
 
-    assert "DynSTEER LLM-as-a-Judge" in llm.messages[0][0].content
+    assert "strict evaluation judge" in llm.messages[0][0].content
+    assert "DynSTEER" not in llm.messages[0][0].content
     assert "only output JSON" in llm.messages[0][0].content
 
 
@@ -191,11 +266,11 @@ def test_expensive_judge_records_pass_metadata() -> None:
 
 
 def test_expensive_judge_rejects_invalid_focus_pass_before_adjudication() -> None:
-    invalid = _valid_response().replace('"needs_expensive": false', '"needs_expensive": "false"')
+    invalid = _valid_response().replace('"judge_confidence": 0.91', '"judge_confidence": "0.91"')
     llm = FakeLLM([invalid, _valid_response(0.6), _valid_response(0.86)])
     judge = ExpensiveJudge(llm=llm, expensive_passes=1)
 
-    with pytest.raises(LLMJudgeResponseError, match="needs_expensive"):
+    with pytest.raises(LLMJudgeResponseError, match="judge_confidence"):
         judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
 
     assert len(llm.messages) == 1
@@ -208,8 +283,8 @@ def test_expensive_prompt_uses_focus_risk_and_adjudication_templates() -> None:
     judge.evaluate_stage(_interval(), _task_case_with_language("en"), _trajectory(), _weights())
 
     prompts = [messages[-1].content for messages in llm.messages]
-    assert "Expensive Focus Review" in prompts[0]
-    assert "Expensive Focus Review" in prompts[1]
+    assert "Focused Stage Review" in prompts[0]
+    assert "Focused Stage Review" in prompts[1]
     assert "Expensive Risk Review" in prompts[2]
     assert "Expensive Final Adjudication" in prompts[3]
     assert "previous_passes" in prompts[3]
@@ -220,20 +295,62 @@ def test_expensive_judge_rejects_non_positive_passes() -> None:
         ExpensiveJudge(llm=FakeLLM([]), expensive_passes=0)
 
 
-def test_llm_judge_rejects_non_bool_flags() -> None:
-    invalid = _valid_response().replace('"needs_expensive": false', '"needs_expensive": "false"')
-    judge = StandardJudge(llm=FakeLLM([invalid]))
-
-    with pytest.raises(LLMJudgeResponseError, match="needs_expensive"):
-        judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
-
-
 def test_llm_judge_accepts_single_json_fenced_block() -> None:
     judge = StandardJudge(llm=FakeLLM([f"```json\n{_valid_response()}\n```"]))
 
     result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
 
     assert result.stage_score == pytest.approx(0.82)
+
+
+def test_judge_prompts_define_context_field_usage() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+
+    prompts = [
+        prompt_module.build_standard_prompt(_interval(), _task_case_with_language("en"), _trajectory(), _weights()),
+        prompt_module.build_expensive_focus_prompt(
+            _interval(),
+            _task_case_with_language("en"),
+            _trajectory(),
+            _weights(),
+            focus_dimensions="progress,state_consistency",
+        ),
+        prompt_module.build_expensive_risk_prompt(_interval(), _task_case_with_language("en"), _trajectory(), _weights()),
+        prompt_module.build_expensive_adjudication_prompt(
+            _interval(),
+            _task_case_with_language("en"),
+            _trajectory(),
+            _weights(),
+            previous_passes=[json.loads(_valid_response())],
+        ),
+    ]
+
+    for prompt in prompts:
+        assert "Use these Context fields" in prompt
+        assert "task.task_description" in prompt
+        assert "interval" in prompt
+        assert "steps" in prompt
+        assert "weights" not in prompt
+        assert "required_output" in prompt
+
+
+def test_expensive_focus_prompt_uses_independent_rubric_without_judge_comparison() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+
+    prompt = prompt_module.build_expensive_focus_prompt(
+        interval=_interval(),
+        task_case=_task_case_with_language("en"),
+        trajectory=_trajectory(),
+        weights=_weights(),
+        focus_dimensions="progress,state_consistency",
+    )
+
+    assert "Focused Stage Review" in prompt
+    assert "Evidence rules" in prompt
+    assert "Rubric" in prompt
+    assert "focus_dimensions" in prompt
+    assert "standard judge" not in prompt.lower()
+    assert "cheap" not in prompt.lower()
 
 
 def test_cheap_judge_uses_milestone_score() -> None:

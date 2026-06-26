@@ -46,4 +46,4 @@ class StandardJudge(LLMJudge):
             language=language,
         )
         payload = self._call_json(prompt, language=language)
-        return self._result_from_payload(interval, EvaluationLevel.STANDARD, payload, metadata={})
+        return self._result_from_payload(interval, EvaluationLevel.STANDARD, payload, weights=weights, metadata={})

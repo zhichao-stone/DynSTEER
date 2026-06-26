@@ -86,16 +86,29 @@ class ExpensiveJudge(LLMJudge):
         )
         payload = self._call_json(adjudicator_prompt, language=language)
         metadata: JsonObject = {
-            "judge_passes": [
-                {
-                    "prompt_type": item.get("prompt_type"),
-                    "focus_dimensions": item.get("focus_dimensions"),
-                    "stage_score": item.get("stage_score"),
-                    "status": item.get("status"),
-                    "judge_confidence": item.get("judge_confidence"),
-                    "diagnosis": item.get("diagnosis", []),
-                }
-                for item in passes
-            ]
+            "judge_passes": [self._pass_metadata(item, weights) for item in passes]
         }
-        return self._result_from_payload(interval, EvaluationLevel.EXPENSIVE, payload, metadata=metadata)
+        return self._result_from_payload(interval, EvaluationLevel.EXPENSIVE, payload, weights=weights, metadata=metadata)
+
+    def _pass_metadata(self, payload: JsonObject, weights: dict[Dimension, float]) -> JsonObject:
+        """生成中间复核轮次的结构化 metadata。
+
+        Args:
+            payload: 已通过 LLMJudge 基础校验的单轮复核 payload。
+            weights: 当前维度权重，用于本地计算该轮总分。
+
+        Returns:
+            可写入最终结果 metadata 的 JSON 对象。
+        """
+        validated = self._validate_payload(payload)
+        metadata: JsonObject = {
+            "prompt_type": payload.get("prompt_type"),
+            "stage_score": self._stage_score_from_dimensions(validated.dimension_scores, weights),
+            "status": validated.status.value,
+            "judge_confidence": validated.judge_confidence,
+            "diagnosis": list(validated.diagnosis),
+        }
+        focus_dimensions = payload.get("focus_dimensions")
+        if focus_dimensions is not None:
+            metadata["focus_dimensions"] = focus_dimensions
+        return metadata

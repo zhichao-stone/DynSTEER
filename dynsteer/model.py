@@ -297,7 +297,6 @@ class StageEvaluationResult:
     minefield_score: float = 0.0
     fatal_minefield_score: float = 0.0
     judge_confidence: float = 1.0
-    first_error_location_required: bool = False
     minefield_evidence_is_structural: bool = True
     metadata: JsonObject = field(default_factory=dict)
 

@@ -41,12 +41,9 @@ class _ValidatedJudgePayload:
 
     status: StageStatus
     dimension_scores: dict[Dimension, float]
-    stage_score: float
     judge_confidence: float
     evidence: list[str]
     diagnosis: list[str]
-    needs_expensive: bool
-    first_error_location_required: bool
     metadata: JsonObject
 
 
@@ -144,24 +141,24 @@ class LLMJudge(BaseJudge):
         interval: StageInterval,
         level: EvaluationLevel,
         payload: JsonObject,
+        weights: dict[Dimension, float],
         metadata: JsonObject,
     ) -> StageEvaluationResult:
         validated = self._validate_payload(payload)
         result_metadata = dict(metadata)
         result_metadata.update(validated.metadata)
-        result_metadata["needs_expensive"] = validated.needs_expensive
+        stage_score = self._stage_score_from_dimensions(validated.dimension_scores, weights)
         return StageEvaluationResult(
             stage_id=interval.stage_id,
             milestone_id=interval.milestone_id,
             evaluator_level=level,
             status=validated.status,
-            stage_score=validated.stage_score,
+            stage_score=stage_score,
             uncertainty=0.0,
             dimension_scores=validated.dimension_scores,
             evidence=validated.evidence,
             diagnosis=validated.diagnosis,
             judge_confidence=validated.judge_confidence,
-            first_error_location_required=validated.first_error_location_required,
             metadata=result_metadata,
         )
 
@@ -183,17 +180,35 @@ class LLMJudge(BaseJudge):
         return _ValidatedJudgePayload(
             status=status,
             dimension_scores=self._dimension_scores(payload.get("dimension_scores")),
-            stage_score=self._float_in_unit(payload.get("stage_score"), "stage_score"),
             judge_confidence=self._float_in_unit(payload.get("judge_confidence"), "judge_confidence"),
             evidence=self._string_list(payload.get("evidence"), "evidence"),
             diagnosis=self._string_list(payload.get("diagnosis"), "diagnosis"),
-            needs_expensive=self._optional_bool(payload.get("needs_expensive", False), "needs_expensive"),
-            first_error_location_required=self._optional_bool(
-                payload.get("first_error_location_required", False),
-                "first_error_location_required",
-            ),
             metadata=self._metadata_object(payload.get("metadata")),
         )
+
+    def _stage_score_from_dimensions(
+        self,
+        dimension_scores: dict[Dimension, float],
+        weights: dict[Dimension, float],
+    ) -> float:
+        """根据维度分数和内部权重计算阶段总分。"""
+        if not isinstance(dimension_scores, dict) or not isinstance(weights, dict):
+            raise LLMJudgeConfigurationError("stage_score 计算参数必须是字典")
+        weighted_score = 0.0
+        total_weight = 0.0
+        for dimension in Dimension:
+            score = dimension_scores[dimension]
+            raw_weight = weights.get(dimension, 0.0)
+            if isinstance(raw_weight, bool) or not isinstance(raw_weight, int | float):
+                raise LLMJudgeConfigurationError(f"{dimension.value} 权重必须是数字")
+            weight = float(raw_weight)
+            if weight <= 0.0:
+                continue
+            weighted_score += score * weight
+            total_weight += weight
+        if total_weight <= 0.0:
+            return sum(dimension_scores.values()) / len(Dimension)
+        return weighted_score / total_weight
 
     def _dimension_scores(self, value: object) -> dict[Dimension, float]:
         if not isinstance(value, dict):
@@ -217,20 +232,6 @@ class LLMJudge(BaseJudge):
         if not isinstance(value, list):
             raise LLMJudgeResponseError(f"{label} 必须是数组")
         return [str(item) for item in value]
-
-    def _optional_bool(self, value: object, label: str) -> bool:
-        """校验可选 bool 字段。
-
-        Args:
-            value: 待校验值。
-            label: 字段名。
-
-        Returns:
-            bool 值。
-        """
-        if not isinstance(value, bool):
-            raise LLMJudgeResponseError(f"{label} 必须是 bool")
-        return value
 
     def _metadata_object(self, value: object) -> JsonObject:
         """校验可选 metadata 字段。
