@@ -1,4 +1,10 @@
+import json
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
 
 
 def test_docker_compose_uses_host_user_and_project_uv_paths() -> None:
@@ -34,6 +40,8 @@ def test_project_uv_cache_is_ignored_by_git_and_docker() -> None:
 
     assert ".uv-cache" in gitignore
     assert ".uv-cache/" in dockerignore
+    assert ".dynsteer-runtime" in gitignore
+    assert ".dynsteer-runtime/" in dockerignore
 
 
 def test_dockerfile_uses_bootstrap_venv_without_runtime_opt_venv() -> None:
@@ -45,3 +53,52 @@ def test_dockerfile_uses_bootstrap_venv_without_runtime_opt_venv() -> None:
     assert "UV_PROJECT_ENVIRONMENT=/opt/bootstrap-venv uv sync" in dockerfile
     assert "mkdir -p /opt/venv" not in dockerfile
     assert "cp -a /opt/bootstrap-venv/. /opt/venv/" not in dockerfile
+
+
+def test_start_script_prepares_runtime_data_root_without_mutating_manifest(tmp_path: Path) -> None:
+    """验证 Docker 内 source_root 覆写只写入运行期副本，不修改原始 benchmark.json。"""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    if "system32" in bash.lower():
+        pytest.skip("Windows WSL bash cannot access pytest Windows temp paths directly")
+    project_root = tmp_path / "DynSTEER"
+    data_root = project_root / "data" / "toolsandbox"
+    data_root.mkdir(parents=True)
+    original_manifest = {
+        "benchmark": "toolsandbox",
+        "source_root": "../ToolSandbox",
+        "tool_backend": "DEFAULT",
+        "language": "en",
+    }
+    (data_root / "benchmark.json").write_text(
+        json.dumps(original_manifest, ensure_ascii=False, indent=4),
+        encoding="utf-8",
+    )
+    (data_root / "run_config.json").write_text("[]", encoding="utf-8")
+    start_script = tmp_path / "start-functions.sh"
+    script_without_main = "\n".join(
+        line for line in Path("scripts/start.sh").read_text(encoding="utf-8").splitlines() if line != 'main "$@"'
+    )
+    start_script.write_text(
+        script_without_main,
+        encoding="utf-8",
+    )
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        source "{start_script.as_posix()}"
+        export DYNSTEER_IN_DOCKER=1
+        prepare_runtime_data_root "{project_root.as_posix()}" toolsandbox "{data_root.as_posix()}" /workspace/benchmark-sources/toolsandbox
+        """
+    )
+
+    result = subprocess.run([bash, "-lc", command], capture_output=True, text=True, check=True)
+
+    effective_data_root = Path(result.stdout.strip())
+    runtime_manifest = json.loads((effective_data_root / "benchmark.json").read_text(encoding="utf-8"))
+    source_manifest = json.loads((data_root / "benchmark.json").read_text(encoding="utf-8"))
+    assert effective_data_root == project_root / ".dynsteer-runtime" / "data" / "toolsandbox"
+    assert runtime_manifest["source_root"] == "/workspace/benchmark-sources/toolsandbox"
+    assert source_manifest == original_manifest
+    assert (effective_data_root / "run_config.json").exists()

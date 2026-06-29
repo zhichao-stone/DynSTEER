@@ -38,6 +38,7 @@ data/
 
 # Runtime
 runs/
+.dynsteer-runtime/
 
 # Test
 test/

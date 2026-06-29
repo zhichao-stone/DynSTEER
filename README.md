@@ -48,6 +48,8 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 ```powershell
 ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox
 ```
+Docker 容器内传入 `--source` 时，启动脚本会复制 `data/{benchmark}` 到 `.dynsteer-runtime/data/{benchmark}`，并只在该运行期副本中把 `benchmark.json` 的 `source_root` 改为容器内挂载路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
+
 Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通过 `scripts/start.sh` 启动时，脚本会自动检测宿主机当前用户的 UID/GID，并让容器以该用户运行；直接使用 Docker Compose 且未传入 UID/GID 时，默认回退到 `1000:100`。运行期 uv 虚拟环境和 cache 默认写入项目目录下的 `.venv` 与 `.uv-cache`，因此新生成的 `runs`、`results` 产物会归属当前宿主机用户，便于通过 SFTP 清理。
 
 接入新的 benchmark 时，最小前置步骤如下：
