@@ -9,6 +9,7 @@ from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_task_case, load_trajectory
+from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig, HarnessRunResult
 from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase
 
@@ -69,6 +70,10 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     dependency_error_message = TOOL_SANDBOX_DEPENDENCY_ERROR
 
     # override 基类的函数实现
+
+    def constraint_scorer(self) -> ToolSandboxConstraintScorer:
+        """返回 ToolSandbox 专用约束评分器。"""
+        return ToolSandboxConstraintScorer(module_loader=self._import_module)
 
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出 ToolSandbox 场景。
@@ -654,6 +659,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
                 "toolsandbox": {
                     "database_namespace": namespace,
                     "snapshot_constraint": snapshot_constraint_name,
+                    "snapshot_constraint_module": getattr(snapshot_constraint, "__module__", None),
                     "reference_milestone_node_index": _json_safe(
                         getattr(constraint, "reference_milestone_node_index", None)
                     ),

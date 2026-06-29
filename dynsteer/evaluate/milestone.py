@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import MatchConfig
 from dynsteer.harness.model import HarnessStageSettlement
+from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.model import (
     Boundary,
     Milestone,
@@ -17,7 +18,6 @@ from dynsteer.model import (
     Trajectory,
     TrajectoryStep,
 )
-from dynsteer.score import score_milestone
 
 
 def _node_ids(graph: MilestoneGraph) -> set[str]:
@@ -166,6 +166,8 @@ def milestone_score_matrix(
     graph: MilestoneGraph,
     boundaries: list[Boundary],
     trajectory: Trajectory,
+    scorer: GeneralScorer | None = None,
+    context: ScoringContext | None = None,
 ) -> dict[tuple[str, str], MilestoneScore]:
     """构造 milestone 与候选边界的评分矩阵。
 
@@ -173,6 +175,8 @@ def milestone_score_matrix(
         graph: milestone DAG。
         boundaries: 候选边界。
         trajectory: Agent 轨迹。
+        scorer: 可选评分器；为空时使用通用评分器。
+        context: 可选评分上下文。
 
     Returns:
         `(milestone_id, boundary_id)` 到 milestone 评分的矩阵。
@@ -182,11 +186,12 @@ def milestone_score_matrix(
     matrix: dict[tuple[str, str], MilestoneScore] = {}
     for milestone in graph.nodes:
         for boundary in boundaries:
-            matrix[(milestone.milestone_id, boundary.boundary_id)] = score_milestone(
+            matrix[(milestone.milestone_id, boundary.boundary_id)] = get_effective_scorer(scorer).score_milestone(
                 milestone,
                 boundary,
                 trajectory,
                 trajectory.snapshots,
+                context=context,
             )
     return matrix
 
@@ -255,6 +260,8 @@ def find_hit_milestone(
     trajectory: Trajectory,
     step: TrajectoryStep,
     matched: dict[str, HarnessStageSettlement],
+    scorer: GeneralScorer | None = None,
+    context: ScoringContext | None = None,
 ) -> tuple[Milestone, Boundary, MilestoneScore] | None:
     """判断当前步骤是否命中某个可命中 milestone。
 
@@ -263,6 +270,8 @@ def find_hit_milestone(
         trajectory: Agent 轨迹。
         step: 当前增量步骤。
         matched: 已结算 milestone 到结算节点的映射。
+        scorer: 可选评分器；为空时使用通用评分器。
+        context: 可选评分上下文。
 
     Returns:
         命中的 (milestone, boundary, score)；未命中时返回 None。
@@ -281,7 +290,13 @@ def find_hit_milestone(
         for boundary in boundaries:
             if boundary.step_index <= predecessor_start and predecessor_start > 0:
                 continue
-            score = score_milestone(milestone, boundary, trajectory, trajectory.snapshots)
+            score = get_effective_scorer(scorer).score_milestone(
+                milestone,
+                boundary,
+                trajectory,
+                trajectory.snapshots,
+                context=context,
+            )
             if score.status != StageStatus.PASS:
                 continue
             if best is None or score.score > best[2].score:

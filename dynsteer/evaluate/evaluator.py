@@ -6,13 +6,14 @@ import sys
 from dataclasses import replace
 from typing import Mapping, TYPE_CHECKING
 
-from dynsteer.boundary import generate_candidate_boundaries
+from dynsteer.boundary import boundary_snapshot, generate_candidate_boundaries
 from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
 from dynsteer.evaluate.diagnostics import (
     build_finish_matching_detail,
     build_milestone_matching_detail,
     build_stage_trace,
 )
+from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
 from dynsteer.llm import build_llm_from_env
@@ -35,7 +36,6 @@ from dynsteer.model import (
     TrajectoryStep,
     TrajectoryEvaluationReport,
 )
-from dynsteer.score import score_constraint
 from dynsteer.stage import build_stage_intervals
 from dynsteer.evaluate.milestone import (
     find_hit_milestone,
@@ -111,12 +111,16 @@ class DynSTEEREvaluator:
         self,
         graph: MilestoneGraph,
         trajectory: Trajectory,
+        scorer: GeneralScorer | None = None,
+        context: ScoringContext | None = None,
     ) -> tuple[list[JsonObject], float, bool]:
         """评估轨迹是否触发 minefield。
 
         Args:
             graph: milestone 图，包含 minefield 定义。
             trajectory: 待检查的轨迹。
+            scorer: 可选评分器；为空时使用通用评分器。
+            context: 可选评分上下文。
 
         Returns:
             三元组：命中的 minefield 列表、最高 minefield 分数、是否触发 fatal minefield。
@@ -137,7 +141,7 @@ class DynSTEEREvaluator:
                     if constraint.target == ConstraintTarget.METRIC
                     else trajectory.final_state or {}
                 )
-                score = score_constraint(constraint, source, None)
+                score = get_effective_scorer(scorer).score_constraint(constraint, source, None, context=context)
                 scores.append(score.score)
                 evidence.extend(score.evidence)
             minefield_score = sum(scores) / len(scores) if scores else 0.0
@@ -240,6 +244,7 @@ class DynSTEEREvaluator:
             session = harness.start_case(config, case_id, raw_output_dir)
             task_case = harness.task_case_from_session(session)
             task_case = self._task_case_with_run_metadata(task_case, config)
+            scorer = harness.constraint_scorer()
             state = RuntimeEvaluationState(
                 weights=select_initial_weights(task_case),
                 settlements=[self._start_settlement([])],
@@ -254,7 +259,7 @@ class DynSTEEREvaluator:
                 for step in advance.steps:
                     steps.append(step)
                     trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
-                    decision = self._evaluate_checkpoint_if_needed(config, task_case, trajectory, step, state)
+                    decision = self._evaluate_checkpoint_if_needed(config, task_case, trajectory, step, state, scorer)
                     state = decision.next_state
                     if decision.should_stop:
                         termination_code = decision.termination_code
@@ -286,6 +291,7 @@ class DynSTEEREvaluator:
                     trajectory,
                     state.matched_settlements,
                     state.weights,
+                    scorer,
                 )
                 state = replace(
                     state,
@@ -293,7 +299,7 @@ class DynSTEEREvaluator:
                     stage_reports=[*state.stage_reports, stage_result],
                     weights=next_weights,
                 )
-            report = self._runtime_report(task_case, trajectory, state.stage_reports)
+            report = self._runtime_report(task_case, trajectory, state.stage_reports, scorer)
             raw_summary = harness.raw_summary_from_session(session)
             return HarnessRunResult(
                 benchmark=config.benchmark,
@@ -316,12 +322,14 @@ class DynSTEEREvaluator:
         self,
         task_case: TaskCase,
         trajectory: Trajectory,
+        scorer: GeneralScorer | None = None,
     ) -> TrajectoryEvaluationReport:
         """对完整轨迹执行阶段式动态评估。
 
         Args:
             task_case: 任务定义。
             trajectory: 待评估 Agent 轨迹。
+            scorer: 可选评分器；为空时使用通用评分器。
 
         Returns:
             轨迹评估报告。
@@ -329,7 +337,15 @@ class DynSTEEREvaluator:
         if task_case is None or trajectory is None:
             raise ValueError("task_case 和 trajectory 不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
-        minefield_matches, minefield_score, fatal_minefield = self.evaluate_minefields(graph, trajectory)
+        effective_scorer = get_effective_scorer(scorer)
+
+        context = ScoringContext(task_case=task_case)
+        minefield_matches, minefield_score, fatal_minefield = self.evaluate_minefields(
+            graph,
+            trajectory,
+            scorer=effective_scorer,
+            context=context,
+        )
         if fatal_minefield:
             return TrajectoryEvaluationReport(
                 run_id=trajectory.run_id,
@@ -354,13 +370,19 @@ class DynSTEEREvaluator:
 
         validate_milestone_graph(graph)
         boundaries = generate_candidate_boundaries(trajectory)
-        matrix = milestone_score_matrix(graph, boundaries, trajectory)
+        matrix = milestone_score_matrix(graph, boundaries, trajectory, scorer=effective_scorer, context=context)
         mapping = match_milestones(graph, boundaries, matrix, self._match_config)
         intervals = build_stage_intervals(graph, mapping, trajectory)
         weights = select_initial_weights(task_case)
         stage_reports: list[StageEvaluationResult] = []
         for interval in intervals:
-            stage_result, weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
+            stage_result, weights = self._evaluate_stage_with_scheduler(
+                interval,
+                task_case,
+                trajectory,
+                weights,
+                effective_scorer,
+            )
             stage_reports.append(stage_result)
 
         failed = first_failure_stage_id(stage_reports)
@@ -382,8 +404,17 @@ class DynSTEEREvaluator:
         trajectory: Trajectory,
         step: TrajectoryStep,
         state: RuntimeEvaluationState,
+        scorer: GeneralScorer,
     ) -> RuntimeEvaluationDecision:
-        hit = find_hit_milestone(task_case, trajectory, step, state.matched_settlements)
+        context = self._scoring_context(task_case, trajectory, state.matched_settlements)
+        hit = find_hit_milestone(
+            task_case,
+            trajectory,
+            step,
+            state.matched_settlements,
+            scorer=scorer,
+            context=context,
+        )
         if hit is None:
             return RuntimeEvaluationDecision(None, None, state)
         milestone, boundary, milestone_score = hit
@@ -396,6 +427,7 @@ class DynSTEEREvaluator:
             boundary=boundary,
             milestone_score=milestone_score,
             weights=state.weights,
+            scorer=scorer,
         )
         next_matched = dict(state.matched_settlements)
         next_matched[milestone.milestone_id] = settlement
@@ -405,7 +437,7 @@ class DynSTEEREvaluator:
             matched_settlements=next_matched,
             stage_reports=[*state.stage_reports, stage_result],
         )
-        stop_decision = self._should_stop_after_stage(config, task_case, trajectory, stage_result)
+        stop_decision = self._should_stop_after_stage(config, task_case, trajectory, stage_result, scorer)
         if stop_decision is None:
             return RuntimeEvaluationDecision(settlement, stage_result, next_state)
         termination_code, termination_reason = stop_decision
@@ -418,23 +450,63 @@ class DynSTEEREvaluator:
             termination_reason=termination_reason,
         )
 
+    def _scoring_context(
+        self,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        matched: dict[str, HarnessStageSettlement],
+    ) -> ScoringContext:
+        """构造运行期评分上下文。
+
+        Args:
+            task_case: 当前任务定义。
+            trajectory: 当前已观测轨迹。
+            matched: 已结算 milestone 映射。
+
+        Returns:
+            包含已命中边界和快照的评分上下文。
+        """
+        if task_case is None or trajectory is None or matched is None:
+            raise ValueError("评分上下文参数不能为空")
+        matched_boundaries: dict[str, Boundary] = {}
+        matched_snapshots: dict[str, StateSnapshot] = {}
+        for milestone_id, settlement in matched.items():
+            if settlement.boundary_step_index is None:
+                continue
+            boundary = Boundary(
+                boundary_id=settlement.boundary_id or f"matched:{milestone_id}",
+                step_index=settlement.boundary_step_index,
+                snapshot_id=None,
+                reason="matched_milestone",
+            )
+            matched_boundaries[milestone_id] = boundary
+            snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+            if snapshot is not None:
+                matched_snapshots[milestone_id] = snapshot
+        return ScoringContext(
+            task_case=task_case,
+            matched_boundaries=matched_boundaries,
+            matched_snapshots=matched_snapshots,
+        )
+
     def _evaluate_stage_with_scheduler(
         self,
         interval: StageInterval,
         task_case: TaskCase,
         trajectory: Trajectory,
         weights: dict[Dimension, float],
+        scorer: GeneralScorer,
     ) -> tuple[StageEvaluationResult, dict[Dimension, float]]:
         stage_result = self._cheap_judge.evaluate_stage(interval, task_case, trajectory, weights)
-        stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
+        stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
         decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.STANDARD:
             stage_result = self._run_standard(interval, task_case, trajectory, weights)
-            stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
+            stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
             decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.EXPENSIVE and stage_result.evaluator_level != EvaluationLevel.EXPENSIVE:
             stage_result = self._run_expensive(interval, task_case, trajectory, weights)
-            stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result)
+            stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
         next_weights = update_weights(weights, stage_result.dimension_scores, stage_result.uncertainty, self._weight_config)
         return replace(stage_result, next_weights=next_weights), next_weights
 
@@ -486,9 +558,16 @@ class DynSTEEREvaluator:
         task_case: TaskCase,
         trajectory: Trajectory,
         result: StageEvaluationResult,
+        scorer: GeneralScorer,
     ) -> StageEvaluationResult:
         graph = task_case.milestone_graph or MilestoneGraph()
-        _, minefield_score, fatal_minefield = self.evaluate_minefields(graph, trajectory)
+        context = ScoringContext(task_case=task_case)
+        _, minefield_score, fatal_minefield = self.evaluate_minefields(
+            graph,
+            trajectory,
+            scorer=scorer,
+            context=context,
+        )
         return enrich_stage_result(interval, result, minefield_score, fatal_minefield, self._thresholds)
 
     def _runtime_report(
@@ -496,9 +575,16 @@ class DynSTEEREvaluator:
         task_case: TaskCase,
         trajectory: Trajectory,
         stage_reports: list[StageEvaluationResult],
+        scorer: GeneralScorer,
     ) -> TrajectoryEvaluationReport:
         graph = task_case.milestone_graph or MilestoneGraph()
-        minefield_matches, minefield_score, _ = self.evaluate_minefields(graph, trajectory)
+        context = ScoringContext(task_case=task_case)
+        minefield_matches, minefield_score, _ = self.evaluate_minefields(
+            graph,
+            trajectory,
+            scorer=scorer,
+            context=context,
+        )
         matched_ids = {stage.milestone_id for stage in stage_reports if stage.milestone_id is not None}
         required_ids = {node.milestone_id for node in graph.nodes if node.required}
         if not graph.nodes:
@@ -536,6 +622,7 @@ class DynSTEEREvaluator:
         trajectory: Trajectory,
         matched: dict[str, HarnessStageSettlement],
         weights: dict[Dimension, float],
+        scorer: GeneralScorer,
     ) -> tuple[HarnessStageSettlement, StageEvaluationResult, dict[Dimension, float]]:
         if settlements is None or task_case is None or trajectory is None or matched is None or weights is None:
             raise ValueError("finish 结算参数不能为空")
@@ -554,7 +641,13 @@ class DynSTEEREvaluator:
             status=StageStatus.PASS,
             evidence=["finish 结算节点"],
         )
-        stage_result, next_weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
+        stage_result, next_weights = self._evaluate_stage_with_scheduler(
+            interval,
+            task_case,
+            trajectory,
+            weights,
+            scorer,
+        )
         stage_trace = build_stage_trace(
             trajectory=trajectory,
             start_step_index=predecessor_index,
@@ -591,6 +684,7 @@ class DynSTEEREvaluator:
         boundary: Boundary,
         milestone_score: MilestoneScore,
         weights: dict[Dimension, float],
+        scorer: GeneralScorer,
     ) -> tuple[HarnessStageSettlement, StageEvaluationResult, dict[Dimension, float]]:
         if (
             settlements is None
@@ -616,7 +710,13 @@ class DynSTEEREvaluator:
             milestone_score=milestone_score,
             evidence=list(milestone_score.evidence),
         )
-        stage_result, next_weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
+        stage_result, next_weights = self._evaluate_stage_with_scheduler(
+            interval,
+            task_case,
+            trajectory,
+            weights,
+            scorer,
+        )
         predecessor_milestone_ids = [source for source, target in graph.edges if target == milestone.milestone_id]
         stage_trace = build_stage_trace(
             trajectory=trajectory,
@@ -669,12 +769,19 @@ class DynSTEEREvaluator:
         task_case: TaskCase,
         trajectory: Trajectory,
         stage_result: StageEvaluationResult,
+        scorer: GeneralScorer,
     ) -> tuple[str, str] | None:
         if config is None or task_case is None or trajectory is None or stage_result is None:
             raise ValueError("终止策略参数不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
         if config.stop_on_minefield:
-            matches, max_score, fatal = self.evaluate_minefields(graph, trajectory)
+            context = ScoringContext(task_case=task_case)
+            matches, max_score, fatal = self.evaluate_minefields(
+                graph,
+                trajectory,
+                scorer=scorer,
+                context=context,
+            )
             if matches and fatal:
                 minefield_id = str(matches[0].get("minefield_id", "minefield"))
                 return (

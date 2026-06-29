@@ -12,6 +12,7 @@ from dynsteer.evaluate.models import (
     RuntimeEvaluationDecision,
     RuntimeEvaluationState,
 )
+from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.evaluate.utils import (
     build_trajectory,
     compute_uncertainty,
@@ -31,6 +32,8 @@ __all__ = [
     "JudgeConfigurationError",
     "RuntimeEvaluationDecision",
     "RuntimeEvaluationState",
+    "GeneralScorer",
+    "ScoringContext",
     "normalize_weights",
     "select_initial_weights",
     "update_weights",

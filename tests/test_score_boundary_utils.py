@@ -3,7 +3,8 @@ from __future__ import annotations
 import inspect
 from types import ModuleType
 
-from dynsteer import boundary, score, utils
+from dynsteer import boundary, utils
+from dynsteer.evaluate import score
 from dynsteer.llm import anthropic
 from dynsteer.model import Actor, Boundary, EventType, StateSnapshot, Trajectory, TrajectoryStep
 

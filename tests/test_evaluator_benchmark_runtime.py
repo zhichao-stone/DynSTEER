@@ -6,11 +6,13 @@ import pytest
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate import DynSTEEREvaluator
+from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.judges import CheapJudge
 from dynsteer.model import (
     Actor,
     Constraint,
+    ConstraintScore,
     ConstraintTarget,
     Dimension,
     EvaluationLevel,
@@ -324,3 +326,61 @@ def test_toolsandbox_harness_teardown_attempts_all_roles_and_clears_references(t
     assert session.roles == {}
     assert session.context is None
     assert session.scenario is None
+
+
+class RuntimeCustomScorer(GeneralScorer):
+    """测试用 runtime scorer：CUSTOM 约束固定通过。"""
+
+    def score_custom_constraint(
+        self,
+        constraint: Constraint,
+        source: object,
+        reference_source: object | None,
+        actual: object,
+        reference_value: object,
+        context=None,
+    ) -> ConstraintScore:
+        return ConstraintScore(
+            constraint_id=constraint.constraint_id,
+            score=1.0,
+            missing=False,
+            evidence=["runtime custom pass"],
+            actual=actual,
+        )
+
+
+class CustomScorerHarness(FakeRuntimeHarness):
+    def constraint_scorer(self) -> GeneralScorer:
+        return RuntimeCustomScorer()
+
+
+def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None:
+    graph = MilestoneGraph(
+        nodes=[
+            Milestone(
+                milestone_id="m-custom",
+                name="custom",
+                description="custom milestone",
+                constraints=[
+                    Constraint(
+                        constraint_id="c-custom",
+                        target=ConstraintTarget.STEP,
+                        selector="$",
+                        operator=Operator.CUSTOM,
+                        hard=True,
+                    )
+                ],
+            )
+        ]
+    )
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    harness = CustomScorerHarness(
+        task_case=task_case,
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任意内容")], continue_running=False)],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    assert any(settlement.kind == "milestone" for settlement in result.stage_settlements)

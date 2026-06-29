@@ -41,6 +41,18 @@ def final_state_from_session(self, session: object) -> JsonObject | None: ...
 def raw_summary_from_session(self, session: object) -> JsonObject: ...
 def stop_case(self, session: object, reason: str) -> None: ...
 def teardown_case(self, session: object) -> None: ...
+def constraint_scorer(self) -> BaseBenchmarkConstraintScorer: ...
+```
+
+### `BaseBenchmarkHarness.constraint_scorer()`
+
+返回当前 benchmark 的约束评分器。默认返回 `BaseBenchmarkConstraintScorer()`，其行为等同 `GeneralScorer`。
+需要解释 `Operator.CUSTOM` 或 benchmark 原生约束的 harness 应覆写该方法。
+
+```python
+class MyHarness(BaseBenchmarkHarness):
+    def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
+        return MyBenchmarkConstraintScorer()
 ```
 
 ## 返回契约

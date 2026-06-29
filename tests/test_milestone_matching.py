@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from dynsteer.config import MatchConfig
+from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.evaluate.milestone import (
     find_hit_milestone,
     match_milestones,
@@ -16,6 +17,7 @@ from dynsteer.model import (
     Actor,
     Boundary,
     Constraint,
+    ConstraintScore,
     ConstraintTarget,
     EventType,
     Milestone,
@@ -153,3 +155,63 @@ def test_find_hit_milestone_returns_none_without_graph() -> None:
     trajectory = _trajectory("任务完成")
 
     assert find_hit_milestone(task_case, trajectory, trajectory.steps[0], {}) is None
+
+
+class PassCustomScorer(GeneralScorer):
+    """测试用 scorer：将 CUSTOM 约束固定判为通过。"""
+
+    def score_custom_constraint(
+        self,
+        constraint: Constraint,
+        source: object,
+        reference_source: object | None,
+        actual: object,
+        reference_value: object,
+        context=None,
+    ) -> ConstraintScore:
+        return ConstraintScore(
+            constraint_id=constraint.constraint_id,
+            score=1.0,
+            missing=False,
+            evidence=["custom scorer pass"],
+            actual=actual,
+        )
+
+
+def _custom_milestone() -> Milestone:
+    return Milestone(
+        milestone_id="custom-m1",
+        name="custom",
+        description="custom scorer milestone",
+        constraints=[
+            Constraint(
+                constraint_id="custom-c1",
+                target=ConstraintTarget.STEP,
+                selector="$",
+                operator=Operator.CUSTOM,
+                expected={},
+                hard=True,
+            )
+        ],
+    )
+
+
+def test_milestone_score_matrix_uses_injected_scorer() -> None:
+    graph = MilestoneGraph(nodes=[_custom_milestone()])
+    trajectory = _trajectory("任意内容")
+    boundaries = [Boundary(boundary_id="b0", step_index=0, snapshot_id=None, reason="agent_message")]
+
+    matrix = milestone_score_matrix(graph, boundaries, trajectory, scorer=PassCustomScorer())
+
+    assert matrix[("custom-m1", "b0")].status == StageStatus.PASS
+
+
+def test_find_hit_milestone_uses_injected_scorer() -> None:
+    graph = MilestoneGraph(nodes=[_custom_milestone()])
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    trajectory = _trajectory("任意内容")
+
+    hit = find_hit_milestone(task_case, trajectory, trajectory.steps[0], {}, scorer=PassCustomScorer())
+
+    assert hit is not None
+    assert hit[0].milestone_id == "custom-m1"

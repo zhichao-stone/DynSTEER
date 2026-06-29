@@ -84,6 +84,7 @@ def test_base_benchmark_harness_member_sections_are_grouped() -> None:
         "case_finished",
     ]
     base_methods = [
+        "constraint_scorer",
         "prepare_config",
         "build_run_id",
         "snapshots_from_session",

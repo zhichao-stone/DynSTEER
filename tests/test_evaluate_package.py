@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from dynsteer.evaluate import DynSTEEREvaluator, JudgeConfigurationError
+from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.judges import ExpensiveJudge, StandardJudge
 from dynsteer.model import (
@@ -239,6 +240,9 @@ class _LanguageHarness:
 
     def metrics_from_session(self, session: object) -> dict[str, object]:
         return {}
+
+    def constraint_scorer(self) -> GeneralScorer:
+        return GeneralScorer()
 
     def teardown_case(self, session: object) -> None:
         return None

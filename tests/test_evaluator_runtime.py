@@ -5,10 +5,12 @@ import pytest
 import dynsteer.evaluate as evaluate_module
 from dynsteer.config import ThresholdConfig
 from dynsteer.evaluate import DynSTEEREvaluator, JudgeConfigurationError
+from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.judges import CheapJudge
 from dynsteer.model import (
     Actor,
     Constraint,
+    ConstraintScore,
     ConstraintTarget,
     Dimension,
     EvaluationLevel,
@@ -114,3 +116,53 @@ def test_standard_level_uses_injected_judge() -> None:
 
     assert recording.levels == [EvaluationLevel.CHEAP]
     assert report.stage_reports[0].evaluator_level == EvaluationLevel.STANDARD
+
+
+class AlwaysPassCustomScorer(GeneralScorer):
+    """测试用 scorer：CUSTOM 约束固定通过。"""
+
+    def score_custom_constraint(
+        self,
+        constraint: Constraint,
+        source: object,
+        reference_source: object | None,
+        actual: object,
+        reference_value: object,
+        context=None,
+    ) -> ConstraintScore:
+        return ConstraintScore(
+            constraint_id=constraint.constraint_id,
+            score=1.0,
+            missing=False,
+            evidence=["custom pass"],
+            actual=actual,
+        )
+
+
+def test_evaluate_trajectory_accepts_explicit_scorer() -> None:
+    graph = MilestoneGraph(
+        nodes=[
+            Milestone(
+                milestone_id="m-custom",
+                name="custom",
+                description="custom milestone",
+                constraints=[
+                    Constraint(
+                        constraint_id="c-custom",
+                        target=ConstraintTarget.STEP,
+                        selector="$",
+                        operator=Operator.CUSTOM,
+                        hard=True,
+                    )
+                ],
+            )
+        ]
+    )
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    trajectory = _trajectory("任意内容")
+    evaluator = DynSTEEREvaluator(standard_judge=RecordingJudge(), expensive_judge=RecordingJudge())
+
+    report = evaluator.evaluate_trajectory(task_case, trajectory, scorer=AlwaysPassCustomScorer())
+
+    assert report.milestone_coverage == "full"
+    assert report.stage_reports[0].milestone_id == "m-custom"

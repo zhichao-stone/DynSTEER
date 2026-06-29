@@ -8,8 +8,17 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory
+
+
+class BaseBenchmarkConstraintScorer(GeneralScorer):
+    """benchmark 约束评分器基类。
+
+    默认继承 DynSTEER 通用评分逻辑；特定 benchmark 可以覆写
+    score_custom_constraint() 或其他评分方法实现专有语义。
+    """
 
 
 class BaseBenchmarkAdapter(ABC):
@@ -103,6 +112,14 @@ class BaseBenchmarkHarness(ABC):
         """
 
     ## 基类自身实现
+
+    def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
+        """返回当前 benchmark 的约束评分器。
+
+        Returns:
+            默认通用 benchmark scorer；子类可返回专用 scorer。
+        """
+        return BaseBenchmarkConstraintScorer()
 
     def prepare_config(self, config: HarnessRunConfig) -> None:
         """校验配置并准备 benchmark source_root。

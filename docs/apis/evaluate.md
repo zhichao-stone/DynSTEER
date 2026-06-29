@@ -16,6 +16,7 @@ dynsteer/evaluate/
 - __init__.py    # 导出 DynSTEEREvaluator、JudgeConfigurationError、权重工具和通用工具
 - models.py      # RuntimeEvaluationState、RuntimeEvaluationDecision、JudgeConfigurationError
 - evaluator.py   # DynSTEEREvaluator
+- score.py       # GeneralScorer、ScoringContext 和通用约束评分逻辑
 - diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
 - weights.py     # normalize_weights、select_initial_weights、update_weights
 - milestone.py   # milestone DAG 校验、贪心匹配、评分矩阵和运行期命中判定
@@ -82,14 +83,35 @@ Evaluator 不检查 `advance_case()` 是否返回 `None`，也不通过空 steps
 ## 整轨迹入口
 
 ```python
-report = evaluator.evaluate_trajectory(task_case, trajectory)
+report = evaluator.evaluate_trajectory(task_case, trajectory, scorer=None)
 ```
 
 该入口会对完整轨迹执行 milestone matching、stage interval 构造、cheap -> standard -> expensive 动态调度和权重更新。本阶段 `main.py --benchmark` 不使用该入口作为主实验流程。
 
+`scorer` 为空时使用 `GeneralScorer()`；需要处理 benchmark 专有 `Operator.CUSTOM` 约束时，可传入继承自 `GeneralScorer` 的专用评分器：
+
+```python
+report = DynSTEEREvaluator().evaluate_trajectory(
+    task_case,
+    trajectory,
+    scorer=MyBenchmarkScorer(),
+)
+```
+
+### `GeneralScorer`
+
+`GeneralScorer` 是 DynSTEER 默认 milestone / minefield 评分器，位于 `dynsteer.evaluate.score`。
+它提供 `score_operator()`、`score_constraint()`、`score_milestone()` 三个核心方法。
+
+`Operator.CUSTOM` 不属于通用 operator。默认 `GeneralScorer` 会返回带 evidence 的 0 分约束结果；benchmark 需要通过 `BaseBenchmarkHarness.constraint_scorer()` 返回专用 scorer 处理 CUSTOM。
+
+### `ScoringContext`
+
+`ScoringContext` 用于在运行期传递当前任务、已命中 milestone 边界和已命中状态快照。ToolSandbox 等 benchmark scorer 可通过该上下文读取 reference snapshot，避免在通用层内硬编码 benchmark 语义。
+
 ## 成员评估函数
 
-- `evaluate_minefields(graph, trajectory) -> (matches, max_score, fatal)`: 评估轨迹是否触发 minefield。
+- `evaluate_minefields(graph, trajectory, scorer=None, context=None) -> (matches, max_score, fatal)`: 评估轨迹是否触发 minefield。
 - `select_evaluation_level(result, thresholds=None) -> EvaluationDecision`: 根据阶段风险选择评估粒度；`thresholds` 为空时使用评估器默认阈值。
 
 ## Judge 与 LLM
