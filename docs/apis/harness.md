@@ -5,7 +5,7 @@
 Harness API 用于把 benchmark 原生执行过程接入 DynSTEER。当前职责边界是：
 
 - `BaseBenchmarkAdapter`: 负责离线实验数据转换和 harness 工厂。
-- `BaseBenchmarkHarness`: 只负责 benchmark 原生 session 生命周期、增量步骤采集、状态快照、原生摘要和资源清理。
+- `BaseBenchmarkHarness`: 只负责 benchmark 原生 session 生命周期、增量观测批次采集、原生摘要和资源清理。
 - `DynSTEEREvaluator`: 负责执行编排、milestone checkpoint、阶段式动态评估、LLMJudge 调度和 fail-fast。
 
 Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、动态权重更新或 minefield 策略终止。
@@ -14,7 +14,7 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 
 - `HarnessRunConfig`: 单次 harness 运行配置，包含 benchmark、data root、case_ids、runs_dir、results_dir、fail-fast 策略和 metadata。
 - `BenchmarkCase`: benchmark 内单个可运行测试任务。
-- `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 `steps`、`continue_running` 和可选 `reason`。
+- `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 `steps`、`snapshots`、`continue_running` 和可选 `reason`。`snapshots` 是必填字段，表示本批推进后可见的状态快照，必须与 `steps` 使用同一时间坐标。
 - `HarnessStageSettlement`: evaluator 在运行期生成的 start/milestone/finish 阶段结算节点。
 - `HarnessRunResult`: evaluator 返回的 benchmark 运行结果，包含 `TaskCase`、`Trajectory`、阶段结算、策略终止字段和 `evaluation_report`。
 
@@ -35,7 +35,6 @@ def case_finished(self, session: object) -> bool: ...
 ```python
 def prepare_config(self, config: HarnessRunConfig) -> None: ...
 def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str: ...
-def snapshots_from_session(self, session: object) -> list[StateSnapshot]: ...
 def metrics_from_session(self, session: object) -> JsonObject: ...
 def final_state_from_session(self, session: object) -> JsonObject | None: ...
 def raw_summary_from_session(self, session: object) -> JsonObject: ...
@@ -59,9 +58,12 @@ class MyHarness(BaseBenchmarkHarness):
 
 - `task_case_from_session()` 必须返回有效 `TaskCase`；无法构造时在 harness 内部抛出异常，不能返回 `None`。
 - `advance_case()` 必须返回 `HarnessAdvanceResult`，不能返回 `None`。
-- `advance_case()` 负责判断空步骤是否合理。自然完成时返回 `HarnessAdvanceResult(steps=[], continue_running=False, reason="benchmark 已自然完成")`。
+- `advance_case()` 负责判断空步骤是否合理。自然完成时返回 `HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")`。
 - 如果 session 未完成但没有新增步骤，`advance_case()` 应在 harness 内部抛出异常。
-- `snapshots_from_session()`、`metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空列表或空字典。
+- 所有 harness 必须通过 `HarnessAdvanceResult.snapshots` 返回本批推进后可见快照；没有状态快照的 benchmark 必须显式返回空数组。
+- `snapshots_from_session()` 不再属于 `BaseBenchmarkHarness` 公开运行期接口。
+- 对带原生全局消息索引的 benchmark，`steps[].index` 与 `snapshots[].after_step_index` 必须使用同一坐标系。
+- `metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空字典。
 - `case_finished()` 只作为查询接口或子类内部辅助能力；`DynSTEEREvaluator.evaluate()` 不用它控制主循环。
 
 ## 资源释放与异常处理契约

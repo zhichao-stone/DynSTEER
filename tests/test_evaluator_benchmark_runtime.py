@@ -26,6 +26,7 @@ from dynsteer.model import (
     StageEvaluationResult,
     StageInterval,
     StageStatus,
+    StateSnapshot,
     TaskCase,
     Trajectory,
     TrajectoryStep,
@@ -130,6 +131,14 @@ class FakeRuntimeHarness(BaseBenchmarkHarness):
         self.torn_down = True
 
 
+class BatchSnapshotHarness(FakeRuntimeHarness):
+    def __init__(self, task_case: TaskCase, batches: list[HarnessAdvanceResult], metrics: JsonObject) -> None:
+        super().__init__(task_case=task_case, batches=batches, metrics=metrics)
+
+    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
+        raise AssertionError("Evaluator 不应调用 snapshots_from_session")
+
+
 def _step(index: int, content: str) -> TrajectoryStep:
     return TrajectoryStep(
         step_id=f"s{index}",
@@ -137,6 +146,15 @@ def _step(index: int, content: str) -> TrajectoryStep:
         actor=Actor.AGENT,
         event_type=EventType.MESSAGE,
         content=content,
+    )
+
+
+def _state_snapshot(after_step_index: int, done: bool = True) -> StateSnapshot:
+    return StateSnapshot(
+        snapshot_id=f"state:{after_step_index}",
+        after_step_id=f"s{after_step_index}",
+        after_step_index=after_step_index,
+        namespaces={"default": {"done": done}},
     )
 
 
@@ -150,10 +168,30 @@ def _config(tmp_path: Path) -> HarnessRunConfig:
     )
 
 
+def _state_snapshot_task_case() -> TaskCase:
+    milestone = Milestone(
+        milestone_id="m1",
+        name="状态完成",
+        description="done 必须为 true",
+        constraints=[
+            Constraint(
+                constraint_id="c1",
+                target=ConstraintTarget.STATE_SNAPSHOT,
+                selector="$.done",
+                operator=Operator.EQUALS,
+                expected=True,
+                hard=True,
+            )
+        ],
+    )
+    graph = MilestoneGraph(nodes=[milestone])
+    return TaskCase(task_id="task-state", task_description="状态任务", milestone_graph=graph)
+
+
 def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
-        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], continue_running=True)],
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], snapshots=[], continue_running=True)],
         metrics={"danger": True},
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
@@ -170,7 +208,7 @@ def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> 
 def test_runtime_milestone_settlement_includes_trace_and_matching_details(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
-        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], continue_running=True)],
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], snapshots=[], continue_running=True)],
         metrics={"danger": True},
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
@@ -205,7 +243,14 @@ def test_runtime_milestone_settlement_includes_trace_and_matching_details(tmp_pa
 def test_runtime_completes_without_milestone_when_clean(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
-        batches=[HarnessAdvanceResult(steps=[_step(0, "still working")], continue_running=False, reason="自然完成")],
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_step(0, "still working")],
+                snapshots=[],
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
         metrics={"danger": False},
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
@@ -260,7 +305,7 @@ def test_evaluator_raises_teardown_error_after_success(tmp_path: Path) -> None:
 
     harness = FailingTeardownHarness(
         task_case=_milestone_with_fatal_minefield(),
-        batches=[HarnessAdvanceResult(steps=[_step(0, "still working")], continue_running=False)],
+        batches=[HarnessAdvanceResult(steps=[_step(0, "still working")], snapshots=[], continue_running=False)],
         metrics={"danger": False},
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
@@ -376,7 +421,7 @@ def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None
     task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
     harness = CustomScorerHarness(
         task_case=task_case,
-        batches=[HarnessAdvanceResult(steps=[_step(0, "任意内容")], continue_running=False)],
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任意内容")], snapshots=[], continue_running=False)],
         metrics={},
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
@@ -384,3 +429,87 @@ def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None
     result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
 
     assert any(settlement.kind == "milestone" for settlement in result.stage_settlements)
+
+
+def test_runtime_uses_advance_snapshots_before_checkpoint(tmp_path: Path) -> None:
+    harness = BatchSnapshotHarness(
+        task_case=_state_snapshot_task_case(),
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_step(0, "触发状态检查")],
+                snapshots=[_state_snapshot(0)],
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    assert [item.milestone_id for item in result.stage_settlements if item.kind == "milestone"] == ["m1"]
+
+
+def test_runtime_matches_multiple_milestones_from_batch_snapshots(tmp_path: Path) -> None:
+    graph = MilestoneGraph(
+        nodes=[
+            Milestone(
+                milestone_id="m1",
+                name="第一步",
+                description="phase 为 one",
+                constraints=[
+                    Constraint(
+                        constraint_id="c1",
+                        target=ConstraintTarget.STATE_SNAPSHOT,
+                        selector="$.phase",
+                        operator=Operator.EQUALS,
+                        expected="one",
+                        hard=True,
+                    )
+                ],
+            ),
+            Milestone(
+                milestone_id="m2",
+                name="第二步",
+                description="phase 为 two",
+                constraints=[
+                    Constraint(
+                        constraint_id="c2",
+                        target=ConstraintTarget.STATE_SNAPSHOT,
+                        selector="$.phase",
+                        operator=Operator.EQUALS,
+                        expected="two",
+                        hard=True,
+                    )
+                ],
+            ),
+        ],
+        edges=[("m1", "m2")],
+    )
+    task_case = TaskCase(task_id="task-chain", task_description="链式状态任务", milestone_graph=graph)
+    snapshots = [
+        StateSnapshot("snap-0", "s0", 0, {"default": {"phase": "one"}}),
+        StateSnapshot("snap-1", "s1", 1, {"default": {"phase": "two"}}),
+    ]
+    harness = BatchSnapshotHarness(
+        task_case=task_case,
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_step(0, "第一步"), _step(1, "第二步")],
+                snapshots=snapshots,
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
+        metrics={},
+    )
+
+    result = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge()).evaluate(
+        harness,
+        "case-1",
+        _config(tmp_path),
+    )
+
+    assert [item.milestone_id for item in result.stage_settlements if item.kind == "milestone"] == ["m1", "m2"]
+    assert result.evaluation_report.to_summary_dict()["stage_count"] == 3

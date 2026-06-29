@@ -73,10 +73,11 @@ result = evaluator.evaluate(harness, case_id, config)
 2. `harness.start_case(...)` 启动原生 session。
 3. `harness.task_case_from_session(session)` 获取 `TaskCase`。
 4. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
-5. 对 `advance.steps` 做 milestone checkpoint 和阶段式动态评估。
-6. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
-7. 当 `advance.continue_running is False` 时结束主循环。
-8. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
+5. 合并 `advance.snapshots`。
+6. 对 `advance.steps` 做 milestone checkpoint 和阶段式动态评估。
+7. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
+8. 当 `advance.continue_running is False` 时结束主循环。
+9. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
 
 Evaluator 不检查 `advance_case()` 是否返回 `None`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 harness 返回契约。
 
@@ -108,6 +109,8 @@ report = DynSTEEREvaluator().evaluate_trajectory(
 ### `ScoringContext`
 
 `ScoringContext` 用于在运行期传递当前任务、已命中 milestone 边界和已命中状态快照。ToolSandbox 等 benchmark scorer 可通过该上下文读取 reference snapshot，避免在通用层内硬编码 benchmark 语义。
+
+ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时刻的完整多 namespace 快照；依赖 `reference_milestone_node_index` 的 custom scorer 会从该快照中按 namespace 读取参考数据。
 
 ## 成员评估函数
 

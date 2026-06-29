@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
+from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.model import Constraint, ConstraintTarget, Operator, StateSnapshot
 
@@ -24,6 +26,93 @@ class _FakeToolSandboxScorer(ToolSandboxConstraintScorer):
 
     def _load_polars(self) -> Any:
         return _FakePolars()
+
+
+def fake_similarity(**kwargs: object) -> float:
+    return 1.0
+
+
+def fake_extractor(tool_trace: dict[str, object]) -> list[dict[str, object]]:
+    return [{"latitude": 1.0, "longitude": 2.0}]
+
+
+class FakeEvaluationModule:
+    _default_dbs_column_similarities = {}
+
+    @staticmethod
+    def fake_similarity(
+        snapshot: object,
+        target_dataframe: object,
+        column_similarities: dict[str, object],
+        reference_snapshot: object | None = None,
+        **kwargs: object,
+    ) -> float:
+        assert kwargs["fill_to"] == "tool_trace"
+        assert callable(kwargs["extractor"])
+        return 1.0
+
+
+class FakeExtractorModule:
+    @staticmethod
+    def fake_extractor(tool_trace: dict[str, object]) -> list[dict[str, object]]:
+        return [{"value": 1}]
+
+
+def test_toolsandbox_constraint_metadata_preserves_partial_kwargs() -> None:
+    constraint = SimpleNamespace(
+        database_namespace=SimpleNamespace(name="SANDBOX"),
+        target_dataframe=[{"tool_trace": "{}"}],
+        snapshot_constraint=partial(fake_similarity, fill_to="tool_trace", extractor=fake_extractor),
+        column_similarity_measure={},
+        reference_milestone_node_index=3,
+    )
+
+    data = ToolSandboxHarness()._constraint_from_snapshot_constraint("m4_c0", constraint)
+    metadata = data["metadata"]["toolsandbox"]
+
+    assert metadata["snapshot_constraint"] == "fake_similarity"
+    assert metadata["snapshot_constraint_kwargs"] == {
+        "fill_to": "tool_trace",
+        "extractor": "fake_extractor",
+    }
+    assert metadata["reference_milestone_node_index"] == 3
+
+
+def test_toolsandbox_scorer_restores_snapshot_constraint_kwargs() -> None:
+    def module_loader(module_name: str) -> object:
+        if module_name == "tool_sandbox.common.evaluation":
+            return FakeEvaluationModule
+        if module_name == "tool_sandbox.common.tool_trace_extractors":
+            return FakeExtractorModule
+        raise ModuleNotFoundError(module_name)
+
+    scorer = ToolSandboxConstraintScorer(module_loader=module_loader)
+    constraint = Constraint(
+        constraint_id="m4_c0",
+        target=ConstraintTarget.STATE_SNAPSHOT,
+        selector="$",
+        operator=Operator.CUSTOM,
+        expected={"rows": [{"tool_trace": "{}"}], "columns": ["tool_trace"]},
+        namespace="SANDBOX",
+        hard=True,
+        metadata={
+            "toolsandbox": {
+                "snapshot_constraint": "fake_similarity",
+                "snapshot_constraint_kwargs": {
+                    "fill_to": "tool_trace",
+                    "extractor": "fake_extractor",
+                },
+            }
+        },
+    )
+
+    result = scorer.score_constraint(
+        constraint,
+        source=[{"tool_trace": "{}"}],
+        reference_source=None,
+    )
+
+    assert result.score == 1.0
 
 
 def test_toolsandbox_scorer_scores_snapshot_similarity_with_exact_rows() -> None:

@@ -10,7 +10,7 @@ from typing import Any
 
 from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
-from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory
+from dynsteer.model import JsonObject, TaskCase, Trajectory
 
 
 class BaseBenchmarkConstraintScorer(GeneralScorer):
@@ -100,7 +100,7 @@ class BaseBenchmarkHarness(ABC):
             session: 子类私有 session 对象。
 
         Returns:
-            本批次新增步骤与是否继续推进的结构化结果。
+            本批次新增步骤、可见快照与是否继续推进的结构化结果。
         """
 
     @abstractmethod
@@ -151,19 +151,6 @@ class BaseBenchmarkHarness(ABC):
         if not safe:
             raise ValueError("run_id 不能为空")
         return safe
-
-    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
-        """从 session 提取当前可见状态快照。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            当前快照列表；默认没有快照。
-        """
-        if session is None:
-            raise ValueError("session 不能为空")
-        return []
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """从 session 提取运行期 metrics。

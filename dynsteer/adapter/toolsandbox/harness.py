@@ -11,7 +11,7 @@ from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.generic import load_task_case, load_trajectory
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig, HarnessRunResult
-from dynsteer.model import JsonObject, JsonValue, StateSnapshot, TaskCase
+from dynsteer.model import JsonObject, JsonValue, TaskCase
 
 TOOL_SANDBOX_DEPENDENCY_ERROR = (
     "ToolSandbox harness 需要安装 ToolSandbox 及其依赖。"
@@ -161,7 +161,12 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         if session.finished:
-            return HarnessAdvanceResult(steps=[], continue_running=False, reason="benchmark 已自然完成")
+            return HarnessAdvanceResult(
+                steps=[],
+                snapshots=[],
+                continue_running=False,
+                reason="benchmark 已自然完成",
+            )
         self._advance_native_session(session)
         rows = [
             row
@@ -171,19 +176,22 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if rows:
             session.last_sandbox_message_index = max(self._sandbox_message_index(row) for row in rows)
         steps = self.convert_sandbox_rows_to_steps(rows)
+        snapshot_data = self._snapshots_from_context(session.context, steps) if session.context is not None else []
         if self._native_session_finished(session):
             session.finished = True
-        trajectory_steps = load_trajectory(
+        trajectory = load_trajectory(
             {
                 "run_id": session.run_id,
                 "task_id": f"toolsandbox::{session.case_id}",
                 "steps": steps,
+                "snapshots": snapshot_data,
             }
-        ).steps
-        if not trajectory_steps and not session.finished:
+        )
+        if not trajectory.steps and not session.finished:
             raise RuntimeError("benchmark session 未完成但没有新增轨迹步骤")
         return HarnessAdvanceResult(
-            steps=trajectory_steps,
+            steps=trajectory.steps,
+            snapshots=trajectory.snapshots,
             continue_running=not session.finished,
             reason="benchmark 已自然完成" if session.finished else None,
         )
@@ -193,24 +201,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
         return session.finished
-
-    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
-        """提取 ToolSandbox 当前状态快照。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
-        if session.context is None:
-            return []
-        rows = self._sandbox_rows_from_context(session.context)
-        steps = self.convert_sandbox_rows_to_steps(rows)
-        snapshot_data = self._snapshots_from_context(session.context, steps)
-        return load_trajectory(
-            {
-                "run_id": session.run_id,
-                "task_id": f"toolsandbox::{session.case_id}",
-                "steps": steps,
-                "snapshots": snapshot_data,
-            }
-        ).snapshots
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 运行期 metrics。"""
@@ -566,6 +556,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             raise ValueError("rows 不能为空")
         steps: list[dict[str, JsonValue]] = []
         for row in rows:
+            raw_index = self._sandbox_message_index(row)
+            step_index = raw_index if raw_index >= 0 else len(steps)
             sender = row.get("sender")
             recipient = row.get("recipient")
             trace = self._tool_trace_from_row(row)
@@ -585,8 +577,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
                 }
             steps.append(
                 {
-                    "step_id": f"s{len(steps)}",
-                    "index": len(steps),
+                    "step_id": f"s{step_index}",
+                    "index": step_index,
                     "actor": actor,
                     "event_type": event_type,
                     "content": row.get("content") if isinstance(row.get("content"), str) else None,
@@ -642,7 +634,14 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         target_dataframe = getattr(constraint, "target_dataframe", None)
         rows = [_json_safe(row) for row in self._rows_from_dataframe(target_dataframe)]
         snapshot_constraint = getattr(constraint, "snapshot_constraint", None)
-        snapshot_constraint_name = getattr(snapshot_constraint, "__name__", str(snapshot_constraint))
+        base_snapshot_constraint = getattr(snapshot_constraint, "func", snapshot_constraint)
+        snapshot_constraint_name = getattr(base_snapshot_constraint, "__name__", str(base_snapshot_constraint))
+        snapshot_constraint_module = getattr(base_snapshot_constraint, "__module__", None)
+        partial_keywords = getattr(snapshot_constraint, "keywords", None) or {}
+        snapshot_constraint_kwargs = {
+            str(key): getattr(value, "__name__", str(value)) if callable(value) else _json_safe(value)
+            for key, value in dict(partial_keywords).items()
+        }
         column_measures = getattr(constraint, "column_similarity_measure", None) or {}
         return {
             "constraint_id": constraint_id,
@@ -659,7 +658,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
                 "toolsandbox": {
                     "database_namespace": namespace,
                     "snapshot_constraint": snapshot_constraint_name,
-                    "snapshot_constraint_module": getattr(snapshot_constraint, "__module__", None),
+                    "snapshot_constraint_module": snapshot_constraint_module,
+                    "snapshot_constraint_kwargs": snapshot_constraint_kwargs,
                     "reference_milestone_node_index": _json_safe(
                         getattr(constraint, "reference_milestone_node_index", None)
                     ),
@@ -747,10 +747,21 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             },
         }
 
-    def _database_namespaces(self) -> list[object]:
+    def _database_namespaces(self, include_sandbox: bool = False) -> list[object]:
+        """返回 ToolSandbox 数据库命名空间。
+
+        Args:
+            include_sandbox: 是否包含 SANDBOX 消息历史命名空间。
+
+        Returns:
+            ToolSandbox DatabaseNamespace 列表。
+        """
         execution_context = self._import_module("tool_sandbox.common.execution_context")
         database_namespace = getattr(execution_context, "DatabaseNamespace")
-        return [namespace for namespace in database_namespace if _enum_name(namespace) != "SANDBOX"]
+        namespaces = list(database_namespace)
+        if include_sandbox:
+            return namespaces
+        return [namespace for namespace in namespaces if _enum_name(namespace) != "SANDBOX"]
 
     def _initial_state_from_context(self, context: object) -> dict[str, JsonValue]:
         namespaces: dict[str, JsonValue] = {}
@@ -767,34 +778,39 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     ) -> list[dict[str, JsonValue]]:
         if not steps:
             return []
+        sandbox_indexes = [
+            int(step["raw_sandbox_message_index"])
+            for step in steps
+            if isinstance(step.get("raw_sandbox_message_index"), int)
+        ]
+        if not sandbox_indexes:
+            return []
+        step_by_sandbox_index = {
+            int(step["raw_sandbox_message_index"]): step
+            for step in steps
+            if isinstance(step.get("raw_sandbox_message_index"), int)
+        }
         snapshots: list[dict[str, JsonValue]] = []
-        for namespace in self._database_namespaces():
-            dataframe = context.get_database(
-                namespace=namespace,
-                get_all_history_snapshots=True,
-                drop_sandbox_message_index=False,
-            )
-            by_index: dict[int, list[JsonObject]] = {}
-            for row in self._rows_from_dataframe(dataframe):
-                raw_index = row.get("sandbox_message_index")
-                if isinstance(raw_index, int):
-                    by_index.setdefault(raw_index, []).append(_json_safe(row))  # type: ignore[arg-type]
-            for sandbox_index, rows in sorted(by_index.items()):
-                step = self._step_for_sandbox_index(steps, sandbox_index)
-                snapshots.append(
-                    {
-                        "snapshot_id": f"{_enum_name(namespace).lower()}:{sandbox_index}",
-                        "after_step_id": str(step["step_id"]),
-                        "after_step_index": int(step["index"]),
-                        "namespaces": {_enum_name(namespace): rows},
-                    }
+        for sandbox_index in sorted(set(sandbox_indexes)):
+            step = step_by_sandbox_index[sandbox_index]
+            namespaces: dict[str, JsonValue] = {}
+            for namespace in self._database_namespaces(include_sandbox=True):
+                dataframe = context.get_database(
+                    namespace=namespace,
+                    sandbox_message_index=sandbox_index,
+                    drop_sandbox_message_index=False,
                 )
+                namespaces[_enum_name(namespace)] = [
+                    _json_safe(row)
+                    for row in self._rows_from_dataframe(dataframe)
+                ]
+            snapshots.append(
+                {
+                    "snapshot_id": f"toolsandbox:{sandbox_index}",
+                    "after_step_id": str(step["step_id"]),
+                    "after_step_index": int(step["index"]),
+                    "namespaces": namespaces,
+                    "raw": {"sandbox_message_index": sandbox_index},
+                }
+            )
         return snapshots
-
-    def _step_for_sandbox_index(self, steps: list[dict[str, JsonValue]], sandbox_index: int) -> dict[str, JsonValue]:
-        selected = steps[0]
-        for step in steps:
-            raw_index = step.get("raw_sandbox_message_index")
-            if isinstance(raw_index, int) and raw_index <= sandbox_index:
-                selected = step
-        return selected

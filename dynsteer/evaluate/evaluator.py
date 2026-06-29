@@ -254,7 +254,7 @@ class DynSTEEREvaluator:
 
             while True:
                 advance = harness.advance_case(session)
-                snapshots = merge_snapshots(snapshots, harness.snapshots_from_session(session))
+                snapshots = merge_snapshots(snapshots, advance.snapshots)
 
                 for step in advance.steps:
                     steps.append(step)
@@ -282,7 +282,6 @@ class DynSTEEREvaluator:
                 if terminated_by_policy or not advance.continue_running:
                     break
 
-            snapshots = merge_snapshots(snapshots, harness.snapshots_from_session(session))
             trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
             if not terminated_by_policy:
                 settlement, stage_result, next_weights = self._finish_settlement(

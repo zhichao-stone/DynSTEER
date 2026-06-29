@@ -95,12 +95,14 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         target = self._rows_to_dataframe(constraint.expected)
         column_similarities = self._column_similarities(evaluation, constraint)
         reference_snapshot = self._reference_dataframe(constraint, context)
+        kwargs = self._snapshot_constraint_kwargs(evaluation, constraint)
         return float(
             measure(
                 snapshot=snapshot,
                 target_dataframe=target,
                 column_similarities=column_similarities,
                 reference_snapshot=reference_snapshot,
+                **kwargs,
             )
         )
 
@@ -108,8 +110,13 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         """加载 ToolSandbox evaluation 模块。"""
         if self._module_loader is not None:
             return self._module_loader("tool_sandbox.common.evaluation")
-        else:
-            raise ModuleNotFoundError("Modules of ToolSandbox are not imported.")
+        raise ModuleNotFoundError("tool_sandbox.common.evaluation")
+
+    def _load_tool_trace_extractors_module(self) -> Any:
+        """加载 ToolSandbox tool_trace extractor 模块。"""
+        if self._module_loader is not None:
+            return self._module_loader("tool_sandbox.common.tool_trace_extractors")
+        raise ModuleNotFoundError("tool_sandbox.common.tool_trace_extractors")
 
     def _rows_to_dataframe(self, value: JsonValue) -> pl.DataFrame:
         """将 DynSTEER JSON rows 转为 polars DataFrame。"""
@@ -124,17 +131,48 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             raise ValueError("ToolSandbox snapshot rows 必须是 list")
         return pl.DataFrame(rows)
 
+    def _snapshot_constraint_kwargs(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
+        """恢复 ToolSandbox partial snapshot constraint 的关键字参数。"""
+        metadata = constraint.metadata.get("toolsandbox")
+        if not isinstance(metadata, dict):
+            return {}
+        raw_kwargs = metadata.get("snapshot_constraint_kwargs")
+        if not isinstance(raw_kwargs, dict):
+            return {}
+        kwargs: dict[str, Any] = {}
+        for key, value in raw_kwargs.items():
+            if key == "extractor" and isinstance(value, str):
+                extractors = self._load_tool_trace_extractors_module()
+                extractor = getattr(extractors, value, None)
+                if not callable(extractor):
+                    raise ValueError(f"不支持的 ToolSandbox extractor: {value}")
+                kwargs[key] = extractor
+            else:
+                kwargs[key] = value
+        return kwargs
+
     def _column_similarities(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
-        """读取 ToolSandbox 默认列相似度。"""
+        """读取 ToolSandbox 默认列相似度并应用约束级覆盖。"""
         metadata = constraint.metadata.get("toolsandbox")
         namespace = ""
         if isinstance(metadata, dict):
             namespace = str(metadata.get("database_namespace") or constraint.namespace or "")
+        column_similarities: dict[str, Any] = {}
         defaults = getattr(evaluation, "_default_dbs_column_similarities", {})
         for key, value in defaults.items():
             if str(key).upper().endswith(namespace.upper()):
-                return dict(value)
-        return {}
+                column_similarities.update(dict(value))
+                break
+        raw_overrides = metadata.get("column_similarity_measure") if isinstance(metadata, dict) else None
+        if isinstance(raw_overrides, dict):
+            for column_name, measure_name in raw_overrides.items():
+                if not isinstance(measure_name, str):
+                    continue
+                measure = getattr(evaluation, measure_name, None)
+                if not callable(measure):
+                    raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_name}")
+                column_similarities[str(column_name)] = measure
+        return column_similarities
 
     def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None) -> pl.DataFrame | None:
         """根据 ScoringContext 查找 ToolSandbox reference snapshot。"""

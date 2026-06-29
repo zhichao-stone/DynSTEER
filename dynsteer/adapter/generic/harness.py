@@ -77,10 +77,16 @@ class GenericHarness(BaseBenchmarkHarness):
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         if not session.remaining_steps:
-            return HarnessAdvanceResult(steps=[], continue_running=False, reason="benchmark 已自然完成")
+            return HarnessAdvanceResult(
+                steps=[],
+                snapshots=list(session.snapshots),
+                continue_running=False,
+                reason="benchmark 已自然完成",
+            )
         step = session.remaining_steps.pop(0)
         return HarnessAdvanceResult(
             steps=[step],
+            snapshots=list(session.snapshots),
             continue_running=bool(session.remaining_steps),
             reason=None if session.remaining_steps else "benchmark 已自然完成",
         )
@@ -90,12 +96,6 @@ class GenericHarness(BaseBenchmarkHarness):
         if not isinstance(session, GenericSession):
             raise TypeError("session 必须是 GenericSession")
         return not session.remaining_steps
-
-    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
-        """返回离线轨迹快照。"""
-        if not isinstance(session, GenericSession):
-            raise TypeError("session 必须是 GenericSession")
-        return list(session.snapshots)
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """返回离线轨迹 metrics。"""

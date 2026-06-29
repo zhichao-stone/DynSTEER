@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dynsteer.model import JsonObject, TaskCase, Trajectory, TrajectoryEvaluationReport, TrajectoryStep
+from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryEvaluationReport, TrajectoryStep
 
 
 @dataclass(frozen=True)
@@ -86,17 +86,21 @@ class HarnessAdvanceResult:
 
     Args:
         steps: 本次推进新增的轨迹步骤。
+        snapshots: 本批推进后可见的状态快照。
         continue_running: 处理完本批步骤后是否继续推进。
         reason: 停止继续推进时的中文原因。
     """
 
     steps: list[TrajectoryStep]
+    snapshots: list[StateSnapshot]
     continue_running: bool
     reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.steps is None:
             raise ValueError("steps 不能为空")
+        if self.snapshots is None:
+            raise ValueError("snapshots 不能为空")
         if not isinstance(self.continue_running, bool):
             raise TypeError("continue_running 必须是 bool")
         if self.reason is not None and not self.reason.strip():

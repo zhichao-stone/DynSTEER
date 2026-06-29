@@ -227,10 +227,7 @@ class _LanguageHarness:
         return TaskCase(task_id="task-1", task_description="测试任务", metadata={"source": "test"})
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
-        return HarnessAdvanceResult(steps=[], continue_running=False, reason="done")
-
-    def snapshots_from_session(self, session: object) -> list[object]:
-        return []
+        return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="done")
 
     def raw_summary_from_session(self, session: object) -> dict[str, object]:
         return {}
