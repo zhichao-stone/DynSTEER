@@ -81,9 +81,10 @@ def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> N
         metadata={"run_id": "run-1"},
     )
 
-    with pytest.raises(TypeError):
+    with pytest.raises(runner_module.HarnessCaseExecutionError) as exc_info:
         run_harness_cases(config=config, harness=FakeHarness(), evaluator=NonSerializableEvaluator())
 
+    assert isinstance(exc_info.value.cause, TypeError)
     result_dir = tmp_path / "results" / "fake" / "run-1" / "case-1"
     assert not (result_dir / "report.json").exists()
     assert not (result_dir / "summary.json").exists()
@@ -211,3 +212,45 @@ def test_run_harness_configs_wraps_case_errors(tmp_path: Path, monkeypatch: pyte
 
     with pytest.raises(runner_module.HarnessCaseExecutionError, match="case-1"):
         runner_module.run_harness_configs(configs=[config], max_workers=1)
+
+
+def test_run_harness_case_wraps_case_errors(tmp_path: Path) -> None:
+    class FailingEvaluator(FakeEvaluator):
+        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+            raise RuntimeError("boom")
+
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    with pytest.raises(runner_module.HarnessCaseExecutionError, match="case-1") as exc_info:
+        runner_module.run_harness_case(config=config, harness=FakeHarness(), evaluator=FailingEvaluator())
+
+    assert exc_info.value.benchmark == "fake"
+    assert exc_info.value.run_id == "run-1"
+    assert exc_info.value.case_id == "case-1"
+
+
+def test_run_harness_cases_wraps_case_errors(tmp_path: Path) -> None:
+    class FailingEvaluator(FakeEvaluator):
+        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+            raise RuntimeError("boom")
+
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    with pytest.raises(runner_module.HarnessCaseExecutionError, match="case-1") as exc_info:
+        runner_module.run_harness_cases(config=config, harness=FakeHarness(), evaluator=FailingEvaluator())
+
+    assert exc_info.value.benchmark == "fake"
+    assert exc_info.value.run_id == "run-1"
+    assert exc_info.value.case_id == "case-1"

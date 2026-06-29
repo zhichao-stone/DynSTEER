@@ -21,6 +21,7 @@ class AnthropicLLM(BaseLLM):
 
     def _get_response_from_client(
         self,
+        client: Anthropic,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
@@ -45,10 +46,6 @@ class AnthropicLLM(BaseLLM):
         if system_text.strip():
             request["system"] = system_text
         request.update(request_params)
-
-        client = self.client
-        if client is None:
-            raise LLMResponseError("Anthropic client 未初始化")
         return client.messages.create(**request)
 
     def _create_client(self) -> Anthropic:
@@ -64,11 +61,11 @@ class AnthropicLLM(BaseLLM):
             kwargs["base_url"] = self._config.base_url
         return Anthropic(**kwargs)
 
-    def _normalize_infer_params(self, infer_params: dict[str, object]) -> dict[str, object]:
+    def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
         """转换 Anthropic Messages API 推理参数。"""
-        params = super()._normalize_infer_params(infer_params)
+        params = super()._normalize_infer_params(infer_params, client)
         params.setdefault("temperature", self._config.temperature)
-        params["max_tokens"] = self._max_tokens_from_params(params)
+        params["max_tokens"] = self._max_tokens_from_params(params, client)
         json_schema = params.pop("json_schema", None)
         response_format = params.pop("response_format", None)
         if json_schema is not None:
@@ -87,14 +84,13 @@ class AnthropicLLM(BaseLLM):
             return params
         raise LLMConfigurationError(f"不支持的 Anthropic response_format: {response_format}")
 
-    def _max_tokens_from_params(self, params: dict[str, object]) -> int:
+    def _max_tokens_from_params(self, params: dict[str, object], client: object) -> int:
         """读取或推断 Anthropic max_tokens。"""
         configured = params.get("max_tokens", self._config.max_tokens)
         if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0:
             return configured
         if configured is not None:
             raise LLMConfigurationError("max_tokens 必须是正整数")
-        client = self.client
         models = getattr(client, "models", None)
         retrieve = getattr(models, "retrieve", None)
         if not callable(retrieve):

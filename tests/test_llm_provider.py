@@ -57,6 +57,35 @@ class _TestOpenaiLLM(OpenaiLLM):
         return self.test_client
 
 
+class LocalClientLLM(BaseLLM):
+    def __init__(self, response: object) -> None:
+        self.created_client = object()
+        self.received_client: object | None = None
+        self.response = response
+        super().__init__(LLMConfig(provider="closable", model="closable-model"))
+
+    def _create_client(self) -> object:
+        return self.created_client
+
+    def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
+        assert client is self.created_client
+        return super()._normalize_infer_params(infer_params, client)
+
+    def _get_response_from_client(
+        self,
+        client: object,
+        messages: list[LLMMessage],
+        request_params: dict[str, object],
+    ) -> object:
+        self.received_client = client
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+    def _response_text(self, response: object) -> str:
+        return str(response)
+
+
 def _openai_config(max_tokens: int | None = None) -> LLMConfig:
     return LLMConfig(
         provider="openai_compatible",
@@ -65,6 +94,27 @@ def _openai_config(max_tokens: int | None = None) -> LLMConfig:
         base_url="https://example.invalid/v1",
         max_tokens=max_tokens,
     )
+
+
+def test_base_llm_uses_local_client_without_storing_member() -> None:
+    llm = LocalClientLLM("ok")
+
+    assert not hasattr(llm, "client")
+
+    assert llm.chat([LLMMessage(role="user", content="prompt")]) == "ok"
+
+    assert llm.received_client is llm.created_client
+    assert not hasattr(llm, "client")
+
+
+def test_base_llm_does_not_store_client_after_failure() -> None:
+    llm = LocalClientLLM(RuntimeError("boom"))
+
+    with pytest.raises(LLMResponseError):
+        llm.chat([LLMMessage(role="user", content="prompt")])
+
+    assert llm.received_client is llm.created_client
+    assert not hasattr(llm, "client")
 
 
 def test_openai_llm_returns_message_content() -> None:
@@ -275,6 +325,7 @@ class RetryLLM(OpenaiLLM):
 
     def _get_response_from_client(
         self,
+        client: object,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
@@ -310,6 +361,7 @@ class IdentityLLM(BaseLLM):
 
     def _get_response_from_client(
         self,
+        client: object,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:

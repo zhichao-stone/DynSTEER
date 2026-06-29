@@ -44,11 +44,12 @@ class BaseLLM(ABC):
     @abstractmethod
     def _create_client(self) -> object: ...
 
-    def _normalize_infer_params(self, infer_params: dict[str, object]) -> dict[str, object]: ...
+    def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]: ...
 
     @abstractmethod
     def _get_response_from_client(
         self,
+        client: object,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object: ...
@@ -57,9 +58,13 @@ class BaseLLM(ABC):
     def _response_text(self, response: object) -> str: ...
 ```
 
-`BaseLLM.chat(...)` 由基类统一实现，流程为：校验 messages、在重试循环外调用 `_create_client()` 构建本次 client 并保存为 `self.client`、调用 `_normalize_infer_params(...)` 转换推理参数、在重试循环内调用 `_get_response_from_client(...)` 获取 provider 原始响应、调用 `_response_text(...)` 抽取文本。client 构建失败直接抛出；provider 调用异常、解析失败或空响应会按指数退避重试，达到 `max_retries` 后抛出 `LLMResponseError`。
+`BaseLLM.chat(...)` 由基类统一实现，流程为：校验 messages、在重试循环外调用 `_create_client()` 构建本次局部 client、调用 `_normalize_infer_params(..., client)` 转换推理参数、在重试循环内调用 `_get_response_from_client(client, ...)` 获取 provider 原始响应、调用 `_response_text(...)` 抽取文本。client 构建失败直接抛出；provider 调用异常、解析失败或空响应会按指数退避重试，达到 `max_retries` 后抛出 `LLMResponseError`。
 
-`_normalize_infer_params(...)` 基类默认做恒等映射并过滤 `None` 值。provider 有特定参数转换时由子类覆盖。`chat` 支持通过 `**infer_params` 传入本次请求参数，例如 `temperature`、`top_p`、`top_k`、`max_tokens`、`response_format`、`json_schema`。
+`_normalize_infer_params(...)` 基类默认做恒等映射并过滤 `None` 值。provider 有特定参数转换时由子类覆盖。`BaseLLM` 不持有 `self.client` 成员，provider 子类必须通过 `_normalize_infer_params` 和 `_get_response_from_client` 的 `client` 入参使用本次局部 client。`chat` 支持通过 `**infer_params` 传入本次请求参数，例如 `temperature`、`top_p`、`top_k`、`max_tokens`、`response_format`、`json_schema`。
+
+## Client 生命周期
+
+`BaseLLM.chat()` 每次调用通过 `_create_client()` 创建一个局部 provider client，并在本次调用的重试循环中复用。`OpenaiLLM` 在 `_get_response_from_client` 中通过入参 `client` 调用 `client.chat.completions.create`；`AnthropicLLM` 在 `_normalize_infer_params` 中通过入参 `client` 推断 `max_tokens`，并在 `_get_response_from_client` 中调用 `client.messages.create`。`chat()` 返回或抛错后，局部 client 离开作用域，避免 `BaseLLM` 实例长期保留 SDK client 或响应对象引用。
 
 ## OpenaiLLM
 
@@ -77,7 +82,7 @@ OpenAI 参数转换规则：
 
 Anthropic 参数转换规则：
 
-- `max_tokens` 优先级为：`chat(max_tokens=...)`、`LLMConfig.max_tokens`、`self.client.models.retrieve(model_id=model).max_tokens`。
+- `max_tokens` 优先级为：`chat(max_tokens=...)`、`LLMConfig.max_tokens`、本次局部 `client.models.retrieve(model_id=model).max_tokens`。
 - 无法获得正整数 `max_tokens` 时抛出 `LLMConfigurationError`。
 - `response_format="json"` 或 `"json_object"` 转为 `output_config={"format": {"type": "json_object"}}`。
 - `json_schema` 转为 `output_config={"format": {"type": "json_schema", "schema": ...}}`。

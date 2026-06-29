@@ -109,4 +109,13 @@ class GenericHarness(BaseBenchmarkHarness):
             raise TypeError("session 必须是 GenericSession")
         return dict(session.final_state) if session.final_state is not None else None
 
+    def teardown_case(self, session: object) -> None:
+        """释放通用回放 session 中的大对象引用。"""
+        if not isinstance(session, GenericSession):
+            return
+        session.remaining_steps.clear()
+        session.snapshots.clear()
+        session.final_state = None
+        session.metrics.clear()
+
     # GenericHarness 独有函数实现

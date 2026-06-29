@@ -9,6 +9,7 @@ from typing import Any
 from dynsteer.model import JsonObject
 
 _LOG_BUFFER: list[JsonObject] = []
+LOG_BUFFER_LIMIT = 2000
 _LOGGER_LOCK = threading.RLock()
 _LOG_BUFFER_LOCK = threading.RLock()
 
@@ -60,6 +61,9 @@ class BufferLogHandler(logging.Handler):
                     entry[key] = value
             with _LOG_BUFFER_LOCK:
                 _LOG_BUFFER.append(entry)
+                overflow = len(_LOG_BUFFER) - LOG_BUFFER_LIMIT
+                if overflow > 0:
+                    del _LOG_BUFFER[:overflow]
         except Exception:
             self.handleError(record)
 

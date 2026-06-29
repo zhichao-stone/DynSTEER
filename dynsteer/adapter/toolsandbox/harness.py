@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ TOOL_SANDBOX_DEPENDENCY_ERROR = (
     "请确认 data/toolsandbox/benchmark.json 的 source_root 可导入，"
     "或在当前 uv 环境安装 ToolSandbox。"
 )
+logger = logging.getLogger(__name__)
 
 
 def _enum_name(value: object) -> str:
@@ -49,7 +51,7 @@ def _json_safe(value: object) -> JsonValue:
 class ToolSandboxSession:
     """ToolSandbox 原生执行 session。"""
 
-    scenario: object
+    scenario: object | None
     roles: dict[object, object]
     context: object | None
     case_id: str
@@ -127,6 +129,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """从 ToolSandbox session 构造 DynSTEER 任务定义。"""
         if not isinstance(session, ToolSandboxSession):
             raise TypeError("session 必须是 ToolSandboxSession")
+        if session.scenario is None:
+            raise RuntimeError("ToolSandbox session 已释放")
         rows = self._sandbox_rows_from_context(session.context)
         steps = self.convert_sandbox_rows_to_steps(rows)
         task_id = f"toolsandbox::{session.case_id}"
@@ -225,14 +229,34 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         session.stop_reason = reason
 
     def teardown_case(self, session: object) -> None:
-        """释放 ToolSandbox role 资源。"""
+        """释放 ToolSandbox role 资源并断开大对象引用。"""
         if not isinstance(session, ToolSandboxSession):
             return
-        for role in session.roles.values():
-            teardown = getattr(role, "teardown", None)
-            if callable(teardown):
-                teardown()
-
+        errors: list[Exception] = []
+        try:
+            for role_name, role in list(session.roles.items()):
+                teardown = getattr(role, "teardown", None)
+                if not callable(teardown):
+                    continue
+                try:
+                    teardown()
+                except Exception as exc:
+                    errors.append(exc)
+                    logger.exception(
+                        "toolsandbox_role_teardown_failed",
+                        extra={
+                            "事件": "ToolSandbox role资源释放失败",
+                            "case_id": session.case_id,
+                            "role": str(role_name),
+                            "error": str(exc),
+                        },
+                    )
+        finally:
+            session.roles.clear()
+            session.context = None
+            session.scenario = None
+        if errors:
+            raise RuntimeError(f"ToolSandbox role 资源释放失败: {len(errors)} 个 role 释放失败") from errors[0]
 
     # ToolSandboxHarness 独有函数实现
 
@@ -330,6 +354,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """调用标准 ToolSandbox Scenario.play 执行完整场景。"""
         if session is None:
             raise ValueError("session 不能为空")
+        if session.scenario is None:
+            raise RuntimeError("ToolSandbox session 已释放")
         play = getattr(session.scenario, "play", None)
         if not callable(play):
             raise TypeError("ToolSandbox scenario.play 必须可调用")

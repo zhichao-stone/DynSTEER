@@ -40,12 +40,13 @@ class BaseBenchmarkAdapter(ABC):
 class BaseBenchmarkHarness(ABC):
     """benchmark 运行期执行接口基类。
 
-    Harness 只负责 benchmark 原生 session 生命周期、增量步骤采集和原生摘要提取。
-    阶段式动态评估、权重更新和 fail-fast 决策由 `DynSTEEREvaluator` 负责。
+    Harness 负责 benchmark 原生 session 生命周期、增量步骤采集和原生摘要提取。
     """
 
     benchmark: str
     dependency_error_message: str | None = None
+
+    ## 子类必须继承实现
 
     @abstractmethod
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
@@ -100,6 +101,8 @@ class BaseBenchmarkHarness(ABC):
         该方法保留为公开查询接口或子类内部辅助能力，`DynSTEEREvaluator.evaluate()`
         不使用它作为主循环条件。
         """
+
+    ## 基类自身实现
 
     def prepare_config(self, config: HarnessRunConfig) -> None:
         """校验配置并准备 benchmark source_root。
@@ -198,6 +201,9 @@ class BaseBenchmarkHarness(ABC):
 
     def teardown_case(self, session: object) -> None:
         """释放 benchmark 原生 session 资源。
+
+        子类应尽力释放全部外部资源并断开大对象引用。若部分资源释放失败，
+        应继续尝试释放剩余资源，并在最后抛出包含失败摘要的异常。
 
         Args:
             session: 子类私有 session 对象。

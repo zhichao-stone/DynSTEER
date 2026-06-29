@@ -30,3 +30,7 @@ class RuntimeEvaluationDecision:
 
 class JudgeConfigurationError(RuntimeError):
     """LLM judge 配置缺失或不合法时抛出。"""
+
+
+class HarnessTeardownError(RuntimeError):
+    """benchmark session 资源释放失败时抛出。"""

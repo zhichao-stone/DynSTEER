@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import replace
 from typing import Mapping, TYPE_CHECKING
 
@@ -39,6 +40,7 @@ from dynsteer.evaluate.milestone import (
     validate_milestone_graph,
 )
 from dynsteer.evaluate.models import (
+    HarnessTeardownError,
     JudgeConfigurationError,
     RuntimeEvaluationDecision,
     RuntimeEvaluationState,
@@ -302,8 +304,7 @@ class DynSTEEREvaluator:
                 termination_reason=termination_reason,
             )
         finally:
-            if session is not None:
-                harness.teardown_case(session)
+            self._teardown_session_safely(harness, session, config.benchmark, run_id, case_id)
 
     def evaluate_trajectory(
         self,
@@ -667,3 +668,34 @@ class DynSTEEREvaluator:
                     f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
                 )
         return None
+
+    def _teardown_session_safely(
+        self,
+        harness: "BaseBenchmarkHarness",
+        session: object | None,
+        benchmark: str,
+        run_id: str,
+        case_id: str,
+    ) -> None:
+        """安全释放 benchmark session，避免清理异常遮蔽主流程异常。"""
+        if session is None:
+            return
+        active_exception = sys.exc_info()[1] is not None
+        try:
+            harness.teardown_case(session)
+        except Exception as exc:
+            logger.exception(
+                "harness_teardown_failed",
+                extra={
+                    "事件": "benchmark资源释放失败",
+                    "benchmark": benchmark,
+                    "run_id": run_id,
+                    "case_id": case_id,
+                    "error": str(exc),
+                },
+            )
+            if not active_exception:
+                raise HarnessTeardownError(
+                    f"benchmark session 资源释放失败: benchmark={benchmark}, run_id={run_id}, "
+                    f"case_id={case_id}, error={exc}"
+                ) from exc

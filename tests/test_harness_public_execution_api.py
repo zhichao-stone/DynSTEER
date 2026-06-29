@@ -67,6 +67,47 @@ def test_harness_advance_result_rejects_none_steps() -> None:
         HarnessAdvanceResult(steps=None, continue_running=False)  # type: ignore[arg-type]
 
 
+def test_base_benchmark_harness_member_sections_are_grouped() -> None:
+    source = Path("dynsteer/adapter/base.py").read_text(encoding="utf-8")
+    class_start = source.index("class BaseBenchmarkHarness")
+    class_source = source[class_start:]
+    abstract_marker = "## 子类必须继承实现"
+    base_marker = "## 基类自身实现"
+
+    abstract_marker_index = class_source.index(abstract_marker)
+    base_marker_index = class_source.index(base_marker)
+    abstract_methods = [
+        "list_cases",
+        "start_case",
+        "task_case_from_session",
+        "advance_case",
+        "case_finished",
+    ]
+    base_methods = [
+        "prepare_config",
+        "build_run_id",
+        "snapshots_from_session",
+        "metrics_from_session",
+        "final_state_from_session",
+        "raw_summary_from_session",
+        "stop_case",
+        "teardown_case",
+        "_project_root",
+        "_validate_config",
+        "_load_manifest",
+        "_ensure_source_root",
+        "_import_module",
+    ]
+
+    assert abstract_marker_index < base_marker_index
+    for method_name in abstract_methods:
+        method_index = class_source.index(f"    def {method_name}(")
+        assert abstract_marker_index < method_index < base_marker_index
+    for method_name in base_methods:
+        method_index = class_source.index(f"    def {method_name}(")
+        assert method_index > base_marker_index
+
+
 def test_evaluator_consumes_public_harness_api(tmp_path: Path) -> None:
     from dynsteer.evaluate import DynSTEEREvaluator
 

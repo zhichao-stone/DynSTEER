@@ -18,6 +18,7 @@ class OpenaiLLM(BaseLLM):
 
     def _get_response_from_client(
         self,
+        client: OpenAI,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
@@ -35,10 +36,6 @@ class OpenaiLLM(BaseLLM):
             "messages": [{"role": message.role, "content": message.content} for message in messages],
         }
         request.update(request_params)
-
-        client: OpenAI = self.client
-        if client is None:
-            raise LLMResponseError("OpenAI client 未初始化")
         return client.chat.completions.create(**request)
 
     def _create_client(self) -> OpenAI:
@@ -54,9 +51,9 @@ class OpenaiLLM(BaseLLM):
             kwargs["base_url"] = self._config.base_url
         return OpenAI(**kwargs)
 
-    def _normalize_infer_params(self, infer_params: dict[str, object]) -> dict[str, object]:
+    def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
         """转换 OpenAI-compatible Chat Completions 推理参数。"""
-        params = super()._normalize_infer_params(infer_params)
+        params = super()._normalize_infer_params(infer_params, client)
         params.setdefault("temperature", self._config.temperature)
         if self._config.max_tokens is not None:
             params.setdefault("max_tokens", self._config.max_tokens)

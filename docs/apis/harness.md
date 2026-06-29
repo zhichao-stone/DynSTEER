@@ -52,6 +52,14 @@ def teardown_case(self, session: object) -> None: ...
 - `snapshots_from_session()`、`metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空列表或空字典。
 - `case_finished()` 只作为查询接口或子类内部辅助能力；`DynSTEEREvaluator.evaluate()` 不用它控制主循环。
 
+## 资源释放与异常处理契约
+
+- `DynSTEEREvaluator.evaluate()` 在成功、策略终止和异常路径中都会调用 `harness.teardown_case(session)`。
+- 若主执行过程已经抛出异常，teardown 失败只记录结构化错误日志，不遮蔽主异常。
+- 若主执行过程成功但 teardown 失败，evaluator 抛出 `HarnessTeardownError`，避免资源释放失败被静默吞掉。
+- harness 子类的 `teardown_case()` 应尽力释放全部外部资源，并断开 session 中对大型上下文、轨迹步骤、快照、SDK client 或原生 role 的引用。
+- runner 对单个 case 的执行失败统一包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id。
+
 ## Runner
 
 `dynsteer.harness.runner` 提供：
@@ -62,7 +70,7 @@ def teardown_case(self, session: object) -> None: ...
 
 Runner 只负责选择 case、调用 `evaluator.evaluate(harness, case_id, config)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
-`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于并行运行时定位失败样本。并行模式下日志缓冲和 logger 重配使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
+`run_harness_case(...)`、`run_harness_cases(...)` 和 `run_harness_configs(...)` 都会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 重配使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
 Harness 模式输出：
 

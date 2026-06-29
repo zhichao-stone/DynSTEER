@@ -60,7 +60,6 @@ class BaseLLM(ABC):
         if config.retry_base_seconds < 0 or config.retry_max_seconds < 0:
             raise LLMConfigurationError("重试等待时间不能为负数")
         self._config = config
-        self.client: object | None = None
 
     def chat(self, messages: list[LLMMessage], **infer_params: object) -> str:
         """与 LLM 交互并返回回复文本。
@@ -73,12 +72,12 @@ class BaseLLM(ABC):
             LLM 回复的纯文本内容。
         """
         self._validate_messages(messages)
-        self.client = self._create_client()
-        request_params = self._normalize_infer_params(infer_params)
+        client = self._create_client()
+        request_params = self._normalize_infer_params(infer_params, client)
         last_error: Exception | None = None
         for attempt in range(1, self._config.max_retries + 1):
             try:
-                response = self._get_response_from_client(messages, request_params)
+                response = self._get_response_from_client(client, messages, request_params)
                 text = self._response_text(response)
                 if isinstance(text, str) and text.strip():
                     return text.strip()
@@ -137,15 +136,18 @@ class BaseLLM(ABC):
         delay = self._config.retry_base_seconds * (2 ** max(attempt - 1, 0))
         return min(delay, self._config.retry_max_seconds)
 
-    def _normalize_infer_params(self, infer_params: dict[str, object]) -> dict[str, object]:
+    def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
         """归一化推理参数。
 
         Args:
             infer_params: chat 调用传入的推理参数。
+            client: 本次 chat 调用创建的 provider SDK client。
 
         Returns:
             去除 None 值后的参数字典。
         """
+        if client is None:
+            raise LLMConfigurationError("provider client 不能为空")
         if infer_params is None:
             return {}
         return {key: value for key, value in infer_params.items() if value is not None}
@@ -161,12 +163,14 @@ class BaseLLM(ABC):
     @abstractmethod
     def _get_response_from_client(
         self,
+        client: object,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
         """使用 provider SDK client 获取响应。
 
         Args:
+            client: 本次 chat 调用创建的 provider SDK client。
             messages: 已校验的消息列表。
             request_params: 已归一化的 provider 请求参数。
 

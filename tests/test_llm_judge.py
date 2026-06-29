@@ -38,6 +38,7 @@ class FakeLLM(BaseLLM):
 
     def _get_response_from_client(
         self,
+        client: object,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:

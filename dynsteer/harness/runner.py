@@ -221,13 +221,22 @@ def _select_case_ids(config: HarnessRunConfig, harness: BaseBenchmarkHarness, ru
     return [cases[0].case_id]
 
 
+def _safe_run_id(config: HarnessRunConfig, harness: BaseBenchmarkHarness, case_id: str) -> str | None:
+    """尽量构造 run_id，用于异常上下文。"""
+    try:
+        return harness.build_run_id(config, case_id)
+    except Exception:
+        raw_run_id = config.metadata.get("run_id")
+        return str(raw_run_id) if raw_run_id is not None else None
+
+
 def _run_single_harness_case(
     config: HarnessRunConfig,
     harness: BaseBenchmarkHarness,
     evaluator: DynSTEEREvaluator,
     case_id: str,
 ) -> HarnessEvaluationOutput:
-    """执行单个 case 并分别写入中间产物和最终结果。
+    """执行单个 case，并把失败包装为 HarnessCaseExecutionError。
 
     Args:
         config: 已指定 scenario 的 harness 运行配置。
@@ -240,6 +249,22 @@ def _run_single_harness_case(
     """
     if config is None or harness is None or evaluator is None or not case_id:
         raise ValueError("config、harness、evaluator 和 case_id 不能为空")
+    try:
+        return _run_single_harness_case_impl(config, harness, evaluator, case_id)
+    except HarnessCaseExecutionError:
+        raise
+    except Exception as exc:
+        run_id = _safe_run_id(config, harness, case_id)
+        raise HarnessCaseExecutionError(config.benchmark, run_id, case_id, exc) from exc
+
+
+def _run_single_harness_case_impl(
+    config: HarnessRunConfig,
+    harness: BaseBenchmarkHarness,
+    evaluator: DynSTEEREvaluator,
+    case_id: str,
+) -> HarnessEvaluationOutput:
+    """执行单个 case 并分别写入中间产物和最终结果。"""
     logger = configure_logger(config.runs_dir / "logs")
 
     logger.info("开始运行 benchmark harness", extra={"benchmark": config.benchmark, "case_id": case_id})
