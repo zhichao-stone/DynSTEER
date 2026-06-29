@@ -90,8 +90,11 @@ Harness 模式输出：
 
 - `runs/<benchmark>/<run_id>/<case_id>/raw/`
 - `runs/<benchmark>/<run_id>/<case_id>/raw_summary.json`
+- `results/<benchmark>/<run_id>/summary.json`
 - `results/<benchmark>/<run_id>/<case_id>/report.json`
 - `results/<benchmark>/<run_id>/<case_id>/summary.json`
+
+`results/<benchmark>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
 `raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 

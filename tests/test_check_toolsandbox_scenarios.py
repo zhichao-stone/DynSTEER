@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import random
 from pathlib import Path
 
 
@@ -58,3 +59,22 @@ ScenarioExtension(
     assert summary["minefield_count"] == 1
     assert summary["milestones"][0]["constraint_count"] == 2
     assert summary["minefields"][0]["constraint_count"] == 1
+
+
+def test_aggregate_report_includes_one_sample_name_per_milestone_count() -> None:
+    checker = _load_checker_module()
+    scenarios = [
+        {"name": "zero-a", "milestone_count": 0},
+        {"name": "zero-b", "milestone_count": 0},
+        {"name": "two-a", "milestone_count": 2},
+        {"name": "two-b", "milestone_count": 2},
+        {"name": "three-a", "milestone_count": 3},
+    ]
+
+    report = checker._aggregate_report(scenarios, "static", [], rng=random.Random(7))
+
+    samples = report["samples"]["milestone_count"]
+    assert set(samples) == {"0", "2", "3"}
+    assert samples["0"]["scenario_name"] in {"zero-a", "zero-b"}
+    assert samples["2"]["scenario_name"] in {"two-a", "two-b"}
+    assert samples["3"]["scenario_name"] == "three-a"

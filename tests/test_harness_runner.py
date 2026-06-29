@@ -43,6 +43,38 @@ class FakeEvaluator:
         )
 
 
+class MultiCaseHarness(FakeHarness):
+    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+        return [
+            BenchmarkCase(benchmark="fake", case_id="case-1"),
+            BenchmarkCase(benchmark="fake", case_id="case-2"),
+        ]
+
+
+class ScoredEvaluator(FakeEvaluator):
+    def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+        result = super().evaluate(harness, case_id, config)
+        score = 1.0 if case_id == "case-1" else 0.5
+        coverage = "full" if case_id == "case-1" else "partial"
+        return HarnessRunResult(
+            benchmark=result.benchmark,
+            case_id=result.case_id,
+            run_id=result.run_id,
+            task_case=result.task_case,
+            trajectory=result.trajectory,
+            raw_output_dir=result.raw_output_dir,
+            raw_summary=result.raw_summary,
+            stage_settlements=result.stage_settlements,
+            evaluation_report=TrajectoryEvaluationReport(
+                run_id=result.run_id,
+                task_id=f"task-{case_id}",
+                milestone_coverage=coverage,
+                overall_score=score,
+                first_failure_stage_id=None if case_id == "case-1" else "stage-x",
+            ),
+        )
+
+
 class RecordingLogger:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -70,6 +102,51 @@ def test_runner_calls_dynsteer_evaluator(tmp_path: Path) -> None:
     assert evaluator.case_ids == ["case-1"]
     assert len(outputs) == 1
     assert outputs[0].report_path.read_text(encoding="utf-8")
+
+
+def test_run_harness_cases_writes_run_level_summary(tmp_path: Path) -> None:
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    run_harness_cases(config=config, harness=MultiCaseHarness(), evaluator=ScoredEvaluator())
+
+    summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["benchmark"] == "fake"
+    assert summary["run_id"] == "run-1"
+    assert summary["case_count"] == 2
+    assert summary["average_overall_score"] == pytest.approx(0.75)
+    assert summary["milestone_coverage_counts"] == {"full": 1, "partial": 1}
+    assert [case["case_id"] for case in summary["cases"]] == ["case-1", "case-2"]
+    assert summary["cases"][0]["summary_path"] == "case-1/summary.json"
+    assert summary["cases"][0]["report_path"] == "case-1/report.json"
+    assert summary["cases"][1]["first_failure_stage_id"] == "stage-x"
+
+
+def test_run_harness_case_writes_run_level_summary(tmp_path: Path) -> None:
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    runner_module.run_harness_case(config=config, harness=MultiCaseHarness(), evaluator=ScoredEvaluator())
+
+    summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["benchmark"] == "fake"
+    assert summary["run_id"] == "run-1"
+    assert summary["case_count"] == 1
+    assert summary["average_overall_score"] == pytest.approx(1.0)
+    assert summary["milestone_coverage_counts"] == {"full": 1}
+    assert summary["cases"][0]["case_id"] == "case-1"
 
 
 def test_run_harness_configs_logs_case_overview_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,6 +398,59 @@ def test_run_harness_configs_parallel_uses_independent_harness_and_evaluator(
     assert len(outputs) == 2
     assert len({item[0] for item in calls}) == 2
     assert len({item[1] for item in calls}) == 2
+
+
+def test_run_harness_configs_parallel_writes_run_level_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(
+        runner_module,
+        "DynSTEEREvaluator",
+        type("EvaluatorFactory", (), {"from_env": staticmethod(lambda: ScoredEvaluator())}),
+    )
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    runner_module.run_harness_configs(configs=[config], max_workers=2)
+
+    summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["case_count"] == 2
+    assert summary["average_overall_score"] == pytest.approx(0.75)
+    assert sorted(case["case_id"] for case in summary["cases"]) == ["case-1", "case-2"]
+
+
+def test_run_harness_configs_serial_writes_run_level_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(
+        runner_module,
+        "DynSTEEREvaluator",
+        type("EvaluatorFactory", (), {"from_env": staticmethod(lambda: ScoredEvaluator())}),
+    )
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    runner_module.run_harness_configs(configs=[config], max_workers=1)
+
+    summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["case_count"] == 2
+    assert summary["average_overall_score"] == pytest.approx(0.75)
 
 
 def test_run_harness_configs_wraps_case_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

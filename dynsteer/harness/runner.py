@@ -93,6 +93,7 @@ def run_harness_cases(
     outputs: list[HarnessEvaluationOutput] = []
     for case_id in case_ids:
         outputs.append(_run_single_harness_case(config, harness, evaluator, case_id))
+    _write_run_level_summaries(outputs)
     logger.info("benchmark harness 评估完成", extra={"case_count": len(case_ids)})
     return outputs
 
@@ -120,6 +121,7 @@ def run_harness_configs(
     logger.info("开始运行 benchmark harness", extra={"case_count": len(tasks)})
     if max_workers == 1:
         outputs = [_run_isolated_harness_case(task) for task in tasks]
+        _write_run_level_summaries(outputs)
         logger.info("benchmark harness 评估完成", extra={"case_count": len(tasks)})
         return outputs
 
@@ -130,6 +132,7 @@ def run_harness_configs(
             task = futures[future]
             outputs_by_order[task.order] = future.result()
     outputs = [outputs_by_order[task.order] for task in tasks]
+    _write_run_level_summaries(outputs)
     logger.info("benchmark harness 评估完成", extra={"case_count": len(tasks)})
     return outputs
 
@@ -266,6 +269,7 @@ def run_harness_case(
     _log_harness_case_overview(logger, [case_id])
     logger.info("开始运行 benchmark harness", extra={"case_count": 1})
     output = _run_single_harness_case(config, harness, evaluator, case_id)
+    _write_run_level_summaries([output])
     logger.info("benchmark harness 评估完成", extra={"case_count": 1})
     return output
 
@@ -376,3 +380,68 @@ def _run_single_harness_case_impl(
         summary_path=summary_path,
         raw_summary_path=raw_summary_path,
     )
+
+
+def _write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
+    """按 run 目录写出所有场景的汇总摘要。
+
+    Args:
+        outputs: 已成功写出的单场景输出路径集合。
+    """
+    if outputs is None:
+        raise ValueError("outputs 不能为空")
+    outputs_by_run_dir: dict[Path, list[HarnessEvaluationOutput]] = {}
+    for output in outputs:
+        if output is None:
+            raise ValueError("outputs 不能包含空输出")
+        outputs_by_run_dir.setdefault(output.result_dir.parent, []).append(output)
+    for run_dir, run_outputs in outputs_by_run_dir.items():
+        summary = _build_run_level_summary(run_dir, run_outputs)
+        summary_text = json.dumps(summary, ensure_ascii=False, indent=4)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "summary.json").write_text(summary_text, encoding="utf-8")
+
+
+def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutput]) -> dict[str, object]:
+    """构造单个 run_id 下所有场景的汇总摘要。
+
+    Args:
+        run_dir: `results/<benchmark>/<run_id>` 目录。
+        outputs: 属于该 run 目录的单场景输出路径集合。
+
+    Returns:
+        可序列化为 JSON 的 run 级汇总摘要。
+    """
+    if run_dir is None or outputs is None:
+        raise ValueError("run_dir 和 outputs 不能为空")
+    cases: list[dict[str, object]] = []
+    coverage_counts: dict[str, int] = {}
+    score_sum = 0.0
+    for output in outputs:
+        if output is None:
+            raise ValueError("outputs 不能包含空输出")
+        summary_data = json.loads(output.summary_path.read_text(encoding="utf-8"))
+        if not isinstance(summary_data, dict):
+            raise ValueError(f"场景摘要必须是 JSON 对象: {output.summary_path}")
+        coverage = str(summary_data.get("milestone_coverage", "unknown"))
+        coverage_counts[coverage] = coverage_counts.get(coverage, 0) + 1
+        score = float(summary_data.get("overall_score", 0.0))
+        score_sum += score
+        case_summary: dict[str, object] = dict(summary_data)
+        case_summary.update(
+            {
+                "case_id": output.result_dir.name,
+                "summary_path": output.summary_path.relative_to(run_dir).as_posix(),
+                "report_path": output.report_path.relative_to(run_dir).as_posix(),
+            }
+        )
+        cases.append(case_summary)
+    case_count = len(cases)
+    return {
+        "benchmark": run_dir.parent.name,
+        "run_id": run_dir.name,
+        "case_count": case_count,
+        "average_overall_score": score_sum / case_count if case_count else 0.0,
+        "milestone_coverage_counts": coverage_counts,
+        "cases": cases,
+    }
