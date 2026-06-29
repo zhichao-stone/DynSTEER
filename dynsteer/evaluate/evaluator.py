@@ -8,6 +8,11 @@ from typing import Mapping, TYPE_CHECKING
 
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
+from dynsteer.evaluate.diagnostics import (
+    build_finish_matching_detail,
+    build_milestone_matching_detail,
+    build_stage_trace,
+)
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
 from dynsteer.llm import build_llm_from_env
@@ -36,6 +41,7 @@ from dynsteer.evaluate.milestone import (
     find_hit_milestone,
     match_milestones,
     milestone_score_matrix,
+    ready_milestones,
     stage_start_for_milestone,
     validate_milestone_graph,
 )
@@ -533,6 +539,7 @@ class DynSTEEREvaluator:
     ) -> tuple[HarnessStageSettlement, StageEvaluationResult, dict[Dimension, float]]:
         if settlements is None or task_case is None or trajectory is None or matched is None or weights is None:
             raise ValueError("finish 结算参数不能为空")
+        graph = task_case.milestone_graph or MilestoneGraph()
         last_step_index = max((step.index for step in trajectory.steps), default=0)
         predecessor_index = max(
             (settlement.end_step_index for settlement in matched.values()),
@@ -548,6 +555,12 @@ class DynSTEEREvaluator:
             evidence=["finish 结算节点"],
         )
         stage_result, next_weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
+        stage_trace = build_stage_trace(
+            trajectory=trajectory,
+            start_step_index=predecessor_index,
+            end_step_index=end_step_index,
+        )
+        milestone_matching = build_finish_matching_detail(graph=graph, matched=matched)
         settlement = HarnessStageSettlement(
             settlement_id=f"st{len(settlements)}",
             kind="finish",
@@ -562,6 +575,8 @@ class DynSTEEREvaluator:
                 "predecessor_milestone_ids": sorted(matched),
                 "stage_start_step_index": predecessor_index,
                 "stage_end_step_index": end_step_index,
+                "stage_trace": stage_trace,
+                "milestone_matching": milestone_matching,
             },
         )
         return settlement, stage_result, next_weights
@@ -591,6 +606,7 @@ class DynSTEEREvaluator:
         graph = task_case.milestone_graph or MilestoneGraph()
         start_settlement = settlements[0] if settlements else None
         start_step_index = stage_start_for_milestone(graph, milestone.milestone_id, matched, start_settlement)
+        ready_milestone_ids_before_match = [item.milestone_id for item in ready_milestones(graph, matched)]
         interval = StageInterval(
             stage_id=f"runtime:st{len(settlements)}",
             milestone_id=milestone.milestone_id,
@@ -602,6 +618,19 @@ class DynSTEEREvaluator:
         )
         stage_result, next_weights = self._evaluate_stage_with_scheduler(interval, task_case, trajectory, weights)
         predecessor_milestone_ids = [source for source, target in graph.edges if target == milestone.milestone_id]
+        stage_trace = build_stage_trace(
+            trajectory=trajectory,
+            start_step_index=start_step_index,
+            end_step_index=boundary.step_index,
+        )
+        milestone_matching = build_milestone_matching_detail(
+            graph=graph,
+            matched=matched,
+            milestone=milestone,
+            boundary=boundary,
+            milestone_score=milestone_score,
+            ready_milestone_ids_before_match=ready_milestone_ids_before_match,
+        )
         settlement = HarnessStageSettlement(
             settlement_id=f"st{len(settlements)}",
             kind="milestone",
@@ -619,6 +648,8 @@ class DynSTEEREvaluator:
                 "predecessor_milestone_ids": predecessor_milestone_ids,
                 "stage_start_step_index": start_step_index,
                 "stage_end_step_index": boundary.step_index,
+                "stage_trace": stage_trace,
+                "milestone_matching": milestone_matching,
             },
         )
         logger.info(

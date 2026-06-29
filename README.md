@@ -48,7 +48,7 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 ```powershell
 ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox
 ```
-Docker 镜像在 build 阶段会生成基础环境，运行时的 `/opt/venv` 和 uv cache 使用 Docker named volume 持久化；因此首次构建后，后续修改代码、`.env` 或 `data/` 配置不需要重建镜像，新增或更新 benchmark 依赖时重新带上 `--source` 启动即可。
+Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通过 `scripts/start.sh` 启动时，脚本会自动检测宿主机当前用户的 UID/GID，并让容器以该用户运行；直接使用 Docker Compose 且未传入 UID/GID 时，默认回退到 `1000:100`。运行期 uv 虚拟环境和 cache 默认写入项目目录下的 `.venv` 与 `.uv-cache`，因此新生成的 `runs`、`results` 产物会归属当前宿主机用户，便于通过 SFTP 清理。
 
 接入新的 benchmark 时，最小前置步骤如下：
 

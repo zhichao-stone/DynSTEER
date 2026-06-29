@@ -83,6 +83,8 @@ run_in_container() {
     fi
     # shellcheck disable=SC2206
     local compose_parts=($compose_cmd)
+    export DYNSTEER_HOST_UID="${DYNSTEER_HOST_UID:-$(id -u)}"
+    export DYNSTEER_HOST_GID="${DYNSTEER_HOST_GID:-$(id -g)}"
 
     local benchmark=""
     local source_path=""
@@ -190,13 +192,16 @@ source_env_file() {
 
 ensure_uv_environment() {
     local project_root="$1"
-    local venv_dir="${UV_PROJECT_ENVIRONMENT:-/opt/venv}"
+    local venv_dir="${UV_PROJECT_ENVIRONMENT:-.venv}"
+    local cache_dir="${UV_CACHE_DIR:-.uv-cache}"
     local bootstrap_dir="${DYNSTEER_BOOTSTRAP_VENV:-/opt/bootstrap-venv}"
+    export UV_PROJECT_ENVIRONMENT="$venv_dir"
+    export UV_CACHE_DIR="$cache_dir"
 
     if [[ ! -x "$venv_dir/bin/python" ]]; then
         mkdir -p "$venv_dir"
         if [[ -d "$bootstrap_dir" && -x "$bootstrap_dir/bin/python" ]]; then
-            cp -a "$bootstrap_dir"/. "$venv_dir"/
+            cp -R "$bootstrap_dir"/. "$venv_dir"/
         else
             (cd "$project_root" && uv sync --frozen --no-dev --no-install-project --inexact)
         fi
@@ -264,7 +269,7 @@ install_benchmark_source() {
 
     link_manifest_source_root "$project_root" "$data_root" "$source_path"
     echo "Installing benchmark source for $benchmark: $source_path"
-    uv pip install --python "${UV_PROJECT_ENVIRONMENT:-/opt/venv}/bin/python" --editable "$source_path"
+    uv pip install --python "${UV_PROJECT_ENVIRONMENT:-.venv}/bin/python" --editable "$source_path"
 }
 
 main() {

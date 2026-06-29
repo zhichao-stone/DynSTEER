@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 import pytest
 
 import dynsteer.harness.runner as runner_module
-from dynsteer.harness.model import BenchmarkCase, HarnessRunConfig, HarnessRunResult
+from dynsteer.harness.model import BenchmarkCase, HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.harness.runner import run_harness_cases
 from dynsteer.model import TaskCase, Trajectory, TrajectoryEvaluationReport
 
@@ -177,6 +178,49 @@ def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> N
     assert not (result_dir / "report.json").exists()
     assert not (result_dir / "summary.json").exists()
     assert not (tmp_path / "runs" / "fake" / "run-1" / "case-1" / "raw_summary.json").exists()
+
+
+def test_runner_preserves_stage_diagnostics_in_raw_summary(tmp_path: Path) -> None:
+    class DiagnosticsEvaluator(FakeEvaluator):
+        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+            result = super().evaluate(harness, case_id, config)
+            settlement = HarnessStageSettlement(
+                settlement_id="st0",
+                kind="finish",
+                milestone_id=None,
+                start_step_index=0,
+                end_step_index=0,
+                metadata={
+                    "stage_trace": {"step_count": 1, "steps": [{"index": 0}]},
+                    "milestone_matching": {"mode": "runtime_finish", "matched": False},
+                },
+            )
+            return HarnessRunResult(
+                benchmark=result.benchmark,
+                case_id=result.case_id,
+                run_id=result.run_id,
+                task_case=result.task_case,
+                trajectory=result.trajectory,
+                raw_output_dir=result.raw_output_dir,
+                raw_summary=result.raw_summary,
+                stage_settlements=[settlement],
+                evaluation_report=result.evaluation_report,
+            )
+
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    outputs = run_harness_cases(config=config, harness=FakeHarness(), evaluator=DiagnosticsEvaluator())
+
+    raw_summary = json.loads(outputs[0].raw_summary_path.read_text(encoding="utf-8"))
+    metadata = raw_summary["stage_settlements"][0]["metadata"]
+    assert metadata["stage_trace"]["step_count"] == 1
+    assert metadata["milestone_matching"]["mode"] == "runtime_finish"
 
 
 def test_run_harness_configs_keeps_serial_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -165,6 +165,41 @@ def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> 
     assert any(settlement.kind == "milestone" for settlement in result.stage_settlements)
 
 
+def test_runtime_milestone_settlement_includes_trace_and_matching_details(tmp_path: Path) -> None:
+    harness = FakeRuntimeHarness(
+        task_case=_milestone_with_fatal_minefield(),
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], continue_running=True)],
+        metrics={"danger": True},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    settlement = next(item for item in result.stage_settlements if item.kind == "milestone")
+    trace = settlement.metadata["stage_trace"]
+    assert trace["start_step_index"] == 0
+    assert trace["end_step_index"] == 0
+    assert trace["step_count"] == 1
+    assert trace["steps"][0]["index"] == 0
+    assert trace["steps"][0]["actor"] == "agent"
+    assert trace["steps"][0]["event_type"] == "message"
+    assert trace["steps"][0]["content"] == "任务完成"
+
+    matching = settlement.metadata["milestone_matching"]
+    assert matching["mode"] == "runtime_checkpoint"
+    assert matching["matched"] is True
+    assert matching["milestone"]["milestone_id"] == "m1"
+    assert matching["milestone"]["constraint_count"] == 1
+    assert matching["boundary"]["step_index"] == 0
+    assert matching["boundary"]["reason"] == "agent_message"
+    assert matching["ready_milestone_ids_before_match"] == ["m1"]
+    assert matching["matched_milestone_ids_before_match"] == []
+    assert matching["predecessor_milestone_ids"] == []
+    assert matching["score"]["status"] == "pass"
+    assert matching["score"]["constraint_scores"][0]["constraint_id"] == "c1"
+    assert matching["score"]["constraint_scores"][0]["actual"] == "任务完成"
+
+
 def test_runtime_completes_without_milestone_when_clean(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
@@ -177,6 +212,18 @@ def test_runtime_completes_without_milestone_when_clean(tmp_path: Path) -> None:
 
     assert result.terminated_by_policy is False
     assert result.stage_settlements[-1].kind == "finish"
+    trace = result.stage_settlements[-1].metadata["stage_trace"]
+    assert trace["start_step_index"] == 0
+    assert trace["end_step_index"] == 0
+    assert trace["step_count"] == 1
+    assert trace["steps"][0]["content"] == "still working"
+    matching = result.stage_settlements[-1].metadata["milestone_matching"]
+    assert matching["mode"] == "runtime_finish"
+    assert matching["matched"] is False
+    assert matching["matched_milestone_ids"] == []
+    assert matching["pending_required_milestone_ids"] == ["m1"]
+    assert matching["pending_optional_milestone_ids"] == []
+    assert matching["total_milestone_count"] == 1
 
 
 def test_evaluator_preserves_advance_error_when_teardown_fails(tmp_path: Path) -> None:
