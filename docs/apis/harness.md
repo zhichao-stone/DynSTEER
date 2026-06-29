@@ -70,7 +70,9 @@ def teardown_case(self, session: object) -> None: ...
 
 Runner 只负责选择 case、调用 `evaluator.evaluate(harness, case_id, config)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
-`run_harness_case(...)`、`run_harness_cases(...)` 和 `run_harness_configs(...)` 都会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 重配使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
+Runner 在批量入口会输出一次待运行场景总览、一次开始日志和一次完成日志；单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
+
+`run_harness_case(...)`、`run_harness_cases(...)` 和 `run_harness_configs(...)` 都会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
 Harness 模式输出：
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,18 @@ class FakeEvaluator:
         )
 
 
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.extras: list[dict[str, object] | None] = []
+
+    def info(self, message: str, *args: object, extra: dict[str, object] | None = None) -> None:
+        if args:
+            message = message % args
+        self.messages.append(message)
+        self.extras.append(extra)
+
+
 def test_runner_calls_dynsteer_evaluator(tmp_path: Path) -> None:
     config = HarnessRunConfig(
         benchmark="fake",
@@ -56,6 +69,81 @@ def test_runner_calls_dynsteer_evaluator(tmp_path: Path) -> None:
     assert evaluator.case_ids == ["case-1"]
     assert len(outputs) == 1
     assert outputs[0].report_path.read_text(encoding="utf-8")
+
+
+def test_run_harness_configs_logs_case_overview_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = RecordingLogger()
+    dynsteer_logger = logging.getLogger("dynsteer")
+
+    class MultiCaseHarness(FakeHarness):
+        def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+            return [
+                BenchmarkCase(benchmark="fake", case_id="case-1"),
+                BenchmarkCase(benchmark="fake", case_id="case-2"),
+            ]
+
+    monkeypatch.setattr(dynsteer_logger, "handlers", [], raising=False)
+    monkeypatch.setattr(runner_module, "configure_logger", lambda log_dir: logger, raising=False)
+    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(
+        runner_module,
+        "DynSTEEREvaluator",
+        type("EvaluatorFactory", (), {"from_env": staticmethod(lambda: FakeEvaluator())}),
+    )
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    runner_module.run_harness_configs(configs=[config], max_workers=1)
+
+    assert logger.messages.count("benchmark harness 将运行 2 个场景: case-1, case-2") == 1
+    assert logger.messages.count("开始运行 benchmark harness") == 1
+    assert logger.messages.count("benchmark harness 评估完成") == 1
+
+
+def test_run_harness_configs_reuses_existing_logger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+    dynsteer_logger = logging.getLogger("dynsteer")
+
+    class MessageHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    class MultiCaseHarness(FakeHarness):
+        def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+            return [
+                BenchmarkCase(benchmark="fake", case_id="case-1"),
+                BenchmarkCase(benchmark="fake", case_id="case-2"),
+            ]
+
+    handler = MessageHandler()
+    monkeypatch.setattr(dynsteer_logger, "handlers", [handler], raising=False)
+    monkeypatch.setattr(dynsteer_logger, "level", logging.INFO, raising=False)
+    monkeypatch.setattr(dynsteer_logger, "propagate", False, raising=False)
+    monkeypatch.setattr(runner_module, "configure_logger", lambda log_dir: pytest.fail("不应重复初始化 logger"), raising=False)
+    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(
+        runner_module,
+        "DynSTEEREvaluator",
+        type("EvaluatorFactory", (), {"from_env": staticmethod(lambda: FakeEvaluator())}),
+    )
+    config = HarnessRunConfig(
+        benchmark="fake",
+        data_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        results_dir=tmp_path / "results",
+        metadata={"run_id": "run-1"},
+    )
+
+    runner_module.run_harness_configs(configs=[config], max_workers=1)
+
+    assert messages.count("benchmark harness 将运行 2 个场景: case-1, case-2") == 1
+    assert messages.count("开始运行 benchmark harness") == 1
+    assert messages.count("benchmark harness 评估完成") == 1
 
 
 def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> None:

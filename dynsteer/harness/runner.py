@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,9 +87,13 @@ def run_harness_cases(
     if evaluator is None:
         raise ValueError("evaluator 不能为空")
     case_ids = _select_case_ids(config, harness, run_all=True)
+    logger = _get_or_configure_harness_logger(config.runs_dir / "logs")
+    _log_harness_case_overview(logger, case_ids)
+    logger.info("开始运行 benchmark harness", extra={"case_count": len(case_ids)})
     outputs: list[HarnessEvaluationOutput] = []
     for case_id in case_ids:
         outputs.append(_run_single_harness_case(config, harness, evaluator, case_id))
+    logger.info("benchmark harness 评估完成", extra={"case_count": len(case_ids)})
     return outputs
 
 
@@ -110,8 +115,13 @@ def run_harness_configs(
     if max_workers < 1:
         raise ValueError("max_workers 必须大于 0")
     tasks = _expand_harness_case_tasks(configs)
+    logger = _get_or_configure_harness_logger(_log_dir_from_harness_tasks(configs, tasks))
+    _log_harness_case_overview(logger, [task.case_id for task in tasks])
+    logger.info("开始运行 benchmark harness", extra={"case_count": len(tasks)})
     if max_workers == 1:
-        return [_run_isolated_harness_case(task) for task in tasks]
+        outputs = [_run_isolated_harness_case(task) for task in tasks]
+        logger.info("benchmark harness 评估完成", extra={"case_count": len(tasks)})
+        return outputs
 
     outputs_by_order: dict[int, HarnessEvaluationOutput] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -119,7 +129,68 @@ def run_harness_configs(
         for future in as_completed(futures):
             task = futures[future]
             outputs_by_order[task.order] = future.result()
-    return [outputs_by_order[task.order] for task in tasks]
+    outputs = [outputs_by_order[task.order] for task in tasks]
+    logger.info("benchmark harness 评估完成", extra={"case_count": len(tasks)})
+    return outputs
+
+
+def _log_dir_from_harness_tasks(configs: list[HarnessRunConfig], tasks: list[_HarnessCaseTask]) -> Path:
+    """获取本批 harness 日志目录。
+
+    Args:
+        configs: harness 运行配置列表。
+        tasks: 已展开的 case 任务。
+
+    Returns:
+        日志目录路径。
+    """
+    if configs is None or tasks is None:
+        raise ValueError("configs 和 tasks 不能为空")
+    if tasks:
+        return tasks[0].config.runs_dir / "logs"
+    if configs:
+        return configs[0].runs_dir / "logs"
+    return Path("runs") / "logs"
+
+
+def _get_or_configure_harness_logger(log_dir: Path) -> logging.Logger:
+    """获取已配置 logger；未配置时初始化一次。
+
+    Args:
+        log_dir: 日志目录。
+
+    Returns:
+        DynSTEER logger。
+    """
+    if log_dir is None:
+        raise ValueError("log_dir 不能为空")
+    logger = logging.getLogger("dynsteer")
+    if logger.handlers:
+        return logger
+    return configure_logger(log_dir)
+
+
+def _log_harness_case_overview(logger: logging.Logger, case_ids: list[str]) -> None:
+    """输出本批 benchmark 场景总览。
+
+    Args:
+        logger: 已配置的 DynSTEER logger。
+        case_ids: 本批运行的 case ID 列表。
+
+    Returns:
+        None。
+    """
+    if logger is None:
+        raise ValueError("logger 不能为空")
+    if case_ids is None:
+        raise ValueError("case_ids 不能为空")
+    scenario_text = ", ".join(case_ids)
+    logger.info(
+        "benchmark harness 将运行 %s 个场景: %s",
+        len(case_ids),
+        scenario_text,
+        extra={"case_count": len(case_ids), "case_ids": scenario_text},
+    )
 
 
 def _expand_harness_case_tasks(configs: list[HarnessRunConfig]) -> list[_HarnessCaseTask]:
@@ -191,7 +262,12 @@ def run_harness_case(
     if evaluator is None:
         raise ValueError("evaluator 不能为空")
     case_id = _select_case_ids(config, harness, run_all=False)[0]
-    return _run_single_harness_case(config, harness, evaluator, case_id)
+    logger = _get_or_configure_harness_logger(config.runs_dir / "logs")
+    _log_harness_case_overview(logger, [case_id])
+    logger.info("开始运行 benchmark harness", extra={"case_count": 1})
+    output = _run_single_harness_case(config, harness, evaluator, case_id)
+    logger.info("benchmark harness 评估完成", extra={"case_count": 1})
+    return output
 
 
 def _select_case_ids(config: HarnessRunConfig, harness: BaseBenchmarkHarness, run_all: bool) -> list[str]:
@@ -265,9 +341,6 @@ def _run_single_harness_case_impl(
     case_id: str,
 ) -> HarnessEvaluationOutput:
     """执行单个 case 并分别写入中间产物和最终结果。"""
-    logger = configure_logger(config.runs_dir / "logs")
-
-    logger.info("开始运行 benchmark harness", extra={"benchmark": config.benchmark, "case_id": case_id})
     harness_result = evaluator.evaluate(harness, case_id, config)
     report = harness_result.evaluation_report
     if report is None:
@@ -295,7 +368,6 @@ def _run_single_harness_case_impl(
     report_path.write_text(report_text, encoding="utf-8")
     summary_path.write_text(summary_text, encoding="utf-8")
     raw_summary_path.write_text(raw_summary_text, encoding="utf-8")
-    logger.info("benchmark harness 评估完成", extra={"report_path": str(report_path)})
     return HarnessEvaluationOutput(
         run_dir=result_dir,
         raw_run_dir=raw_run_dir,
