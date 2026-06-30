@@ -7,6 +7,8 @@ from dynsteer.llm.anthropic import AnthropicLLM
 from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError
 from dynsteer.llm.openai import OpenaiLLM
 
+from dynsteer.utils import normalize_str_from_source
+
 _OPENAI_PROVIDERS = {"openai_compatible", "openai", "qwen"}
 _ANTHROPIC_PROVIDERS = {"anthropic", "claude"}
 
@@ -46,19 +48,21 @@ def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
         LLMConfigurationError: provider 已配置但其余必填项缺失或不合法时抛出。
     """
     source = env if env is not None else os.environ
-    provider_raw = source.get("DYNSTEER_JUDGE_PROVIDER")
-    if provider_raw is None or not provider_raw.strip():
+
+    provider_raw = normalize_str_from_source(source, "DYNSTEER_JUDGE_PROVIDER")
+    if provider_raw is None:
         return None
     provider = provider_raw.strip().lower()
-    model = source.get("DYNSTEER_JUDGE_MODEL")
-    if model is None or not model.strip():
+
+    model = normalize_str_from_source(source, "DYNSTEER_JUDGE_MODEL")
+    if model is None:
         raise LLMConfigurationError("DYNSTEER_JUDGE_MODEL 不能为空")
-    base_url = source.get("DYNSTEER_JUDGE_BASE_URL")
+
     config = LLMConfig(
         provider=provider,
         model=model.strip(),
         api_key=_read_api_key(source, provider),
-        base_url=base_url.strip() if isinstance(base_url, str) and base_url.strip() else None,
+        base_url=_read_base_url(source, provider),
         timeout_seconds=float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
         temperature=float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
         max_tokens=_read_max_tokens(source.get("DYNSTEER_JUDGE_MAX_TOKENS")),
@@ -125,11 +129,15 @@ def _read_non_negative_float(value: str | None, label: str, default: float) -> f
 
 
 def _read_api_key(source: Mapping[str, str], provider: str) -> str | None:
-    direct = source.get("DYNSTEER_JUDGE_API_KEY")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-    fallback_key = "ANTHROPIC_API_KEY" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_API_KEY"
-    fallback = source.get(fallback_key)
-    if isinstance(fallback, str) and fallback.strip():
-        return fallback.strip()
-    return None
+    api_key = normalize_str_from_source(source, "DYNSTEER_JUDGE_API_KEY")
+    if api_key is None:
+        fallback_key = "ANTHROPIC_API_KEY" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_API_KEY"
+        api_key = normalize_str_from_source(source, fallback_key)
+    return api_key
+
+def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:    
+    base_url = normalize_str_from_source(source, "DYNSTEER_JUDGE_BASE_URL")
+    if base_url is None:
+        fallback_key = "ANTHROPIC_BASE_URL" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_BASE_URL"
+        base_url = normalize_str_from_source(source, fallback_key)
+    return base_url

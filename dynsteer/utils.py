@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Mapping
 
 from dynsteer.model import JsonValue, MISSING
 
@@ -88,3 +88,10 @@ def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
             return False
         return all(json_subsumes(actual[index], value) for index, value in enumerate(expected))
     return actual == expected
+
+
+def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None:
+    value = source.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
