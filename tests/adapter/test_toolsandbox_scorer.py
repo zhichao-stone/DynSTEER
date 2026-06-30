@@ -58,6 +58,13 @@ class FakeExtractorModule:
         return [{"value": 1}]
 
 
+class FakePyo3PanicException(BaseException):
+    pass
+
+
+FakePyo3PanicException.__module__ = "pyo3_runtime"
+
+
 def test_toolsandbox_constraint_metadata_preserves_partial_kwargs() -> None:
     constraint = SimpleNamespace(
         database_namespace=SimpleNamespace(name="SANDBOX"),
@@ -117,12 +124,12 @@ def test_toolsandbox_scorer_restores_snapshot_constraint_kwargs() -> None:
 
 def test_toolsandbox_scorer_scores_snapshot_similarity_with_exact_rows() -> None:
     def snapshot_similarity(
-        snapshot: _FakeDataFrame,
-        target_dataframe: _FakeDataFrame,
+        snapshot: Any,
+        target_dataframe: Any,
         column_similarities: dict[str, object],
-        reference_snapshot: _FakeDataFrame | None,
+        reference_snapshot: Any | None,
     ) -> float:
-        return 1.0 if snapshot.rows == target_dataframe.rows else 0.0
+        return 1.0 if snapshot.to_dicts() == target_dataframe.to_dicts() else 0.0
 
     evaluation = SimpleNamespace(
         snapshot_similarity=snapshot_similarity,
@@ -221,3 +228,38 @@ def test_toolsandbox_scorer_reports_missing_dependency_when_unavailable() -> Non
 
     assert result.score == 0.0
     assert any("tool_sandbox" in item for item in result.evidence)
+
+
+def test_toolsandbox_scorer_converts_pyo3_panic_to_constraint_failure() -> None:
+    class PanicEvaluationModule:
+        _default_dbs_column_similarities = {}
+
+        @staticmethod
+        def removal_similarity(**kwargs: object) -> float:
+            raise FakePyo3PanicException("not yet implemented")
+
+    scorer = ToolSandboxConstraintScorer(module_loader=lambda _: PanicEvaluationModule)
+    constraint = Constraint(
+        constraint_id="m0-c0",
+        target=ConstraintTarget.STATE_SNAPSHOT,
+        selector="$",
+        operator=Operator.CUSTOM,
+        expected={"rows": []},
+        namespace="CONTACT",
+        hard=True,
+        evaluator_hint="toolsandbox",
+        metadata={
+            "toolsandbox": {
+                "database_namespace": "CONTACT",
+                "snapshot_constraint": "removal_similarity",
+                "reference_milestone_node_index": None,
+                "column_similarity_measure": {},
+            }
+        },
+    )
+
+    result = scorer.score_constraint(constraint, {"rows": []})
+
+    assert result.score == 0.0
+    assert result.missing is False
+    assert any("评分失败" in item and "not yet implemented" in item for item in result.evidence)

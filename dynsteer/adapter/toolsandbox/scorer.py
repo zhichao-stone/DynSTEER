@@ -61,13 +61,11 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 context=context,
             )
         except Exception as exc:
-            return ConstraintScore(
-                constraint_id=constraint.constraint_id,
-                score=0.0,
-                missing=actual is None,
-                evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 评分失败: {exc}"],
-                actual=actual,
-            )
+            return self._custom_constraint_failure_score(constraint, actual, exc)
+        except BaseException as exc:
+            if not self._is_pyo3_panic_exception(exc):
+                raise
+            return self._custom_constraint_failure_score(constraint, actual, exc)
         return ConstraintScore(
             constraint_id=constraint.constraint_id,
             score=score,
@@ -75,6 +73,29 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 得分 {score:.3f} ({measure_name})"],
             actual=actual,
         )
+
+    def _custom_constraint_failure_score(
+        self,
+        constraint: Constraint,
+        actual: JsonValue,
+        exc: BaseException,
+    ) -> ConstraintScore:
+        """将 ToolSandbox 原生评分异常转换为可诊断的约束失败。"""
+        exc_type = f"{exc.__class__.__module__}.{exc.__class__.__name__}"
+        return ConstraintScore(
+            constraint_id=constraint.constraint_id,
+            score=0.0,
+            missing=actual is None,
+            evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 评分失败: {exc_type}: {exc}"],
+            actual=actual,
+        )
+
+    def _is_pyo3_panic_exception(self, exc: BaseException) -> bool:
+        """判断异常是否为 Polars/PyO3 Rust panic 包装异常。"""
+        exc_type = exc.__class__
+        module_name = str(getattr(exc_type, "__module__", ""))
+        class_name = str(getattr(exc_type, "__name__", ""))
+        return module_name == "pyo3_runtime" or class_name == "PanicException"
 
     def _score_toolsandbox_snapshot_constraint(
         self,
