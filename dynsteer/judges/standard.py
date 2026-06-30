@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
+
 from dynsteer.judges.base import LLMJudge
 from dynsteer.judges.prompt import build_standard_prompt
+from dynsteer.judges.telemetry import judge_input_metadata, judge_result_output_metadata
 from dynsteer.language import language_from_task
 from dynsteer.model import (
     Dimension,
@@ -11,6 +15,8 @@ from dynsteer.model import (
     TaskCase,
     Trajectory,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StandardJudge(LLMJudge):
@@ -36,7 +42,7 @@ class StandardJudge(LLMJudge):
         """
         if interval is None or task_case is None or trajectory is None or weights is None:
             raise ValueError("StandardJudge 入参不能为空")
-        
+
         language = language_from_task(task_case)
         prompt = build_standard_prompt(
             interval=interval,
@@ -45,5 +51,16 @@ class StandardJudge(LLMJudge):
             weights=weights,
             language=language,
         )
+        input_metadata = judge_input_metadata(interval, task_case, trajectory, prompt)
+        logger.info("standard_judge_input_snapshot", extra=input_metadata)
         payload = self._call_json(prompt, language=language)
-        return self._result_from_payload(interval, EvaluationLevel.STANDARD, payload, weights=weights, metadata={})
+        result = self._result_from_payload(
+            interval,
+            EvaluationLevel.STANDARD,
+            payload,
+            weights=weights,
+            metadata=input_metadata,
+        )
+        output_metadata = judge_result_output_metadata(result, input_metadata)
+        logger.info("standard_judge_output_snapshot", extra={**input_metadata, **output_metadata})
+        return replace(result, metadata={**result.metadata, **output_metadata})

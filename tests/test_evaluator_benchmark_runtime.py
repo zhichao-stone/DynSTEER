@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate import DynSTEEREvaluator
+from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.judges import CheapJudge
@@ -28,6 +30,7 @@ from dynsteer.model import (
     StageStatus,
     StateSnapshot,
     TaskCase,
+    TaskType,
     Trajectory,
     TrajectoryStep,
 )
@@ -168,6 +171,16 @@ def _step(index: int, content: str) -> TrajectoryStep:
         step_id=f"s{index}",
         index=index,
         actor=Actor.AGENT,
+        event_type=EventType.MESSAGE,
+        content=content,
+    )
+
+
+def _user_step(index: int, content: str) -> TrajectoryStep:
+    return TrajectoryStep(
+        step_id=f"u{index}",
+        index=index,
+        actor=Actor.USER,
         event_type=EventType.MESSAGE,
         content=content,
     )
@@ -348,6 +361,70 @@ def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: 
     assert failed_stage.metadata["blocker"] == "attempted_but_not_pass"
 
 
+def test_evaluate_raw_summary_includes_task_case_snapshot(tmp_path: Path) -> None:
+    task_case = TaskCase(
+        task_id="task-snapshot",
+        task_description="Turn off cellular",
+        task_types=[TaskType.STATEFUL_TOOL],
+        metadata={"scenario_name": "cellular_off", "categories": ["settings"]},
+    )
+    harness = FakeRuntimeHarness(
+        task_case=task_case,
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_user_step(0, "Turn off cellular")],
+                snapshots=[],
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    snapshot = result.raw_summary["task_case_snapshot"]
+    assert snapshot["case_id"] == "case-1"
+    assert snapshot["task_id"] == "task-snapshot"
+    assert snapshot["task_description"] == "Turn off cellular"
+    assert snapshot["task_types"] == ["stateful_tool_task"]
+    assert snapshot["scenario_name"] == "cellular_off"
+    assert snapshot["categories"] == ["settings"]
+    assert snapshot["initial_user_message_excerpt"] == "Turn off cellular"
+
+
+def test_task_description_mismatch_warning_is_observational_only(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    task_case = TaskCase(
+        task_id="task-mismatch",
+        task_description="Send a message to someone",
+        metadata={"scenario_name": "cellular_off"},
+    )
+    harness = FakeRuntimeHarness(
+        task_case=task_case,
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_user_step(0, "Turn off cellular")],
+                snapshots=[],
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+    caplog.set_level(logging.WARNING, logger="dynsteer.evaluate.evaluator")
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    assert result.task_case.task_description == "Send a message to someone"
+    assert result.raw_summary["task_case_snapshot"]["initial_user_message_excerpt"] == "Turn off cellular"
+    assert any(
+        record.message == "evaluator_task_description_mismatch" and getattr(record, "case_id", None) == "case-1"
+        for record in caplog.records
+    )
+
+
 def test_runtime_coverage_uses_matched_milestones_not_stage_status(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
@@ -398,9 +475,8 @@ def test_scoring_context_includes_initial_snapshot() -> None:
         initial_state={"namespaces": {"SETTING": [{"device_id": "phone", "cellular": True}]}},
     )
     trajectory = Trajectory(run_id="run-1", task_id="task-initial", steps=[], snapshots=[])
-    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    context = evaluator._scoring_context(task_case, trajectory, {})
+    context = scoring_context(task_case, trajectory, {})
 
     assert context.matched_snapshots["initial"] == StateSnapshot(
         snapshot_id="initial",

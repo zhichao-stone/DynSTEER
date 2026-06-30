@@ -18,6 +18,8 @@ dynsteer/evaluate/
 - evaluator.py   # DynSTEEREvaluator
 - score.py       # GeneralScorer、ScoringContext 和通用约束评分逻辑
 - diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
+- runtime.py     # 运行期 raw_summary、pending milestone、scoring context 辅助函数
+- telemetry.py   # 运行期结构化日志 extra 构造函数
 - weights.py     # normalize_weights、select_initial_weights、update_weights
 - milestone.py   # milestone DAG 校验、贪心匹配、评分矩阵和运行期命中判定
 - utils.py       # compute_uncertainty、overall_score、enrich_stage_result 等纯函数
@@ -135,3 +137,23 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 - `stage_trace`: 当前阶段闭区间 `[start_step_index, end_step_index]` 内的轨迹步骤详情，包含 step id、index、actor、event_type、content、tool_call、tool_result、cost 和 adapter raw 字段。
 - `milestone_matching`: milestone 匹配诊断。`mode="runtime_checkpoint"` 表示本阶段由 milestone checkpoint 触发，包含命中的 milestone、boundary、milestone score、constraint scores、命中前 ready milestone 和已匹配 milestone；`mode="runtime_finish"` 表示自然完成阶段，包含已匹配 milestone 与 pending required/optional milestone 列表。
+
+`raw_summary` 会额外包含以下运行期诊断字段：
+
+- `task_case_snapshot`: 当前 case 的轻量任务快照，包含 `case_id`、`task_id`、`task_description`、`task_types`、`scenario_name`、`categories` 和首条用户消息摘要。
+- `milestone_graph_summary`: milestone 图定义摘要。
+- `milestone_match_attempts`: 每次 checkpoint 匹配尝试的候选详情。
+- `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
+
+当 `task_case_snapshot.task_description` 与首条用户消息摘要不一致时，Evaluator 只输出 `evaluator_task_description_mismatch` warning，不修改任务定义或判分策略。
+
+## 运行期日志
+
+Evaluator 会通过 `dynsteer.evaluate.telemetry` 构造短结构化日志：
+
+- `evaluator_milestone_match_attempt`: checkpoint 匹配尝试，包含 ready/matched milestone、selected milestone、best candidate 和约束摘要。
+- `evaluator_milestone_checkpoint`: milestone 命中后同时记录 milestone score/status 与 stage score/status。
+- `evaluator_policy_stop`: 策略提前终止，记录 termination code、matched/pending milestone、stage 结果和首条诊断。
+- `evaluator_pending_milestones`: 自然结束后仍未完成的 required milestone 摘要。
+
+这些日志会同时进入终端、`logs/<date>.log` 文件和内存日志缓冲区。日志 formatter 会对 dict/list extra 做 JSON 追加，并截断过长字段，避免输出完整 prompt、表格或大型 raw 数据。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 
@@ -223,6 +224,29 @@ def test_standard_judge_computes_stage_score_from_dimension_scores() -> None:
     assert result.stage_score == pytest.approx(0.75)
 
 
+def test_standard_judge_records_input_task_description_metadata() -> None:
+    llm = FakeLLM([_valid_response()])
+    judge = StandardJudge(llm=llm)
+
+    result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
+
+    prompt = llm.messages[0][-1].content
+    metadata = result.metadata
+    assert metadata["task_description"] == "测试任务"
+    assert metadata["stage_id"] == "stage:m1"
+    assert metadata["milestone_id"] == "m1"
+    assert metadata["prompt_context_digest"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    assert metadata["prompt_task_description_excerpt"] == "测试任务"
+    assert metadata["stage_step_count"] == 0
+    assert metadata["first_stage_step_excerpt"] is None
+    assert metadata["last_stage_step_excerpt"] is None
+    assert metadata["judge_status"] == "pass"
+    assert metadata["judge_stage_score"] == pytest.approx(0.82)
+    assert metadata["judge_confidence"] == pytest.approx(0.91)
+    assert metadata["judge_first_diagnosis"] == "overall: 诊断"
+    assert metadata["judge_first_evidence"] == "证据"
+
+
 def test_llm_judge_system_prompt_uses_generic_judge_identity() -> None:
     llm = FakeLLM([_valid_response()])
     judge = StandardJudge(llm=llm)
@@ -264,6 +288,39 @@ def test_expensive_judge_records_pass_metadata() -> None:
     ]
     # 3 轮聚焦评估 + 1 轮风险复核 + 1 轮汇总裁决
     assert len(llm.messages) == 5
+
+
+def test_expensive_judge_records_input_output_snapshot_metadata() -> None:
+    llm = FakeLLM([_valid_response(0.7), _valid_response(0.6), _valid_response(0.86)])
+    judge = ExpensiveJudge(llm=llm, expensive_passes=1)
+
+    result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
+
+    prompts = [messages[-1].content for messages in llm.messages]
+    metadata = result.metadata
+    assert metadata["task_description"] == "测试任务"
+    assert metadata["stage_id"] == "stage:m1"
+    assert metadata["milestone_id"] == "m1"
+    assert metadata["prompt_type"] == "adjudication"
+    assert metadata["prompt_context_digest"] == hashlib.sha256(prompts[-1].encode("utf-8")).hexdigest()
+    assert metadata["prompt_task_description_excerpt"] == "测试任务"
+    assert metadata["stage_step_count"] == 0
+    assert metadata["first_stage_step_excerpt"] is None
+    assert metadata["last_stage_step_excerpt"] is None
+    assert metadata["judge_status"] == "pass"
+    assert metadata["judge_stage_score"] == pytest.approx(0.86)
+    assert metadata["judge_confidence"] == pytest.approx(0.91)
+    assert metadata["judge_first_diagnosis"] == "overall: 诊断"
+    assert metadata["judge_first_evidence"] == "证据"
+
+    passes = metadata["judge_passes"]
+    assert [item["prompt_type"] for item in passes] == ["focus", "risk"]
+    assert passes[0]["task_description"] == "测试任务"
+    assert passes[0]["prompt_context_digest"] == hashlib.sha256(prompts[0].encode("utf-8")).hexdigest()
+    assert passes[0]["prompt_task_description_excerpt"] == "测试任务"
+    assert passes[0]["judge_first_diagnosis"] == "overall: 诊断"
+    assert passes[0]["judge_first_evidence"] == "证据"
+    assert passes[1]["prompt_context_digest"] == hashlib.sha256(prompts[1].encode("utf-8")).hexdigest()
 
 
 def test_expensive_judge_rejects_invalid_focus_pass_before_adjudication() -> None:

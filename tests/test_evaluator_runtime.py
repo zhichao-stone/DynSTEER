@@ -5,6 +5,13 @@ import pytest
 import dynsteer.evaluate as evaluate_module
 from dynsteer.config import ThresholdConfig
 from dynsteer.evaluate import DynSTEEREvaluator, JudgeConfigurationError
+from dynsteer.evaluate.models import RuntimeEvaluationState
+from dynsteer.evaluate.runtime import (
+    blocked_milestone_termination_reason,
+    pending_required_stage_results,
+    runtime_diagnostics_summary,
+    scoring_context,
+)
 from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.judges import CheapJudge
 from dynsteer.model import (
@@ -101,6 +108,15 @@ def test_dynsteer_evaluator_exposes_member_evaluate_trajectory() -> None:
     assert callable(DynSTEEREvaluator().evaluate_trajectory)
 
 
+def test_dynsteer_evaluator_does_not_expose_migrated_runtime_helpers() -> None:
+    evaluator = DynSTEEREvaluator()
+
+    assert not hasattr(evaluator, "_runtime_diagnostics_summary")
+    assert not hasattr(evaluator, "_blocked_milestone_termination_reason")
+    assert not hasattr(evaluator, "_pending_required_stage_results")
+    assert not hasattr(evaluator, "_scoring_context")
+
+
 def test_standard_or_expensive_requires_real_llm_judge() -> None:
     evaluator = DynSTEEREvaluator(thresholds=ThresholdConfig())
 
@@ -166,3 +182,78 @@ def test_evaluate_trajectory_accepts_explicit_scorer() -> None:
 
     assert report.milestone_coverage == "full"
     assert report.stage_reports[0].milestone_id == "m-custom"
+
+
+def test_runtime_diagnostics_summary_keeps_existing_raw_summary_shape() -> None:
+    task_case = _task_with_missing_milestone()
+    state = RuntimeEvaluationState(
+        weights={dimension: 1 / len(Dimension) for dimension in Dimension},
+        settlements=[],
+        matched_settlements={},
+        stage_reports=[],
+        match_attempts=[],
+    )
+
+    summary = runtime_diagnostics_summary(task_case, state)
+
+    assert set(summary) == {
+        "milestone_graph_summary",
+        "milestone_match_attempts",
+        "milestone_final_diagnostics",
+    }
+    assert summary["milestone_graph_summary"]["required_milestone_ids"] == ["m1"]
+    assert summary["milestone_match_attempts"] == []
+    assert summary["milestone_final_diagnostics"][0]["milestone_id"] == "m1"
+
+
+def test_pending_required_stage_results_preserves_missing_semantics() -> None:
+    state = RuntimeEvaluationState(
+        weights={dimension: 1 / len(Dimension) for dimension in Dimension},
+        settlements=[],
+        matched_settlements={},
+        stage_reports=[],
+        match_attempts=[],
+    )
+
+    results = pending_required_stage_results(_task_with_missing_milestone(), state)
+
+    assert len(results) == 1
+    assert results[0].stage_id == "runtime:missing:m1"
+    assert results[0].milestone_id == "m1"
+    assert results[0].status == StageStatus.MISSING
+    assert results[0].stage_score == 0.0
+    assert results[0].metadata["blocker"] == "not_ready"
+
+
+def test_blocked_milestone_termination_reason_keeps_predecessor_evidence() -> None:
+    detail = {
+        "step_id": "s2",
+        "milestone_id": "m2",
+        "missing_predecessors": ["m1"],
+        "matched_milestone": {"milestone_id": "m2"},
+        "predecessor_diagnostics": [{"milestone_id": "m1", "best_candidate": {"score": {"score": 0.1}}}],
+    }
+
+    reason = blocked_milestone_termination_reason(detail)
+
+    assert "s2" in reason
+    assert "m2" in reason
+    assert "m1" in reason
+    assert "前驱诊断" in reason
+
+
+def test_scoring_context_helper_includes_initial_and_matched_snapshots() -> None:
+    task_case = TaskCase(
+        task_id="task-initial",
+        task_description="初始状态任务",
+        initial_state={"namespaces": {"SETTING": [{"device_id": "phone", "cellular": True}]}},
+    )
+    trajectory = Trajectory(run_id="run-1", task_id="task-initial", steps=[], snapshots=[])
+
+    context = scoring_context(task_case, trajectory, {})
+
+    assert context.task_case == task_case
+    assert context.matched_boundaries == {}
+    assert context.matched_snapshots["initial"].namespaces == {
+        "SETTING": [{"device_id": "phone", "cellular": True}]
+    }

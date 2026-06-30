@@ -60,9 +60,27 @@ benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配�
 
 `StandardJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成单轮 prompt 构造、LLM JSON 调用和结果转换，固定返回 `EvaluationLevel.STANDARD` 结果。standard prompt 包含任务上下文、阶段轨迹、维度权重、证据规则、评分 rubric 和严格 JSON 输出 schema。
 
+`StandardJudge` 会在 `StageEvaluationResult.metadata` 中记录轻量观测字段，便于排查 LLM judge 任务目标错位：
+
+- `task_description`: 调用 LLM 前的 `TaskCase.task_description`。
+- `stage_id` / `milestone_id` / `start_step_index` / `end_step_index`: 当前阶段标识与范围。
+- `prompt_context_digest`: 已渲染 standard prompt 的 SHA-256 digest，用于关联输入快照与输出诊断。
+- `prompt_task_description_excerpt`: 任务描述摘要。
+- `stage_step_count` / `first_stage_step_excerpt` / `last_stage_step_excerpt`: 阶段轨迹摘要。
+- `judge_status` / `judge_stage_score` / `judge_confidence`: LLM 输出转换后的阶段结果摘要。
+- `judge_first_diagnosis` / `judge_first_evidence`: LLM 输出的首条诊断和证据摘要。
+
+这些字段只用于审计与日志关联，不会向 prompt context 添加 `task_id`、`scenario_name` 等额外任务语义字段。
+
 ## ExpensiveJudge
 
 `ExpensiveJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成多轮聚焦评估、一次风险复核和一次汇总裁决，记录 `metadata["judge_passes"]`，固定返回 `EvaluationLevel.EXPENSIVE` 结果。`expensive_passes` 控制聚焦评估轮数，必须大于 0。聚焦模板用于分维度深审，风险模板用于 fatal/minefield/约束风险复核，裁决模板基于前序 pass 形成最终 JSON 结果。
+
+`ExpensiveJudge` 与 `StandardJudge` 使用同一套轻量输入/输出快照机制：
+
+- 最终 `StageEvaluationResult.metadata` 会记录 adjudication prompt 的 `task_description`、`stage_id`、`milestone_id`、`prompt_type="adjudication"`、`prompt_context_digest`、阶段步骤摘要、`judge_status`、`judge_stage_score`、`judge_confidence`、首条诊断和首条证据。
+- `metadata["judge_passes"]` 中每个 focus/risk 中间轮次也会记录各自的 `prompt_context_digest`、`task_description`、阶段步骤摘要、`judge_first_diagnosis` 和 `judge_first_evidence`。
+- 这些字段只用于审计和日志关联，不会写入 expensive adjudication 的 `previous_passes` prompt context。
 
 ## 分发约定
 
