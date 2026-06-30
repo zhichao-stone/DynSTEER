@@ -57,6 +57,30 @@ class PassJudge(CheapJudge):
         )
 
 
+class FailJudge(CheapJudge):
+    """返回失败阶段结果，用于验证 milestone 匹配口径不依赖阶段评估状态。"""
+
+    def evaluate_stage(
+        self,
+        interval: StageInterval,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        weights: dict[Dimension, float],
+    ) -> StageEvaluationResult:
+        return StageEvaluationResult(
+            stage_id=interval.stage_id,
+            milestone_id=interval.milestone_id,
+            evaluator_level=EvaluationLevel.CHEAP,
+            status=StageStatus.FAIL,
+            stage_score=0.0,
+            uncertainty=0.0,
+            dimension_scores={dimension: 0.0 for dimension in Dimension},
+            evidence=["judge 失败"],
+            diagnosis=[],
+            judge_confidence=1.0,
+        )
+
+
 def _milestone_with_fatal_minefield() -> TaskCase:
     milestone = Milestone(
         milestone_id="m1",
@@ -322,6 +346,21 @@ def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: 
     )
     assert failed_stage.stage_score == 0.0
     assert failed_stage.metadata["blocker"] == "attempted_but_not_pass"
+
+
+def test_runtime_coverage_uses_matched_milestones_not_stage_status(tmp_path: Path) -> None:
+    harness = FakeRuntimeHarness(
+        task_case=_milestone_with_fatal_minefield(),
+        batches=[HarnessAdvanceResult(steps=[_step(0, "任务完成")], snapshots=[], continue_running=True)],
+        metrics={"danger": False},
+    )
+    judge = FailJudge()
+    evaluator = DynSTEEREvaluator(cheap_judge=judge, standard_judge=judge, expensive_judge=judge)
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    assert result.evaluation_report.milestone_coverage == "full"
+    assert result.evaluation_report.first_failure_stage_id == "runtime:st1"
 
 
 def test_runtime_stops_when_successor_matches_but_predecessor_is_missing(tmp_path: Path) -> None:
@@ -695,4 +734,4 @@ def test_runtime_matches_multiple_milestones_from_batch_snapshots(tmp_path: Path
     )
 
     assert [item.milestone_id for item in result.stage_settlements if item.kind == "milestone"] == ["m1", "m2"]
-    assert result.evaluation_report.to_summary_dict()["stage_count"] == 3
+    assert result.evaluation_report.to_summary_dict()["stage_count"] == 2

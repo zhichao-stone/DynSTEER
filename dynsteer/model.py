@@ -352,9 +352,18 @@ class TrajectoryEvaluationReport:
             "task_id": self.task_id,
             "milestone_coverage": self.milestone_coverage,
             "overall_score": self.overall_score,
-            "stage_count": len(self.stage_reports),
+            "stage_count": sum(1 for stage in self.stage_reports if _is_matched_milestone_stage(stage)),
             "first_failure_stage_id": self.first_failure_stage_id,
         }
+
+
+def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
+    """判断阶段是否来自已匹配 milestone 的动态评估。"""
+    if stage is None or stage.milestone_id is None:
+        return False
+    if stage.status == StageStatus.MISSING:
+        return False
+    return not stage.stage_id.startswith("runtime:missing:")
 
 
 ## 通用校验函数

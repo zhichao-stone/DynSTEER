@@ -310,7 +310,13 @@ class DynSTEEREvaluator:
                     stage_reports=[*state.stage_reports, stage_result],
                     weights=next_weights,
                 )
-            report = self._runtime_report(task_case, trajectory, state.stage_reports, scorer)
+            report = self._runtime_report(
+                task_case,
+                trajectory,
+                state.stage_reports,
+                state.matched_settlements,
+                scorer,
+            )
             raw_summary = harness.raw_summary_from_session(session)
             raw_summary.update(
                 self._runtime_diagnostics_summary(
@@ -745,6 +751,7 @@ class DynSTEEREvaluator:
         task_case: TaskCase,
         trajectory: Trajectory,
         stage_reports: list[StageEvaluationResult],
+        matched_settlements: dict[str, HarnessStageSettlement] | None,
         scorer: GeneralScorer,
     ) -> TrajectoryEvaluationReport:
         graph = task_case.milestone_graph or MilestoneGraph()
@@ -755,11 +762,15 @@ class DynSTEEREvaluator:
             scorer=scorer,
             context=context,
         )
-        matched_ids = {
-            stage.milestone_id
-            for stage in stage_reports
-            if stage.milestone_id is not None and stage.status == StageStatus.PASS
-        }
+        matched_ids = set(matched_settlements or {})
+        if not matched_ids:
+            matched_ids = {
+                stage.milestone_id
+                for stage in stage_reports
+                if stage.milestone_id is not None
+                and stage.status != StageStatus.MISSING
+                and not stage.stage_id.startswith("runtime:missing:")
+            }
         required_ids = {node.milestone_id for node in graph.nodes if node.required}
         if not graph.nodes:
             coverage = "none"

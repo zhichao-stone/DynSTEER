@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
@@ -205,6 +206,82 @@ def test_toolsandbox_scorer_restores_partial_column_similarity() -> None:
             after_step_id="s1",
             after_step_index=1,
             namespaces={"SANDBOX": [{"tool_trace": ['{"tool_name": "timestamp_diff"}']}]},
+        ),
+    )
+
+    assert result.score == 1.0
+
+
+def test_toolsandbox_scorer_serializes_target_tool_trace_for_native_similarity() -> None:
+    class ToolTraceEvaluationModule:
+        _default_dbs_column_similarities = {}
+
+        @staticmethod
+        def column_tool_trace_exact_match_similarity(
+            dataframe: pl.DataFrame,
+            column_name: str,
+            value: object,
+        ) -> pl.DataFrame:
+            assert isinstance(value, str)
+            json.loads(value)
+            return dataframe.select(pl.lit(1.0).alias("similarity"))
+
+        @staticmethod
+        def snapshot_similarity(
+            snapshot: pl.DataFrame,
+            target_dataframe: pl.DataFrame,
+            column_similarities: dict[str, object],
+            reference_snapshot: object | None = None,
+        ) -> float:
+            for row in target_dataframe.to_dicts():
+                measure = column_similarities["tool_trace"]
+                measure(dataframe=snapshot, column_name="tool_trace", value=row["tool_trace"])
+            return 1.0
+
+    scorer = ToolSandboxConstraintScorer(module_loader=lambda _: ToolTraceEvaluationModule)
+    constraint = Constraint(
+        constraint_id="m0_c0",
+        target=ConstraintTarget.STATE_SNAPSHOT,
+        selector="$",
+        operator=Operator.CUSTOM,
+        expected={
+            "rows": [
+                {
+                    "sender": "AGENT",
+                    "recipient": "EXECUTION_ENVIRONMENT",
+                    "tool_trace": ['{"tool_name":"send_message","arguments":{}}'],
+                }
+            ],
+            "columns": ["sender", "recipient", "tool_trace"],
+        },
+        namespace="SANDBOX",
+        evaluator_hint="toolsandbox",
+        metadata={
+            "toolsandbox": {
+                "database_namespace": "SANDBOX",
+                "snapshot_constraint": "snapshot_similarity",
+                "column_similarity_measure": {
+                    "tool_trace": "column_tool_trace_exact_match_similarity",
+                },
+            }
+        },
+    )
+
+    result = scorer.score_constraint(
+        constraint,
+        StateSnapshot(
+            snapshot_id="sandbox:1",
+            after_step_id="s1",
+            after_step_index=1,
+            namespaces={
+                "SANDBOX": [
+                    {
+                        "sender": "AGENT",
+                        "recipient": "EXECUTION_ENVIRONMENT",
+                        "tool_trace": ['{"tool_name":"send_message","arguments":{}}'],
+                    }
+                ]
+            },
         ),
     )
 

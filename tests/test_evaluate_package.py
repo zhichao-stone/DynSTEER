@@ -24,6 +24,7 @@ from dynsteer.model import (
     StageStatus,
     TaskCase,
     Trajectory,
+    TrajectoryEvaluationReport,
     TrajectoryStep,
 )
 
@@ -175,6 +176,46 @@ def test_evaluate_trajectory_without_milestones_is_none_coverage() -> None:
     assert report.milestone_coverage == "none"
     assert report.overall_score == pytest.approx(1.0)
     assert report.stage_reports == []
+
+
+def test_report_summary_stage_count_only_counts_matched_milestone_stages() -> None:
+    report = TrajectoryEvaluationReport(
+        run_id="run-1",
+        task_id="task-1",
+        milestone_coverage="partial",
+        overall_score=0.5,
+        stage_reports=[
+            StageEvaluationResult(
+                stage_id="runtime:st1",
+                milestone_id="m0",
+                evaluator_level=EvaluationLevel.CHEAP,
+                status=StageStatus.FAIL,
+                stage_score=0.2,
+                uncertainty=0.1,
+                dimension_scores={dimension: 0.0 for dimension in Dimension},
+            ),
+            StageEvaluationResult(
+                stage_id="runtime:missing:m1",
+                milestone_id="m1",
+                evaluator_level=EvaluationLevel.CHEAP,
+                status=StageStatus.FAIL,
+                stage_score=0.0,
+                uncertainty=0.0,
+                dimension_scores={dimension: 0.0 for dimension in Dimension},
+            ),
+            StageEvaluationResult(
+                stage_id="runtime:st2",
+                milestone_id=None,
+                evaluator_level=EvaluationLevel.CHEAP,
+                status=StageStatus.PASS,
+                stage_score=1.0,
+                uncertainty=0.0,
+                dimension_scores={dimension: 1.0 for dimension in Dimension},
+            ),
+        ],
+    )
+
+    assert report.to_summary_dict()["stage_count"] == 1
 
 
 def test_evaluate_trajectory_fatal_minefield_short_circuits() -> None:

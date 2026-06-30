@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+import json
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
@@ -260,7 +261,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             raise ValueError(f"不支持的 ToolSandbox snapshot_constraint: {measure_name}")
         namespace = constraint.namespace or self._toolsandbox_namespace(constraint)
         snapshot = self._rows_to_dataframe(actual, namespace=namespace)
-        target = self._rows_to_dataframe(constraint.expected, namespace=namespace)
+        target = self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True)
         column_similarities = self._column_similarities(evaluation, constraint)
         reference_snapshot = self._reference_dataframe(constraint, context)
         kwargs = self._snapshot_constraint_kwargs(evaluation, constraint)
@@ -286,7 +287,12 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             return self._module_loader("tool_sandbox.common.tool_trace_extractors")
         raise ModuleNotFoundError("tool_sandbox.common.tool_trace_extractors")
 
-    def _rows_to_dataframe(self, value: JsonValue, namespace: str | None = None) -> pl.DataFrame:
+    def _rows_to_dataframe(
+        self,
+        value: JsonValue,
+        namespace: str | None = None,
+        target: bool = False,
+    ) -> pl.DataFrame:
         """将 DynSTEER JSON rows 转为 polars DataFrame。"""
         rows: JsonValue
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
@@ -297,7 +303,46 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             rows = []
         if not isinstance(rows, list):
             raise ValueError("ToolSandbox snapshot rows 必须是 list")
-        return self._restore_namespace_schema(pl.DataFrame(rows), namespace)
+        if target and str(namespace or "").upper() == "SANDBOX":
+            rows = self._normalize_sandbox_target_rows(rows)
+        return self._restore_namespace_schema(pl.DataFrame(rows), namespace, target=target)
+
+    def _normalize_sandbox_target_rows(self, rows: list[JsonValue]) -> list[JsonValue]:
+        """将 SANDBOX target rows 恢复为原生 similarity 期望的单元格类型。"""
+        if rows is None:
+            raise ValueError("SANDBOX target rows 不能为空")
+        normalized: list[JsonValue] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                normalized.append(row)
+                continue
+            row_data: dict[str, JsonValue] = dict(row)
+            if "tool_trace" in row_data:
+                row_data["tool_trace"] = self._serialize_target_tool_trace(row_data["tool_trace"])
+            normalized.append(row_data)
+        return normalized
+
+    def _serialize_target_tool_trace(self, value: JsonValue) -> JsonValue:
+        """把 target `tool_trace` 转成 ToolSandbox 原生列相似度要求的 JSON 字符串。"""
+        if value is None or isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list):
+            traces: list[JsonValue] = []
+            for item in value:
+                if isinstance(item, str):
+                    try:
+                        parsed = json.loads(item)
+                    except json.JSONDecodeError:
+                        return json.dumps(value, ensure_ascii=False)
+                    traces.append(parsed)
+                else:
+                    traces.append(item)
+            if len(traces) == 1:
+                return json.dumps(traces[0], ensure_ascii=False)
+            return json.dumps(traces, ensure_ascii=False)
+        return json.dumps(value, ensure_ascii=False)
 
     def _toolsandbox_namespace(self, constraint: Constraint) -> str:
         """读取 ToolSandbox 约束对应的数据库命名空间。"""
@@ -308,7 +353,12 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 return namespace
         return constraint.namespace or ""
 
-    def _restore_namespace_schema(self, dataframe: pl.DataFrame, namespace: str | None) -> pl.DataFrame:
+    def _restore_namespace_schema(
+        self,
+        dataframe: pl.DataFrame,
+        namespace: str | None,
+        target: bool = False,
+    ) -> pl.DataFrame:
         """恢复 ToolSandbox JSON 快照丢失的 Null 列类型。"""
         if dataframe is None or not namespace:
             return dataframe
@@ -316,7 +366,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         if not schema:
             return dataframe
         if namespace.upper() == "SANDBOX":
-            return self._restore_sandbox_schema(dataframe, schema)
+            return self._restore_sandbox_schema(dataframe, schema, target=target)
         result = dataframe
         for column_name, dtype in schema.items():
             if column_name not in result.columns:
@@ -325,13 +375,20 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 result = result.with_columns(pl.col(column_name).cast(dtype))
         return result
 
-    def _restore_sandbox_schema(self, dataframe: pl.DataFrame, schema: dict[str, Any]) -> pl.DataFrame:
+    def _restore_sandbox_schema(
+        self,
+        dataframe: pl.DataFrame,
+        schema: dict[str, Any],
+        target: bool = False,
+    ) -> pl.DataFrame:
         """恢复 SANDBOX 消息表的原生 enum/list schema。"""
         if dataframe is None or schema is None:
             raise ValueError("SANDBOX schema 恢复参数不能为空")
         result = dataframe
         for column_name, dtype in schema.items():
             if column_name not in result.columns:
+                continue
+            if target and column_name == "tool_trace":
                 continue
             if result.schema.get(column_name) == dtype:
                 continue
