@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -46,6 +47,32 @@ def _json_safe(value: object) -> JsonValue:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return str(value)
+
+
+def _callable_name(value: object) -> str:
+    """读取 callable 的稳定函数名，用于跨进程恢复 ToolSandbox 元数据。"""
+    return str(getattr(value, "__name__", str(value)))
+
+
+def _callable_keyword_value(value: object) -> JsonValue:
+    if callable(value):
+        return _callable_name(value)
+    return _json_safe(value)
+
+
+def _callable_spec(value: object) -> JsonValue:
+    """将普通 callable 或 functools.partial 序列化为可恢复的 JSON 规格。"""
+    if isinstance(value, functools.partial):
+        return {
+            "callable": _callable_name(value.func),
+            "partial_keywords": {
+                str(key): _callable_keyword_value(item)
+                for key, item in dict(value.keywords or {}).items()
+            },
+        }
+    if callable(value):
+        return _callable_name(value)
+    return _json_safe(value)
 
 
 @dataclass
@@ -664,7 +691,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
                         getattr(constraint, "reference_milestone_node_index", None)
                     ),
                     "column_similarity_measure": {
-                        str(key): getattr(value, "__name__", str(value))
+                        str(key): _callable_spec(value)
                         for key, value in dict(column_measures).items()
                     },
                     "guardrail": "guardrail" in snapshot_constraint_name,

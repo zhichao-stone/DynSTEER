@@ -27,6 +27,7 @@ class RuntimeEvaluationDecision:
     should_stop: bool = False
     termination_code: str | None = None
     termination_reason: str | None = None
+    termination_detail: JsonObject | None = None
 
 
 class JudgeConfigurationError(RuntimeError):

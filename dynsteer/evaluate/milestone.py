@@ -4,7 +4,13 @@ from collections import defaultdict, deque
 
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import MatchConfig
-from dynsteer.evaluate.diagnostics import build_milestone_candidate_detail, boundary_to_dict
+from dynsteer.evaluate.diagnostics import (
+    build_milestone_candidate_detail,
+    boundary_to_dict,
+    milestone_score_to_dict,
+    milestone_summary_to_dict,
+    trajectory_step_to_dict,
+)
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.model import (
@@ -287,6 +293,131 @@ def find_hit_milestone(
         context=context,
     )
     return hit
+
+
+def find_blocked_milestone_hit_with_diagnostics(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    step: TrajectoryStep,
+    matched: dict[str, HarnessStageSettlement],
+    scorer: GeneralScorer | None = None,
+    context: ScoringContext | None = None,
+) -> JsonObject | None:
+    """诊断后继 milestone 已命中但前驱 milestone 缺失的路径断裂。"""
+    if task_case is None or trajectory is None or step is None or matched is None:
+        raise ValueError("blocked milestone 诊断参数不能为空")
+    graph = task_case.milestone_graph
+    if graph is None or not graph.nodes:
+        return None
+    boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
+    if not boundaries:
+        return None
+
+    node_by_id = {node.milestone_id: node for node in graph.nodes}
+    predecessor_map = _predecessors(graph)
+    ready_ids = {milestone.milestone_id for milestone in ready_milestones(graph, matched)}
+    matched_ids = set(matched)
+    effective_scorer = get_effective_scorer(scorer)
+
+    best: tuple[Milestone, Boundary, MilestoneScore, list[str]] | None = None
+    candidate_details: list[JsonObject] = []
+    for milestone in graph.nodes:
+        if milestone.milestone_id in matched_ids or milestone.milestone_id in ready_ids:
+            continue
+        missing_predecessors = [
+            predecessor_id
+            for predecessor_id in predecessor_map.get(milestone.milestone_id, [])
+            if predecessor_id not in matched_ids
+        ]
+        if not missing_predecessors:
+            continue
+        for boundary in boundaries:
+            score = effective_scorer.score_milestone(
+                milestone,
+                boundary,
+                trajectory,
+                trajectory.snapshots,
+                context=context,
+            )
+            candidate_details.append(
+                build_milestone_candidate_detail(
+                    milestone=milestone,
+                    boundary=boundary,
+                    score=score,
+                    selected=False,
+                    reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
+                )
+            )
+            if score.status != StageStatus.PASS:
+                continue
+            if best is None or score.score > best[2].score:
+                best = (milestone, boundary, score, missing_predecessors)
+
+    if best is None:
+        return None
+
+    milestone, boundary, score, missing_predecessors = best
+    predecessor_diagnostics: list[JsonObject] = []
+    for predecessor_id in missing_predecessors:
+        predecessor = node_by_id.get(predecessor_id)
+        if predecessor is None:
+            predecessor_diagnostics.append(
+                {
+                    "milestone_id": predecessor_id,
+                    "missing_node": True,
+                    "candidate_scores": [],
+                }
+            )
+            continue
+        predecessor_candidates: list[JsonObject] = []
+        for predecessor_boundary in boundaries:
+            predecessor_score = effective_scorer.score_milestone(
+                predecessor,
+                predecessor_boundary,
+                trajectory,
+                trajectory.snapshots,
+                context=context,
+            )
+            predecessor_candidates.append(
+                build_milestone_candidate_detail(
+                    milestone=predecessor,
+                    boundary=predecessor_boundary,
+                    score=predecessor_score,
+                    selected=False,
+                    reject_reason=None if predecessor_score.status == StageStatus.PASS else "status_not_pass",
+                )
+            )
+        best_predecessor = None
+        scored_predecessors = [
+            item for item in predecessor_candidates if isinstance(item.get("score"), dict)
+        ]
+        if scored_predecessors:
+            best_predecessor = max(scored_predecessors, key=lambda item: float(item["score"].get("score", 0.0)))
+        predecessor_diagnostics.append(
+            {
+                "milestone_id": predecessor_id,
+                "missing_node": False,
+                "candidate_scores": predecessor_candidates,
+                "best_candidate": best_predecessor,
+            }
+        )
+
+    return {
+        "diagnostic_type": "blocked_milestone_hit",
+        "step_index": step.index,
+        "step_id": step.step_id,
+        "current_step": trajectory_step_to_dict(step),
+        "matched_before": sorted(matched_ids),
+        "ready_before": sorted(ready_ids),
+        "milestone_id": milestone.milestone_id,
+        "matched_milestone": milestone_summary_to_dict(milestone),
+        "boundary": boundary_to_dict(boundary),
+        "score": milestone_score_to_dict(score),
+        "missing_predecessors": list(missing_predecessors),
+        "missing_predecessor_ids": list(missing_predecessors),
+        "predecessor_diagnostics": predecessor_diagnostics,
+        "candidate_scores": candidate_details,
+    }
 
 
 def find_hit_milestone_with_diagnostics(

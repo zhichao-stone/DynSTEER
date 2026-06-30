@@ -223,6 +223,56 @@ def _two_step_task_case() -> TaskCase:
     return TaskCase(task_id="task-two-step", task_description="两步任务", milestone_graph=graph)
 
 
+def _three_step_gap_task_case() -> TaskCase:
+    first = Milestone(
+        milestone_id="m0",
+        name="第一步",
+        description="第一步需要说 zero",
+        constraints=[
+            Constraint(
+                constraint_id="c0",
+                target=ConstraintTarget.STEP,
+                selector="$.content",
+                operator=Operator.CONTAINS,
+                expected="zero",
+                hard=True,
+            )
+        ],
+    )
+    second = Milestone(
+        milestone_id="m1",
+        name="第二步",
+        description="第二步需要说 one",
+        constraints=[
+            Constraint(
+                constraint_id="c1",
+                target=ConstraintTarget.STEP,
+                selector="$.content",
+                operator=Operator.CONTAINS,
+                expected="one",
+                hard=True,
+            )
+        ],
+    )
+    third = Milestone(
+        milestone_id="m2",
+        name="第三步",
+        description="第三步需要说 two",
+        constraints=[
+            Constraint(
+                constraint_id="c2",
+                target=ConstraintTarget.STEP,
+                selector="$.content",
+                operator=Operator.CONTAINS,
+                expected="two",
+                hard=True,
+            )
+        ],
+    )
+    graph = MilestoneGraph(nodes=[first, second, third], edges=[("m0", "m1"), ("m1", "m2")])
+    return TaskCase(task_id="task-gap", task_description="前驱断裂任务", milestone_graph=graph)
+
+
 def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_two_step_task_case(),
@@ -261,6 +311,64 @@ def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: 
     assert final["m2"]["ready_ever"] is True
     assert final["m2"]["attempt_count"] == 1
     assert final["m2"]["blocker"] == "attempted_but_not_pass"
+    assert result.evaluation_report is not None
+    assert result.evaluation_report.milestone_coverage == "partial"
+    assert result.evaluation_report.overall_score < 1.0
+    assert result.evaluation_report.first_failure_stage_id is not None
+    failed_stage = next(
+        stage
+        for stage in result.evaluation_report.stage_reports
+        if stage.milestone_id == "m2" and stage.status == StageStatus.FAIL
+    )
+    assert failed_stage.stage_score == 0.0
+    assert failed_stage.metadata["blocker"] == "attempted_but_not_pass"
+
+
+def test_runtime_stops_when_successor_matches_but_predecessor_is_missing(tmp_path: Path) -> None:
+    harness = FakeRuntimeHarness(
+        task_case=_three_step_gap_task_case(),
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_step(0, "zero"), _step(1, "two")],
+                snapshots=[],
+                continue_running=True,
+            )
+        ],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    assert result.terminated_by_policy is True
+    assert result.termination_code == "milestone_predecessor_gap:m2"
+    assert result.termination_reason is not None
+    assert "m1" in result.termination_reason
+    assert harness.stopped_reason == result.termination_reason
+    detail = result.raw_summary["termination_detail"]
+    assert detail["code"] == "milestone_predecessor_gap:m2"
+    assert detail["matched_milestone"]["milestone_id"] == "m2"
+    assert detail["missing_predecessors"] == ["m1"]
+    assert detail["current_step"]["step_id"] == "s1"
+
+
+def test_scoring_context_includes_initial_snapshot() -> None:
+    task_case = TaskCase(
+        task_id="task-initial",
+        task_description="初始状态任务",
+        initial_state={"namespaces": {"SETTING": [{"device_id": "phone", "cellular": True}]}},
+    )
+    trajectory = Trajectory(run_id="run-1", task_id="task-initial", steps=[], snapshots=[])
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    context = evaluator._scoring_context(task_case, trajectory, {})
+
+    assert context.matched_snapshots["initial"] == StateSnapshot(
+        snapshot_id="initial",
+        after_step_id="initial",
+        after_step_index=0,
+        namespaces={"SETTING": [{"device_id": "phone", "cellular": True}]},
+    )
 
 
 def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> None:

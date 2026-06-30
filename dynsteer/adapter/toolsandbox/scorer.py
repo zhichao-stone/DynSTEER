@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
 from dynsteer.evaluate.score import ScoringContext
-from dynsteer.model import Constraint, ConstraintScore, JsonValue, Operator
+from dynsteer.model import (
+    Boundary,
+    Constraint,
+    ConstraintScore,
+    JsonValue,
+    Milestone,
+    MilestoneScore,
+    Operator,
+    StageStatus,
+    StateSnapshot,
+    Trajectory,
+)
+from dynsteer.utils import clamp
 
 import polars as pl
 
@@ -69,6 +82,75 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
     def __init__(self, module_loader: Callable[[str], Any] | None = None) -> None:
         self._module_loader = module_loader
 
+    def score_milestone(
+        self,
+        milestone: Milestone,
+        boundary: Boundary,
+        trajectory: Trajectory,
+        reference_snapshots: list[StateSnapshot],
+        context: ScoringContext | None = None,
+    ) -> MilestoneScore:
+        """按 ToolSandbox 原生语义聚合 milestone 约束分数。"""
+        if milestone is None or boundary is None or trajectory is None or reference_snapshots is None:
+            raise ValueError("ToolSandbox milestone 评分参数不能为空")
+        if not any(self._is_toolsandbox_constraint(constraint) for constraint in milestone.constraints):
+            return super().score_milestone(
+                milestone,
+                boundary,
+                trajectory,
+                reference_snapshots,
+                context=context,
+            )
+        if len(milestone.constraints) == 0:
+            return super().score_milestone(
+                milestone,
+                boundary,
+                trajectory,
+                reference_snapshots,
+                context=context,
+            )
+
+        constraint_scores: list[ConstraintScore] = []
+        score_product = 1.0
+        non_guardrail_count = 0
+        hard_pass = True
+        for constraint in milestone.constraints:
+            source = self._source_for_constraint(constraint, boundary, trajectory, reference_snapshots)
+            reference = self._reference_for_constraint(constraint, reference_snapshots)
+            result = self.score_constraint(constraint, source, reference, context=context)
+            constraint_scores.append(result)
+            constraint_score = clamp(float(result.score))
+            score_product *= constraint_score
+            if self._is_toolsandbox_guardrail(constraint):
+                if constraint_score <= 0.0:
+                    hard_pass = False
+            else:
+                non_guardrail_count += 1
+
+        score = score_product ** (1.0 / non_guardrail_count) if non_guardrail_count > 0 else score_product
+        score = 0.0 if not hard_pass else clamp(score)
+        threshold = milestone.pass_threshold if milestone.pass_threshold is not None else 0.8
+        if not hard_pass:
+            status = StageStatus.FAIL
+        elif score >= threshold:
+            status = StageStatus.PASS
+        elif score >= 0.6:
+            status = StageStatus.WARN
+        else:
+            status = StageStatus.FAIL
+
+        missing_count = sum(1 for item in constraint_scores if item.missing)
+        return MilestoneScore(
+            milestone_id=milestone.milestone_id,
+            boundary_id=boundary.boundary_id,
+            score=score,
+            status=status,
+            evidence=[line for item in constraint_scores for line in item.evidence],
+            missing_ratio=missing_count / len(constraint_scores),
+            hard_constraints_all_pass=hard_pass,
+            constraint_scores=constraint_scores,
+        )
+
     def score_custom_constraint(
         self,
         constraint: Constraint,
@@ -126,6 +208,17 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 得分 {score:.3f} ({measure_name})"],
             actual=actual,
         )
+
+    def _is_toolsandbox_constraint(self, constraint: Constraint) -> bool:
+        """判断约束是否来自 ToolSandbox 适配层。"""
+        if constraint is None:
+            return False
+        return isinstance(constraint.metadata.get("toolsandbox"), dict)
+
+    def _is_toolsandbox_guardrail(self, constraint: Constraint) -> bool:
+        """读取 ToolSandbox guardrail 标记。"""
+        metadata = constraint.metadata.get("toolsandbox") if constraint is not None else None
+        return isinstance(metadata, dict) and bool(metadata.get("guardrail"))
 
     def _custom_constraint_failure_score(
         self,
@@ -222,12 +315,30 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         schema = self._namespace_schema(namespace)
         if not schema:
             return dataframe
+        if namespace.upper() == "SANDBOX":
+            return self._restore_sandbox_schema(dataframe, schema)
         result = dataframe
         for column_name, dtype in schema.items():
             if column_name not in result.columns:
                 continue
             if result.schema.get(column_name) == pl.Null:
                 result = result.with_columns(pl.col(column_name).cast(dtype))
+        return result
+
+    def _restore_sandbox_schema(self, dataframe: pl.DataFrame, schema: dict[str, Any]) -> pl.DataFrame:
+        """恢复 SANDBOX 消息表的原生 enum/list schema。"""
+        if dataframe is None or schema is None:
+            raise ValueError("SANDBOX schema 恢复参数不能为空")
+        result = dataframe
+        for column_name, dtype in schema.items():
+            if column_name not in result.columns:
+                continue
+            if result.schema.get(column_name) == dtype:
+                continue
+            try:
+                result = result.with_columns(pl.col(column_name).cast(dtype))
+            except Exception as exc:
+                raise ValueError(f"ToolSandbox SANDBOX schema 恢复失败: column={column_name}") from exc
         return result
 
     def _namespace_schema(self, namespace: str) -> dict[str, Any]:
@@ -283,14 +394,31 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 break
         raw_overrides = metadata.get("column_similarity_measure") if isinstance(metadata, dict) else None
         if isinstance(raw_overrides, dict):
-            for column_name, measure_name in raw_overrides.items():
-                if not isinstance(measure_name, str):
-                    continue
-                measure = getattr(evaluation, measure_name, None)
-                if not callable(measure):
-                    raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_name}")
-                column_similarities[str(column_name)] = measure
+            for column_name, measure_spec in raw_overrides.items():
+                column_similarities[str(column_name)] = self._restore_column_similarity(evaluation, measure_spec)
         return column_similarities
+
+    def _restore_column_similarity(self, evaluation: Any, measure_spec: object) -> Any:
+        """从字符串或结构化 partial 规格恢复 ToolSandbox 列相似度函数。"""
+        if isinstance(measure_spec, str):
+            measure = getattr(evaluation, measure_spec, None)
+            if not callable(measure):
+                raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
+            return measure
+        if isinstance(measure_spec, dict):
+            measure_name = measure_spec.get("callable")
+            if not isinstance(measure_name, str) or not measure_name:
+                raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
+            measure = getattr(evaluation, measure_name, None)
+            if not callable(measure):
+                raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_name}")
+            raw_keywords = measure_spec.get("partial_keywords", {})
+            if raw_keywords is None:
+                raw_keywords = {}
+            if not isinstance(raw_keywords, dict):
+                raise ValueError(f"ToolSandbox partial column similarity 参数非法: {measure_name}")
+            return partial(measure, **dict(raw_keywords))
+        raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
 
     def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None) -> pl.DataFrame | None:
         """根据 ScoringContext 查找 ToolSandbox reference snapshot。"""
@@ -298,11 +426,19 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         if not isinstance(metadata, dict):
             return None
         reference_index = metadata.get("reference_milestone_node_index")
-        if reference_index is None or context is None:
+        if reference_index is None:
             return None
+        if context is None:
+            raise ValueError(
+                "ToolSandbox reference snapshot 缺失: "
+                f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
+            )
         reference_milestone_id = "initial" if reference_index == -1 else f"m{reference_index}"
         reference_snapshot = context.matched_snapshots.get(reference_milestone_id)
         if reference_snapshot is None:
-            return None
+            raise ValueError(
+                "ToolSandbox reference snapshot 缺失: "
+                f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
+            )
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
         return self._rows_to_dataframe(reference_snapshot.namespaces.get(namespace), namespace=namespace)

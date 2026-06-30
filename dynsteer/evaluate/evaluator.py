@@ -40,6 +40,7 @@ from dynsteer.model import (
 )
 from dynsteer.stage import build_stage_intervals
 from dynsteer.evaluate.milestone import (
+    find_blocked_milestone_hit_with_diagnostics,
     find_hit_milestone_with_diagnostics,
     match_milestones,
     milestone_score_matrix,
@@ -237,6 +238,7 @@ class DynSTEEREvaluator:
         terminated_by_policy = False
         termination_code: str | None = None
         termination_reason: str | None = None
+        termination_detail: JsonObject | None = None
 
         try:
             logger.info(
@@ -267,6 +269,7 @@ class DynSTEEREvaluator:
                     if decision.should_stop:
                         termination_code = decision.termination_code
                         termination_reason = decision.termination_reason
+                        termination_detail = decision.termination_detail
                         terminated_by_policy = True
                         harness.stop_case(
                             session,
@@ -287,6 +290,12 @@ class DynSTEEREvaluator:
 
             trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
             if not terminated_by_policy:
+                pending_stage_reports = self._pending_required_stage_results(task_case, state)
+                if pending_stage_reports:
+                    state = replace(
+                        state,
+                        stage_reports=[*state.stage_reports, *pending_stage_reports],
+                    )
                 settlement, stage_result, next_weights = self._finish_settlement(
                     state.settlements,
                     task_case,
@@ -309,6 +318,8 @@ class DynSTEEREvaluator:
                     state=state,
                 )
             )
+            if termination_detail is not None:
+                raw_summary["termination_detail"] = termination_detail
             return HarnessRunResult(
                 benchmark=config.benchmark,
                 case_id=case_id,
@@ -429,10 +440,36 @@ class DynSTEEREvaluator:
             else state.match_attempts
         )
         if hit is None:
+            blocked_detail = find_blocked_milestone_hit_with_diagnostics(
+                task_case,
+                trajectory,
+                step,
+                state.matched_settlements,
+                scorer=scorer,
+                context=context,
+            )
+            if blocked_detail is None:
+                return RuntimeEvaluationDecision(
+                    None,
+                    None,
+                    replace(state, match_attempts=next_attempts),
+                )
+            blocked_attempts = [*next_attempts, blocked_detail]
+            next_state = replace(state, match_attempts=blocked_attempts)
+            if not config.stop_on_stage_failure:
+                return RuntimeEvaluationDecision(None, None, next_state)
+            milestone_id = str(blocked_detail.get("milestone_id") or "unknown")
+            termination_code = f"milestone_predecessor_gap:{milestone_id}"
+            termination_detail = dict(blocked_detail)
+            termination_detail["code"] = termination_code
             return RuntimeEvaluationDecision(
                 None,
                 None,
-                replace(state, match_attempts=next_attempts),
+                next_state,
+                should_stop=True,
+                termination_code=termination_code,
+                termination_reason=self._blocked_milestone_termination_reason(blocked_detail),
+                termination_detail=termination_detail,
             )
         milestone, boundary, milestone_score = hit
         settlement, stage_result, next_weights = self._append_milestone_settlement(
@@ -495,6 +532,84 @@ class DynSTEEREvaluator:
             ),
         }
 
+    def _blocked_milestone_termination_reason(self, detail: JsonObject) -> str:
+        """根据路径断裂诊断生成可定位的中文终止原因。"""
+        if detail is None:
+            raise ValueError("路径断裂诊断不能为空")
+        current_step = detail.get("current_step")
+        step_id = None
+        if isinstance(current_step, dict):
+            step_id = current_step.get("step_id")
+        milestone_id = str(detail.get("milestone_id") or "unknown")
+        missing = detail.get("missing_predecessors")
+        missing_text = ",".join(str(item) for item in missing) if isinstance(missing, list) else "unknown"
+        score = detail.get("score")
+        evidence_text = ""
+        if isinstance(score, dict):
+            evidence = score.get("evidence")
+            if isinstance(evidence, list) and evidence:
+                evidence_text = str(evidence[0])
+            else:
+                evidence_text = f"score={score.get('score')}, status={score.get('status')}"
+        predecessor_diagnostics = detail.get("predecessor_diagnostics")
+        predecessor_text = ""
+        if isinstance(predecessor_diagnostics, list) and predecessor_diagnostics:
+            predecessor_text = str(predecessor_diagnostics[0].get("best_candidate"))
+        return (
+            f"当前 step={step_id} 命中 milestone={milestone_id}，"
+            f"但前驱 milestone={missing_text} 未匹配；"
+            f"当前 milestone 证据={evidence_text}；前驱诊断={predecessor_text}"
+        )
+
+    def _pending_required_stage_results(
+        self,
+        task_case: TaskCase,
+        state: RuntimeEvaluationState,
+    ) -> list[StageEvaluationResult]:
+        """为自然结束时仍未完成的 required milestone 生成失败阶段报告。"""
+        if task_case is None or state is None:
+            raise ValueError("pending required stage 参数不能为空")
+        graph = task_case.milestone_graph or MilestoneGraph()
+        diagnostics = build_final_milestone_diagnostics(
+            graph=graph,
+            matched=state.matched_settlements,
+            match_attempts=state.match_attempts,
+        )
+        results: list[StageEvaluationResult] = []
+        for item in diagnostics:
+            if item.get("required") is not True or item.get("final_state") == "matched":
+                continue
+            milestone_id = str(item.get("milestone_id") or "unknown")
+            blocker = str(item.get("blocker") or "unknown")
+            ready_ever = bool(item.get("ready_ever"))
+            attempt_count = int(item.get("attempt_count") or 0)
+            status = StageStatus.FAIL if ready_ever or attempt_count > 0 else StageStatus.MISSING
+            evidence = [
+                (
+                    f"required milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
+                    f"best_score={item.get('best_score')}, "
+                    f"best_boundary_step_index={item.get('best_boundary_step_index')}, "
+                    f"pending_predecessor_ids={item.get('pending_predecessor_ids')}"
+                )
+            ]
+            results.append(
+                StageEvaluationResult(
+                    stage_id=f"runtime:missing:{milestone_id}",
+                    milestone_id=milestone_id,
+                    evaluator_level=EvaluationLevel.CHEAP,
+                    status=status,
+                    stage_score=0.0,
+                    uncertainty=0.0,
+                    dimension_scores={dimension: 0.0 for dimension in Dimension},
+                    evidence=evidence,
+                    diagnosis=[f"required milestone {milestone_id} 未完成"],
+                    hard_constraints_all_pass=False,
+                    required_fields_missing_ratio=1.0,
+                    metadata=dict(item),
+                )
+            )
+        return results
+
     def _scoring_context(
         self,
         task_case: TaskCase,
@@ -515,6 +630,16 @@ class DynSTEEREvaluator:
             raise ValueError("评分上下文参数不能为空")
         matched_boundaries: dict[str, Boundary] = {}
         matched_snapshots: dict[str, StateSnapshot] = {}
+        initial_state = task_case.initial_state
+        if isinstance(initial_state, dict):
+            namespaces = initial_state.get("namespaces")
+            if isinstance(namespaces, dict):
+                matched_snapshots["initial"] = StateSnapshot(
+                    snapshot_id="initial",
+                    after_step_id="initial",
+                    after_step_index=0,
+                    namespaces={str(key): value for key, value in namespaces.items()},
+                )
         for milestone_id, settlement in matched.items():
             if settlement.boundary_step_index is None:
                 continue
@@ -630,7 +755,11 @@ class DynSTEEREvaluator:
             scorer=scorer,
             context=context,
         )
-        matched_ids = {stage.milestone_id for stage in stage_reports if stage.milestone_id is not None}
+        matched_ids = {
+            stage.milestone_id
+            for stage in stage_reports
+            if stage.milestone_id is not None and stage.status == StageStatus.PASS
+        }
         required_ids = {node.milestone_id for node in graph.nodes if node.required}
         if not graph.nodes:
             coverage = "none"
