@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import Dimension, StageEvaluationResult
+from dynsteer.model import Dimension, JsonObject, StageEvaluationResult
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class RuntimeEvaluationState:
     settlements: list[HarnessStageSettlement]
     matched_settlements: dict[str, HarnessStageSettlement]
     stage_reports: list[StageEvaluationResult]
+    match_attempts: list[JsonObject]
 
 
 @dataclass(frozen=True)

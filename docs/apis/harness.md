@@ -100,6 +100,12 @@ Harness 模式输出：
 
 `raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
+`raw_summary.json` 还包含实时 milestone 匹配诊断字段：
+
+- `milestone_graph_summary`: 当前 case 转换后的 milestone DAG 摘要，包含节点、边、required/optional milestone ID 和约束摘要。
+- `milestone_match_attempts`: 运行期每个存在 ready milestone 的候选 step 匹配尝试，包含命中前 matched/ready 集合、候选边界、候选 milestone 评分、是否被选中和拒绝原因。
+- `milestone_final_diagnostics`: 每个 milestone 的最终状态摘要，包含 `matched`/`pending`、是否曾经 ready、尝试次数、最佳分数、最佳边界、阻塞原因和未满足前驱。
+
 ## ToolSandbox 适配说明
 
 ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER 核心包直接依赖 ToolSandbox。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。

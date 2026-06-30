@@ -3,6 +3,7 @@ from __future__ import annotations
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Boundary,
+    Constraint,
     ConstraintScore,
     JsonObject,
     Milestone,
@@ -152,6 +153,69 @@ def milestone_summary_to_dict(milestone: Milestone) -> JsonObject:
     }
 
 
+def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
+    """将约束定义转换为轻量诊断摘要。
+
+    Args:
+        constraint: milestone 或 minefield 中的单条约束。
+
+    Returns:
+        可写入 raw_summary 的约束摘要，避免输出完整大字段。
+    """
+    if constraint is None:
+        raise ValueError("constraint 不能为空")
+    expected = constraint.expected
+    expected_summary: JsonObject = {"type": type(expected).__name__}
+    if isinstance(expected, dict):
+        rows = expected.get("rows")
+        columns = expected.get("columns")
+        expected_summary = {
+            "type": "dict",
+            "row_count": len(rows) if isinstance(rows, list) else None,
+            "columns": list(columns) if isinstance(columns, list) else None,
+        }
+    return {
+        "constraint_id": constraint.constraint_id,
+        "target": constraint.target.value,
+        "namespace": constraint.namespace,
+        "selector": constraint.selector,
+        "operator": constraint.operator.value,
+        "weight": constraint.weight,
+        "threshold": constraint.threshold,
+        "hard": constraint.hard,
+        "evaluator_hint": constraint.evaluator_hint,
+        "reference_milestone_id": constraint.reference_milestone_id,
+        "expected_summary": expected_summary,
+        "metadata": dict(constraint.metadata),
+    }
+
+
+def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
+    """构造运行期 milestone 图摘要。
+
+    Args:
+        graph: 当前任务的 milestone DAG。
+
+    Returns:
+        包含节点、边、required/optional 计数的诊断摘要。
+    """
+    if graph is None:
+        raise ValueError("graph 不能为空")
+    return {
+        "total_milestone_count": len(graph.nodes),
+        "required_milestone_ids": [node.milestone_id for node in graph.nodes if node.required],
+        "optional_milestone_ids": [node.milestone_id for node in graph.nodes if not node.required],
+        "edges": [[source, target] for source, target in graph.edges],
+        "nodes": [
+            {
+                **milestone_summary_to_dict(node),
+                "constraints": [constraint_summary_to_dict(constraint) for constraint in node.constraints],
+            }
+            for node in graph.nodes
+        ],
+    }
+
+
 def boundary_to_dict(boundary: Boundary) -> JsonObject:
     """将候选边界转换为诊断字典。
 
@@ -169,6 +233,36 @@ def boundary_to_dict(boundary: Boundary) -> JsonObject:
         "step_id": boundary.step_id,
         "snapshot_id": boundary.snapshot_id,
         "reason": boundary.reason,
+    }
+
+
+def build_milestone_candidate_detail(
+    milestone: Milestone,
+    boundary: Boundary | None,
+    score: MilestoneScore | None,
+    selected: bool,
+    reject_reason: str | None,
+) -> JsonObject:
+    """构造单个 ready milestone 在候选边界上的评分诊断。
+
+    Args:
+        milestone: 当前尝试匹配的 milestone。
+        boundary: 当前候选边界；被起点过滤时可为空。
+        score: 当前候选评分；被起点过滤时可为空。
+        selected: 该候选是否最终成为 checkpoint。
+        reject_reason: 未选中原因。
+
+    Returns:
+        单个候选评分详情。
+    """
+    if milestone is None:
+        raise ValueError("milestone 不能为空")
+    return {
+        "milestone_id": milestone.milestone_id,
+        "boundary": boundary_to_dict(boundary) if boundary is not None else None,
+        "score": milestone_score_to_dict(score) if score is not None else None,
+        "selected": selected,
+        "reject_reason": reject_reason,
     }
 
 
@@ -213,6 +307,115 @@ def build_milestone_matching_detail(
         "matched_milestone_ids_before_match": sorted(matched),
         "predecessor_milestone_ids": predecessor_milestone_ids,
     }
+
+
+def build_final_milestone_diagnostics(
+    graph: MilestoneGraph,
+    matched: dict[str, HarnessStageSettlement],
+    match_attempts: list[JsonObject],
+) -> list[JsonObject]:
+    """汇总每个 milestone 在运行结束时的匹配状态。
+
+    Args:
+        graph: 当前任务 milestone DAG。
+        matched: 已经结算的 milestone 映射。
+        match_attempts: 运行期逐 step 匹配尝试诊断。
+
+    Returns:
+        每个 milestone 的最终诊断列表。
+    """
+    if graph is None or matched is None or match_attempts is None:
+        raise ValueError("最终 milestone 诊断参数不能为空")
+    predecessors: dict[str, list[str]] = {node.milestone_id: [] for node in graph.nodes}
+    for source, target in graph.edges:
+        if target in predecessors:
+            predecessors[target].append(source)
+
+    diagnostics: list[JsonObject] = []
+    for node in graph.nodes:
+        candidate_entries: list[JsonObject] = []
+        ready_ever = False
+        for attempt in match_attempts:
+            ready_ids = attempt.get("ready_before")
+            if isinstance(ready_ids, list) and node.milestone_id in ready_ids:
+                ready_ever = True
+            raw_candidates = attempt.get("candidate_scores")
+            if not isinstance(raw_candidates, list):
+                continue
+            for candidate in raw_candidates:
+                if isinstance(candidate, dict) and candidate.get("milestone_id") == node.milestone_id:
+                    candidate_entries.append(candidate)
+
+        scored_entries = [
+            entry
+            for entry in candidate_entries
+            if isinstance(entry.get("score"), dict)
+        ]
+        best_entry = None
+        if scored_entries:
+            best_entry = max(scored_entries, key=lambda item: float(item["score"].get("score", 0.0)))
+        last_entry = candidate_entries[-1] if candidate_entries else None
+        pending_predecessors = [item for item in predecessors.get(node.milestone_id, []) if item not in matched]
+
+        if node.milestone_id in matched:
+            settlement = matched[node.milestone_id]
+            diagnostics.append(
+                {
+                    "milestone_id": node.milestone_id,
+                    "required": node.required,
+                    "final_state": "matched",
+                    "ready_ever": True,
+                    "attempt_count": len(candidate_entries),
+                    "blocker": None,
+                    "settlement_id": settlement.settlement_id,
+                    "boundary_step_index": settlement.boundary_step_index,
+                    "stage_start_step_index": settlement.start_step_index,
+                    "stage_end_step_index": settlement.end_step_index,
+                    "best_score": best_entry["score"]["score"] if best_entry is not None else settlement.score,
+                    "best_status": best_entry["score"]["status"] if best_entry is not None else settlement.status,
+                    "best_boundary_step_index": (
+                        best_entry["boundary"]["step_index"]
+                        if best_entry is not None and isinstance(best_entry.get("boundary"), dict)
+                        else settlement.boundary_step_index
+                    ),
+                    "last_reject_reason": None,
+                    "pending_predecessor_ids": [],
+                }
+            )
+            continue
+
+        if candidate_entries:
+            blocker = "attempted_but_not_pass"
+        elif pending_predecessors:
+            blocker = "predecessor_not_matched"
+        elif ready_ever:
+            blocker = "ready_without_candidate"
+        else:
+            blocker = "not_ready"
+        diagnostics.append(
+            {
+                "milestone_id": node.milestone_id,
+                "required": node.required,
+                "final_state": "pending",
+                "ready_ever": ready_ever,
+                "attempt_count": len(candidate_entries),
+                "blocker": blocker,
+                "settlement_id": None,
+                "boundary_step_index": None,
+                "stage_start_step_index": None,
+                "stage_end_step_index": None,
+                "best_score": best_entry["score"]["score"] if best_entry is not None else None,
+                "best_status": best_entry["score"]["status"] if best_entry is not None else None,
+                "best_boundary_step_index": (
+                    best_entry["boundary"]["step_index"]
+                    if best_entry is not None and isinstance(best_entry.get("boundary"), dict)
+                    else None
+                ),
+                "last_reject_reason": last_entry.get("reject_reason") if isinstance(last_entry, dict) else None,
+                "pending_predecessor_ids": pending_predecessors,
+            }
+        )
+    return diagnostics
 
 
 def build_finish_matching_detail(

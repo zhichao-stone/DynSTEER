@@ -4,10 +4,12 @@ from collections import defaultdict, deque
 
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import MatchConfig
+from dynsteer.evaluate.diagnostics import build_milestone_candidate_detail, boundary_to_dict
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.model import (
     Boundary,
+    JsonObject,
     Milestone,
     MilestoneGraph,
     MilestoneMapping,
@@ -276,19 +278,65 @@ def find_hit_milestone(
     Returns:
         命中的 (milestone, boundary, score)；未命中时返回 None。
     """
+    hit, _ = find_hit_milestone_with_diagnostics(
+        task_case=task_case,
+        trajectory=trajectory,
+        step=step,
+        matched=matched,
+        scorer=scorer,
+        context=context,
+    )
+    return hit
+
+
+def find_hit_milestone_with_diagnostics(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    step: TrajectoryStep,
+    matched: dict[str, HarnessStageSettlement],
+    scorer: GeneralScorer | None = None,
+    context: ScoringContext | None = None,
+) -> tuple[tuple[Milestone, Boundary, MilestoneScore] | None, JsonObject | None]:
+    """判断当前步骤是否命中 milestone，并返回未命中候选的诊断信息。
+
+    Args:
+        task_case: 当前任务。
+        trajectory: Agent 轨迹。
+        step: 当前增量步骤。
+        matched: 已结算 milestone 到结算节点的映射。
+        scorer: 可选评分器；为空时使用通用评分器。
+        context: 可选评分上下文。
+
+    Returns:
+        `(命中的 milestone 三元组, 匹配尝试诊断)`；无 milestone 图时诊断为空。
+    """
     if task_case is None or trajectory is None or step is None or matched is None:
         raise ValueError("milestone 判定参数不能为空")
     graph = task_case.milestone_graph
     if graph is None or not graph.nodes:
-        return None
+        return None, None
     boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
     if not boundaries:
-        return None
+        return None, None
+
+    ready = ready_milestones(graph, matched)
+    if not ready:
+        return None, None
+    candidate_details: list[JsonObject] = []
     best: tuple[Milestone, Boundary, MilestoneScore] | None = None
-    for milestone in ready_milestones(graph, matched):
+    for milestone in ready:
         predecessor_start = stage_start_for_milestone(graph, milestone.milestone_id, matched, None)
         for boundary in boundaries:
             if boundary.step_index <= predecessor_start and predecessor_start > 0:
+                candidate_details.append(
+                    build_milestone_candidate_detail(
+                        milestone=milestone,
+                        boundary=boundary,
+                        score=None,
+                        selected=False,
+                        reject_reason="boundary_not_after_predecessor",
+                    )
+                )
                 continue
             score = get_effective_scorer(scorer).score_milestone(
                 milestone,
@@ -297,8 +345,43 @@ def find_hit_milestone(
                 trajectory.snapshots,
                 context=context,
             )
+            candidate_details.append(
+                build_milestone_candidate_detail(
+                    milestone=milestone,
+                    boundary=boundary,
+                    score=score,
+                    selected=False,
+                    reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
+                )
+            )
             if score.status != StageStatus.PASS:
                 continue
             if best is None or score.score > best[2].score:
                 best = (milestone, boundary, score)
-    return best
+
+    selected_milestone_id = best[0].milestone_id if best is not None else None
+    selected_boundary_id = best[1].boundary_id if best is not None else None
+    for candidate in candidate_details:
+        boundary = candidate.get("boundary")
+        is_selected = (
+            candidate.get("milestone_id") == selected_milestone_id
+            and isinstance(boundary, dict)
+            and boundary.get("boundary_id") == selected_boundary_id
+        )
+        if is_selected:
+            candidate["selected"] = True
+            candidate["reject_reason"] = None
+        elif candidate.get("reject_reason") is None:
+            candidate["reject_reason"] = "lower_score_than_selected"
+
+    attempt_detail: JsonObject = {
+        "step_index": step.index,
+        "step_id": step.step_id,
+        "boundaries": [boundary_to_dict(boundary) for boundary in boundaries],
+        "boundary": boundary_to_dict(boundaries[0]) if boundaries else None,
+        "matched_before": sorted(matched),
+        "ready_before": [milestone.milestone_id for milestone in ready],
+        "candidate_scores": candidate_details,
+        "selected_milestone_id": selected_milestone_id,
+    }
+    return best, attempt_detail

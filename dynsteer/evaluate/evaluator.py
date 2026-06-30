@@ -10,6 +10,8 @@ from dynsteer.boundary import boundary_snapshot, generate_candidate_boundaries
 from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
 from dynsteer.evaluate.diagnostics import (
     build_finish_matching_detail,
+    build_final_milestone_diagnostics,
+    build_milestone_graph_summary,
     build_milestone_matching_detail,
     build_stage_trace,
 )
@@ -38,7 +40,7 @@ from dynsteer.model import (
 )
 from dynsteer.stage import build_stage_intervals
 from dynsteer.evaluate.milestone import (
-    find_hit_milestone,
+    find_hit_milestone_with_diagnostics,
     match_milestones,
     milestone_score_matrix,
     ready_milestones,
@@ -250,6 +252,7 @@ class DynSTEEREvaluator:
                 settlements=[self._start_settlement([])],
                 matched_settlements={},
                 stage_reports=[],
+                match_attempts=[],
             )
 
             while True:
@@ -300,6 +303,12 @@ class DynSTEEREvaluator:
                 )
             report = self._runtime_report(task_case, trajectory, state.stage_reports, scorer)
             raw_summary = harness.raw_summary_from_session(session)
+            raw_summary.update(
+                self._runtime_diagnostics_summary(
+                    task_case=task_case,
+                    state=state,
+                )
+            )
             return HarnessRunResult(
                 benchmark=config.benchmark,
                 case_id=case_id,
@@ -406,7 +415,7 @@ class DynSTEEREvaluator:
         scorer: GeneralScorer,
     ) -> RuntimeEvaluationDecision:
         context = self._scoring_context(task_case, trajectory, state.matched_settlements)
-        hit = find_hit_milestone(
+        hit, attempt_detail = find_hit_milestone_with_diagnostics(
             task_case,
             trajectory,
             step,
@@ -414,8 +423,17 @@ class DynSTEEREvaluator:
             scorer=scorer,
             context=context,
         )
+        next_attempts = (
+            [*state.match_attempts, attempt_detail]
+            if attempt_detail is not None
+            else state.match_attempts
+        )
         if hit is None:
-            return RuntimeEvaluationDecision(None, None, state)
+            return RuntimeEvaluationDecision(
+                None,
+                None,
+                replace(state, match_attempts=next_attempts),
+            )
         milestone, boundary, milestone_score = hit
         settlement, stage_result, next_weights = self._append_milestone_settlement(
             settlements=state.settlements,
@@ -435,6 +453,7 @@ class DynSTEEREvaluator:
             settlements=[*state.settlements, settlement],
             matched_settlements=next_matched,
             stage_reports=[*state.stage_reports, stage_result],
+            match_attempts=next_attempts,
         )
         stop_decision = self._should_stop_after_stage(config, task_case, trajectory, stage_result, scorer)
         if stop_decision is None:
@@ -448,6 +467,33 @@ class DynSTEEREvaluator:
             termination_code=termination_code,
             termination_reason=termination_reason,
         )
+
+    def _runtime_diagnostics_summary(
+        self,
+        task_case: TaskCase,
+        state: RuntimeEvaluationState,
+    ) -> JsonObject:
+        """构造实时评估 raw_summary 的 milestone 诊断信息。
+
+        Args:
+            task_case: 当前任务定义。
+            state: 运行结束时的评估状态。
+
+        Returns:
+            可合入 raw_summary 的诊断字段。
+        """
+        if task_case is None or state is None:
+            raise ValueError("运行期诊断参数不能为空")
+        graph = task_case.milestone_graph or MilestoneGraph()
+        return {
+            "milestone_graph_summary": build_milestone_graph_summary(graph),
+            "milestone_match_attempts": list(state.match_attempts),
+            "milestone_final_diagnostics": build_final_milestone_diagnostics(
+                graph=graph,
+                matched=state.matched_settlements,
+                match_attempts=state.match_attempts,
+            ),
+        }
 
     def _scoring_context(
         self,

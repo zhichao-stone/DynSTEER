@@ -188,6 +188,81 @@ def _state_snapshot_task_case() -> TaskCase:
     return TaskCase(task_id="task-state", task_description="状态任务", milestone_graph=graph)
 
 
+def _two_step_task_case() -> TaskCase:
+    first = Milestone(
+        milestone_id="m1",
+        name="第一步",
+        description="第一步需要说 one",
+        constraints=[
+            Constraint(
+                constraint_id="c1",
+                target=ConstraintTarget.STEP,
+                selector="$.content",
+                operator=Operator.CONTAINS,
+                expected="one",
+                hard=True,
+            )
+        ],
+    )
+    second = Milestone(
+        milestone_id="m2",
+        name="第二步",
+        description="第二步需要说 two",
+        constraints=[
+            Constraint(
+                constraint_id="c2",
+                target=ConstraintTarget.STEP,
+                selector="$.content",
+                operator=Operator.CONTAINS,
+                expected="two",
+                hard=True,
+            )
+        ],
+    )
+    graph = MilestoneGraph(nodes=[first, second], edges=[("m1", "m2")])
+    return TaskCase(task_id="task-two-step", task_description="两步任务", milestone_graph=graph)
+
+
+def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: Path) -> None:
+    harness = FakeRuntimeHarness(
+        task_case=_two_step_task_case(),
+        batches=[
+            HarnessAdvanceResult(
+                steps=[_step(0, "one"), _step(1, "not yet")],
+                snapshots=[],
+                continue_running=False,
+                reason="自然完成",
+            )
+        ],
+        metrics={},
+    )
+    evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
+
+    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+
+    graph_summary = result.raw_summary["milestone_graph_summary"]
+    assert graph_summary["total_milestone_count"] == 2
+    assert graph_summary["edges"] == [["m1", "m2"]]
+
+    attempts = result.raw_summary["milestone_match_attempts"]
+    failed_attempt = next(item for item in attempts if item["step_index"] == 1)
+    assert failed_attempt["ready_before"] == ["m2"]
+    assert failed_attempt["selected_milestone_id"] is None
+    assert failed_attempt["candidate_scores"][0]["milestone_id"] == "m2"
+    assert failed_attempt["candidate_scores"][0]["reject_reason"] == "status_not_pass"
+    assert failed_attempt["candidate_scores"][0]["score"]["status"] == "fail"
+
+    final = {
+        item["milestone_id"]: item
+        for item in result.raw_summary["milestone_final_diagnostics"]
+    }
+    assert final["m1"]["final_state"] == "matched"
+    assert final["m2"]["final_state"] == "pending"
+    assert final["m2"]["ready_ever"] is True
+    assert final["m2"]["attempt_count"] == 1
+    assert final["m2"]["blocker"] == "attempted_but_not_pass"
+
+
 def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> None:
     harness = FakeRuntimeHarness(
         task_case=_milestone_with_fatal_minefield(),
