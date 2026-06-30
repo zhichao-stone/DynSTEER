@@ -7,6 +7,7 @@ from typing import Any
 
 from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
+from dynsteer.evaluate.score import ScoringContext
 from dynsteer.model import Constraint, ConstraintTarget, Operator, StateSnapshot
 
 
@@ -263,3 +264,69 @@ def test_toolsandbox_scorer_converts_pyo3_panic_to_constraint_failure() -> None:
     assert result.score == 0.0
     assert result.missing is False
     assert any("评分失败" in item and "not yet implemented" in item for item in result.evidence)
+
+
+def test_toolsandbox_scorer_restores_reminder_null_column_schema_before_native_similarity() -> None:
+    def removal_similarity(
+        snapshot: Any,
+        target_dataframe: Any,
+        column_similarities: dict[str, object],
+        reference_snapshot: Any | None,
+    ) -> float:
+        assert reference_snapshot is not None
+        reference_snapshot.drop("sandbox_message_index").fill_null(strategy="zero")
+        snapshot.drop("sandbox_message_index").fill_null(strategy="zero")
+        target_dataframe.fill_null(strategy="zero")
+        return 1.0
+
+    evaluation = SimpleNamespace(
+        removal_similarity=removal_similarity,
+        _default_dbs_column_similarities={},
+    )
+    scorer = _FakeToolSandboxScorer(evaluation)
+    constraint = Constraint(
+        constraint_id="m2-c0",
+        target=ConstraintTarget.STATE_SNAPSHOT,
+        selector="$",
+        operator=Operator.CUSTOM,
+        expected={"rows": [{"reminder_id": "reminder-2"}]},
+        namespace="REMINDER",
+        hard=True,
+        evaluator_hint="toolsandbox",
+        metadata={
+            "toolsandbox": {
+                "database_namespace": "REMINDER",
+                "snapshot_constraint": "removal_similarity",
+                "reference_milestone_node_index": 0,
+                "column_similarity_measure": {},
+            }
+        },
+    )
+    reminder_rows = [
+        {
+            "sandbox_message_index": 17,
+            "reminder_id": "reminder-2",
+            "content": "Buy tickets",
+            "creation_timestamp": 1782698492.0,
+            "reminder_timestamp": 1782784832.0,
+            "latitude": None,
+            "longitude": None,
+        }
+    ]
+    current_snapshot = StateSnapshot(
+        snapshot_id="reminder:current",
+        after_step_id="s17",
+        after_step_index=17,
+        namespaces={"REMINDER": reminder_rows},
+    )
+    reference_snapshot = StateSnapshot(
+        snapshot_id="reminder:reference",
+        after_step_id="s15",
+        after_step_index=15,
+        namespaces={"REMINDER": reminder_rows},
+    )
+    context = ScoringContext(matched_snapshots={"m0": reference_snapshot})
+
+    result = scorer.score_constraint(constraint, current_snapshot, context=context)
+
+    assert result.score == 1.0

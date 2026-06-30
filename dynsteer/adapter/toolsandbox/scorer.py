@@ -10,6 +10,59 @@ from dynsteer.model import Constraint, ConstraintScore, JsonValue, Operator
 import polars as pl
 
 
+_FALLBACK_TOOLSANDBOX_SCHEMAS: dict[str, dict[str, Any]] = {
+    "SANDBOX": {
+        "sandbox_message_index": pl.Int32,
+        "sender": pl.String,
+        "recipient": pl.String,
+        "content": pl.String,
+        "openai_tool_call_id": pl.String,
+        "openai_function_name": pl.String,
+        "conversation_active": pl.Boolean,
+        "tool_call_exception": pl.String,
+        "tool_trace": pl.List(pl.String),
+        "visible_to": pl.List(pl.String),
+    },
+    "SETTING": {
+        "sandbox_message_index": pl.Int32,
+        "device_id": pl.String,
+        "cellular": pl.Boolean,
+        "wifi": pl.Boolean,
+        "location_service": pl.Boolean,
+        "low_battery_mode": pl.Boolean,
+        "latitude": pl.Float64,
+        "longitude": pl.Float64,
+    },
+    "CONTACT": {
+        "sandbox_message_index": pl.Int32,
+        "person_id": pl.String,
+        "name": pl.String,
+        "phone_number": pl.String,
+        "relationship": pl.String,
+        "is_self": pl.Boolean,
+    },
+    "MESSAGING": {
+        "sandbox_message_index": pl.Int32,
+        "message_id": pl.String,
+        "sender_person_id": pl.String,
+        "sender_phone_number": pl.String,
+        "recipient_person_id": pl.String,
+        "recipient_phone_number": pl.String,
+        "content": pl.String,
+        "creation_timestamp": pl.Float64,
+    },
+    "REMINDER": {
+        "sandbox_message_index": pl.Int32,
+        "reminder_id": pl.String,
+        "content": pl.String,
+        "creation_timestamp": pl.Float64,
+        "reminder_timestamp": pl.Float64,
+        "latitude": pl.Float64,
+        "longitude": pl.Float64,
+    },
+}
+
+
 class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
     """ToolSandbox 专用约束评分器。"""
 
@@ -112,8 +165,9 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         measure = getattr(evaluation, measure_name, None)
         if not callable(measure):
             raise ValueError(f"不支持的 ToolSandbox snapshot_constraint: {measure_name}")
-        snapshot = self._rows_to_dataframe(actual)
-        target = self._rows_to_dataframe(constraint.expected)
+        namespace = constraint.namespace or self._toolsandbox_namespace(constraint)
+        snapshot = self._rows_to_dataframe(actual, namespace=namespace)
+        target = self._rows_to_dataframe(constraint.expected, namespace=namespace)
         column_similarities = self._column_similarities(evaluation, constraint)
         reference_snapshot = self._reference_dataframe(constraint, context)
         kwargs = self._snapshot_constraint_kwargs(evaluation, constraint)
@@ -139,7 +193,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             return self._module_loader("tool_sandbox.common.tool_trace_extractors")
         raise ModuleNotFoundError("tool_sandbox.common.tool_trace_extractors")
 
-    def _rows_to_dataframe(self, value: JsonValue) -> pl.DataFrame:
+    def _rows_to_dataframe(self, value: JsonValue, namespace: str | None = None) -> pl.DataFrame:
         """将 DynSTEER JSON rows 转为 polars DataFrame。"""
         rows: JsonValue
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
@@ -150,7 +204,50 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             rows = []
         if not isinstance(rows, list):
             raise ValueError("ToolSandbox snapshot rows 必须是 list")
-        return pl.DataFrame(rows)
+        return self._restore_namespace_schema(pl.DataFrame(rows), namespace)
+
+    def _toolsandbox_namespace(self, constraint: Constraint) -> str:
+        """读取 ToolSandbox 约束对应的数据库命名空间。"""
+        metadata = constraint.metadata.get("toolsandbox")
+        if isinstance(metadata, dict):
+            namespace = metadata.get("database_namespace")
+            if isinstance(namespace, str):
+                return namespace
+        return constraint.namespace or ""
+
+    def _restore_namespace_schema(self, dataframe: pl.DataFrame, namespace: str | None) -> pl.DataFrame:
+        """恢复 ToolSandbox JSON 快照丢失的 Null 列类型。"""
+        if dataframe is None or not namespace:
+            return dataframe
+        schema = self._namespace_schema(namespace)
+        if not schema:
+            return dataframe
+        result = dataframe
+        for column_name, dtype in schema.items():
+            if column_name not in result.columns:
+                continue
+            if result.schema.get(column_name) == pl.Null:
+                result = result.with_columns(pl.col(column_name).cast(dtype))
+        return result
+
+    def _namespace_schema(self, namespace: str) -> dict[str, Any]:
+        """获取 ToolSandbox namespace 的列类型定义。"""
+        normalized = namespace.upper()
+        try:
+            execution_context = self._load_toolsandbox_execution_context_module()
+            schemas = getattr(getattr(execution_context, "ExecutionContext"), "dbs_schemas", {})
+            for key, value in dict(schemas).items():
+                if str(key).upper().endswith(normalized):
+                    return dict(value)
+        except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
+            return _FALLBACK_TOOLSANDBOX_SCHEMAS.get(normalized, {})
+        return _FALLBACK_TOOLSANDBOX_SCHEMAS.get(normalized, {})
+
+    def _load_toolsandbox_execution_context_module(self) -> Any:
+        """加载 ToolSandbox execution_context 模块。"""
+        if self._module_loader is not None:
+            return self._module_loader("tool_sandbox.common.execution_context")
+        raise ModuleNotFoundError("tool_sandbox.common.execution_context")
 
     def _snapshot_constraint_kwargs(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
         """恢复 ToolSandbox partial snapshot constraint 的关键字参数。"""
@@ -208,4 +305,4 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         if reference_snapshot is None:
             return None
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
-        return self._rows_to_dataframe(reference_snapshot.namespaces.get(namespace))
+        return self._rows_to_dataframe(reference_snapshot.namespaces.get(namespace), namespace=namespace)
