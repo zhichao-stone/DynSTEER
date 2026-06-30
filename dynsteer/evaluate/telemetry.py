@@ -132,6 +132,8 @@ def policy_stop_log_extra(
     matched_ids = sorted(decision.next_state.matched_settlements)
     pending_ids = _pending_required_ids(task_case.milestone_graph, matched_ids)
     milestone_score, milestone_status = _milestone_layer_from_stage(stage_result)
+    if milestone_score is None and milestone_status is None:
+        milestone_score, milestone_status = _milestone_layer_from_checkpoint(decision.checkpoint)
     last_attempt = _last_match_attempt(decision.next_state.match_attempts)
     extra: JsonObject = {
         "case_id": str(case_id),
@@ -200,6 +202,20 @@ def _milestone_layer_from_stage(stage_result: StageEvaluationResult | None) -> t
     if stage_result is None:
         return None, None
     matching = stage_result.metadata.get("milestone_matching")
+    if not isinstance(matching, dict):
+        return None, None
+    score = matching.get("score")
+    if not isinstance(score, dict):
+        return None, None
+    return _optional_float(score.get("score")), _optional_str(score.get("status"))
+
+
+def _milestone_layer_from_checkpoint(
+    checkpoint: HarnessStageSettlement | None,
+) -> tuple[float | None, str | None]:
+    if checkpoint is None:
+        return None, None
+    matching = checkpoint.metadata.get("milestone_matching")
     if not isinstance(matching, dict):
         return None, None
     score = matching.get("score")

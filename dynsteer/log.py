@@ -14,6 +14,14 @@ _LOGGER_LOCK = threading.RLock()
 _LOG_BUFFER_LOCK = threading.RLock()
 _LOG_EXTRA_TEXT_LIMIT = 160
 _LOG_EXTRA_LIST_LIMIT = 12
+_TERMINAL_SUPPRESSED_MESSAGES = {
+    "evaluator_milestone_match_attempt",
+    "evaluator_pending_milestones",
+    "standard_judge_input_snapshot",
+    "standard_judge_output_snapshot",
+    "expensive_judge_input_snapshot",
+    "expensive_judge_output_snapshot",
+}
 _LOG_RECORD_BUILTINS = {
     "args",
     "asctime",
@@ -40,6 +48,25 @@ _LOG_RECORD_BUILTINS = {
 }
 
 
+class TerminalLogFilter(logging.Filter):
+    """过滤不需要进入终端的高频诊断日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """判断日志记录是否应该输出到终端。
+
+        Args:
+            record: logging 产生的日志记录。
+
+        Returns:
+            `True` 表示允许终端输出，`False` 表示仅保留到文件/缓冲区。
+        """
+        if record is None:
+            raise ValueError("record 不能为空")
+        if record.name.startswith("dynsteer.judges"):
+            return False
+        return record.getMessage() not in _TERMINAL_SUPPRESSED_MESSAGES
+
+
 class StructuredLogFormatter(logging.Formatter):
     """在日志消息后追加轻量 JSON extra 的 formatter。"""
 
@@ -54,6 +81,25 @@ class StructuredLogFormatter(logging.Formatter):
         """
         message = super().format(record)
         extra = log_extra_from_record(record)
+        if not extra:
+            return message
+        return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
+
+
+class TerminalLogFormatter(logging.Formatter):
+    """终端专用 formatter，仅展示少量摘要字段。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """格式化终端日志并追加受控摘要。
+
+        Args:
+            record: logging 产生的日志记录。
+
+        Returns:
+            终端可读的短日志文本。
+        """
+        message = super().format(record)
+        extra = terminal_log_extra_from_record(record)
         if not extra:
             return message
         return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
@@ -107,8 +153,10 @@ def configure_logger(log_dir: str | Path) -> logging.Logger:
             handler.close()
             logger.removeHandler(handler)
         formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s")
+        terminal_formatter = TerminalLogFormatter("%(asctime)s %(levelname)s %(message)s")
         stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
+        stream_handler.setFormatter(terminal_formatter)
+        stream_handler.addFilter(TerminalLogFilter())
         file_path = directory / f"{datetime.now().date().isoformat()}.log"
         file_handler = logging.FileHandler(file_path, encoding="utf-8")
         file_handler.setFormatter(formatter)
@@ -160,6 +208,23 @@ def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
     return extra
 
 
+def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
+    """从 LogRecord 中提取终端展示用的精简 extra。
+
+    Args:
+        record: logging 产生的日志记录。
+
+    Returns:
+        仅包含 case、milestone、分数、诊断和证据的 JSON 对象。
+    """
+    if record is None:
+        raise ValueError("record 不能为空")
+    if record.getMessage() != "evaluator_milestone_checkpoint" and record.levelno < logging.WARNING:
+        return {}
+    raw_extra = log_extra_from_record(record)
+    return _compact_terminal_extra(raw_extra)
+
+
 def sanitize_log_value(value: object) -> JsonValue:
     """清洗日志 extra 值，避免长字段刷屏。
 
@@ -181,6 +246,29 @@ def sanitize_log_value(value: object) -> JsonValue:
             for key, item in list(value.items())[:_LOG_EXTRA_LIST_LIMIT]
         }
     return _truncate_text(str(value))
+
+
+def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
+    result: JsonObject = {}
+    for key in ("case_id", "milestone_id", "milestone_score", "milestone_status"):
+        value = extra.get(key)
+        if value is not None:
+            result[key] = value
+    diagnosis = extra.get("diagnosis")
+    if diagnosis is None:
+        diagnosis = extra.get("stage_first_diagnosis")
+    if diagnosis is None:
+        diagnosis = extra.get("judge_first_diagnosis")
+    if diagnosis is not None:
+        result["diagnosis"] = diagnosis
+    evidence = extra.get("evidence")
+    if evidence is None:
+        evidence = extra.get("stage_first_evidence")
+    if evidence is None:
+        evidence = extra.get("judge_first_evidence")
+    if evidence is not None:
+        result["evidence"] = evidence
+    return result
 
 
 def _truncate_text(value: str) -> str:

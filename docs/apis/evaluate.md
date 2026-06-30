@@ -156,4 +156,11 @@ Evaluator 会通过 `dynsteer.evaluate.telemetry` 构造短结构化日志：
 - `evaluator_policy_stop`: 策略提前终止，记录 termination code、matched/pending milestone、stage 结果和首条诊断。
 - `evaluator_pending_milestones`: 自然结束后仍未完成的 required milestone 摘要。
 
-这些日志会同时进入终端、`logs/<date>.log` 文件和内存日志缓冲区。日志 formatter 会对 dict/list extra 做 JSON 追加，并截断过长字段，避免输出完整 prompt、表格或大型 raw 数据。
+终端日志会使用更严格的过滤和摘要规则：
+
+- 不输出 `evaluator_milestone_match_attempt`。
+- 不输出 `evaluator_pending_milestones`。
+- `evaluator_milestone_checkpoint` 和 warning 只显示 `case_id`、`milestone_id`、`milestone_score`、`milestone_status`、`diagnosis`、`evidence`。
+- 不输出 `dynsteer.judges` 下的 judge 输入/输出快照日志；judge 快照仍通过 stage report metadata 写入运行产物。
+
+`logs/<date>.log` 文件和内存日志缓冲区仍保留完整结构化 extra。日志 formatter 会对 dict/list extra 做 JSON 追加，并截断过长字段，避免输出完整 prompt、表格或大型 raw 数据。

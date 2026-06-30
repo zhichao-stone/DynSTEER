@@ -191,6 +191,41 @@ def test_policy_stop_log_extra_distinguishes_milestone_pass_and_stage_fail() -> 
     assert extra["last_selected_milestone_id"] == "m1"
 
 
+def test_policy_stop_log_extra_reads_milestone_layer_from_checkpoint_metadata() -> None:
+    task_case = TaskCase(task_id="task-1", task_description="Turn off cellular", milestone_graph=None)
+    checkpoint = HarnessStageSettlement(
+        settlement_id="st1",
+        kind="milestone",
+        milestone_id="m1",
+        start_step_index=0,
+        end_step_index=2,
+        metadata={"milestone_matching": {"score": {"score": 0.899, "status": "pass"}}},
+    )
+    stage_result = StageEvaluationResult(
+        stage_id="runtime:st1",
+        milestone_id="m1",
+        evaluator_level=EvaluationLevel.STANDARD,
+        status=StageStatus.FAIL,
+        stage_score=0.2,
+        uncertainty=0.0,
+        dimension_scores={dimension: 0.2 for dimension in Dimension},
+        metadata={},
+    )
+    decision = RuntimeEvaluationDecision(
+        checkpoint=checkpoint,
+        stage_result=stage_result,
+        next_state=_state(),
+        should_stop=True,
+        termination_code="stage_failure:m1",
+        termination_reason="阶段失败",
+    )
+
+    extra = policy_stop_log_extra("case-1", task_case, decision, "stage_failure:m1", "阶段失败")
+
+    assert extra["milestone_score"] == pytest.approx(0.899)
+    assert extra["milestone_status"] == "pass"
+
+
 def test_pending_milestones_log_extra_reports_blocker_and_best_score() -> None:
     diagnostics = [
         {
