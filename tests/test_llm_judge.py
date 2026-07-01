@@ -11,13 +11,21 @@ from dynsteer.judges.base import LLMJudgeConfigurationError, LLMJudgeResponseErr
 from dynsteer.language import TaskLanguage
 from dynsteer.llm.base import BaseLLM, LLMMessage
 from dynsteer.model import (
+    Actor,
+    Constraint,
+    ConstraintTarget,
     Dimension,
     EvaluationLevel,
+    EventType,
+    Milestone,
+    MilestoneGraph,
     MilestoneScore,
+    Operator,
     StageInterval,
     StageStatus,
     TaskCase,
     Trajectory,
+    TrajectoryStep,
 )
 
 
@@ -80,8 +88,45 @@ def _task_case_with_language(language: str) -> TaskCase:
     return TaskCase(task_id="task-1", task_description="测试任务", metadata={"language": language})
 
 
+def _task_case_with_milestone_graph() -> TaskCase:
+    constraint = Constraint(
+        constraint_id="m1_c0",
+        target=ConstraintTarget.STATE_SNAPSHOT,
+        selector="$",
+        operator=Operator.CUSTOM,
+        expected={"rows": [{"id": "target"}], "columns": ["id"]},
+        namespace="CELLULAR",
+        evaluator_hint="toolsandbox",
+        metadata={"toolsandbox": {"database_namespace": "CELLULAR", "snapshot_constraint": "snapshot_similarity"}},
+    )
+    graph = MilestoneGraph(
+        nodes=[
+            Milestone("m0", "open settings", "打开设置", []),
+            Milestone("m1", "turn off cellular", "关闭蜂窝网络", [constraint]),
+        ],
+        edges=[("m0", "m1")],
+    )
+    return TaskCase(
+        "task-1",
+        "I want to send a message to someone.",
+        milestone_graph=graph,
+        metadata={"language": "en"},
+    )
+
+
 def _trajectory() -> Trajectory:
     return Trajectory(run_id="run-1", task_id="task-1", steps=[])
+
+
+def _trajectory_with_initial_user(content: str) -> Trajectory:
+    return Trajectory(
+        run_id="run-1",
+        task_id="task-1",
+        steps=[
+            TrajectoryStep("s0", 0, Actor.USER, EventType.MESSAGE, content=content),
+            TrajectoryStep("s1", 1, Actor.AGENT, EventType.TOOL_CALL, tool_call=None),
+        ],
+    )
 
 
 def _weights() -> dict[Dimension, float]:
@@ -133,7 +178,6 @@ def test_standard_prompt_contains_rubric_schema_and_evidence_rules() -> None:
     judge.evaluate_stage(_interval(), _task_case_with_language("en"), _trajectory(), _weights())
 
     prompt = llm.messages[0][-1].content
-    assert "Stage Review" in prompt
     assert "Evaluation objective" in prompt
     assert "Evidence rules" in prompt
     assert "dimension_scores" in prompt
@@ -157,6 +201,7 @@ def test_prompt_context_excludes_evaluation_level() -> None:
 
 def test_prompt_context_keeps_only_evaluation_fields() -> None:
     prompt_module = importlib.import_module("dynsteer.judges.prompt")
+    removed_warning_key = "task_description" + "_warning"
 
     prompt = prompt_module.build_standard_prompt(
         interval=_interval(),
@@ -167,12 +212,61 @@ def test_prompt_context_keeps_only_evaluation_fields() -> None:
 
     context = _context_from_prompt(prompt)
     assert set(context["task"]) == {"task_description"}
+    assert "stage_goal" in context
+    assert "rubric_dimension_focus" in context
+    assert removed_warning_key not in context
     assert "stage_id" not in context["interval"]
     assert "milestone_id" not in context["interval"]
     assert "weights" not in context
     assert "stage_score" not in context["required_output"]
     assert "needs_expensive" not in context["required_output"]
     assert "first_error_location_required" not in context["required_output"]
+
+
+def test_standard_prompt_context_contains_generic_stage_goal() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+    removed_warning_key = "task_description" + "_warning"
+
+    prompt = prompt_module.build_standard_prompt(
+        interval=StageInterval("runtime:st2", "m1", 0, 1, StageStatus.PASS),
+        task_case=_task_case_with_milestone_graph(),
+        trajectory=_trajectory_with_initial_user("Yes"),
+        weights=_weights(),
+    )
+
+    context = _context_from_prompt(prompt)
+    assert context["stage_goal"]["current_milestone_id"] == "m1"
+    assert context["stage_goal"]["predecessor_milestone_ids"] == ["m0"]
+    assert context["stage_goal"]["objective"] == "完成 milestone m1：关闭蜂窝网络"
+    assert context["stage_goal"]["constraint_targets"][0] == {
+        "constraint_id": "m1_c0",
+        "target": "state_snapshot",
+        "operator": "custom",
+        "selector": "$",
+        "namespace": "CELLULAR",
+        "hard": False,
+        "expected_summary": {"row_count": 1, "columns": ["id"]},
+    }
+    assert context["rubric_dimension_focus"] == ["progress", "state_consistency", "tool_quality"]
+    assert removed_warning_key not in context
+    assert context["task"]["task_description"] == "I want to send a message to someone."
+
+
+def test_standard_prompt_text_prioritizes_stage_goal_over_task_description() -> None:
+    prompt_module = importlib.import_module("dynsteer.judges.prompt")
+    removed_warning_key = "task_description" + "_warning"
+
+    prompt = prompt_module.build_standard_prompt(
+        interval=StageInterval("runtime:st2", "m1", 0, 1, StageStatus.PASS),
+        task_case=_task_case_with_milestone_graph(),
+        trajectory=_trajectory_with_initial_user("Yes"),
+        weights=_weights(),
+    )
+
+    assert "stage_goal is the current stage success condition" in prompt
+    assert "task.task_description is only task background for judgment" in prompt
+    assert "If task.task_description conflicts with stage_goal, follow stage_goal" in prompt
+    assert removed_warning_key not in prompt
 
 
 def test_standard_prompt_uses_chinese_output_schema_for_chinese_task() -> None:
@@ -228,15 +322,18 @@ def test_standard_judge_records_input_task_description_metadata() -> None:
     llm = FakeLLM([_valid_response()])
     judge = StandardJudge(llm=llm)
 
-    result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
+    result = judge.evaluate_stage(_interval(), _task_case_with_milestone_graph(), _trajectory(), _weights())
 
     prompt = llm.messages[0][-1].content
     metadata = result.metadata
-    assert metadata["task_description"] == "测试任务"
+    assert metadata["task_description"] == "I want to send a message to someone."
     assert metadata["stage_id"] == "stage:m1"
     assert metadata["milestone_id"] == "m1"
     assert metadata["prompt_context_digest"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    assert metadata["prompt_task_description_excerpt"] == "测试任务"
+    assert metadata["prompt_task_description_excerpt"] == "I want to send a message to someone."
+    assert metadata["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert isinstance(metadata["stage_goal_digest"], str)
+    assert len(metadata["stage_goal_digest"]) == 64
     assert metadata["stage_step_count"] == 0
     assert metadata["first_stage_step_excerpt"] is None
     assert metadata["last_stage_step_excerpt"] is None
@@ -294,16 +391,18 @@ def test_expensive_judge_records_input_output_snapshot_metadata() -> None:
     llm = FakeLLM([_valid_response(0.7), _valid_response(0.6), _valid_response(0.86)])
     judge = ExpensiveJudge(llm=llm, expensive_passes=1)
 
-    result = judge.evaluate_stage(_interval(), _task_case(), _trajectory(), _weights())
+    result = judge.evaluate_stage(_interval(), _task_case_with_milestone_graph(), _trajectory(), _weights())
 
     prompts = [messages[-1].content for messages in llm.messages]
     metadata = result.metadata
-    assert metadata["task_description"] == "测试任务"
+    assert metadata["task_description"] == "I want to send a message to someone."
     assert metadata["stage_id"] == "stage:m1"
     assert metadata["milestone_id"] == "m1"
     assert metadata["prompt_type"] == "adjudication"
     assert metadata["prompt_context_digest"] == hashlib.sha256(prompts[-1].encode("utf-8")).hexdigest()
-    assert metadata["prompt_task_description_excerpt"] == "测试任务"
+    assert metadata["prompt_task_description_excerpt"] == "I want to send a message to someone."
+    assert metadata["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert len(metadata["stage_goal_digest"]) == 64
     assert metadata["stage_step_count"] == 0
     assert metadata["first_stage_step_excerpt"] is None
     assert metadata["last_stage_step_excerpt"] is None
@@ -315,9 +414,11 @@ def test_expensive_judge_records_input_output_snapshot_metadata() -> None:
 
     passes = metadata["judge_passes"]
     assert [item["prompt_type"] for item in passes] == ["focus", "risk"]
-    assert passes[0]["task_description"] == "测试任务"
+    assert passes[0]["task_description"] == "I want to send a message to someone."
     assert passes[0]["prompt_context_digest"] == hashlib.sha256(prompts[0].encode("utf-8")).hexdigest()
-    assert passes[0]["prompt_task_description_excerpt"] == "测试任务"
+    assert passes[0]["prompt_task_description_excerpt"] == "I want to send a message to someone."
+    assert passes[0]["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert len(passes[0]["stage_goal_digest"]) == 64
     assert passes[0]["judge_first_diagnosis"] == "overall: 诊断"
     assert passes[0]["judge_first_evidence"] == "证据"
     assert passes[1]["prompt_context_digest"] == hashlib.sha256(prompts[1].encode("utf-8")).hexdigest()
@@ -341,10 +442,8 @@ def test_expensive_prompt_uses_focus_risk_and_adjudication_templates() -> None:
     judge.evaluate_stage(_interval(), _task_case_with_language("en"), _trajectory(), _weights())
 
     prompts = [messages[-1].content for messages in llm.messages]
-    assert "Focused Stage Review" in prompts[0]
-    assert "Focused Stage Review" in prompts[1]
-    assert "Expensive Risk Review" in prompts[2]
-    assert "Expensive Final Adjudication" in prompts[3]
+    assert "focus_dimensions" in prompts[0]
+    assert "fatal or near-fatal risk" in prompts[2]
     assert "previous_passes" in prompts[3]
 
 
@@ -363,6 +462,7 @@ def test_llm_judge_accepts_single_json_fenced_block() -> None:
 
 def test_judge_prompts_define_context_field_usage() -> None:
     prompt_module = importlib.import_module("dynsteer.judges.prompt")
+    removed_warning_key = "task_description" + "_warning"
 
     prompts = [
         prompt_module.build_standard_prompt(_interval(), _task_case_with_language("en"), _trajectory(), _weights()),
@@ -386,6 +486,8 @@ def test_judge_prompts_define_context_field_usage() -> None:
     for prompt in prompts:
         assert "Use these Context fields" in prompt
         assert "task.task_description" in prompt
+        assert "stage_goal" in prompt
+        assert removed_warning_key not in prompt
         assert "interval" in prompt
         assert "steps" in prompt
         assert "weights" not in prompt
@@ -403,7 +505,6 @@ def test_expensive_focus_prompt_uses_independent_rubric_without_judge_comparison
         focus_dimensions="progress,state_consistency",
     )
 
-    assert "Focused Stage Review" in prompt
     assert "Evidence rules" in prompt
     assert "Rubric" in prompt
     assert "focus_dimensions" in prompt

@@ -4,36 +4,21 @@ import pytest
 
 from dynsteer.evaluate.models import RuntimeEvaluationDecision, RuntimeEvaluationState
 from dynsteer.evaluate.telemetry import (
-    match_attempt_log_extra,
     milestone_checkpoint_log_extra,
-    pending_milestones_log_extra,
     policy_stop_log_extra,
 )
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
-    Actor,
     Boundary,
     ConstraintScore,
     Dimension,
     EvaluationLevel,
-    EventType,
     Milestone,
     MilestoneScore,
     StageEvaluationResult,
     StageStatus,
     TaskCase,
-    TrajectoryStep,
 )
-
-
-def _step() -> TrajectoryStep:
-    return TrajectoryStep(
-        step_id="s2",
-        index=2,
-        actor=Actor.AGENT,
-        event_type=EventType.MESSAGE,
-        content="done",
-    )
 
 
 def _stage_result() -> StageEvaluationResult:
@@ -73,55 +58,6 @@ def _state() -> RuntimeEvaluationState:
             }
         ],
     )
-
-
-def test_match_attempt_log_extra_summarizes_selected_and_best_candidate() -> None:
-    attempt_detail = {
-        "step_index": 2,
-        "step_id": "s2",
-        "matched_before": ["m0"],
-        "ready_before": ["m1", "m2"],
-        "selected_milestone_id": "m1",
-        "candidate_scores": [
-            {
-                "milestone_id": "m2",
-                "score": {"score": 0.1, "status": "fail", "constraint_scores": []},
-                "selected": False,
-                "reject_reason": "status_not_pass",
-            },
-            {
-                "milestone_id": "m1",
-                "score": {
-                    "score": 0.92,
-                    "status": "pass",
-                    "constraint_scores": [
-                        {"constraint_id": "c1", "score": 0.92, "missing": False},
-                    ],
-                },
-                "selected": True,
-                "reject_reason": None,
-            },
-        ],
-    }
-
-    extra = match_attempt_log_extra("case-1", _step(), attempt_detail)
-
-    assert extra["case_id"] == "case-1"
-    assert extra["step_index"] == 2
-    assert extra["step_id"] == "s2"
-    assert extra["step_actor"] == "agent"
-    assert extra["step_event_type"] == "message"
-    assert extra["ready_milestone_ids"] == ["m1", "m2"]
-    assert extra["matched_milestone_ids"] == ["m0"]
-    assert extra["selected_milestone_id"] == "m1"
-    assert extra["candidate_count"] == 2
-    assert extra["best_candidate_milestone_id"] == "m1"
-    assert extra["best_candidate_score"] == pytest.approx(0.92)
-    assert extra["best_candidate_status"] == "pass"
-    assert extra["best_candidate_reject_reason"] is None
-    assert extra["best_candidate_constraint_summary"] == [
-        {"constraint_id": "c1", "score": 0.92, "missing": False}
-    ]
 
 
 def test_milestone_checkpoint_log_extra_keeps_two_score_layers() -> None:
@@ -224,57 +160,3 @@ def test_policy_stop_log_extra_reads_milestone_layer_from_checkpoint_metadata() 
 
     assert extra["milestone_score"] == pytest.approx(0.899)
     assert extra["milestone_status"] == "pass"
-
-
-def test_pending_milestones_log_extra_reports_blocker_and_best_score() -> None:
-    diagnostics = [
-        {
-            "milestone_id": "m3",
-            "required": True,
-            "final_state": "pending",
-            "blocker": "attempted_but_not_pass",
-            "best_score": 0.0,
-            "best_status": "fail",
-            "best_boundary_step_index": 17,
-            "last_reject_reason": "status_not_pass",
-            "pending_predecessor_ids": [],
-        },
-        {
-            "milestone_id": "m4",
-            "required": True,
-            "final_state": "pending",
-            "blocker": "predecessor_not_matched",
-            "pending_predecessor_ids": ["m3"],
-        },
-    ]
-
-    extra = pending_milestones_log_extra("case-1", diagnostics)
-
-    assert extra["case_id"] == "case-1"
-    assert extra["pending_required_milestone_ids"] == ["m3", "m4"]
-    assert extra["pending_milestone_count"] == 2
-    assert extra["first_pending_milestone_id"] == "m3"
-    assert extra["blocker"] == "attempted_but_not_pass"
-    assert extra["best_score"] == pytest.approx(0.0)
-    assert extra["best_status"] == "fail"
-    assert extra["best_boundary_step_index"] == 17
-    assert extra["last_reject_reason"] == "status_not_pass"
-    assert extra["pending_predecessor_ids"] == []
-
-
-def test_log_extra_truncates_large_values() -> None:
-    extra = pending_milestones_log_extra(
-        "case-1",
-        [
-            {
-                "milestone_id": "m1",
-                "required": True,
-                "final_state": "pending",
-                "blocker": "x" * 500,
-            }
-        ],
-    )
-
-    assert isinstance(extra["blocker"], str)
-    assert len(extra["blocker"]) < 200
-    assert extra["blocker"].endswith("...")

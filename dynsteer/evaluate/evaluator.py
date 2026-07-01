@@ -10,7 +10,6 @@ from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
 from dynsteer.evaluate.diagnostics import (
     build_finish_matching_detail,
-    build_final_milestone_diagnostics,
     build_milestone_matching_detail,
     build_stage_trace,
 )
@@ -62,9 +61,7 @@ from dynsteer.evaluate.runtime import (
     task_description_mismatched,
 )
 from dynsteer.evaluate.telemetry import (
-    match_attempt_log_extra,
     milestone_checkpoint_log_extra,
-    pending_milestones_log_extra,
     policy_stop_log_extra,
 )
 from dynsteer.evaluate.utils import (
@@ -277,7 +274,7 @@ class DynSTEEREvaluator:
                 for step in advance.steps:
                     steps.append(step)
                     trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
-                    decision = self._evaluate_checkpoint_if_needed(
+                    decision = self._evaluate_checkpoint(
                         config,
                         case_id,
                         task_case,
@@ -318,18 +315,6 @@ class DynSTEEREvaluator:
             if not terminated_by_policy:
                 pending_stage_reports = pending_required_stage_results(task_case, state)
                 if pending_stage_reports:
-                    diagnostics = build_final_milestone_diagnostics(
-                        graph=task_case.milestone_graph or MilestoneGraph(),
-                        matched=state.matched_settlements,
-                        match_attempts=state.match_attempts,
-                    )
-                    logger.warning(
-                        "evaluator_pending_milestones",
-                        extra={
-                            "事件": "存在未完成required milestone",
-                            **pending_milestones_log_extra(case_id, diagnostics),
-                        },
-                    )
                     state = replace(
                         state,
                         stage_reports=[*state.stage_reports, *pending_stage_reports],
@@ -473,7 +458,7 @@ class DynSTEEREvaluator:
             first_failure_stage_id=failed,
         )
 
-    def _evaluate_checkpoint_if_needed(
+    def _evaluate_checkpoint(
         self,
         config: HarnessRunConfig,
         case_id: str,
@@ -497,14 +482,6 @@ class DynSTEEREvaluator:
             if attempt_detail is not None
             else state.match_attempts
         )
-        if attempt_detail is not None:
-            logger.info(
-                "evaluator_milestone_match_attempt",
-                extra={
-                    "事件": "milestone匹配尝试",
-                    **match_attempt_log_extra(case_id, step, attempt_detail),
-                },
-            )
         if hit is None:
             blocked_detail = find_blocked_milestone_hit_with_diagnostics(
                 task_case,

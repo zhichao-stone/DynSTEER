@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 
 from dynsteer.judges.base import LLMJudge
@@ -24,8 +23,6 @@ from dynsteer.model import (
     TaskCase,
     Trajectory,
 )
-
-logger = logging.getLogger(__name__)
 
 _FOCUS_GROUPS = (
     "progress,state_consistency",
@@ -73,14 +70,12 @@ class ExpensiveJudge(LLMJudge):
             )
             input_metadata = judge_input_metadata(interval, task_case, trajectory, prompt, prompt_type="focus")
             input_metadata["focus_dimensions"] = group
-            logger.info("expensive_judge_input_snapshot", extra=input_metadata)
             payload = self._call_json(prompt, language=language)
             payload["prompt_type"] = "focus"
             payload["focus_dimensions"] = group
             passes.append(payload)
             metadata = self._pass_metadata(payload, weights, input_metadata)
             pass_metadata.append(metadata)
-            logger.info("expensive_judge_output_snapshot", extra={**input_metadata, **metadata})
 
         risk_prompt = build_expensive_risk_prompt(
             interval=interval,
@@ -90,13 +85,11 @@ class ExpensiveJudge(LLMJudge):
             language=language,
         )
         risk_input_metadata = judge_input_metadata(interval, task_case, trajectory, risk_prompt, prompt_type="risk")
-        logger.info("expensive_judge_input_snapshot", extra=risk_input_metadata)
         risk_payload = self._call_json(risk_prompt, language=language)
         risk_payload["prompt_type"] = "risk"
         passes.append(risk_payload)
         risk_metadata = self._pass_metadata(risk_payload, weights, risk_input_metadata)
         pass_metadata.append(risk_metadata)
-        logger.info("expensive_judge_output_snapshot", extra={**risk_input_metadata, **risk_metadata})
 
         adjudicator_prompt = build_expensive_adjudication_prompt(
             interval=interval,
@@ -113,7 +106,6 @@ class ExpensiveJudge(LLMJudge):
             adjudicator_prompt,
             prompt_type="adjudication",
         )
-        logger.info("expensive_judge_input_snapshot", extra=input_metadata)
         payload = self._call_json(adjudicator_prompt, language=language)
         metadata: JsonObject = {
             "judge_passes": pass_metadata,
@@ -121,7 +113,6 @@ class ExpensiveJudge(LLMJudge):
         }
         result = self._result_from_payload(interval, EvaluationLevel.EXPENSIVE, payload, weights=weights, metadata=metadata)
         output_metadata = judge_result_output_metadata(result, input_metadata)
-        logger.info("expensive_judge_output_snapshot", extra={**input_metadata, **output_metadata})
         return replace(result, metadata={**result.metadata, **output_metadata})
 
     def _pass_metadata(

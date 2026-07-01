@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 
 from dynsteer.judges.base import LLMJudge
@@ -15,9 +14,6 @@ from dynsteer.model import (
     TaskCase,
     Trajectory,
 )
-
-logger = logging.getLogger(__name__)
-
 
 class StandardJudge(LLMJudge):
     """standard 粒度的单轮 LLM-as-a-Judge。"""
@@ -52,7 +48,6 @@ class StandardJudge(LLMJudge):
             language=language,
         )
         input_metadata = judge_input_metadata(interval, task_case, trajectory, prompt)
-        logger.info("standard_judge_input_snapshot", extra=input_metadata)
         payload = self._call_json(prompt, language=language)
         result = self._result_from_payload(
             interval,
@@ -62,5 +57,4 @@ class StandardJudge(LLMJudge):
             metadata=input_metadata,
         )
         output_metadata = judge_result_output_metadata(result, input_metadata)
-        logger.info("standard_judge_output_snapshot", extra={**input_metadata, **output_metadata})
         return replace(result, metadata={**result.metadata, **output_metadata})

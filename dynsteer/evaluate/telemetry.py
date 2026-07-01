@@ -11,48 +11,10 @@ from dynsteer.model import (
     MilestoneScore,
     StageEvaluationResult,
     TaskCase,
-    TrajectoryStep,
 )
 
 _TEXT_LIMIT = 160
 _LIST_LIMIT = 8
-
-
-def match_attempt_log_extra(case_id: str, step: TrajectoryStep, attempt_detail: JsonObject) -> JsonObject:
-    """构造 checkpoint 匹配尝试日志摘要。
-
-    Args:
-        case_id: benchmark case ID。
-        step: 当前触发检查的轨迹步骤。
-        attempt_detail: milestone 匹配诊断详情。
-
-    Returns:
-        可放入 logger extra 的轻量 JSON 摘要。
-    """
-    if case_id is None or step is None or attempt_detail is None:
-        raise ValueError("匹配尝试日志参数不能为空")
-    candidates = _dict_list(attempt_detail.get("candidate_scores"))
-    best_candidate = _best_candidate(candidates)
-    best_score = _score_object(best_candidate)
-    extra: JsonObject = {
-        "case_id": str(case_id),
-        "step_index": step.index,
-        "step_id": step.step_id,
-        "step_actor": step.actor.value,
-        "step_event_type": step.event_type.value,
-        "ready_milestone_ids": _string_list(attempt_detail.get("ready_before")),
-        "matched_milestone_ids": _string_list(attempt_detail.get("matched_before")),
-        "selected_milestone_id": _optional_str(attempt_detail.get("selected_milestone_id")),
-        "candidate_count": len(candidates),
-        "best_candidate_milestone_id": _optional_str(best_candidate.get("milestone_id") if best_candidate else None),
-        "best_candidate_score": _optional_float(best_score.get("score") if best_score else None),
-        "best_candidate_status": _optional_str(best_score.get("status") if best_score else None),
-        "best_candidate_reject_reason": _optional_str(
-            best_candidate.get("reject_reason") if best_candidate else None
-        ),
-        "best_candidate_constraint_summary": _constraint_summary(best_score),
-    }
-    return _sanitize_extra(extra)
 
 
 def milestone_checkpoint_log_extra(
@@ -158,39 +120,6 @@ def policy_stop_log_extra(
     return _sanitize_extra(extra)
 
 
-def pending_milestones_log_extra(case_id: str, diagnostics: list[JsonObject]) -> JsonObject:
-    """构造自然结束后 pending required milestone 摘要。
-
-    Args:
-        case_id: benchmark case ID。
-        diagnostics: `build_final_milestone_diagnostics()` 返回的最终诊断列表。
-
-    Returns:
-        可放入 logger extra 的轻量 JSON 摘要。
-    """
-    if case_id is None or diagnostics is None:
-        raise ValueError("pending milestone 日志参数不能为空")
-    pending = [
-        item
-        for item in diagnostics
-        if item.get("required") is True and item.get("final_state") != "matched"
-    ]
-    first = pending[0] if pending else {}
-    extra: JsonObject = {
-        "case_id": str(case_id),
-        "pending_required_milestone_ids": [str(item.get("milestone_id")) for item in pending],
-        "pending_milestone_count": len(pending),
-        "first_pending_milestone_id": _optional_str(first.get("milestone_id")),
-        "blocker": _optional_str(first.get("blocker")),
-        "best_score": _optional_float(first.get("best_score")),
-        "best_status": _optional_str(first.get("best_status")),
-        "best_boundary_step_index": _optional_int(first.get("best_boundary_step_index")),
-        "last_reject_reason": _optional_str(first.get("last_reject_reason")),
-        "pending_predecessor_ids": _string_list(first.get("pending_predecessor_ids")),
-    }
-    return _sanitize_extra(extra)
-
-
 def _pending_required_ids(graph: MilestoneGraph | None, matched_ids: list[str]) -> list[str]:
     if graph is None:
         return []
@@ -231,59 +160,10 @@ def _last_match_attempt(attempts: list[JsonObject]) -> JsonObject | None:
     return None
 
 
-def _best_candidate(candidates: list[JsonObject]) -> JsonObject | None:
-    scored = [candidate for candidate in candidates if _score_object(candidate) is not None]
-    if not scored:
-        return candidates[0] if candidates else None
-    selected = [candidate for candidate in scored if candidate.get("selected") is True]
-    if selected:
-        return selected[0]
-    return max(scored, key=lambda candidate: _optional_float(_score_object(candidate).get("score")) or 0.0)
-
-
-def _score_object(candidate: JsonObject | None) -> JsonObject | None:
-    if candidate is None:
-        return None
-    score = candidate.get("score")
-    return score if isinstance(score, dict) else None
-
-
-def _constraint_summary(score: JsonObject | None) -> list[JsonObject]:
-    if score is None:
-        return []
-    constraints = score.get("constraint_scores")
-    if not isinstance(constraints, list):
-        return []
-    result: list[JsonObject] = []
-    for item in constraints[:_LIST_LIMIT]:
-        if not isinstance(item, dict):
-            continue
-        result.append(
-            {
-                "constraint_id": _optional_str(item.get("constraint_id")),
-                "score": _optional_float(item.get("score")),
-                "missing": bool(item.get("missing")),
-            }
-        )
-    return result
-
-
 def _first_text(values: list[str]) -> str | None:
     if not values:
         return None
     return _truncate(str(values[0]))
-
-
-def _dict_list(value: JsonValue | object) -> list[JsonObject]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
 
 
 def _optional_str(value: object) -> str | None:
@@ -296,12 +176,6 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
-
-
-def _optional_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return int(value)
 
 
 def _sanitize_extra(value: JsonValue | JsonObject) -> JsonObject:

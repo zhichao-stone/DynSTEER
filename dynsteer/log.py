@@ -14,14 +14,6 @@ _LOGGER_LOCK = threading.RLock()
 _LOG_BUFFER_LOCK = threading.RLock()
 _LOG_EXTRA_TEXT_LIMIT = 160
 _LOG_EXTRA_LIST_LIMIT = 12
-_TERMINAL_SUPPRESSED_MESSAGES = {
-    "evaluator_milestone_match_attempt",
-    "evaluator_pending_milestones",
-    "standard_judge_input_snapshot",
-    "standard_judge_output_snapshot",
-    "expensive_judge_input_snapshot",
-    "expensive_judge_output_snapshot",
-}
 _LOG_RECORD_BUILTINS = {
     "args",
     "asctime",
@@ -46,25 +38,6 @@ _LOG_RECORD_BUILTINS = {
     "thread",
     "threadName",
 }
-
-
-class TerminalLogFilter(logging.Filter):
-    """过滤不需要进入终端的高频诊断日志。"""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        """判断日志记录是否应该输出到终端。
-
-        Args:
-            record: logging 产生的日志记录。
-
-        Returns:
-            `True` 表示允许终端输出，`False` 表示仅保留到文件/缓冲区。
-        """
-        if record is None:
-            raise ValueError("record 不能为空")
-        if record.name.startswith("dynsteer.judges"):
-            return False
-        return record.getMessage() not in _TERMINAL_SUPPRESSED_MESSAGES
 
 
 class StructuredLogFormatter(logging.Formatter):
@@ -156,7 +129,6 @@ def configure_logger(log_dir: str | Path) -> logging.Logger:
         terminal_formatter = TerminalLogFormatter("%(asctime)s %(levelname)s %(message)s")
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(terminal_formatter)
-        stream_handler.addFilter(TerminalLogFilter())
         file_path = directory / f"{datetime.now().date().isoformat()}.log"
         file_handler = logging.FileHandler(file_path, encoding="utf-8")
         file_handler.setFormatter(formatter)

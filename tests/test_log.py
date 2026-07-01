@@ -6,7 +6,6 @@ import logging
 from dynsteer.log import (
     BufferLogHandler,
     StructuredLogFormatter,
-    TerminalLogFilter,
     TerminalLogFormatter,
     clear_log_buffer,
     configure_logger,
@@ -115,38 +114,3 @@ def test_terminal_log_formatter_keeps_only_milestone_summary_fields() -> None:
         "diagnosis": "overall: 目标错位",
         "evidence": "step 18: agent message",
     }
-
-
-def test_terminal_log_filter_hides_noisy_runtime_and_judge_records() -> None:
-    filter_ = TerminalLogFilter()
-
-    noisy_messages = [
-        "evaluator_milestone_match_attempt",
-        "evaluator_pending_milestones",
-        "standard_judge_input_snapshot",
-        "standard_judge_output_snapshot",
-        "expensive_judge_input_snapshot",
-        "expensive_judge_output_snapshot",
-    ]
-    for message in noisy_messages:
-        record = logging.LogRecord(
-            name="dynsteer.judges.standard" if "judge" in message else "dynsteer.evaluate.evaluator",
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=1,
-            msg=message,
-            args=(),
-            exc_info=None,
-        )
-        assert not filter_.filter(record)
-
-    visible = logging.LogRecord(
-        name="dynsteer.evaluate.evaluator",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="evaluator_milestone_checkpoint",
-        args=(),
-        exc_info=None,
-    )
-    assert filter_.filter(visible)

@@ -56,6 +56,13 @@ judge = ExpensiveJudge(llm=llm, expensive_passes=3)
 
 benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配置，并在 `load_harness_run_configs(...)` 中写入 `HarnessRunConfig.metadata["language"]`；`DynSTEEREvaluator.evaluate(...)` 会合并到 `TaskCase.metadata`，judge 通过 `dynsteer.language.language_from_task(...)` 读取并归一为 `TaskLanguage`。
 
+LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focus`：
+
+- `stage_goal`: 当前阶段的权威成功条件，由 `StageInterval` 与 `TaskCase.milestone_graph` 生成。standard / expensive judge 必须优先判断该字段，而不是要求阶段片段完成整个 `task.task_description`。
+- `rubric_dimension_focus`: 当前阶段最应关注的维度，例如状态更新阶段关注 `progress`、`state_consistency`、`tool_quality`、`safety`。
+
+`stage_goal` 由 `dynsteer.stage.build_stage_goal(...)` 生成，只使用 `Milestone`、`Constraint`、`StageInterval` 等通用字段，不解析 benchmark 私有 metadata。
+
 ## StandardJudge
 
 `StandardJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成单轮 prompt 构造、LLM JSON 调用和结果转换，固定返回 `EvaluationLevel.STANDARD` 结果。standard prompt 包含任务上下文、阶段轨迹、维度权重、证据规则、评分 rubric 和严格 JSON 输出 schema。
@@ -66,11 +73,12 @@ benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配�
 - `stage_id` / `milestone_id` / `start_step_index` / `end_step_index`: 当前阶段标识与范围。
 - `prompt_context_digest`: 已渲染 standard prompt 的 SHA-256 digest，用于关联输入快照与输出诊断。
 - `prompt_task_description_excerpt`: 任务描述摘要。
+- `stage_goal_digest` / `stage_goal_objective_excerpt`: 当前阶段目标摘要，用于定位 LLM judge 是否按阶段目标判分。
 - `stage_step_count` / `first_stage_step_excerpt` / `last_stage_step_excerpt`: 阶段轨迹摘要。
 - `judge_status` / `judge_stage_score` / `judge_confidence`: LLM 输出转换后的阶段结果摘要。
 - `judge_first_diagnosis` / `judge_first_evidence`: LLM 输出的首条诊断和证据摘要。
 
-这些字段只用于审计与日志关联，不会向 prompt context 添加 `task_id`、`scenario_name` 等额外任务语义字段。
+这些字段只用于审计与日志关联，不会向 prompt context 添加 `task_id`、`scenario_name` 等额外任务语义字段；prompt 语义以 `stage_goal` 和轨迹证据为准。
 
 ## ExpensiveJudge
 
@@ -79,7 +87,7 @@ benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配�
 `ExpensiveJudge` 与 `StandardJudge` 使用同一套轻量输入/输出快照机制：
 
 - 最终 `StageEvaluationResult.metadata` 会记录 adjudication prompt 的 `task_description`、`stage_id`、`milestone_id`、`prompt_type="adjudication"`、`prompt_context_digest`、阶段步骤摘要、`judge_status`、`judge_stage_score`、`judge_confidence`、首条诊断和首条证据。
-- `metadata["judge_passes"]` 中每个 focus/risk 中间轮次也会记录各自的 `prompt_context_digest`、`task_description`、阶段步骤摘要、`judge_first_diagnosis` 和 `judge_first_evidence`。
+- `metadata["judge_passes"]` 中每个 focus/risk 中间轮次也会记录各自的 `prompt_context_digest`、`task_description`、`stage_goal_digest`、`stage_goal_objective_excerpt`、阶段步骤摘要、`judge_first_diagnosis` 和 `judge_first_evidence`。
 - 这些字段只用于审计和日志关联，不会写入 expensive adjudication 的 `previous_passes` prompt context。
 
 ## 分发约定

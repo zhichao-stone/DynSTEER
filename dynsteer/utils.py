@@ -91,6 +91,15 @@ def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
 
 
 def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None:
+    """从配置来源读取非空字符串并去除首尾空白。
+
+    Args:
+        source: 字符串配置映射，例如环境变量。
+        key: 需要读取的配置键。
+
+    Returns:
+        去除首尾空白后的字符串；值不存在、不是字符串或为空白时返回 None。
+    """
     value = source.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
