@@ -17,7 +17,7 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--runs-dir", default="runs", help="benchmark 中间产物与原生输出目录")
     parser.add_argument("--results-dir", default="results", help="最终 DynSTEER 评估结果目录")
     parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
-    parser.add_argument("--max-workers", type=int, default=1, help="benchmark case 最大并行 worker 数，默认 1")
+    parser.add_argument("--max-workers", type=int, default=3, help="benchmark case 最大并行 worker 数，默认 3")
     return parser.parse_args(argv)
 
 

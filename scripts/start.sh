@@ -12,12 +12,13 @@ Options:
   --data-root PATH      Benchmark config directory. Defaults to data/NAME.
   --runs-dir PATH       Runtime artifacts directory. Defaults to runs.
   --results-dir PATH    DynSTEER reports directory. Defaults to results.
+  --workers NUM         Max parallel benchmark workers. Defaults to main.py default.
   --env-file PATH       Env file to source before running. Defaults to .env.
   --no-env-file         Do not source an env file.
   -h, --help            Show this help.
 
 Examples:
-  ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox
+  ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
   docker compose run --rm -v ../ToolSandbox:/workspace/benchmark-sources/toolsandbox dynsteer --benchmark toolsandbox --source /workspace/benchmark-sources/toolsandbox
 EOF
 }
@@ -368,6 +369,7 @@ main() {
     local data_root=""
     local runs_dir="${DYNSTEER_RUNS_DIR:-runs}"
     local results_dir="${DYNSTEER_RESULTS_DIR:-results}"
+    local workers=""
     local env_file="${DYNSTEER_ENV_FILE:-.env}"
     local load_env_file="1"
     local extra_args=()
@@ -424,6 +426,16 @@ main() {
                 require_value "--results-dir" "$results_dir"
                 shift
                 ;;
+            --workers)
+                require_value "$1" "${2:-}"
+                workers="$2"
+                shift 2
+                ;;
+            --workers=*)
+                workers="${1#*=}"
+                require_value "--workers" "$workers"
+                shift
+                ;;
             --env-file)
                 require_value "$1" "${2:-}"
                 env_file="$2"
@@ -475,11 +487,17 @@ main() {
         install_benchmark_source "$project_root" "$benchmark" "$effective_data_root" "$source_path"
     fi
 
+    local worker_args=()
+    if [[ -n "$workers" ]]; then
+        worker_args=(--max-workers "$workers")
+    fi
+
     exec python main.py \
         --benchmark "$benchmark" \
         --data-root "$effective_data_root" \
         --runs-dir "$runs_dir" \
         --results-dir "$results_dir" \
+        "${worker_args[@]}" \
         "${extra_args[@]}"
 }
 
