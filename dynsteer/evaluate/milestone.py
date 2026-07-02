@@ -26,61 +26,7 @@ from dynsteer.model import (
     Trajectory,
     TrajectoryStep,
 )
-
-
-def _node_ids(graph: MilestoneGraph) -> set[str]:
-    ids = {node.milestone_id for node in graph.nodes}
-    for source, target in graph.edges:
-        ids.add(source)
-        ids.add(target)
-    return ids
-
-
-def _topological_order(graph: MilestoneGraph) -> list[str]:
-    ids = _node_ids(graph)
-    outgoing: dict[str, list[str]] = {node_id: [] for node_id in ids}
-    indegree: dict[str, int] = {node_id: 0 for node_id in ids}
-    for source, target in graph.edges:
-        outgoing[source].append(target)
-        indegree[target] += 1
-    queue: deque[str] = deque(sorted(node_id for node_id, degree in indegree.items() if degree == 0))
-    order: list[str] = []
-    while queue:
-        node_id = queue.popleft()
-        order.append(node_id)
-        for target in outgoing[node_id]:
-            indegree[target] -= 1
-            if indegree[target] == 0:
-                queue.append(target)
-    if len(order) != len(ids):
-        raise ValueError("milestone graph 存在环")
-    return order
-
-
-def validate_milestone_graph(graph: MilestoneGraph) -> None:
-    """校验 milestone 图节点唯一、边引用有效且无环。
-
-    Args:
-        graph: 待校验的 milestone DAG。
-
-    Raises:
-        ValueError: 图结构非法时抛出。
-    """
-    if graph is None:
-        raise ValueError("graph 不能为空")
-    explicit_ids = [node.milestone_id for node in graph.nodes]
-    if len(explicit_ids) != len(set(explicit_ids)):
-        raise ValueError("milestone_id 不能重复")
-    explicit_id_set = set(explicit_ids)
-    if explicit_id_set:
-        for source, target in graph.edges:
-            if source not in explicit_id_set or target not in explicit_id_set:
-                raise ValueError(f"边引用了不存在的 milestone: {source}->{target}")
-    _topological_order(graph)
-
-
-def _predecessors(graph: MilestoneGraph) -> dict[str, list[str]]:
-    return {node.milestone_id: list(node.dependency_predecessor_ids) for node in graph.nodes}
+from dynsteer.graph import build_adjacency, topological_order
 
 
 def _best_candidate(
@@ -122,14 +68,15 @@ def match_milestones(
     """
     if graph is None or boundaries is None or score_matrix is None or config is None:
         raise ValueError("match_milestones 入参不能为空")
-    validate_milestone_graph(graph)
     node_by_id = {node.milestone_id: node for node in graph.nodes}
-    predecessors = _predecessors(graph)
     assignments: dict[str, MilestoneMappingItem] = {}
     missing_required: list[str] = []
     evidence: list[str] = []
 
-    for milestone_id in _topological_order(graph):
+    predecessors, successors = build_adjacency({node.milestone_id for node in graph.nodes}, graph.edges)
+    order, _ = topological_order(predecessors, successors)
+
+    for milestone_id in order:
         milestone = node_by_id.get(milestone_id)
         if milestone is None:
             continue
@@ -262,39 +209,7 @@ def stage_start_for_milestone(
     return start_settlement.end_step_index if start_settlement is not None else 0
 
 
-def find_hit_milestone(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    step: TrajectoryStep,
-    matched: dict[str, HarnessStageSettlement],
-    scorer: GeneralScorer | None = None,
-    context: ScoringContext | None = None,
-) -> tuple[Milestone, Boundary, MilestoneScore] | None:
-    """判断当前步骤是否命中某个可命中 milestone。
-
-    Args:
-        task_case: 当前任务。
-        trajectory: Agent 轨迹。
-        step: 当前增量步骤。
-        matched: 已结算 milestone 到结算节点的映射。
-        scorer: 可选评分器；为空时使用通用评分器。
-        context: 可选评分上下文。
-
-    Returns:
-        命中的 (milestone, boundary, score)；未命中时返回 None。
-    """
-    hit, _ = find_hit_milestone_with_diagnostics(
-        task_case=task_case,
-        trajectory=trajectory,
-        step=step,
-        matched=matched,
-        scorer=scorer,
-        context=context,
-    )
-    return hit
-
-
-def find_blocked_milestone_hit_with_diagnostics(
+def find_blocked_milestone_hit(
     task_case: TaskCase,
     trajectory: Trajectory,
     step: TrajectoryStep,
@@ -313,7 +228,7 @@ def find_blocked_milestone_hit_with_diagnostics(
         return None
 
     node_by_id = {node.milestone_id: node for node in graph.nodes}
-    predecessor_map = _predecessors(graph)
+    predecessor_map = {node.milestone_id: list(node.dependency_predecessor_ids) for node in graph.nodes}
     ready_ids = {milestone.milestone_id for milestone in ready_milestones(graph, matched)}
     matched_ids = set(matched)
     effective_scorer = get_effective_scorer(scorer)
@@ -419,7 +334,7 @@ def find_blocked_milestone_hit_with_diagnostics(
     }
 
 
-def find_hit_milestone_with_diagnostics(
+def find_hit_milestone(
     task_case: TaskCase,
     trajectory: Trajectory,
     step: TrajectoryStep,

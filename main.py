@@ -1,36 +1,28 @@
 from __future__ import annotations
 
 import argparse
-import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from dynsteer.adapter.generic import load_milestone_graph, load_task_case, load_trajectory
-from dynsteer.adapter.toolsandbox import load_toolsandbox_experiment
-from dynsteer.evaluate import DynSTEEREvaluator
-from dynsteer.log import configure_logger, get_log_buffer
+from dynsteer.harness.config import load_harness_run_configs
+from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
+from dynsteer.log import configure_logger
 
 
 def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行 DynSTEER 阶段式动态轨迹评估实验")
-    # benchmark 模式相关参数
-    parser.add_argument("--benchmark", default=None, help="benchmark harness 名称，例如 toolsandbox")
+    """解析 benchmark-only 命令行参数。"""
+    parser = argparse.ArgumentParser(description="运行 DynSTEER benchmark 阶段式动态评估实验")
+    parser.add_argument("--benchmark", required=True, help="benchmark harness 名称，例如 toolsandbox")
     parser.add_argument("--data-root", default=None, help="benchmark 静态配置与 manifest 目录")
-    # 离线评估模式相关参数
-    parser.add_argument("--input", default=None, help="离线实验输入 JSON 文件路径")
-    parser.add_argument("--input-format", default="generic", choices=["generic", "toolsandbox"])
-    # 输出路径参数
     parser.add_argument("--runs-dir", default="runs", help="benchmark 中间产物与原生输出目录")
     parser.add_argument("--results-dir", default="results", help="最终 DynSTEER 评估结果目录")
-    parser.add_argument("--run-name", default=None)
-    parser.add_argument("--log-dir", default="logs")
-    parser.add_argument("--max-workers", type=int, default=1, help="benchmark config/case 并行 worker 数，默认 1")
+    parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
+    parser.add_argument("--max-workers", type=int, default=1, help="benchmark case 最大并行 worker 数，默认 1")
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """主实验入口：读取输入、执行轨迹评估、写出报告并返回状态码。
+    """主实验入口：加载 benchmark 配置列表并执行评估。
 
     Args:
         argv: 可选命令行参数，测试时可直接传入。
@@ -44,83 +36,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     results_dir = Path(args.results_dir)
 
     try:
-        if args.benchmark is not None:
-            if args.data_root is None:
-                data_root: Path = Path(__file__).parent / "data" / args.benchmark
-                if not data_root.exists():
-                    raise ValueError("运行 benchmark harness 时 需要提供可靠的data-root，通过--data-root提供或者data/{benchmark}")
-            else:
-                data_root = Path(args.data_root)
-            if not data_root.exists():
-                raise ValueError("运行 benchmark harness 时 需要提供可靠的data-root，通过--data-root提供或者data/{benchmark}")
-            if int(args.max_workers) < 1:
-                raise ValueError("--max-workers 必须大于 0")
-            
-            from dynsteer.harness.config import load_harness_run_configs
-            from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
+        data_root = Path(args.data_root) if args.data_root is not None else Path(__file__).parent / "data" / args.benchmark
+        if not data_root.exists():
+            raise ValueError("运行 benchmark harness 时需要提供可靠的 data-root，通过 --data-root 提供或者使用 data/{benchmark}")
+        if int(args.max_workers) < 1:
+            raise ValueError("--max-workers 必须大于 0")
 
-            configs = load_harness_run_configs(
-                benchmark=str(args.benchmark),
-                data_root=data_root,
-                runs_dir=runs_dir,
-                results_dir=results_dir,
-            )
-            outputs: list[HarnessEvaluationOutput] = run_harness_configs(
-                configs=configs,
-                max_workers=int(args.max_workers),
-            )
-            for output in outputs:
-                print(str(output.report_path))
-            return 0
-
-        if args.input is None:
-            raise ValueError("离线评估模式必须提供 --input")
-        input_path = Path(args.input)
-        run_name = args.run_name or input_path.stem
-        run_dir = results_dir / run_name
-        if not input_path.exists():
-            logger.error("实验输入文件不存在", extra={"input_path": str(input_path)})
-            return 1
-        data = json.loads(input_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("实验输入必须是 JSON 对象")
-        if args.input_format == "generic":
-            task_data = dict(data["task"])
-            task_data.setdefault("case_id", str(task_data.get("task_id", run_name)))
-            task_case = load_task_case(task_data)
-            trajectory = load_trajectory(data["trajectory"])
-            if data.get("milestone_graph") is not None:
-                task_case = replace(
-                    task_case,
-                    milestone_graph=load_milestone_graph(data["milestone_graph"]),
-                )
-        else:
-            task_case, trajectory = load_toolsandbox_experiment(data)
-
-        logger.info("开始执行轨迹评估", extra={"run_id": trajectory.run_id, "task_id": task_case.task_id})
-        evaluator = DynSTEEREvaluator.from_env()
-        report = evaluator.evaluate_trajectory(task_case, trajectory)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "report.json").write_text(
-            json.dumps(report.to_dict(), ensure_ascii=False, indent=4),
-            encoding="utf-8",
+        configs = load_harness_run_configs(
+            benchmark=str(args.benchmark),
+            data_root=data_root,
+            runs_dir=runs_dir,
+            results_dir=results_dir,
         )
-        (run_dir / "summary.json").write_text(
-            json.dumps(report.to_summary_dict(), ensure_ascii=False, indent=4),
-            encoding="utf-8",
+        outputs: list[HarnessEvaluationOutput] = run_harness_configs(
+            configs=configs,
+            max_workers=int(args.max_workers),
         )
-        logger.info("轨迹评估完成", extra={"report_path": str(run_dir / "report.json")})
-        (run_dir / "logs.json").write_text(
-            json.dumps(get_log_buffer(), ensure_ascii=False, indent=4),
-            encoding="utf-8",
-        )
-        print(str(run_dir / "report.json"))
+        for output in outputs:
+            print(str(output.report_path))
         return 0
-    except (KeyError, ValueError, json.JSONDecodeError) as exc:
-        logger.exception("实验输入解析失败", extra={"error": str(exc)})
+    except ValueError as exc:
+        logger.exception("benchmark 输入解析失败", extra={"error": str(exc)})
         return 1
     except Exception as exc:
-        logger.exception("实验执行失败", extra={"error": str(exc)})
+        logger.exception("benchmark 执行失败", extra={"error": str(exc)})
         return 2
 
 

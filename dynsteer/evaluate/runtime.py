@@ -48,7 +48,7 @@ def blocked_milestone_termination_reason(detail: JsonObject) -> str:
     """根据前驱断裂诊断生成中文终止原因。
 
     Args:
-        detail: `find_blocked_milestone_hit_with_diagnostics()` 返回的诊断对象。
+        detail: `find_blocked_milestone_hit()` 返回的诊断对象。
 
     Returns:
         面向日志和 stop_case 的中文终止原因。

@@ -86,15 +86,15 @@ class MyHarness(BaseBenchmarkHarness):
 
 `dynsteer.harness.runner` 提供：
 
-- `run_harness_case(config, evaluator)`: 运行一个 case。
-- `run_harness_cases(config, evaluator)`: 运行一个或多个 case。
-- `run_harness_configs(configs, max_workers=1)`: 运行多组配置并按 case 展开；`max_workers > 1` 时使用独立 harness/evaluator 实例并行执行，返回值按配置和 case 的原始顺序排列。
+- `run_harness_configs(configs, max_workers=1)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。
 
 Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
-Runner 在批量入口会输出一次待运行场景总览、一次开始日志和一次完成日志；单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
+Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)` 加载本组 `TaskCase` 列表，然后输出日志：`基于配置XXX，开始基于 {benchmark} 展开评估，Cases数量: N`。单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
 
-`run_harness_case(...)`、`run_harness_cases(...)` 和 `run_harness_configs(...)` 都会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
+`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
+
+Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示未知总步数进度条。并行运行时同时活动的进度条数量不超过 `max_workers`；case 完成后会关闭对应进度条并重建剩余进度条位置。warning 通过 tqdm 风格输出显示在进度条下方，文件日志和内存日志仍保留 INFO 结构化内容。
 
 Harness 模式输出：
 
@@ -104,9 +104,9 @@ Harness 模式输出：
 - `results/<benchmark>/<run_id>/<case_id>/report.json`
 - `results/<benchmark>/<run_id>/<case_id>/summary.json`
 
-`results/<benchmark>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
+`results/<benchmark>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics` 记录 case 评估耗时、轨迹 step 数、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 

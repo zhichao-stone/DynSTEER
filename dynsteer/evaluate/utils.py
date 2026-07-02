@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Optional, TYPE_CHECKING
 
 from dynsteer.config import ThresholdConfig
@@ -110,12 +109,10 @@ def enrich_stage_result(
         judge_uncertainty=1.0 - result.judge_confidence,
         thresholds=thresholds,
     )
-    return replace(
-        result,
-        uncertainty=uncertainty,
-        minefield_score=minefield_score,
-        fatal_minefield_score=minefield_score if fatal_minefield else 0.0,
-    )
+    result.uncertainty = uncertainty
+    result.minefield_score = minefield_score
+    result.fatal_minefield_score = minefield_score if fatal_minefield else 0.0
+    return result
 
 
 def first_failure_stage_id(stage_reports: list[StageEvaluationResult]) -> str | None:

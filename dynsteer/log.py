@@ -191,7 +191,7 @@ def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
     """
     if record is None:
         raise ValueError("record 不能为空")
-    if record.getMessage() != "evaluator_milestone_checkpoint" and record.levelno < logging.WARNING:
+    if record.levelno < logging.WARNING:
         return {}
     raw_extra = log_extra_from_record(record)
     return _compact_terminal_extra(raw_extra)

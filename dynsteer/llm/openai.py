@@ -78,3 +78,12 @@ class OpenaiLLM(BaseLLM):
             if isinstance(content, str) and content.strip():
                 return content.strip()
         raise LLMResponseError("OpenAI 返回内容缺少 message.content")
+
+    def _response_usage(self, response: object) -> dict[str, int | None]:
+        """从 OpenAI-compatible 响应中提取 token usage。"""
+        usage = getattr(response, "usage", None)
+        return {
+            "prompt_tokens": self._optional_usage_int(getattr(usage, "prompt_tokens", None)),
+            "completion_tokens": self._optional_usage_int(getattr(usage, "completion_tokens", None)),
+            "total_tokens": self._optional_usage_int(getattr(usage, "total_tokens", None)),
+        }

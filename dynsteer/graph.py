@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import replace
 
-from dynsteer.model import JsonObject, MilestoneGraph
+from dynsteer.model import MilestoneGraph
 
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 
 
-def _node_ids(graph: MilestoneGraph) -> list[str]:
-    return [node.milestone_id for node in graph.nodes]
-
-
 def _augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
-    ids = set(_node_ids(graph))
+    ids = {node.milestone_id for node in graph.nodes}
     if not ids:
         return [(START_NODE_ID, FINISH_NODE_ID)]
     indegree: dict[str, int] = {node_id: 0 for node_id in ids}
@@ -30,7 +25,7 @@ def _augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
     return augmented
 
 
-def _build_adjacency(
+def build_adjacency(
     node_ids: set[str],
     edges: list[tuple[str, str]],
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
@@ -45,14 +40,16 @@ def _build_adjacency(
     )
 
 
-def _topological_order(
+def topological_order(
     predecessors: dict[str, list[str]],
     successors: dict[str, list[str]],
 ) -> tuple[list[str], dict[str, int]]:
     indegree: dict[str, int] = {node_id: len(values) for node_id, values in predecessors.items()}
-    queue: deque[str] = deque([START_NODE_ID] if indegree.get(START_NODE_ID) == 0 else [])
+    root_node: list[str] = sorted(node_id for node_id, degree in indegree.items() if degree == 0)
+    queue: deque[str] = deque(root_node)
+    depths: dict[str, int] = {n: 0 for n in root_node}
+
     order: list[str] = []
-    depths: dict[str, int] = {START_NODE_ID: 0}
     while queue:
         node_id = queue.popleft()
         order.append(node_id)
@@ -101,27 +98,22 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
     """为 milestone graph 写入直接前驱、阶段锚点和增强图分析元数据。"""
     if graph is None:
         raise ValueError("graph 不能为空")
-    actual_node_ids = set(_node_ids(graph))
+    actualnode_ids = set(node_ids(graph))
     augmented = _augmented_edges(graph)
-    node_ids = actual_node_ids | {START_NODE_ID, FINISH_NODE_ID}
-    predecessors, successors = _build_adjacency(node_ids, augmented)
-    order, depths = _topological_order(predecessors, successors)
+    node_ids = actualnode_ids | {START_NODE_ID, FINISH_NODE_ID}
+    
+    predecessors, successors = build_adjacency(node_ids, augmented)
+    order, depths = topological_order(predecessors, successors)
     idom = _immediate_dominators(order, predecessors, depths)
-    nodes = [
-        replace(
-            node,
-            dependency_predecessor_ids=[
-                predecessor for predecessor in predecessors.get(node.milestone_id, []) if predecessor in actual_node_ids
-            ],
-            stage_anchor_predecessor_id=(
-                idom[node.milestone_id] if idom.get(node.milestone_id) not in {None, START_NODE_ID} else None
-            ),
-        )
-        for node in graph.nodes
-    ]
+
+    for node in graph.nodes:
+        node.dependency_predecessor_ids = [
+            predecessor for predecessor in predecessors.get(node.milestone_id, []) if predecessor in actualnode_ids
+        ]
+        anchor_id = idom.get(node.milestone_id)
+        node.stage_anchor_predecessor_id = anchor_id if anchor_id not in {None, START_NODE_ID} else None
     finish_anchor = idom.get(FINISH_NODE_ID)
-    metadata: JsonObject = dict(graph.metadata)
-    metadata["graph_analysis"] = {
+    graph.metadata["graph_analysis"] = {
         "start_node_id": START_NODE_ID,
         "finish_node_id": FINISH_NODE_ID,
         "augmented_edges": [[source, target] for source, target in augmented],
@@ -129,4 +121,4 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
             finish_anchor if finish_anchor not in {None, START_NODE_ID} else None
         ),
     }
-    return replace(graph, nodes=nodes, metadata=metadata)
+    return graph

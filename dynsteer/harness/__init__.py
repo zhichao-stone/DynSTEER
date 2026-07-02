@@ -19,23 +19,17 @@ def __getattr__(name: str) -> object:
     if name in {
         "HarnessCaseExecutionError",
         "HarnessEvaluationOutput",
-        "run_harness_case",
-        "run_harness_cases",
         "run_harness_configs",
     }:
         from dynsteer.harness.runner import (
             HarnessCaseExecutionError,
             HarnessEvaluationOutput,
-            run_harness_case,
-            run_harness_cases,
             run_harness_configs,
         )
 
         return {
             "HarnessCaseExecutionError": HarnessCaseExecutionError,
             "HarnessEvaluationOutput": HarnessEvaluationOutput,
-            "run_harness_case": run_harness_case,
-            "run_harness_cases": run_harness_cases,
             "run_harness_configs": run_harness_configs,
         }[name]
     raise AttributeError(name)
@@ -51,7 +45,5 @@ __all__ = [
     "HarnessRunResult",
     "HarnessStageSettlement",
     "load_harness_run_configs",
-    "run_harness_case",
-    "run_harness_cases",
     "run_harness_configs",
 ]

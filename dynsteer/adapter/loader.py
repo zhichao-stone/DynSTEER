@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
 from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkAdapter
@@ -66,8 +65,12 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
                 raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
             if task_case.case_id != case_id:
                 raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
+            if task_case.milestone_graph is not None:
+                task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
             save_task_case(path, task_case)
-        task_cases.append(load_task_case_file(path, expected_case_id=case_id))
+        else:
+            task_case = load_task_case_file(path, expected_case_id=case_id)
+        task_cases.append(task_case)
     return task_cases
 
 
@@ -95,10 +98,12 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
         raise ValueError("path 和 task_case 不能为空")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(task_case_to_json(_enriched_task_case(task_case)), ensure_ascii=False, indent=4),
+        json.dumps(task_case_to_json(task_case), ensure_ascii=False, indent=4),
         encoding="utf-8",
     )
 
+
+## 解析JSON对象为DynSTEER模型对象
 
 def _required_str(data: JsonObject, key: str) -> str:
     value = get_object(data, key, str)
@@ -222,7 +227,7 @@ def parse_milestone_graph(data: JsonObject) -> MilestoneGraph:
         default_thresholds={str(key): float(value) for key, value in thresholds.items()},
         metadata=_optional_object(graph_data, "metadata"),
     )
-    return enrich_milestone_graph(graph)
+    return graph
 
 
 def parse_task_case(data: JsonObject) -> TaskCase:
@@ -355,6 +360,8 @@ def load_trajectory(data: JsonObject) -> Trajectory:
     )
 
 
+## 将DynSTEER模型对象转换为JSON对象
+
 def constraint_to_json(constraint: Constraint) -> JsonObject:
     """将 Constraint 转换为 JSON 对象。"""
     return {
@@ -403,41 +410,33 @@ def minefield_to_json(minefield: Minefield) -> JsonObject:
 
 def milestone_graph_to_json(graph: MilestoneGraph) -> JsonObject:
     """将 MilestoneGraph 转换为 JSON 对象。"""
-    enriched = enrich_milestone_graph(graph)
     return {
-        "nodes": [milestone_to_json(item) for item in enriched.nodes],
-        "edges": [[source, target] for source, target in enriched.edges],
-        "minefields": [minefield_to_json(item) for item in enriched.minefields],
-        "default_thresholds": dict(enriched.default_thresholds),
-        "metadata": json_safe(enriched.metadata),
+        "nodes": [milestone_to_json(item) for item in graph.nodes],
+        "edges": [[source, target] for source, target in graph.edges],
+        "minefields": [minefield_to_json(item) for item in graph.minefields],
+        "default_thresholds": dict(graph.default_thresholds),
+        "metadata": json_safe(graph.metadata),
     }
 
 
 def task_case_to_json(task_case: TaskCase) -> JsonObject:
     """将 TaskCase 转换为 adapted JSON 对象。"""
-    normalized = _enriched_task_case(task_case)
     return {
-        "task_id": normalized.task_id,
-        "task_description": normalized.task_description,
-        "case_id": normalized.case_id,
-        "environment_schema": json_safe(normalized.environment_schema),
-        "tool_schema": json_safe(normalized.tool_schema),
-        "policy_constraints": json_safe(normalized.policy_constraints),
-        "initial_state": json_safe(normalized.initial_state),
+        "task_id": task_case.task_id,
+        "task_description": task_case.task_description,
+        "case_id": task_case.case_id,
+        "environment_schema": json_safe(task_case.environment_schema),
+        "tool_schema": json_safe(task_case.tool_schema),
+        "policy_constraints": json_safe(task_case.policy_constraints),
+        "initial_state": json_safe(task_case.initial_state),
         "milestone_graph": (
-            milestone_graph_to_json(normalized.milestone_graph)
-            if normalized.milestone_graph is not None
+            milestone_graph_to_json(task_case.milestone_graph)
+            if task_case.milestone_graph is not None
             else None
         ),
-        "task_types": [item.value for item in normalized.task_types],
-        "metadata": json_safe(normalized.metadata),
+        "task_types": [item.value for item in task_case.task_types],
+        "metadata": json_safe(task_case.metadata),
     }
-
-
-def _enriched_task_case(task_case: TaskCase) -> TaskCase:
-    if task_case.milestone_graph is None:
-        return task_case
-    return replace(task_case, milestone_graph=enrich_milestone_graph(task_case.milestone_graph))
 
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:

@@ -3,70 +3,15 @@ from __future__ import annotations
 from dynsteer.evaluate.models import RuntimeEvaluationDecision
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
-    Boundary,
     JsonObject,
     JsonValue,
-    Milestone,
     MilestoneGraph,
-    MilestoneScore,
     StageEvaluationResult,
     TaskCase,
 )
 
 _TEXT_LIMIT = 160
 _LIST_LIMIT = 8
-
-
-def milestone_checkpoint_log_extra(
-    case_id: str,
-    milestone: Milestone,
-    boundary: Boundary,
-    milestone_score: MilestoneScore,
-    stage_result: StageEvaluationResult,
-    matched_before: dict[str, HarnessStageSettlement],
-    ready_before: list[str],
-) -> JsonObject:
-    """构造 milestone 命中日志摘要。
-
-    Args:
-        case_id: benchmark case ID。
-        milestone: 当前命中的 milestone。
-        boundary: 当前命中的边界。
-        milestone_score: milestone 匹配评分。
-        stage_result: 对应阶段评估结果。
-        matched_before: 命中前已经结算的 milestone。
-        ready_before: 命中前可匹配 milestone ID。
-
-    Returns:
-        可放入 logger extra 的轻量 JSON 摘要。
-    """
-    if (
-        case_id is None
-        or milestone is None
-        or boundary is None
-        or milestone_score is None
-        or stage_result is None
-        or matched_before is None
-        or ready_before is None
-    ):
-        raise ValueError("checkpoint 日志参数不能为空")
-    extra: JsonObject = {
-        "case_id": str(case_id),
-        "milestone_id": milestone.milestone_id,
-        "boundary_id": boundary.boundary_id,
-        "boundary_step_index": boundary.step_index,
-        "ready_milestone_ids_before_match": list(ready_before),
-        "matched_milestone_ids_before_match": sorted(matched_before),
-        "milestone_score": milestone_score.score,
-        "milestone_status": milestone_score.status.value,
-        "stage_id": stage_result.stage_id,
-        "stage_score": stage_result.stage_score,
-        "stage_status": stage_result.status.value,
-        "evaluator_level": stage_result.evaluator_level.value,
-        "stage_first_evidence": _first_text(stage_result.evidence),
-        "stage_first_diagnosis": _first_text(stage_result.diagnosis),
-    }
-    return _sanitize_extra(extra)
 
 
 def policy_stop_log_extra(

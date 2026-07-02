@@ -135,13 +135,13 @@ def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | N
     if scenarios is None:
         return None
     if not isinstance(scenarios, list):
-        raise ValueError(f"run_config.json 第 {index} 项的 scenarios 必须是字符串数组")
+        raise ValueError(f"run_configs.json 第 {index} 项的 scenarios 必须是字符串数组")
     if not scenarios:
         return None
     case_ids: list[str] = []
     for scenario in scenarios:
         if not isinstance(scenario, str) or not scenario.strip():
-            raise ValueError(f"run_config.json 第 {index} 项的 scenarios 不能包含空字符串")
+            raise ValueError(f"run_configs.json 第 {index} 项的 scenarios 不能包含空字符串")
         case_ids.append(scenario.strip())
     return tuple(case_ids)
 
@@ -156,12 +156,12 @@ def load_harness_run_configs(
 
     Args:
         benchmark: benchmark 名称。
-        data_root: 包含 benchmark.json 与 run_config.json 的目录。
+        data_root: 包含 benchmark.json 与 run_configs.json 的目录。
         runs_dir: benchmark 原生输出与中间产物目录。
         results_dir: DynSTEER 评估结果目录。
 
     Returns:
-        按 run_config.json 顺序生成的 HarnessRunConfig 列表。
+        按 run_configs.json 顺序生成的 HarnessRunConfig 列表。
     """
     if benchmark is None or not benchmark.strip():
         raise ValueError("benchmark 不能为空")
@@ -176,21 +176,21 @@ def load_harness_run_configs(
     tool_backend = _required_str(manifest, "tool_backend", "benchmark.json")
     language = _manifest_language(manifest)
 
-    raw_specs = _read_json_array(data_root / "run_config.json", "run_config.json")
+    raw_specs = _read_json_array(data_root / "run_configs.json", "run_configs.json")
     if not raw_specs:
-        raise ValueError("run_config.json 至少需要包含一组运行配置")
+        raise ValueError("run_configs.json 至少需要包含一组运行配置")
 
     configs: list[HarnessRunConfig] = []
     seen_run_ids: set[str] = set()
     judge_config = load_judge_config_from_env()
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
-            raise ValueError(f"run_config.json 第 {index} 项必须是 JSON 对象")
+            raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
         metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key != "scenarios"}
         metadata["language"] = language
         if normalized_benchmark == "toolsandbox":
-            _required_str(raw_spec, "agent", f"run_config.json 第 {index} 项")
-            _required_str(raw_spec, "user", f"run_config.json 第 {index} 项")
+            _required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
+            _required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
         metadata.setdefault("tool_backend", tool_backend)
         run_id = _optional_str(raw_spec, "run_id") or _optional_str(raw_spec, "name")
         if run_id is None:
@@ -201,7 +201,7 @@ def load_harness_run_configs(
             else:
                 run_id = f"run_{index}"
         if run_id in seen_run_ids:
-            raise ValueError(f"run_config.json 中 run_id 重复: {run_id}")
+            raise ValueError(f"run_configs.json 中 run_id 重复: {run_id}")
         seen_run_ids.add(run_id)
         metadata["run_config_index"] = index
         metadata["run_id"] = run_id

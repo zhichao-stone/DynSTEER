@@ -198,7 +198,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         cli_utils = self._module_loader("tool_sandbox.cli.utils")
         role_impl_type = getattr(cli_utils, "RoleImplType")
         if not isinstance(role_name, str) or not role_name.strip():
-            raise ValueError(f"ToolSandbox run_config.json 必须提供 {role_label}")
+            raise ValueError(f"ToolSandbox run_configs.json 必须提供 {role_label}")
         effective_name = role_name.strip()
         try:
             return role_impl_type[effective_name]

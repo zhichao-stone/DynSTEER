@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
 from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
@@ -475,7 +474,7 @@ def load_toolsandbox_experiment(data: JsonObject) -> tuple[TaskCase, Trajectory]
         )
     graph_data = experiment.get("milestone_graph", experiment.get("milestones"))
     if graph_data is not None:
-        task_case = replace(task_case, milestone_graph=parse_milestone_graph(ensure_json_object(graph_data)))
+        task_case.milestone_graph = parse_milestone_graph(ensure_json_object(graph_data))
     return task_case, trajectory
 
 

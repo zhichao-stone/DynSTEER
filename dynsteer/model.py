@@ -92,26 +92,26 @@ class StageStatus(str, Enum):
 
 ## 轨迹与状态模型
 
-@dataclass(frozen=True)
+@dataclass
 class ToolCall:
     name: str
     arguments: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class ToolResult:
     success: bool
     content: JsonValue = None
     exception: Optional[str] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class StepCost:
     tokens: Optional[int] = None
     latency_ms: Optional[int] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class TrajectoryStep:
     step_id: str
     index: int
@@ -126,7 +126,7 @@ class TrajectoryStep:
     raw: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class StateSnapshot:
     snapshot_id: str
     after_step_id: str
@@ -137,7 +137,7 @@ class StateSnapshot:
 
 ## Milestone 与约束模型
 
-@dataclass(frozen=True)
+@dataclass
 class Constraint:
     constraint_id: str
     target: ConstraintTarget
@@ -153,7 +153,7 @@ class Constraint:
     metadata: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Milestone:
     milestone_id: str
     name: str
@@ -166,13 +166,13 @@ class Milestone:
     stage_anchor_predecessor_id: Optional[str] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class MinefieldPenalty:
     mode: str
     value: float
 
 
-@dataclass(frozen=True)
+@dataclass
 class Minefield:
     minefield_id: str
     name: str
@@ -183,7 +183,7 @@ class Minefield:
     metadata: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class MilestoneGraph:
     nodes: list[Milestone] = field(default_factory=list)
     edges: list[tuple[str, str]] = field(default_factory=list)
@@ -192,7 +192,7 @@ class MilestoneGraph:
     metadata: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class TaskCase:
     task_id: str
     task_description: str
@@ -206,7 +206,7 @@ class TaskCase:
     metadata: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Trajectory:
     run_id: str
     task_id: str
@@ -217,7 +217,7 @@ class Trajectory:
     raw: JsonObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Boundary:
     boundary_id: str
     step_index: int
@@ -226,7 +226,7 @@ class Boundary:
     step_id: Optional[str] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class ConstraintScore:
     constraint_id: str
     score: float
@@ -235,7 +235,7 @@ class ConstraintScore:
     actual: JsonValue = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class MilestoneScore:
     milestone_id: str
     boundary_id: str
@@ -247,7 +247,7 @@ class MilestoneScore:
     constraint_scores: list[ConstraintScore] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass
 class MilestoneMappingItem:
     milestone_id: str
     boundary_id: str
@@ -255,7 +255,7 @@ class MilestoneMappingItem:
     score: MilestoneScore
 
 
-@dataclass(frozen=True)
+@dataclass
 class MilestoneMapping:
     assignments: dict[str, MilestoneMappingItem] = field(default_factory=dict)
     missing_required: list[str] = field(default_factory=list)
@@ -265,7 +265,7 @@ class MilestoneMapping:
 
 ## 评估决策与结果模型
 
-@dataclass(frozen=True)
+@dataclass
 class StageInterval:
     stage_id: str
     milestone_id: Optional[str]
@@ -276,13 +276,13 @@ class StageInterval:
     evidence: list[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass
 class EvaluationDecision:
     level: EvaluationLevel
     reason: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class StageEvaluationResult:
     stage_id: str
     milestone_id: Optional[str]
@@ -326,7 +326,7 @@ class StageEvaluationResult:
         }
 
 
-@dataclass(frozen=True)
+@dataclass
 class TrajectoryEvaluationReport:
     run_id: str
     task_id: str
@@ -335,6 +335,7 @@ class TrajectoryEvaluationReport:
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
     minefield_matches: list[JsonObject] = field(default_factory=list)
     first_failure_stage_id: Optional[str] = None
+    runtime_metrics: JsonObject = field(default_factory=dict)
 
     def to_dict(self) -> JsonObject:
         """转换为完整 JSON 可序列化报告。"""
@@ -346,6 +347,7 @@ class TrajectoryEvaluationReport:
             "stage_reports": [stage.to_dict() for stage in self.stage_reports],
             "minefield_matches": list(self.minefield_matches),
             "first_failure_stage_id": self.first_failure_stage_id,
+            "runtime_metrics": dict(self.runtime_metrics),
         }
 
     def to_summary_dict(self) -> JsonObject:
@@ -357,6 +359,13 @@ class TrajectoryEvaluationReport:
             "overall_score": self.overall_score,
             "stage_count": sum(1 for stage in self.stage_reports if _is_matched_milestone_stage(stage)),
             "first_failure_stage_id": self.first_failure_stage_id,
+            "runtime_metrics": dict(self.runtime_metrics),
+            "elapsed_seconds": self.runtime_metrics.get("elapsed_seconds"),
+            "step_count": self.runtime_metrics.get("step_count"),
+            "tool_call_count": self.runtime_metrics.get("tool_call_count"),
+            "llm_call_count": self.runtime_metrics.get("llm_call_count"),
+            "llm_total_tokens": self.runtime_metrics.get("llm_total_tokens"),
+            "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
         }
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from dynsteer.judges.base import LLMJudge
 from dynsteer.judges.prompt import build_standard_prompt
 from dynsteer.judges.telemetry import judge_input_metadata, judge_result_output_metadata
@@ -57,4 +55,5 @@ class StandardJudge(LLMJudge):
             metadata=input_metadata,
         )
         output_metadata = judge_result_output_metadata(result, input_metadata)
-        return replace(result, metadata={**result.metadata, **output_metadata})
+        result.metadata.update(output_metadata)
+        return result

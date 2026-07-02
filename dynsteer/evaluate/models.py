@@ -6,7 +6,7 @@ from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import Dimension, JsonObject, StageEvaluationResult
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeEvaluationState:
     """保存单个 case 运行期间的评估状态。"""
 
@@ -17,7 +17,7 @@ class RuntimeEvaluationState:
     match_attempts: list[JsonObject]
 
 
-@dataclass(frozen=True)
+@dataclass
 class RuntimeEvaluationDecision:
     """单步运行期阶段评估决策。"""
 

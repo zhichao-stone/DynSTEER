@@ -140,3 +140,19 @@ class AnthropicLLM(BaseLLM):
         if block_type == "text" and isinstance(text, str):
             return text
         return None
+
+    def _response_usage(self, response: object) -> dict[str, int | None]:
+        """从 Anthropic Messages 响应中提取 token usage。"""
+        usage = getattr(response, "usage", None)
+        prompt_tokens = self._optional_usage_int(getattr(usage, "input_tokens", None))
+        completion_tokens = self._optional_usage_int(getattr(usage, "output_tokens", None))
+        total_tokens = (
+            prompt_tokens + completion_tokens
+            if prompt_tokens is not None and completion_tokens is not None
+            else None
+        )
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }

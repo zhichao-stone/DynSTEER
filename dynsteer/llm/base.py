@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import logging
 import time
 
+from dynsteer.metrics import LLMCallMetrics, current_runtime_metrics_recorder
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,15 +78,20 @@ class BaseLLM(ABC):
         request_params = self._normalize_infer_params(infer_params, client)
         last_error: Exception | None = None
         for attempt in range(1, self._config.max_retries + 1):
+            started = time.perf_counter()
             try:
                 response = self._get_response_from_client(client, messages, request_params)
+                elapsed_seconds = time.perf_counter() - started
                 text = self._response_text(response)
                 if isinstance(text, str) and text.strip():
+                    self._record_llm_success(response, elapsed_seconds)
                     return text.strip()
                 raise LLMResponseError("LLM 返回空响应")
             except LLMConfigurationError:
                 raise
             except Exception as exc:
+                elapsed_seconds = time.perf_counter() - started
+                self._record_llm_failure(elapsed_seconds, exc)
                 last_error = exc
                 if attempt >= self._config.max_retries:
                     break
@@ -107,6 +114,39 @@ class BaseLLM(ABC):
             f"LLM 调用失败: provider={self._config.provider}, model={self._config.model}, "
             f"attempts={self._config.max_retries}, error={error_text}"
         ) from last_error
+
+    def _record_llm_success(self, response: object, elapsed_seconds: float) -> None:
+        """记录一次成功的 provider 调用统计。"""
+        recorder = current_runtime_metrics_recorder()
+        if recorder is None:
+            return
+        usage = self._response_usage(response)
+        recorder.record_llm_call(
+            LLMCallMetrics(
+                provider=self._config.provider,
+                model=self._config.model,
+                elapsed_seconds=elapsed_seconds,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                success=True,
+            )
+        )
+
+    def _record_llm_failure(self, elapsed_seconds: float, exc: Exception) -> None:
+        """记录一次失败的 provider 调用统计。"""
+        recorder = current_runtime_metrics_recorder()
+        if recorder is None:
+            return
+        recorder.record_llm_call(
+            LLMCallMetrics(
+                provider=self._config.provider,
+                model=self._config.model,
+                elapsed_seconds=elapsed_seconds,
+                success=False,
+                error=str(exc),
+            )
+        )
 
     def _validate_messages(self, messages: list[LLMMessage]) -> None:
         """校验对话消息列表。
@@ -151,6 +191,18 @@ class BaseLLM(ABC):
         if infer_params is None:
             return {}
         return {key: value for key, value in infer_params.items() if value is not None}
+
+    def _response_usage(self, response: object) -> dict[str, int | None]:
+        """从 provider 响应中提取 token usage；默认 provider 不提供。"""
+        return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+
+    def _optional_usage_int(self, value: object) -> int | None:
+        """把 provider usage 字段转换为可选整数。"""
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        return None
 
     @abstractmethod
     def _create_client(self) -> object:

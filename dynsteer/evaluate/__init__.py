@@ -1,11 +1,9 @@
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.milestone import (
-    find_hit_milestone,
     match_milestones,
     milestone_score_matrix,
     ready_milestones,
     stage_start_for_milestone,
-    validate_milestone_graph,
 )
 from dynsteer.evaluate.models import (
     JudgeConfigurationError,
@@ -47,6 +45,5 @@ __all__ = [
     "validate_milestone_graph",
     "milestone_score_matrix",
     "ready_milestones",
-    "find_hit_milestone",
     "stage_start_for_milestone",
 ]
