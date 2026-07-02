@@ -64,6 +64,7 @@ def topological_order(
 
 
 def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) -> str:
+    """基于直接支配关系和深度信息，获取两个节点的最近公共祖先（LCA）。"""
     u = left
     v = right
     while u != v:
@@ -75,6 +76,7 @@ def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) ->
 
 
 def _lca_all(nodes: list[str], idom: dict[str, str], depths: dict[str, int]) -> str:
+    """基于直接支配关系和深度信息，获取多个节点的最近公共祖先（LCA）。"""
     if not nodes:
         raise ValueError("lca 节点列表不能为空")
     current_lca = nodes[0]
@@ -88,6 +90,7 @@ def _immediate_dominators(
     predecessors: dict[str, list[str]],
     depths: dict[str, int],
 ) -> dict[str, str]:
+    """基于拓扑顺序、前驱关系和深度信息，计算每个节点的直接支配节点。"""
     idom: dict[str, str] = {START_NODE_ID: START_NODE_ID}
     for node_id in order[1:]:
         idom[node_id] = _lca_all(predecessors[node_id], idom, depths)
@@ -98,7 +101,7 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
     """为 milestone graph 写入直接前驱、阶段锚点和增强图分析元数据。"""
     if graph is None:
         raise ValueError("graph 不能为空")
-    actualnode_ids = set(node_ids(graph))
+    actualnode_ids = {node.milestone_id for node in graph.nodes}
     augmented = _augmented_edges(graph)
     node_ids = actualnode_ids | {START_NODE_ID, FINISH_NODE_ID}
     
