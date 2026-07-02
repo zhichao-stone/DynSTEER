@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+from dynsteer.adapter.toolsandbox.adapter import constraint_from_snapshot_constraint
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.evaluate.score import ScoringContext
 from dynsteer.model import Boundary, Constraint, ConstraintTarget, Milestone, Operator, StateSnapshot, StageStatus, Trajectory
@@ -83,7 +83,7 @@ def test_toolsandbox_constraint_metadata_preserves_partial_kwargs() -> None:
         reference_milestone_node_index=3,
     )
 
-    data = ToolSandboxHarness()._constraint_from_snapshot_constraint("m4_c0", constraint)
+    data = constraint_from_snapshot_constraint("m4_c0", constraint)
     metadata = data["metadata"]["toolsandbox"]
 
     assert metadata["snapshot_constraint"] == "fake_similarity"
@@ -105,7 +105,7 @@ def test_toolsandbox_constraint_metadata_preserves_partial_column_similarity() -
         reference_milestone_node_index=None,
     )
 
-    data = ToolSandboxHarness()._constraint_from_snapshot_constraint("m2_c0", constraint)
+    data = constraint_from_snapshot_constraint("m2_c0", constraint)
     metadata = data["metadata"]["toolsandbox"]
 
     assert metadata["column_similarity_measure"]["tool_trace"] == {

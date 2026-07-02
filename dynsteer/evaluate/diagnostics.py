@@ -296,7 +296,6 @@ def build_milestone_matching_detail(
         or ready_milestone_ids_before_match is None
     ):
         raise ValueError("milestone 匹配诊断参数不能为空")
-    predecessor_milestone_ids = [source for source, target in graph.edges if target == milestone.milestone_id]
     return {
         "mode": "runtime_checkpoint",
         "matched": True,
@@ -305,7 +304,7 @@ def build_milestone_matching_detail(
         "score": milestone_score_to_dict(milestone_score),
         "ready_milestone_ids_before_match": list(ready_milestone_ids_before_match),
         "matched_milestone_ids_before_match": sorted(matched),
-        "predecessor_milestone_ids": predecessor_milestone_ids,
+        "predecessor_milestone_ids": list(milestone.dependency_predecessor_ids),
     }
 
 
@@ -326,11 +325,6 @@ def build_final_milestone_diagnostics(
     """
     if graph is None or matched is None or match_attempts is None:
         raise ValueError("最终 milestone 诊断参数不能为空")
-    predecessors: dict[str, list[str]] = {node.milestone_id: [] for node in graph.nodes}
-    for source, target in graph.edges:
-        if target in predecessors:
-            predecessors[target].append(source)
-
     diagnostics: list[JsonObject] = []
     for node in graph.nodes:
         candidate_entries: list[JsonObject] = []
@@ -355,7 +349,7 @@ def build_final_milestone_diagnostics(
         if scored_entries:
             best_entry = max(scored_entries, key=lambda item: float(item["score"].get("score", 0.0)))
         last_entry = candidate_entries[-1] if candidate_entries else None
-        pending_predecessors = [item for item in predecessors.get(node.milestone_id, []) if item not in matched]
+        pending_predecessors = [item for item in node.dependency_predecessor_ids if item not in matched]
 
         if node.milestone_id in matched:
             settlement = matched[node.milestone_id]

@@ -3,13 +3,15 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from dynsteer.adapter.registry import get_harness
+from dynsteer.adapter.registry import get_adapter
 from dynsteer.adapter.base import BaseBenchmarkHarness
+from dynsteer.adapter.loader import load_task_case
 from dynsteer.evaluate import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.model import TaskCase
 from dynsteer.log import configure_logger
 
 
@@ -67,14 +69,12 @@ class _HarnessCaseTask:
 
 def run_harness_cases(
     config: HarnessRunConfig,
-    harness: BaseBenchmarkHarness,
     evaluator: DynSTEEREvaluator,
 ) -> list[HarnessEvaluationOutput]:
     """运行一个或多个 benchmark case，并执行 DynSTEER 评估。
 
     Args:
         config: harness 运行配置；未指定 case_ids 时运行全部场景。
-        harness: benchmark harness 适配器。
         evaluator: DynSTEER 主实验 evaluator。
 
     Returns:
@@ -82,17 +82,20 @@ def run_harness_cases(
     """
     if config is None:
         raise ValueError("config 不能为空")
-    if harness is None:
-        raise ValueError("harness 不能为空")
     if evaluator is None:
         raise ValueError("evaluator 不能为空")
+    adapter = get_adapter(config.benchmark)
+    harness = adapter.create_harness()
     case_ids = _select_case_ids(config, harness, run_all=True)
+    run_config = _config_with_case_ids(config, case_ids)
+    harness.prepare_config(run_config)
+    task_cases = load_task_case(run_config, adapter)
     logger = _get_or_configure_harness_logger(config.runs_dir / "logs")
     _log_harness_case_overview(logger, case_ids)
     logger.info("开始运行 benchmark harness", extra={"case_count": len(case_ids)})
     outputs: list[HarnessEvaluationOutput] = []
-    for case_id in case_ids:
-        outputs.append(_run_single_harness_case(config, harness, evaluator, case_id))
+    for task_case in task_cases:
+        outputs.append(_run_single_harness_case(run_config, harness, evaluator, task_case))
     _write_run_level_summaries(outputs)
     logger.info("benchmark harness 评估完成", extra={"case_count": len(case_ids)})
     return outputs
@@ -209,10 +212,11 @@ def _expand_harness_case_tasks(configs: list[HarnessRunConfig]) -> list[_Harness
     for config in configs:
         if config is None:
             raise ValueError("configs 不能包含空配置")
-        harness = get_harness(config.benchmark)
+        adapter = get_adapter(config.benchmark)
+        harness = adapter.create_harness()
         case_ids = _select_case_ids(config, harness, run_all=True)
         for case_id in case_ids:
-            tasks.append(_HarnessCaseTask(order=len(tasks), config=config, case_id=case_id))
+            tasks.append(_HarnessCaseTask(order=len(tasks), config=_config_with_case_ids(config, [case_id]), case_id=case_id))
     return tasks
 
 
@@ -228,9 +232,14 @@ def _run_isolated_harness_case(task: _HarnessCaseTask) -> HarnessEvaluationOutpu
     if task is None:
         raise ValueError("task 不能为空")
     try:
-        harness = get_harness(task.config.benchmark)
+        adapter = get_adapter(task.config.benchmark)
+        harness = adapter.create_harness()
         evaluator = DynSTEEREvaluator.from_env()
-        return _run_single_harness_case(task.config, harness, evaluator, task.case_id)
+        harness.prepare_config(task.config)
+        task_cases = load_task_case(task.config, adapter)
+        if len(task_cases) != 1:
+            raise ValueError("单 case 任务必须只加载一个 TaskCase")
+        return _run_single_harness_case(task.config, harness, evaluator, task_cases[0])
     except HarnessCaseExecutionError:
         raise
     except Exception as exc:
@@ -245,14 +254,12 @@ def _run_isolated_harness_case(task: _HarnessCaseTask) -> HarnessEvaluationOutpu
 
 def run_harness_case(
     config: HarnessRunConfig,
-    harness: BaseBenchmarkHarness,
     evaluator: DynSTEEREvaluator,
 ) -> HarnessEvaluationOutput:
     """运行单个 benchmark case，并执行 DynSTEER 评估。
 
     Args:
         config: harness 运行配置；若 case_ids 为空则选择第一个 case。
-        harness: benchmark harness 适配器。
         evaluator: DynSTEER 主实验 evaluator。
 
     Returns:
@@ -260,15 +267,20 @@ def run_harness_case(
     """
     if config is None:
         raise ValueError("config 不能为空")
-    if harness is None:
-        raise ValueError("harness 不能为空")
     if evaluator is None:
         raise ValueError("evaluator 不能为空")
+    adapter = get_adapter(config.benchmark)
+    harness = adapter.create_harness()
     case_id = _select_case_ids(config, harness, run_all=False)[0]
+    run_config = _config_with_case_ids(config, [case_id])
+    harness.prepare_config(run_config)
+    task_cases = load_task_case(run_config, adapter)
+    if len(task_cases) != 1:
+        raise ValueError("单 case 运行必须只加载一个 TaskCase")
     logger = _get_or_configure_harness_logger(config.runs_dir / "logs")
     _log_harness_case_overview(logger, [case_id])
     logger.info("开始运行 benchmark harness", extra={"case_count": 1})
-    output = _run_single_harness_case(config, harness, evaluator, case_id)
+    output = _run_single_harness_case(run_config, harness, evaluator, task_cases[0])
     _write_run_level_summaries([output])
     logger.info("benchmark harness 评估完成", extra={"case_count": 1})
     return output
@@ -301,6 +313,15 @@ def _select_case_ids(config: HarnessRunConfig, harness: BaseBenchmarkHarness, ru
     return [cases[0].case_id]
 
 
+def _config_with_case_ids(config: HarnessRunConfig, case_ids: list[str]) -> HarnessRunConfig:
+    """返回写入本次展开 case_ids 的运行配置。"""
+    if config is None or case_ids is None:
+        raise ValueError("config 和 case_ids 不能为空")
+    if not case_ids:
+        raise ValueError("case_ids 不能为空")
+    return replace(config, case_ids=tuple(case_ids))
+
+
 def _safe_run_id(config: HarnessRunConfig, harness: BaseBenchmarkHarness, case_id: str) -> str | None:
     """尽量构造 run_id，用于异常上下文。"""
     try:
@@ -314,7 +335,7 @@ def _run_single_harness_case(
     config: HarnessRunConfig,
     harness: BaseBenchmarkHarness,
     evaluator: DynSTEEREvaluator,
-    case_id: str,
+    task_case: TaskCase,
 ) -> HarnessEvaluationOutput:
     """执行单个 case，并把失败包装为 HarnessCaseExecutionError。
 
@@ -322,30 +343,31 @@ def _run_single_harness_case(
         config: 已指定 scenario 的 harness 运行配置。
         harness: benchmark harness 适配器。
         evaluator: DynSTEER 主实验 evaluator。
-        case_id: benchmark 场景 ID。
+        task_case: 已适配的任务定义。
 
     Returns:
         输出文件路径集合。
     """
-    if config is None or harness is None or evaluator is None or not case_id:
-        raise ValueError("config、harness、evaluator 和 case_id 不能为空")
+    if config is None or harness is None or evaluator is None or task_case is None or not task_case.case_id:
+        raise ValueError("config、harness、evaluator 和 task_case 不能为空")
     try:
-        return _run_single_harness_case_impl(config, harness, evaluator, case_id)
+        return _run_single_harness_case_impl(config, harness, evaluator, task_case)
     except HarnessCaseExecutionError:
         raise
     except Exception as exc:
-        run_id = _safe_run_id(config, harness, case_id)
-        raise HarnessCaseExecutionError(config.benchmark, run_id, case_id, exc) from exc
+        run_id = _safe_run_id(config, harness, task_case.case_id)
+        raise HarnessCaseExecutionError(config.benchmark, run_id, task_case.case_id, exc) from exc
 
 
 def _run_single_harness_case_impl(
     config: HarnessRunConfig,
     harness: BaseBenchmarkHarness,
     evaluator: DynSTEEREvaluator,
-    case_id: str,
+    task_case: TaskCase,
 ) -> HarnessEvaluationOutput:
     """执行单个 case 并分别写入中间产物和最终结果。"""
-    harness_result = evaluator.evaluate(harness, case_id, config)
+    harness_result = evaluator.evaluate(harness, config, task_case)
+    case_id = task_case.case_id
     report = harness_result.evaluation_report
     if report is None:
         raise ValueError("evaluator.evaluate 必须返回 evaluation_report")

@@ -220,23 +220,24 @@ class DynSTEEREvaluator:
     def evaluate(
         self,
         harness: "BaseBenchmarkHarness",
-        case_id: str,
         config: HarnessRunConfig,
+        task_case: TaskCase,
     ) -> HarnessRunResult:
         """执行 benchmark case，并进行阶段式动态评估。
 
         Args:
             harness: 已适配为 DynSTEER 公开执行接口的 benchmark harness。
-            case_id: benchmark case ID。
             config: harness 运行配置。
+            task_case: 已由 adapter/loader 适配完成的任务定义。
 
         Returns:
             benchmark 运行结果，包含轨迹、阶段结算和主实验评估报告。
         """
-        if harness is None or config is None:
-            raise ValueError("harness 和 config 不能为空")
+        if harness is None or config is None or task_case is None:
+            raise ValueError("harness、config 和 task_case 不能为空")
+        case_id = task_case.case_id
         if case_id is None or not str(case_id).strip():
-            raise ValueError("case_id 不能为空")
+            raise ValueError("task_case.case_id 不能为空")
         harness.prepare_config(config)
         run_id = harness.build_run_id(config, case_id)
         raw_output_dir = config.runs_dir / config.benchmark / run_id / case_id / "raw"
@@ -256,7 +257,6 @@ class DynSTEEREvaluator:
                 extra={"事件": "启动benchmark任务", "benchmark": config.benchmark, "case_id": case_id},
             )
             session = harness.start_case(config, case_id, raw_output_dir)
-            task_case = harness.task_case_from_session(session)
             task_case = self._task_case_with_run_metadata(task_case, config)
             scorer = harness.constraint_scorer()
             state = RuntimeEvaluationState(
@@ -788,7 +788,7 @@ class DynSTEEREvaluator:
             weights,
             scorer,
         )
-        predecessor_milestone_ids = [source for source, target in graph.edges if target == milestone.milestone_id]
+        predecessor_milestone_ids = list(milestone.dependency_predecessor_ids)
         stage_trace = build_stage_trace(
             trajectory=trajectory,
             start_step_index=start_step_index,

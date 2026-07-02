@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -58,7 +58,7 @@ def _task_with_missing_milestone() -> TaskCase:
             )
         ]
     )
-    return TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
 
 
 def _trajectory(content: str = "hello") -> Trajectory:
@@ -154,7 +154,7 @@ def _passing_milestone_task() -> TaskCase:
             )
         ]
     )
-    return TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
 
 
 def test_evaluate_trajectory_cheap_pass_needs_no_llm() -> None:
@@ -169,7 +169,7 @@ def test_evaluate_trajectory_cheap_pass_needs_no_llm() -> None:
 
 
 def test_evaluate_trajectory_without_milestones_is_none_coverage() -> None:
-    task_case = TaskCase(task_id="task-1", task_description="测试任务")
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1")
 
     report = DynSTEEREvaluator().evaluate_trajectory(task_case, _trajectory("hello"))
 
@@ -235,9 +235,7 @@ def test_evaluate_trajectory_fatal_minefield_short_circuits() -> None:
         ],
         penalty=MinefieldPenalty(mode="multiplier", value=0.0),
     )
-    task_case = TaskCase(
-        task_id="task-1",
-        task_description="测试任务",
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1",
         milestone_graph=MilestoneGraph(minefields=[minefield]),
     )
     trajectory = Trajectory(run_id="run-1", task_id="task-1", steps=[], metrics={"danger": True})
@@ -263,9 +261,6 @@ class _LanguageHarness:
 
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: object) -> object:
         return {"case_id": case_id}
-
-    def task_case_from_session(self, session: object) -> TaskCase:
-        return TaskCase(task_id="task-1", task_description="测试任务", metadata={"source": "test"})
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="done")
@@ -295,7 +290,8 @@ def test_evaluate_merges_run_config_language_into_task_metadata(tmp_path: Path) 
         metadata={"run_id": "run-1", "language": "zh"},
     )
 
-    result = DynSTEEREvaluator().evaluate(_LanguageHarness(), "case-1", config)  # type: ignore[arg-type]
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", metadata={"source": "test"})
+    result = DynSTEEREvaluator().evaluate(_LanguageHarness(), config, task_case)  # type: ignore[arg-type]
 
     assert result.task_case.metadata["source"] == "test"
     assert result.task_case.metadata["language"] == "zh"

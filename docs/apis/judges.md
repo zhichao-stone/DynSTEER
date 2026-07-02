@@ -58,10 +58,10 @@ benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配�
 
 LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focus`：
 
-- `stage_goal`: 当前阶段的权威成功条件，由 `StageInterval` 与 `TaskCase.milestone_graph` 生成。standard / expensive judge 必须优先判断该字段，而不是要求阶段片段完成整个 `task.task_description`。
+- `stage_goal`: 当前阶段的权威成功条件，由 `StageInterval` 与 `TaskCase.milestone_graph` 生成。它只包含面向 LLM 可读的自然语言 `objective`、`success_condition`、阶段类型与维度焦点，不向 prompt 暴露 `current_milestone_id`、`stage_anchor_predecessor_id`、`predecessor_milestone_ids` 或 `constraint_targets` 等内部结构字段。standard / expensive judge 必须优先判断该字段，而不是要求阶段片段完成整个 `task.task_description`。
 - `rubric_dimension_focus`: 当前阶段最应关注的维度，例如状态更新阶段关注 `progress`、`state_consistency`、`tool_quality`、`safety`。
 
-`stage_goal` 由 `dynsteer.stage.build_stage_goal(...)` 生成，只使用 `Milestone`、`Constraint`、`StageInterval` 等通用字段，不解析 benchmark 私有 metadata。
+`stage_goal` 由 `dynsteer.stage.build_stage_goal(...)` 生成，只使用 `Milestone`、`Constraint`、`StageInterval` 等通用字段，不解析 benchmark 私有 metadata。阶段目标会结合当前 milestone 与 `stage_anchor_predecessor_id` 对应 milestone 的描述、约束期望生成自然语言摘要，避免把 LLM 无法理解的内部 ID 当作判断依据。
 
 ## StandardJudge
 

@@ -4,7 +4,7 @@
 
 当前主入口是 `dynsteer.evaluate.DynSTEEREvaluator`：
 
-- `evaluate(harness, case_id, config)`: benchmark 主实验入口。
+- `evaluate(harness, config, task_case)`: benchmark 主实验入口，`task_case` 来自 adapter/loader，`case_id` 来自 `task_case.case_id`。
 - `evaluate_trajectory(task_case, trajectory)`: 整轨迹评估成员函数，用于后续对比实验或消融实验。
 
 模块级 `evaluate_trajectory()` 已删除。

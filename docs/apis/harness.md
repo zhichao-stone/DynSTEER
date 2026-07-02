@@ -4,8 +4,8 @@
 
 Harness API 用于把 benchmark 原生执行过程接入 DynSTEER。当前职责边界是：
 
-- `BaseBenchmarkAdapter`: 负责离线实验数据转换和 harness 工厂。
-- `BaseBenchmarkHarness`: 只负责 benchmark 原生 session 生命周期、增量观测批次采集、原生摘要和资源清理。
+- `BaseBenchmarkAdapter`: 负责按 case 适配 `TaskCase`、写入/复用 adapted JSON 缓存，并创建 harness。
+- `BaseBenchmarkHarness`: 只负责 benchmark 原生 session 生命周期、增量观测批次采集、原生摘要和资源清理，不再构造 `TaskCase`。
 - `DynSTEEREvaluator`: 负责执行编排、milestone checkpoint、阶段式动态评估、LLMJudge 调度和 fail-fast。
 
 Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、动态权重更新或 minefield 策略终止。
@@ -18,6 +18,15 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 - `HarnessStageSettlement`: evaluator 在运行期生成的 start/milestone/finish 阶段结算节点。
 - `HarnessRunResult`: evaluator 返回的 benchmark 运行结果，包含 `TaskCase`、`Trajectory`、阶段结算、策略终止字段和 `evaluation_report`。
 
+## BaseBenchmarkAdapter 接口
+
+```python
+def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase: ...
+def create_harness(self) -> BaseBenchmarkHarness: ...
+```
+
+adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter)` 按 `data/{benchmark}/adapterd_cases/<case_id>.json` 读取缓存；缺失时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。
+
 ## BaseBenchmarkHarness 接口
 
 子类需要实现以下公开接口：
@@ -25,7 +34,6 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 ```python
 def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]: ...
 def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object: ...
-def task_case_from_session(self, session: object) -> TaskCase: ...
 def advance_case(self, session: object) -> HarnessAdvanceResult: ...
 def case_finished(self, session: object) -> bool: ...
 ```
@@ -56,7 +64,7 @@ class MyHarness(BaseBenchmarkHarness):
 
 ## 返回契约
 
-- `task_case_from_session()` 必须返回有效 `TaskCase`；无法构造时在 harness 内部抛出异常，不能返回 `None`。
+- `TaskCase` 必须在 adapter/loader 阶段完成适配，harness 运行期不提供 `task_case_from_session()`。
 - `advance_case()` 必须返回 `HarnessAdvanceResult`，不能返回 `None`。
 - `advance_case()` 负责判断空步骤是否合理。自然完成时返回 `HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")`。
 - 如果 session 未完成但没有新增步骤，`advance_case()` 应在 harness 内部抛出异常。
@@ -78,11 +86,11 @@ class MyHarness(BaseBenchmarkHarness):
 
 `dynsteer.harness.runner` 提供：
 
-- `run_harness_case(config, harness, evaluator)`: 运行一个 case。
-- `run_harness_cases(config, harness, evaluator)`: 运行一个或多个 case。
+- `run_harness_case(config, evaluator)`: 运行一个 case。
+- `run_harness_cases(config, evaluator)`: 运行一个或多个 case。
 - `run_harness_configs(configs, max_workers=1)`: 运行多组配置并按 case 展开；`max_workers > 1` 时使用独立 harness/evaluator 实例并行执行，返回值按配置和 case 的原始顺序排列。
 
-Runner 只负责选择 case、调用 `evaluator.evaluate(harness, case_id, config)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
+Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
 Runner 在批量入口会输出一次待运行场景总览、一次开始日志和一次完成日志；单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
 
@@ -112,6 +120,6 @@ ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER �
 
 `data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。
 
-ToolSandbox harness 不调用原生 `play_and_evaluate()`，也不再通过统一 kwargs 适配层猜测原生函数参数。它按标准 ToolSandbox 接口直接读取 `Scenario.starting_context`，并通过 `Scenario.play(roles, scenario_name)` 执行完整场景；`play()` 成功返回后将 session 标记为完成，避免重复执行同一场景。阶段评估、minefield 判断和 fail-fast 终止由 `DynSTEEREvaluator` 完成。
+ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
 
-ToolSandbox harness 复用基类 `build_run_id()` 构造 run_id，不再保留私有 `_run_id()`。它也不再导入未使用的 `TrajectoryStep`。`_result_from_toolsandbox()` 暂时保留为旧的整次运行转换能力，当前没有外部调用方，待确认无外部入口后再单独删除。
+ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息；每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。

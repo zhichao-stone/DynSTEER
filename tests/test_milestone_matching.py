@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
 from dynsteer.config import MatchConfig
+from dynsteer.graph import enrich_milestone_graph
 from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.evaluate.milestone import (
     find_hit_milestone,
@@ -70,7 +71,7 @@ def _settlement(milestone_id: str, end_step_index: int) -> HarnessStageSettlemen
 
 
 def test_validate_milestone_graph_accepts_dag() -> None:
-    graph = MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")])
+    graph = enrich_milestone_graph(MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")]))
 
     validate_milestone_graph(graph)
 
@@ -122,7 +123,7 @@ def test_match_milestones_marks_missing_required() -> None:
 
 
 def test_ready_milestones_respects_predecessors() -> None:
-    graph = MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")])
+    graph = enrich_milestone_graph(MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")]))
 
     assert [node.milestone_id for node in ready_milestones(graph, {})] == ["m1"]
     matched = {"m1": _settlement("m1", end_step_index=2)}
@@ -130,7 +131,7 @@ def test_ready_milestones_respects_predecessors() -> None:
 
 
 def test_stage_start_for_milestone_uses_predecessor_end() -> None:
-    graph = MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")])
+    graph = enrich_milestone_graph(MilestoneGraph(nodes=[_milestone("m1"), _milestone("m2")], edges=[("m1", "m2")]))
     matched = {"m1": _settlement("m1", end_step_index=4)}
 
     assert stage_start_for_milestone(graph, "m2", matched, None) == 4
@@ -139,7 +140,7 @@ def test_stage_start_for_milestone_uses_predecessor_end() -> None:
 
 def test_find_hit_milestone_returns_passing_milestone() -> None:
     graph = MilestoneGraph(nodes=[_milestone("m1")])
-    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
     trajectory = _trajectory("任务完成")
 
     hit = find_hit_milestone(task_case, trajectory, trajectory.steps[0], {})
@@ -151,7 +152,7 @@ def test_find_hit_milestone_returns_passing_milestone() -> None:
 
 
 def test_find_hit_milestone_returns_none_without_graph() -> None:
-    task_case = TaskCase(task_id="task-1", task_description="测试任务")
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1")
     trajectory = _trajectory("任务完成")
 
     assert find_hit_milestone(task_case, trajectory, trajectory.steps[0], {}) is None
@@ -208,7 +209,7 @@ def test_milestone_score_matrix_uses_injected_scorer() -> None:
 
 def test_find_hit_milestone_uses_injected_scorer() -> None:
     graph = MilestoneGraph(nodes=[_custom_milestone()])
-    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
     trajectory = _trajectory("任意内容")
 
     hit = find_hit_milestone(task_case, trajectory, trajectory.steps[0], {}, scorer=PassCustomScorer())

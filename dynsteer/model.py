@@ -162,6 +162,8 @@ class Milestone:
     required: bool = True
     pass_threshold: Optional[float] = None
     metadata: JsonObject = field(default_factory=dict)
+    dependency_predecessor_ids: list[str] = field(default_factory=list)
+    stage_anchor_predecessor_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,7 @@ class MilestoneGraph:
 class TaskCase:
     task_id: str
     task_description: str
+    case_id: str
     environment_schema: JsonObject = field(default_factory=dict)
     tool_schema: JsonObject = field(default_factory=dict)
     policy_constraints: list[JsonObject] = field(default_factory=list)

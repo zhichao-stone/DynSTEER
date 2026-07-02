@@ -18,14 +18,38 @@ class FakeHarness:
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         return [BenchmarkCase(benchmark="fake", case_id="case-1")]
 
+    def prepare_config(self, config: HarnessRunConfig) -> None:
+        if config is None:
+            raise ValueError("config 不能为空")
+
+    def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str:
+        return str(config.metadata.get("run_id", "run-1"))
+
+
+class FakeAdapter:
+    benchmark = "fake"
+
+    def __init__(self, harness_factory: type[FakeHarness] = FakeHarness) -> None:
+        self.harness_factory = harness_factory
+
+    def create_harness(self) -> FakeHarness:
+        return self.harness_factory()
+
+    def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
+        return TaskCase(
+            task_id=f"task-{case_id}",
+            task_description="测试任务",
+            case_id=case_id,
+        )
+
 
 class FakeEvaluator:
     def __init__(self) -> None:
         self.case_ids: list[str] = []
 
-    def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+    def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+        case_id = task_case.case_id
         self.case_ids.append(case_id)
-        task_case = TaskCase(task_id="task-1", task_description="测试任务")
         trajectory = Trajectory(run_id="run-1", task_id="task-1", steps=[])
         return HarnessRunResult(
             benchmark="fake",
@@ -52,8 +76,9 @@ class MultiCaseHarness(FakeHarness):
 
 
 class ScoredEvaluator(FakeEvaluator):
-    def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
-        result = super().evaluate(harness, case_id, config)
+    def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+        case_id = task_case.case_id
+        result = super().evaluate(harness, config, task_case)
         score = 1.0 if case_id == "case-1" else 0.5
         coverage = "full" if case_id == "case-1" else "partial"
         return HarnessRunResult(
@@ -87,6 +112,11 @@ class RecordingLogger:
         self.extras.append(extra)
 
 
+@pytest.fixture(autouse=True)
+def install_default_fake_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(), raising=False)
+
+
 def test_runner_calls_dynsteer_evaluator(tmp_path: Path) -> None:
     config = HarnessRunConfig(
         benchmark="fake",
@@ -97,7 +127,7 @@ def test_runner_calls_dynsteer_evaluator(tmp_path: Path) -> None:
     )
     evaluator = FakeEvaluator()
 
-    outputs = run_harness_cases(config=config, harness=FakeHarness(), evaluator=evaluator)
+    outputs = run_harness_cases(config=config, evaluator=evaluator)
 
     assert evaluator.case_ids == ["case-1"]
     assert len(outputs) == 1
@@ -113,7 +143,12 @@ def test_run_harness_cases_writes_run_level_summary(tmp_path: Path) -> None:
         metadata={"run_id": "run-1"},
     )
 
-    run_harness_cases(config=config, harness=MultiCaseHarness(), evaluator=ScoredEvaluator())
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
+    try:
+        run_harness_cases(config=config, evaluator=ScoredEvaluator())
+    finally:
+        monkeypatch.undo()
 
     summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -137,7 +172,12 @@ def test_run_harness_case_writes_run_level_summary(tmp_path: Path) -> None:
         metadata={"run_id": "run-1"},
     )
 
-    runner_module.run_harness_case(config=config, harness=MultiCaseHarness(), evaluator=ScoredEvaluator())
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
+    try:
+        runner_module.run_harness_case(config=config, evaluator=ScoredEvaluator())
+    finally:
+        monkeypatch.undo()
 
     summary_path = tmp_path / "results" / "fake" / "run-1" / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -162,7 +202,7 @@ def test_run_harness_configs_logs_case_overview_once(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(dynsteer_logger, "handlers", [], raising=False)
     monkeypatch.setattr(runner_module, "configure_logger", lambda log_dir: logger, raising=False)
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -203,7 +243,7 @@ def test_run_harness_configs_reuses_existing_logger(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(dynsteer_logger, "level", logging.INFO, raising=False)
     monkeypatch.setattr(dynsteer_logger, "propagate", False, raising=False)
     monkeypatch.setattr(runner_module, "configure_logger", lambda log_dir: pytest.fail("不应重复初始化 logger"), raising=False)
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -226,8 +266,8 @@ def test_run_harness_configs_reuses_existing_logger(tmp_path: Path, monkeypatch:
 
 def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> None:
     class NonSerializableEvaluator(FakeEvaluator):
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
-            result = super().evaluate(harness, case_id, config)
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+            result = super().evaluate(harness, config, task_case)
             return HarnessRunResult(
                 benchmark=result.benchmark,
                 case_id=result.case_id,
@@ -248,7 +288,7 @@ def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> N
     )
 
     with pytest.raises(runner_module.HarnessCaseExecutionError) as exc_info:
-        run_harness_cases(config=config, harness=FakeHarness(), evaluator=NonSerializableEvaluator())
+        run_harness_cases(config=config, evaluator=NonSerializableEvaluator())
 
     assert isinstance(exc_info.value.cause, TypeError)
     result_dir = tmp_path / "results" / "fake" / "run-1" / "case-1"
@@ -259,8 +299,8 @@ def test_runner_serializes_all_outputs_before_writing_files(tmp_path: Path) -> N
 
 def test_runner_preserves_stage_diagnostics_in_raw_summary(tmp_path: Path) -> None:
     class DiagnosticsEvaluator(FakeEvaluator):
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
-            result = super().evaluate(harness, case_id, config)
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+            result = super().evaluate(harness, config, task_case)
             settlement = HarnessStageSettlement(
                 settlement_id="st0",
                 kind="finish",
@@ -292,7 +332,7 @@ def test_runner_preserves_stage_diagnostics_in_raw_summary(tmp_path: Path) -> No
         metadata={"run_id": "run-1"},
     )
 
-    outputs = run_harness_cases(config=config, harness=FakeHarness(), evaluator=DiagnosticsEvaluator())
+    outputs = run_harness_cases(config=config, evaluator=DiagnosticsEvaluator())
 
     raw_summary = json.loads(outputs[0].raw_summary_path.read_text(encoding="utf-8"))
     metadata = raw_summary["stage_settlements"][0]["metadata"]
@@ -324,11 +364,11 @@ def test_run_harness_configs_keeps_serial_order(tmp_path: Path, monkeypatch: pyt
             FactoryEvaluator.counter += 1
             self.instance_id = FactoryEvaluator.counter
 
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
-            calls.append((self.instance_id, harness.instance_id, case_id))  # type: ignore[attr-defined]
-            return super().evaluate(harness, case_id, config)
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+            calls.append((self.instance_id, harness.instance_id, task_case.case_id))  # type: ignore[attr-defined]
+            return super().evaluate(harness, config, task_case)
 
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: FactoryHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(FactoryHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -375,11 +415,11 @@ def test_run_harness_configs_parallel_uses_independent_harness_and_evaluator(
             FactoryEvaluator.counter += 1
             self.instance_id = FactoryEvaluator.counter
 
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
-            calls.append((self.instance_id, harness.instance_id, case_id))  # type: ignore[attr-defined]
-            return super().evaluate(harness, case_id, config)
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
+            calls.append((self.instance_id, harness.instance_id, task_case.case_id))  # type: ignore[attr-defined]
+            return super().evaluate(harness, config, task_case)
 
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: FactoryHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(FactoryHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -404,7 +444,7 @@ def test_run_harness_configs_parallel_writes_run_level_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -431,7 +471,7 @@ def test_run_harness_configs_serial_writes_run_level_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: MultiCaseHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(MultiCaseHarness), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -455,10 +495,10 @@ def test_run_harness_configs_serial_writes_run_level_summary(
 
 def test_run_harness_configs_wraps_case_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class FailingEvaluator(FakeEvaluator):
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(runner_module, "get_harness", lambda benchmark: FakeHarness(), raising=False)
+    monkeypatch.setattr(runner_module, "get_adapter", lambda benchmark: FakeAdapter(), raising=False)
     monkeypatch.setattr(
         runner_module,
         "DynSTEEREvaluator",
@@ -478,7 +518,7 @@ def test_run_harness_configs_wraps_case_errors(tmp_path: Path, monkeypatch: pyte
 
 def test_run_harness_case_wraps_case_errors(tmp_path: Path) -> None:
     class FailingEvaluator(FakeEvaluator):
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
             raise RuntimeError("boom")
 
     config = HarnessRunConfig(
@@ -490,7 +530,7 @@ def test_run_harness_case_wraps_case_errors(tmp_path: Path) -> None:
     )
 
     with pytest.raises(runner_module.HarnessCaseExecutionError, match="case-1") as exc_info:
-        runner_module.run_harness_case(config=config, harness=FakeHarness(), evaluator=FailingEvaluator())
+        runner_module.run_harness_case(config=config, evaluator=FailingEvaluator())
 
     assert exc_info.value.benchmark == "fake"
     assert exc_info.value.run_id == "run-1"
@@ -499,7 +539,7 @@ def test_run_harness_case_wraps_case_errors(tmp_path: Path) -> None:
 
 def test_run_harness_cases_wraps_case_errors(tmp_path: Path) -> None:
     class FailingEvaluator(FakeEvaluator):
-        def evaluate(self, harness: object, case_id: str, config: HarnessRunConfig) -> HarnessRunResult:
+        def evaluate(self, harness: object, config: HarnessRunConfig, task_case: TaskCase) -> HarnessRunResult:
             raise RuntimeError("boom")
 
     config = HarnessRunConfig(
@@ -511,7 +551,7 @@ def test_run_harness_cases_wraps_case_errors(tmp_path: Path) -> None:
     )
 
     with pytest.raises(runner_module.HarnessCaseExecutionError, match="case-1") as exc_info:
-        runner_module.run_harness_cases(config=config, harness=FakeHarness(), evaluator=FailingEvaluator())
+        runner_module.run_harness_cases(config=config, evaluator=FailingEvaluator())
 
     assert exc_info.value.benchmark == "fake"
     assert exc_info.value.run_id == "run-1"

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
@@ -96,9 +96,7 @@ def test_milestone_checkpoint_log_extra_keeps_two_score_layers() -> None:
 
 
 def test_policy_stop_log_extra_distinguishes_milestone_pass_and_stage_fail() -> None:
-    task_case = TaskCase(
-        task_id="task-1",
-        task_description="Turn off cellular",
+    task_case = TaskCase(task_id="task-1", task_description="Turn off cellular", case_id="case-1",
         milestone_graph=None,
     )
     decision = RuntimeEvaluationDecision(
@@ -128,7 +126,7 @@ def test_policy_stop_log_extra_distinguishes_milestone_pass_and_stage_fail() -> 
 
 
 def test_policy_stop_log_extra_reads_milestone_layer_from_checkpoint_metadata() -> None:
-    task_case = TaskCase(task_id="task-1", task_description="Turn off cellular", milestone_graph=None)
+    task_case = TaskCase(task_id="task-1", task_description="Turn off cellular", case_id="case-1", milestone_graph=None)
     checkpoint = HarnessStageSettlement(
         settlement_id="st1",
         kind="milestone",

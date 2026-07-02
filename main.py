@@ -85,7 +85,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not isinstance(data, dict):
             raise ValueError("实验输入必须是 JSON 对象")
         if args.input_format == "generic":
-            task_case = load_task_case(data["task"])
+            task_data = dict(data["task"])
+            task_data.setdefault("case_id", str(task_data.get("task_id", run_name)))
+            task_case = load_task_case(task_data)
             trajectory = load_trajectory(data["trajectory"])
             if data.get("milestone_graph") is not None:
                 task_case = replace(

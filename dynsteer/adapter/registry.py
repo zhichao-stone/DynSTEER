@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
-from dynsteer.adapter.generic.adapter import GenericAdapter
 from dynsteer.adapter.toolsandbox.adapter import ToolSandboxAdapter
 
 _ADAPTERS: dict[str, type[BaseBenchmarkAdapter]] = {
-    "generic": GenericAdapter,
     "toolsandbox": ToolSandboxAdapter,
 }
 

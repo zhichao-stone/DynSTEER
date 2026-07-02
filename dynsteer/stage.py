@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import defaultdict, deque
+from collections import deque
 
 from dynsteer.model import (
     Actor,
@@ -41,10 +41,7 @@ def _topological_nodes(graph: MilestoneGraph) -> list[str]:
 
 
 def _predecessors(graph: MilestoneGraph) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = defaultdict(list)
-    for source, target in graph.edges:
-        result[target].append(source)
-    return result
+    return {node.milestone_id: list(node.dependency_predecessor_ids) for node in graph.nodes}
 
 
 def _first_user_or_zero(trajectory: Trajectory) -> int:
@@ -61,16 +58,7 @@ def build_stage_intervals(
     mapping: MilestoneMapping,
     trajectory: Trajectory,
 ) -> list[StageInterval]:
-    """根据 milestone 匹配结果构造阶段区间。
-
-    Args:
-        graph: milestone DAG。
-        mapping: milestone 到候选边界的匹配结果。
-        trajectory: Agent 执行轨迹。
-
-    Returns:
-        以 milestone 拓扑序排列的阶段区间。
-    """
+    """根据 milestone 匹配结果构造阶段区间。"""
     if graph is None or mapping is None or trajectory is None:
         raise ValueError("build_stage_intervals 入参不能为空")
     first_start = _first_user_or_zero(trajectory)
@@ -115,60 +103,38 @@ def build_stage_intervals(
     return intervals
 
 
-### 阶段评估目标的构建
-
 def build_stage_goal(interval: StageInterval, task_case: TaskCase) -> JsonObject:
-    """构造当前阶段的显式评估目标。
-
-    Args:
-        interval: 当前阶段区间。
-        task_case: 当前任务定义。
-
-    Returns:
-        可写入 judge prompt context 的通用阶段目标 JSON 对象。
-    """
+    """构造面向 judge prompt 的当前阶段自然语言目标。"""
     if interval is None or task_case is None:
         raise ValueError("阶段目标参数不能为空")
     graph = task_case.milestone_graph or MilestoneGraph()
     if interval.milestone_id is None:
-        matched_ids = [node.milestone_id for node in graph.nodes if node.required]
         return {
-            "stage_id": interval.stage_id,
             "stage_kind": "finish",
-            "current_milestone_id": None,
-            "predecessor_milestone_ids": matched_ids,
-            "objective": "完成运行收尾阶段：确认已匹配 milestone 后没有新的失败证据",
-            "success_condition": "仅判断收尾区间内是否存在推翻已匹配 milestone 的新证据、未处理错误或不当用户回应。",
-            "constraint_targets": [],
+            "objective": "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。",
+            "success_condition": (
+                "仅判断收尾区间内是否出现推翻既有阶段目标的新证据、未处理错误或不当回应。"
+            ),
             "primary_dimensions": _dimension_values(
                 [Dimension.PROGRESS, Dimension.INTERACTION_QUALITY, Dimension.EFFICIENCY]
             ),
         }
 
     milestone = _milestone_by_id(graph, interval.milestone_id)
+    anchor = _stage_anchor_milestone(graph, milestone)
     return {
-        "stage_id": interval.stage_id,
         "stage_kind": "milestone",
-        "current_milestone_id": interval.milestone_id,
-        "objective": _milestone_objective(milestone),
+        "objective": _stage_objective(milestone, anchor),
         "success_condition": (
-            f"仅判断当前阶段是否满足 milestone {interval.milestone_id} 的约束；"
-            "完整任务描述只作为背景，不作为本阶段的额外完成条件。"
+            "仅判断给定阶段区间内的行为、工具结果和状态变化是否已经达成上述目标；"
+            "不要求完成后续阶段或整个任务的额外目标。"
         ),
-        "constraint_targets": [_constraint_target_summary(item) for item in milestone.constraints],
         "primary_dimensions": _primary_dimensions(milestone),
     }
 
 
 def stage_goal_digest(stage_goal: JsonObject) -> str:
-    """生成阶段目标摘要 digest，便于日志与报告关联。
-
-    Args:
-        stage_goal: 阶段目标 JSON 对象。
-
-    Returns:
-        SHA-256 十六进制 digest。
-    """
+    """生成阶段目标摘要 digest，便于日志与报告关联。"""
     if stage_goal is None:
         raise ValueError("stage_goal 不能为空")
     payload = json.dumps(stage_goal, ensure_ascii=False, sort_keys=True)
@@ -181,43 +147,88 @@ def _milestone_by_id(graph: MilestoneGraph, milestone_id: str) -> Milestone:
     for milestone in graph.nodes:
         if milestone.milestone_id == milestone_id:
             return milestone
-    return Milestone(milestone_id, milestone_id, f"完成 milestone {milestone_id}", [])
+    return Milestone(milestone_id, "当前阶段", "当前阶段目标", [])
 
 
-def _milestone_objective(milestone: Milestone) -> str:
+def _stage_anchor_milestone(graph: MilestoneGraph, milestone: Milestone) -> Milestone | None:
+    if graph is None or milestone is None:
+        raise ValueError("阶段锚点参数不能为空")
+    anchor_id = milestone.stage_anchor_predecessor_id
+    if anchor_id is None:
+        return None
+    return next((node for node in graph.nodes if node.milestone_id == anchor_id), None)
+
+
+def _stage_objective(milestone: Milestone, anchor: Milestone | None) -> str:
+    current_summary = _milestone_summary(milestone)
+    prefix = ""
+    if anchor is not None:
+        prefix = f"在已完成“{_milestone_summary(anchor)}”后，"
+    requirements = _constraint_requirements(milestone.constraints)
+    if requirements:
+        return f"{prefix}完成当前阶段目标：{current_summary}；关键要求：{'；'.join(requirements)}。"
+    return f"{prefix}完成当前阶段目标：{current_summary}。"
+
+
+def _milestone_summary(milestone: Milestone) -> str:
     if milestone is None:
         raise ValueError("milestone 不能为空")
-    description = str(milestone.description or milestone.name or milestone.milestone_id).strip()
-    return f"完成 milestone {milestone.milestone_id}：{description}"
+    for value in (milestone.description, milestone.name):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "当前阶段目标"
 
 
-def _constraint_target_summary(constraint: Constraint) -> JsonObject:
+def _constraint_requirements(constraints: list[Constraint]) -> list[str]:
+    if constraints is None:
+        raise ValueError("constraints 不能为空")
+    requirements: list[str] = []
+    for constraint in constraints:
+        text = _constraint_requirement(constraint)
+        if text:
+            requirements.append(text)
+    return requirements
+
+
+def _constraint_requirement(constraint: Constraint) -> str:
     if constraint is None:
         raise ValueError("constraint 不能为空")
-    return {
-        "constraint_id": constraint.constraint_id,
-        "target": constraint.target.value,
-        "operator": constraint.operator.value,
-        "selector": constraint.selector,
-        "namespace": constraint.namespace,
-        "hard": constraint.hard,
-        "expected_summary": _expected_summary(constraint.expected),
-    }
-
-
-def _expected_summary(expected: object) -> JsonObject:
+    expected = constraint.expected
     if isinstance(expected, dict):
         rows = expected.get("rows")
-        columns = expected.get("columns")
-        return {
-            "row_count": len(rows) if isinstance(rows, list) else None,
-            "columns": [str(item) for item in columns] if isinstance(columns, list) else [],
-        }
-    if isinstance(expected, list):
-        return {"item_count": len(expected)}
-    if expected is None:
-        return {"kind": "none"}
-    return {"kind": type(expected).__name__}
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            columns = expected.get("columns")
+            row = rows[0]
+            selected_columns = (
+                [str(column) for column in columns if str(column) in row]
+                if isinstance(columns, list)
+                else [str(column) for column in row]
+            )
+            values = [
+                f"{column}={_format_value(row[column])}"
+                for column in selected_columns[:4]
+            ]
+            namespace = f"{constraint.namespace} 中 " if constraint.namespace else ""
+            suffix = f" 等 {len(rows)} 条记录" if len(rows) > 1 else ""
+            if values:
+                return f"使 {namespace}{', '.join(values)}{suffix}"
+    if expected is not None:
+        return f"满足{_target_text(constraint)}：{_format_value(expected)}"
+    return f"满足{_target_text(constraint)}要求"
+
+
+def _target_text(constraint: Constraint) -> str:
+    target = constraint.target.value
+    namespace = f"{constraint.namespace} " if constraint.namespace else ""
+    return f"{namespace}{target}"
+
+
+def _format_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
 def _primary_dimensions(milestone: Milestone) -> list[str]:

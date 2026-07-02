@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+from dynsteer.adapter.toolsandbox.adapter import snapshots_from_context
 
 
 class FakeNamespace:
@@ -28,23 +28,27 @@ class FakeContext:
         return [{"sandbox_message_index": sandbox_message_index, "value": f"{namespace.name}-{sandbox_message_index}"}]
 
 
-class FakeToolSandboxHarness(ToolSandboxHarness):
-    def _database_namespaces(self, include_sandbox: bool = False) -> list[FakeNamespace]:
-        names = ["SETTING", "CONTACT"]
-        if include_sandbox:
-            names.insert(0, "SANDBOX")
-        return [FakeNamespace(name) for name in names]
+class FakeExecutionContext:
+    class DatabaseNamespace:
+        SANDBOX = FakeNamespace("SANDBOX")
+        SETTING = FakeNamespace("SETTING")
+        CONTACT = FakeNamespace("CONTACT")
+
+
+def fake_module_loader(module_name: str) -> object:
+    if module_name == "tool_sandbox.common.execution_context":
+        return FakeExecutionContext
+    raise ModuleNotFoundError(module_name)
 
 
 def test_toolsandbox_snapshots_are_full_namespace_batches() -> None:
-    harness = FakeToolSandboxHarness()
     context = FakeContext()
     steps = [
         {"step_id": "s28", "index": 28, "raw_sandbox_message_index": 28},
         {"step_id": "s29", "index": 29, "raw_sandbox_message_index": 29},
     ]
 
-    snapshots = harness._snapshots_from_context(context, steps)
+    snapshots = snapshots_from_context(context, steps, fake_module_loader)
 
     assert [item["snapshot_id"] for item in snapshots] == ["toolsandbox:28", "toolsandbox:29"]
     assert snapshots[0]["after_step_id"] == "s28"

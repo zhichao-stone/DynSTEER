@@ -10,7 +10,7 @@ from dynsteer.model import Actor, EventType, StateSnapshot, TaskCase, Trajectory
 
 
 def _task_case() -> TaskCase:
-    return TaskCase(task_id="task-1", task_description="完成测试任务")
+    return TaskCase(task_id="task-1", task_description="完成测试任务", case_id="case-1")
 
 
 def _step(index: int) -> TrajectoryStep:
@@ -48,9 +48,6 @@ class FakeHarness(BaseBenchmarkHarness):
 
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object:
         return {"case_id": case_id, "raw_output_dir": raw_output_dir}
-
-    def task_case_from_session(self, session: object) -> TaskCase:
-        return self.task_case
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         if not self.batches:
@@ -107,7 +104,6 @@ def test_base_benchmark_harness_member_sections_are_grouped() -> None:
     abstract_methods = [
         "list_cases",
         "start_case",
-        "task_case_from_session",
         "advance_case",
         "case_finished",
     ]
@@ -122,9 +118,6 @@ def test_base_benchmark_harness_member_sections_are_grouped() -> None:
         "teardown_case",
         "_project_root",
         "_validate_config",
-        "_load_manifest",
-        "_ensure_source_root",
-        "_import_module",
     ]
 
     assert abstract_marker_index < base_marker_index
@@ -135,6 +128,10 @@ def test_base_benchmark_harness_member_sections_are_grouped() -> None:
         method_index = class_source.index(f"    def {method_name}(")
         assert method_index > base_marker_index
     assert "snapshots_from_session" not in class_source
+    assert "task_case_from_session" not in class_source
+    assert "_load_manifest" not in class_source
+    assert "_ensure_source_root" not in class_source
+    assert "_import_module" not in class_source
 
 
 def test_evaluator_consumes_public_harness_api(tmp_path: Path) -> None:
@@ -151,7 +148,7 @@ def test_evaluator_consumes_public_harness_api(tmp_path: Path) -> None:
             ),
         ]
     )
-    result = DynSTEEREvaluator().evaluate(harness, "case-1", _config(tmp_path))
+    result = DynSTEEREvaluator().evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.task_case.task_id == "task-1"
     assert [step.index for step in result.trajectory.steps] == [0, 1]
@@ -166,7 +163,7 @@ def test_evaluator_exits_on_advance_continue_running_false(tmp_path: Path) -> No
     harness = FakeHarness(
         [HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")]
     )
-    result = DynSTEEREvaluator().evaluate(harness, "case-1", _config(tmp_path))
+    result = DynSTEEREvaluator().evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.trajectory.steps == []
     assert result.stage_settlements[-1].kind == "finish"
@@ -179,7 +176,7 @@ def test_harness_owns_empty_step_error(tmp_path: Path) -> None:
     harness = FakeHarness([])
 
     with pytest.raises(RuntimeError, match="没有新增轨迹步骤"):
-        DynSTEEREvaluator().evaluate(harness, "case-1", _config(tmp_path))
+        DynSTEEREvaluator().evaluate(harness, _config(tmp_path), harness.task_case)
 
 
 def test_toolsandbox_starting_context_uses_scenario_attribute() -> None:
@@ -201,46 +198,6 @@ def test_toolsandbox_starting_context_uses_scenario_attribute() -> None:
     assert context is scenario.starting_context
 
 
-def test_toolsandbox_advance_calls_native_play_directly(tmp_path: Path) -> None:
-    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness, ToolSandboxSession
-
-    class NativeContext:
-        pass
-
-    class NativeScenario:
-        def __init__(self) -> None:
-            self.result = NativeContext()
-            self.calls: list[tuple[dict[object, object], str]] = []
-
-        def advance(self) -> object:
-            raise AssertionError("标准 ToolSandbox harness 不应调用 advance")
-
-        def step(self) -> object:
-            raise AssertionError("标准 ToolSandbox harness 不应调用 step")
-
-        def play(self, roles: dict[object, object], scenario_name: str) -> object:
-            self.calls.append((roles, scenario_name))
-            return self.result
-
-    roles: dict[object, object] = {}
-    scenario = NativeScenario()
-    session = ToolSandboxSession(
-        scenario=scenario,
-        roles=roles,
-        context=NativeContext(),
-        case_id="cellular_off",
-        run_id="run-1",
-        raw_output_dir=tmp_path,
-    )
-
-    ToolSandboxHarness()._advance_native_session(session)
-
-    assert scenario.calls == [(roles, "cellular_off")]
-    assert session.context is scenario.result
-    assert session.finished is True
-    assert session.stop_reason == "ToolSandbox 原生 play 已完成整场执行"
-
-
 def test_toolsandbox_harness_removes_call_native_adapter_layer() -> None:
     from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 
@@ -255,7 +212,7 @@ def test_toolsandbox_harness_removes_unused_respond_roles_fallback() -> None:
 
 
 def test_toolsandbox_steps_use_raw_sandbox_message_index() -> None:
-    from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
+    from dynsteer.adapter.toolsandbox.adapter import sandbox_rows_to_step_dicts
 
     rows = [
         {
@@ -274,7 +231,7 @@ def test_toolsandbox_steps_use_raw_sandbox_message_index() -> None:
         },
     ]
 
-    steps = ToolSandboxHarness().convert_sandbox_rows_to_steps(rows)
+    steps = sandbox_rows_to_step_dicts(rows)
 
     assert [step["index"] for step in steps] == [28, 29]
     assert [step["step_id"] for step in steps] == ["s28", "s29"]

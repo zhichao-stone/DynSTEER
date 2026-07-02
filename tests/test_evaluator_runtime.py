@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
@@ -68,7 +68,7 @@ def _task_with_missing_milestone() -> TaskCase:
             )
         ]
     )
-    return TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
 
 
 class RecordingJudge(CheapJudge):
@@ -174,7 +174,7 @@ def test_evaluate_trajectory_accepts_explicit_scorer() -> None:
             )
         ]
     )
-    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
     trajectory = _trajectory("任意内容")
     evaluator = DynSTEEREvaluator(standard_judge=RecordingJudge(), expensive_judge=RecordingJudge())
 
@@ -243,9 +243,7 @@ def test_blocked_milestone_termination_reason_keeps_predecessor_evidence() -> No
 
 
 def test_scoring_context_helper_includes_initial_and_matched_snapshots() -> None:
-    task_case = TaskCase(
-        task_id="task-initial",
-        task_description="初始状态任务",
+    task_case = TaskCase(task_id="task-initial", task_description="初始状态任务", case_id="case-1",
         initial_state={"namespaces": {"SETTING": [{"device_id": "phone", "cellular": True}]}},
     )
     trajectory = Trajectory(run_id="run-1", task_id="task-initial", steps=[], snapshots=[])

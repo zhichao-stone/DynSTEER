@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping
 
-from dynsteer.model import JsonValue, MISSING
+from dynsteer.model import JsonObject, JsonValue, MISSING
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -104,3 +106,82 @@ def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def get_object(
+    data: JsonObject,
+    key: str,
+    type: object = None,
+    default: object = None,
+    required: bool = True,
+) -> object:
+    """从 JSON 对象读取字段，并按需校验存在性和类型。
+
+    Args:
+        data: 待读取的 JSON 对象。
+        key: 字段名。
+        type: 可选的 `isinstance` 类型或类型元组。
+        default: 字段缺失且非必填时返回的默认值。
+        required: 字段是否必填。
+
+    Returns:
+        字段值或默认值。
+    """
+    if data is None:
+        raise ValueError("待读取字段的 JSON 对象不能为空")
+    if key not in data:
+        if required:
+            raise ValueError(f"缺少必要字段: {key}")
+        return default
+    value = data[key]
+    if type is not None and not isinstance(value, type):  # type: ignore[arg-type]
+        raise ValueError(f"字段 {key} 必须是 {type} 类型")
+    return value
+
+
+def enum_value(enum_class: type[Enum], value: object, field_name: str) -> Enum:
+    """将 JSON 枚举值转换为指定 Enum 成员。"""
+    if enum_class is None or field_name is None:
+        raise ValueError("enum_class 和 field_name 不能为空")
+    if value is None:
+        raise ValueError(f"缺少枚举字段: {field_name}")
+    try:
+        return enum_class(value)
+    except ValueError as exc:
+        raise ValueError(f"字段 {field_name} 的枚举值非法: {value}") from exc
+
+
+def enum_name(value: object) -> str:
+    """读取枚举或类枚举对象的稳定大写名称。"""
+    if value is None:
+        return ""
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name.upper()
+    raw = str(value)
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[-1]
+    return raw.upper()
+
+
+def unknown_fields(data: JsonObject, known: set[str]) -> JsonObject:
+    """返回 JSON 对象中不属于 known 集合的字段。"""
+    if data is None or known is None:
+        raise ValueError("data 和 known 不能为空")
+    return {key: value for key, value in data.items() if key not in known}
+
+
+def json_safe(value: object) -> JsonValue:
+    """将常见 Python 对象转换为 JSON 安全值。"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    enum_raw_value = getattr(value, "value", None)
+    if isinstance(enum_raw_value, (str, int, float, bool)) or enum_raw_value is None and isinstance(value, Enum):
+        return enum_raw_value
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    return str(value)

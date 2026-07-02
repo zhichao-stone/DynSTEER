@@ -1,16 +1,11 @@
-from __future__ import annotations
-
-import importlib
-import json
 import re
-import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
 
+from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.score import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
-from dynsteer.model import JsonObject, TaskCase, Trajectory
+from dynsteer.model import JsonObject, TaskCase
 
 
 class BaseBenchmarkConstraintScorer(GeneralScorer):
@@ -27,14 +22,15 @@ class BaseBenchmarkAdapter(ABC):
     benchmark: str
 
     @abstractmethod
-    def load_experiment(self, data: JsonObject) -> tuple[TaskCase, Trajectory]:
-        """将离线输入字典转换为 DynSTEER 任务和轨迹。
+    def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
+        """将 benchmark 原生 case 转换为 DynSTEER TaskCase。
 
         Args:
-            data: benchmark 原始实验字典。
+            config: harness 运行配置。
+            case_id: benchmark 原生 case ID。
 
         Returns:
-            统一任务与轨迹模型。
+            已适配的 DynSTEER 任务定义。
         """
 
     @abstractmethod
@@ -82,17 +78,6 @@ class BaseBenchmarkHarness(ABC):
         """
 
     @abstractmethod
-    def task_case_from_session(self, session: object) -> TaskCase:
-        """从原生 session 提取 DynSTEER 任务定义。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            DynSTEER 任务定义，不能为 None。
-        """
-
-    @abstractmethod
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         """推进 benchmark session 一个可中断执行批次。
 
@@ -128,7 +113,7 @@ class BaseBenchmarkHarness(ABC):
             config: harness 运行配置。
         """
         self._validate_config(config)
-        self._ensure_source_root(config.data_root)
+        ensure_source_root(config.data_root, self._project_root(), self.benchmark)
 
     def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str:
         """构造安全的运行 ID。
@@ -227,48 +212,3 @@ class BaseBenchmarkHarness(ABC):
             raise ValueError(f"benchmark 必须是 {self.benchmark}")
         if config.data_root is None:
             raise ValueError("data_root 不能为空")
-
-    def _load_manifest(self, data_root: Path) -> dict[str, object]:
-        """从 data_root 读取 benchmark.json。"""
-        if data_root is None:
-            raise ValueError("data_root 不能为空")
-        manifest_path = data_root / "benchmark.json"
-        if not manifest_path.exists():
-            return {"benchmark": self.benchmark, "source_root": None}
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"benchmark.json 不是合法 JSON: {manifest_path}") from exc
-        if not isinstance(data, dict):
-            raise ValueError("benchmark.json 必须是 JSON 对象")
-        return data
-
-    def _ensure_source_root(self, data_root: Path) -> None:
-        """将 benchmark.json 中的 source_root 加入 sys.path。"""
-        manifest = self._load_manifest(data_root)
-        raw_source_root = manifest.get("source_root")
-        if raw_source_root is None:
-            return
-        if not isinstance(raw_source_root, str) or not raw_source_root.strip():
-            raise ValueError("benchmark.json source_root 必须是非空字符串")
-        source_root = Path(raw_source_root.strip())
-        if not source_root.is_absolute():
-            source_root = self._project_root() / source_root
-        if not source_root.exists():
-            raise FileNotFoundError(f"{self.benchmark} source_root 不存在: {source_root}")
-        source_text = str(source_root.resolve())
-        if source_text not in sys.path:
-            sys.path.insert(0, source_text)
-
-    def _import_module(self, module_name: str) -> Any:
-        """懒加载 benchmark 运行期依赖。"""
-        if not isinstance(module_name, str) or not module_name.strip():
-            raise ValueError("module_name 不能为空")
-        try:
-            return importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            message = self.dependency_error_message or (
-                f"{self.benchmark} harness 需要 benchmark 包及其依赖。"
-                "请确认 benchmark.json source_root 可导入，或在当前 uv 环境安装 benchmark。"
-            )
-            raise ImportError(message) from exc

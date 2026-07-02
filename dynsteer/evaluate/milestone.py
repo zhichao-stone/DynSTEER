@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import deque
 
 from dynsteer.boundary import generate_candidate_boundaries
 from dynsteer.config import MatchConfig
@@ -80,10 +80,7 @@ def validate_milestone_graph(graph: MilestoneGraph) -> None:
 
 
 def _predecessors(graph: MilestoneGraph) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = defaultdict(list)
-    for source, target in graph.edges:
-        result[target].append(source)
-    return result
+    return {node.milestone_id: list(node.dependency_predecessor_ids) for node in graph.nodes}
 
 
 def _best_candidate(
@@ -220,15 +217,11 @@ def ready_milestones(
     if graph is None or matched is None:
         raise ValueError("graph 和 matched 不能为空")
     matched_ids = set(matched)
-    predecessors: dict[str, list[str]] = {node.milestone_id: [] for node in graph.nodes}
-    for source, target in graph.edges:
-        if target in predecessors:
-            predecessors[target].append(source)
     ready = []
     for node in graph.nodes:
         if node.milestone_id in matched_ids:
             continue
-        if all(source in matched_ids for source in predecessors.get(node.milestone_id, [])):
+        if all(source in matched_ids for source in node.dependency_predecessor_ids):
             ready.append(node)
     return ready
 
@@ -252,7 +245,10 @@ def stage_start_for_milestone(
     """
     if graph is None or not milestone_id or matched is None:
         raise ValueError("阶段起点参数不能为空")
-    predecessors = [source for source, target in graph.edges if target == milestone_id]
+    milestone = next((node for node in graph.nodes if node.milestone_id == milestone_id), None)
+    if milestone is None:
+        raise KeyError(f"milestone 不存在: {milestone_id}")
+    predecessors = list(milestone.dependency_predecessor_ids)
     matched_predecessor_indexes = [
         matched[source].end_step_index
         for source in predecessors
@@ -260,6 +256,9 @@ def stage_start_for_milestone(
     ]
     if matched_predecessor_indexes:
         return max(matched_predecessor_indexes)
+    anchor = milestone.stage_anchor_predecessor_id
+    if anchor is not None and anchor in matched:
+        return matched[anchor].end_step_index
     return start_settlement.end_step_index if start_settlement is not None else 0
 
 

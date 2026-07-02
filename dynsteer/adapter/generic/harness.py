@@ -66,12 +66,6 @@ class GenericHarness(BaseBenchmarkHarness):
             metrics=dict(trajectory.metrics),
         )
 
-    def task_case_from_session(self, session: object) -> TaskCase:
-        """从回放 session 提取任务定义。"""
-        if not isinstance(session, GenericSession):
-            raise TypeError("session 必须是 GenericSession")
-        return session.task_case
-
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         """回放一个轨迹步骤。"""
         if not isinstance(session, GenericSession):

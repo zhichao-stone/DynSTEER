@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from dynsteer.graph import enrich_milestone_graph
 from dynsteer.judges import CheapJudge, ExpensiveJudge, StandardJudge
 from dynsteer.judges.base import LLMJudgeConfigurationError, LLMJudgeResponseError
 from dynsteer.language import TaskLanguage
@@ -81,11 +82,11 @@ def _interval() -> StageInterval:
 
 
 def _task_case() -> TaskCase:
-    return TaskCase(task_id="task-1", task_description="测试任务")
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1")
 
 
 def _task_case_with_language(language: str) -> TaskCase:
-    return TaskCase(task_id="task-1", task_description="测试任务", metadata={"language": language})
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", metadata={"language": language})
 
 
 def _task_case_with_milestone_graph() -> TaskCase:
@@ -99,16 +100,17 @@ def _task_case_with_milestone_graph() -> TaskCase:
         evaluator_hint="toolsandbox",
         metadata={"toolsandbox": {"database_namespace": "CELLULAR", "snapshot_constraint": "snapshot_similarity"}},
     )
-    graph = MilestoneGraph(
+    graph = enrich_milestone_graph(MilestoneGraph(
         nodes=[
             Milestone("m0", "open settings", "打开设置", []),
             Milestone("m1", "turn off cellular", "关闭蜂窝网络", [constraint]),
         ],
         edges=[("m0", "m1")],
-    )
+    ))
     return TaskCase(
         "task-1",
         "I want to send a message to someone.",
+        "case-1",
         milestone_graph=graph,
         metadata={"language": "en"},
     )
@@ -235,18 +237,16 @@ def test_standard_prompt_context_contains_generic_stage_goal() -> None:
     )
 
     context = _context_from_prompt(prompt)
-    assert context["stage_goal"]["current_milestone_id"] == "m1"
-    assert context["stage_goal"]["predecessor_milestone_ids"] == ["m0"]
-    assert context["stage_goal"]["objective"] == "完成 milestone m1：关闭蜂窝网络"
-    assert context["stage_goal"]["constraint_targets"][0] == {
-        "constraint_id": "m1_c0",
-        "target": "state_snapshot",
-        "operator": "custom",
-        "selector": "$",
-        "namespace": "CELLULAR",
-        "hard": False,
-        "expected_summary": {"row_count": 1, "columns": ["id"]},
-    }
+    assert "current_milestone_id" not in context["stage_goal"]
+    assert "predecessor_milestone_ids" not in context["stage_goal"]
+    assert "constraint_targets" not in context["stage_goal"]
+    assert context["stage_goal"]["objective"] == (
+        "在已完成“打开设置”后，完成当前阶段目标：关闭蜂窝网络；关键要求：使 CELLULAR 中 id=target。"
+    )
+    assert context["stage_goal"]["success_condition"] == (
+        "仅判断给定阶段区间内的行为、工具结果和状态变化是否已经达成上述目标；"
+        "不要求完成后续阶段或整个任务的额外目标。"
+    )
     assert context["rubric_dimension_focus"] == ["progress", "state_consistency", "tool_quality"]
     assert removed_warning_key not in context
     assert context["task"]["task_description"] == "I want to send a message to someone."
@@ -331,7 +331,9 @@ def test_standard_judge_records_input_task_description_metadata() -> None:
     assert metadata["milestone_id"] == "m1"
     assert metadata["prompt_context_digest"] == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     assert metadata["prompt_task_description_excerpt"] == "I want to send a message to someone."
-    assert metadata["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert metadata["stage_goal_objective_excerpt"] == (
+        "在已完成“打开设置”后，完成当前阶段目标：关闭蜂窝网络；关键要求：使 CELLULAR 中 id=target。"
+    )
     assert isinstance(metadata["stage_goal_digest"], str)
     assert len(metadata["stage_goal_digest"]) == 64
     assert metadata["stage_step_count"] == 0
@@ -401,7 +403,9 @@ def test_expensive_judge_records_input_output_snapshot_metadata() -> None:
     assert metadata["prompt_type"] == "adjudication"
     assert metadata["prompt_context_digest"] == hashlib.sha256(prompts[-1].encode("utf-8")).hexdigest()
     assert metadata["prompt_task_description_excerpt"] == "I want to send a message to someone."
-    assert metadata["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert metadata["stage_goal_objective_excerpt"] == (
+        "在已完成“打开设置”后，完成当前阶段目标：关闭蜂窝网络；关键要求：使 CELLULAR 中 id=target。"
+    )
     assert len(metadata["stage_goal_digest"]) == 64
     assert metadata["stage_step_count"] == 0
     assert metadata["first_stage_step_excerpt"] is None
@@ -417,7 +421,9 @@ def test_expensive_judge_records_input_output_snapshot_metadata() -> None:
     assert passes[0]["task_description"] == "I want to send a message to someone."
     assert passes[0]["prompt_context_digest"] == hashlib.sha256(prompts[0].encode("utf-8")).hexdigest()
     assert passes[0]["prompt_task_description_excerpt"] == "I want to send a message to someone."
-    assert passes[0]["stage_goal_objective_excerpt"] == "完成 milestone m1：关闭蜂窝网络"
+    assert passes[0]["stage_goal_objective_excerpt"] == (
+        "在已完成“打开设置”后，完成当前阶段目标：关闭蜂窝网络；关键要求：使 CELLULAR 中 id=target。"
+    )
     assert len(passes[0]["stage_goal_digest"]) == 64
     assert passes[0]["judge_first_diagnosis"] == "overall: 诊断"
     assert passes[0]["judge_first_evidence"] == "证据"

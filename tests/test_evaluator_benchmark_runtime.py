@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from pathlib import Path
@@ -9,6 +9,7 @@ from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate import DynSTEEREvaluator
 from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.score import GeneralScorer
+from dynsteer.graph import enrich_milestone_graph
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.judges import CheapJudge
 from dynsteer.model import (
@@ -116,7 +117,7 @@ def _milestone_with_fatal_minefield() -> TaskCase:
         penalty=MinefieldPenalty(mode="multiplier", value=0.0),
     )
     graph = MilestoneGraph(nodes=[milestone], minefields=[minefield])
-    return TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    return TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
 
 
 class FakeRuntimeHarness(BaseBenchmarkHarness):
@@ -136,9 +137,6 @@ class FakeRuntimeHarness(BaseBenchmarkHarness):
 
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object:
         return {"case_id": case_id, "raw_output_dir": raw_output_dir}
-
-    def task_case_from_session(self, session: object) -> TaskCase:
-        return self.task_case
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         if not self.batches:
@@ -161,9 +159,6 @@ class FakeRuntimeHarness(BaseBenchmarkHarness):
 class BatchSnapshotHarness(FakeRuntimeHarness):
     def __init__(self, task_case: TaskCase, batches: list[HarnessAdvanceResult], metrics: JsonObject) -> None:
         super().__init__(task_case=task_case, batches=batches, metrics=metrics)
-
-    def snapshots_from_session(self, session: object) -> list[StateSnapshot]:
-        raise AssertionError("Evaluator 不应调用 snapshots_from_session")
 
 
 def _step(index: int, content: str) -> TrajectoryStep:
@@ -222,7 +217,7 @@ def _state_snapshot_task_case() -> TaskCase:
         ],
     )
     graph = MilestoneGraph(nodes=[milestone])
-    return TaskCase(task_id="task-state", task_description="状态任务", milestone_graph=graph)
+    return TaskCase(task_id="task-state", task_description="状态任务", case_id="case-1", milestone_graph=graph)
 
 
 def _two_step_task_case() -> TaskCase:
@@ -256,8 +251,8 @@ def _two_step_task_case() -> TaskCase:
             )
         ],
     )
-    graph = MilestoneGraph(nodes=[first, second], edges=[("m1", "m2")])
-    return TaskCase(task_id="task-two-step", task_description="两步任务", milestone_graph=graph)
+    graph = enrich_milestone_graph(MilestoneGraph(nodes=[first, second], edges=[("m1", "m2")]))
+    return TaskCase(task_id="task-two-step", task_description="两步任务", case_id="case-1", milestone_graph=graph)
 
 
 def _three_step_gap_task_case() -> TaskCase:
@@ -306,8 +301,8 @@ def _three_step_gap_task_case() -> TaskCase:
             )
         ],
     )
-    graph = MilestoneGraph(nodes=[first, second, third], edges=[("m0", "m1"), ("m1", "m2")])
-    return TaskCase(task_id="task-gap", task_description="前驱断裂任务", milestone_graph=graph)
+    graph = enrich_milestone_graph(MilestoneGraph(nodes=[first, second, third], edges=[("m0", "m1"), ("m1", "m2")]))
+    return TaskCase(task_id="task-gap", task_description="前驱断裂任务", case_id="case-1", milestone_graph=graph)
 
 
 def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: Path) -> None:
@@ -325,7 +320,7 @@ def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: 
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     graph_summary = result.raw_summary["milestone_graph_summary"]
     assert graph_summary["total_milestone_count"] == 2
@@ -362,9 +357,7 @@ def test_runtime_raw_summary_includes_unmatched_milestone_diagnostics(tmp_path: 
 
 
 def test_evaluate_raw_summary_includes_task_case_snapshot(tmp_path: Path) -> None:
-    task_case = TaskCase(
-        task_id="task-snapshot",
-        task_description="Turn off cellular",
+    task_case = TaskCase(task_id="task-snapshot", task_description="Turn off cellular", case_id="case-1",
         task_types=[TaskType.STATEFUL_TOOL],
         metadata={"scenario_name": "cellular_off", "categories": ["settings"]},
     )
@@ -382,7 +375,7 @@ def test_evaluate_raw_summary_includes_task_case_snapshot(tmp_path: Path) -> Non
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     snapshot = result.raw_summary["task_case_snapshot"]
     assert snapshot["case_id"] == "case-1"
@@ -395,9 +388,7 @@ def test_evaluate_raw_summary_includes_task_case_snapshot(tmp_path: Path) -> Non
 
 
 def test_task_description_mismatch_warning_is_observational_only(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    task_case = TaskCase(
-        task_id="task-mismatch",
-        task_description="Send a message to someone",
+    task_case = TaskCase(task_id="task-mismatch", task_description="Send a message to someone", case_id="case-1",
         metadata={"scenario_name": "cellular_off"},
     )
     harness = FakeRuntimeHarness(
@@ -415,7 +406,7 @@ def test_task_description_mismatch_warning_is_observational_only(tmp_path: Path,
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
     caplog.set_level(logging.WARNING, logger="dynsteer.evaluate.evaluator")
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.task_case.task_description == "Send a message to someone"
     assert result.raw_summary["task_case_snapshot"]["initial_user_message_excerpt"] == "Turn off cellular"
@@ -434,7 +425,7 @@ def test_runtime_coverage_uses_matched_milestones_not_stage_status(tmp_path: Pat
     judge = FailJudge()
     evaluator = DynSTEEREvaluator(cheap_judge=judge, standard_judge=judge, expensive_judge=judge)
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.evaluation_report.milestone_coverage == "full"
     assert result.evaluation_report.first_failure_stage_id == "runtime:st1"
@@ -454,7 +445,7 @@ def test_runtime_stops_when_successor_matches_but_predecessor_is_missing(tmp_pat
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.terminated_by_policy is True
     assert result.termination_code == "milestone_predecessor_gap:m2"
@@ -469,9 +460,7 @@ def test_runtime_stops_when_successor_matches_but_predecessor_is_missing(tmp_pat
 
 
 def test_scoring_context_includes_initial_snapshot() -> None:
-    task_case = TaskCase(
-        task_id="task-initial",
-        task_description="初始状态任务",
+    task_case = TaskCase(task_id="task-initial", task_description="初始状态任务", case_id="case-1",
         initial_state={"namespaces": {"SETTING": [{"device_id": "phone", "cellular": True}]}},
     )
     trajectory = Trajectory(run_id="run-1", task_id="task-initial", steps=[], snapshots=[])
@@ -494,7 +483,7 @@ def test_runtime_milestone_hit_triggers_fatal_minefield_stop(tmp_path: Path) -> 
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.terminated_by_policy is True
     assert result.termination_code is not None and result.termination_code.startswith("minefield")
@@ -511,7 +500,7 @@ def test_runtime_milestone_settlement_includes_trace_and_matching_details(tmp_pa
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     settlement = next(item for item in result.stage_settlements if item.kind == "milestone")
     trace = settlement.metadata["stage_trace"]
@@ -553,7 +542,7 @@ def test_runtime_completes_without_milestone_when_clean(tmp_path: Path) -> None:
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert result.terminated_by_policy is False
     assert result.stage_settlements[-1].kind == "finish"
@@ -588,7 +577,7 @@ def test_evaluator_preserves_advance_error_when_teardown_fails(tmp_path: Path) -
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
     with pytest.raises(RuntimeError, match="advance boom"):
-        evaluator.evaluate(harness, "case-1", _config(tmp_path))
+        evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert harness.torn_down is True
 
@@ -609,7 +598,7 @@ def test_evaluator_raises_teardown_error_after_success(tmp_path: Path) -> None:
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
     with pytest.raises(HarnessTeardownError, match="case-1"):
-        evaluator.evaluate(harness, "case-1", _config(tmp_path))
+        evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert harness.torn_down is True
 
@@ -617,7 +606,7 @@ def test_evaluator_raises_teardown_error_after_success(tmp_path: Path) -> None:
 def test_generic_harness_teardown_clears_session_references() -> None:
     from dynsteer.adapter.generic.harness import GenericHarness, GenericSession
 
-    task_case = TaskCase(task_id="task-1", task_description="测试任务")
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1")
     step = _step(0, "step")
     session = GenericSession(
         task_case=task_case,
@@ -659,6 +648,9 @@ def test_toolsandbox_harness_teardown_attempts_all_roles_and_clears_references(t
         case_id="case-1",
         run_id="run-1",
         raw_output_dir=tmp_path,
+        initial_max_sandbox_message_index=0,
+        last_sandbox_message_index=0,
+        max_messages=5,
     )
 
     with pytest.raises(RuntimeError, match="ToolSandbox role 资源释放失败"):
@@ -698,7 +690,7 @@ class CustomScorerHarness(FakeRuntimeHarness):
 
 
 def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None:
-    graph = MilestoneGraph(
+    graph = enrich_milestone_graph(MilestoneGraph(
         nodes=[
             Milestone(
                 milestone_id="m-custom",
@@ -715,8 +707,8 @@ def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None
                 ],
             )
         ]
-    )
-    task_case = TaskCase(task_id="task-1", task_description="测试任务", milestone_graph=graph)
+    ))
+    task_case = TaskCase(task_id="task-1", task_description="测试任务", case_id="case-1", milestone_graph=graph)
     harness = CustomScorerHarness(
         task_case=task_case,
         batches=[HarnessAdvanceResult(steps=[_step(0, "任意内容")], snapshots=[], continue_running=False)],
@@ -724,7 +716,7 @@ def test_runtime_evaluate_uses_harness_constraint_scorer(tmp_path: Path) -> None
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert any(settlement.kind == "milestone" for settlement in result.stage_settlements)
 
@@ -744,13 +736,13 @@ def test_runtime_uses_advance_snapshots_before_checkpoint(tmp_path: Path) -> Non
     )
     evaluator = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge())
 
-    result = evaluator.evaluate(harness, "case-1", _config(tmp_path))
+    result = evaluator.evaluate(harness, _config(tmp_path), harness.task_case)
 
     assert [item.milestone_id for item in result.stage_settlements if item.kind == "milestone"] == ["m1"]
 
 
 def test_runtime_matches_multiple_milestones_from_batch_snapshots(tmp_path: Path) -> None:
-    graph = MilestoneGraph(
+    graph = enrich_milestone_graph(MilestoneGraph(
         nodes=[
             Milestone(
                 milestone_id="m1",
@@ -784,8 +776,8 @@ def test_runtime_matches_multiple_milestones_from_batch_snapshots(tmp_path: Path
             ),
         ],
         edges=[("m1", "m2")],
-    )
-    task_case = TaskCase(task_id="task-chain", task_description="链式状态任务", milestone_graph=graph)
+    ))
+    task_case = TaskCase(task_id="task-chain", task_description="链式状态任务", case_id="case-1", milestone_graph=graph)
     snapshots = [
         StateSnapshot("snap-0", "s0", 0, {"default": {"phase": "one"}}),
         StateSnapshot("snap-1", "s1", 1, {"default": {"phase": "two"}}),
@@ -805,8 +797,8 @@ def test_runtime_matches_multiple_milestones_from_batch_snapshots(tmp_path: Path
 
     result = DynSTEEREvaluator(standard_judge=PassJudge(), expensive_judge=PassJudge()).evaluate(
         harness,
-        "case-1",
         _config(tmp_path),
+        harness.task_case,
     )
 
     assert [item.milestone_id for item in result.stage_settlements if item.kind == "milestone"] == ["m1", "m2"]
