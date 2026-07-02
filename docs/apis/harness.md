@@ -86,7 +86,7 @@ class MyHarness(BaseBenchmarkHarness):
 
 `dynsteer.harness.runner` 提供：
 
-- `run_harness_configs(configs, max_workers=1)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。
+- `run_harness_configs(configs, max_workers=1)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。若 `benchmark.json` 配置了 `max_workers`，实际 worker 数取命令行 workers 与该字段的较小值，且最小为 1。
 
 Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
@@ -118,8 +118,10 @@ Harness 模式输出：
 
 ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER 核心包直接依赖 ToolSandbox。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。
 
-`data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。
+`data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。`benchmark.json` 还支持可选 `max_workers` 整数字段，用于为不支持并行的 benchmark 设置 case 并发上限。
 
 ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
 
 ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息；每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
+
+ToolSandbox 的原生工具、role 和 execution environment 通过模块级 `_global_execution_context` 读写当前消息上下文，线程并行执行不同 case 会互相覆盖 context。因此 `data/toolsandbox/benchmark.json` 配置 `max_workers: 1`，确保 ToolSandbox case 串行执行。

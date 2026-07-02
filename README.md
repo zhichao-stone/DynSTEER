@@ -26,7 +26,8 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 {
     "benchmark": "toolsandbox",
     "source_root": "../ToolSandbox",
-    "tool_backend": "DEFAULT"
+    "tool_backend": "DEFAULT",
+    "max_workers": 1
 }
 ```
 
@@ -46,7 +47,7 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 
 `source_root` 相对于 DynSTEER 项目根目录解析，也就是 `main.py` 所在目录。通过 Docker 启动时，可以用 `--source` 指定原生 benchmark 源码目录，启动脚本会把该目录挂载进容器，并在容器内执行 editable 安装。例如 ToolSandbox：
 ```powershell
-./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox
+./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
 ```
 Docker 容器内传入 `--source` 时，启动脚本会复制 `data/{benchmark}` 到 `.dynsteer-runtime/data/{benchmark}`，并只在该运行期副本中把 `benchmark.json` 的 `source_root` 改为容器内挂载路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
 
@@ -56,10 +57,10 @@ Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通�
 
 1. 在 `dynsteer/adapter/{benchmark}/` 下实现对应的 `adapter.py` 与 `harness.py`。
 2. 在 `dynsteer/adapter/registry.py` 的 `_ADAPTERS` 中注册新的 adapter。
-3. 在 `data/{benchmark}/benchmark.json` 中填写 `benchmark`、`source_root` 和 benchmark 需要的静态字段。
+3. 在 `data/{benchmark}/benchmark.json` 中填写 `benchmark`、`source_root` 和 benchmark 需要的静态字段；若 benchmark 不支持 case 并行，可填写 `max_workers` 作为并发上限。
 4. 在 `data/{benchmark}/run_config.json` 中填写运行配置与待评估场景。
 5. Docker 启动时传入 `--source {benchmark源码路径}`；本地非 Docker 运行时仍可手动执行 `uv add --editable {benchmark源码路径}` 和 `uv sync`。
 
 ```powershell
-./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox
+./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
 ```

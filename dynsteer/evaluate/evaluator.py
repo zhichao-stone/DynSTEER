@@ -260,10 +260,6 @@ class DynSTEEREvaluator:
         metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
 
         try:
-            logger.info(
-                "evaluator_case_start",
-                extra={"事件": "启动benchmark任务", "benchmark": config.benchmark, "case_id": case_id},
-            )
             session = harness.start_case(config, case_id, raw_output_dir)
             task_case = self._task_case_with_run_metadata(task_case, config)
             scorer = harness.constraint_scorer()

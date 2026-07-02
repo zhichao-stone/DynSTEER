@@ -489,7 +489,7 @@ main() {
 
     local worker_args=()
     if [[ -n "$workers" ]]; then
-        worker_args=(--max-workers "$workers")
+        worker_args=(--workers "$workers")
     fi
 
     exec python main.py \

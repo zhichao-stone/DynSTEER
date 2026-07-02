@@ -130,6 +130,16 @@ def _manifest_language(manifest: dict[str, Any]) -> str:
     return value.strip()
 
 
+def _manifest_max_workers(manifest: dict[str, Any]) -> int | None:
+    """读取 benchmark 允许的最大 worker 数。"""
+    value = manifest.get("max_workers")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("benchmark.json max_workers 必须是整数")
+    return max(value, 1)
+
+
 def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | None:
     scenarios = spec.get("scenarios", [])
     if scenarios is None:
@@ -175,6 +185,7 @@ def load_harness_run_configs(
     _required_str(manifest, "source_root", "benchmark.json")
     tool_backend = _required_str(manifest, "tool_backend", "benchmark.json")
     language = _manifest_language(manifest)
+    manifest_max_workers = _manifest_max_workers(manifest)
 
     raw_specs = _read_json_array(data_root / "run_configs.json", "run_configs.json")
     if not raw_specs:
@@ -188,6 +199,8 @@ def load_harness_run_configs(
             raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
         metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key != "scenarios"}
         metadata["language"] = language
+        if manifest_max_workers is not None:
+            metadata["benchmark_max_workers"] = manifest_max_workers
         if normalized_benchmark == "toolsandbox":
             _required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
             _required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")

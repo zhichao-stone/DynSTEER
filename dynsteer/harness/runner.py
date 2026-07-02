@@ -83,9 +83,23 @@ def run_harness_configs(
     for config in configs:
         if config is None:
             raise ValueError("configs 不能包含空配置")
-        config_outputs = _run_config(config, max_workers=max_workers, logger=logger)
+        config_outputs = _run_config(config, max_workers=_effective_max_workers(max_workers, config), logger=logger)
         outputs.extend(config_outputs)
     return outputs
+
+
+def _effective_max_workers(max_workers: int, config: HarnessRunConfig) -> int:
+    """计算当前配置实际可使用的 worker 数。"""
+    if config is None:
+        raise ValueError("config 不能为空")
+    if max_workers < 1:
+        raise ValueError("max_workers 必须大于 0")
+    benchmark_max_workers = config.metadata.get("benchmark_max_workers")
+    if benchmark_max_workers is None:
+        return max_workers
+    if isinstance(benchmark_max_workers, bool) or not isinstance(benchmark_max_workers, int):
+        raise ValueError("benchmark_max_workers 必须是整数")
+    return max(1, min(max_workers, max(benchmark_max_workers, 1)))
 
 
 def _run_config(

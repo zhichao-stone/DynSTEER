@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
+import sys
 import time
 from queue import Queue
 from typing import Any, Callable, Iterator, Literal, Protocol
@@ -79,6 +80,7 @@ class TqdmCaseProgressManager:
         self,
         max_workers: int,
         bar_factory: Callable[..., Any] | None = None,
+        line_writer: Callable[[str], object] | None = None,
         time_fn: Callable[[], float] | None = None,
     ) -> None:
         if max_workers < 1:
@@ -88,7 +90,10 @@ class TqdmCaseProgressManager:
         self.case_states: dict[str, CaseProgressState] = {}
         self.bars: dict[str, Any] = {}
         self._bar_factory = bar_factory or tqdm
+        self._line_writer = line_writer or (lambda message: tqdm.write(message, file=sys.stderr))
         self._time_fn = time_fn or time.monotonic
+        self._had_active_bars = False
+        self._line_after_close_written = False
 
     @property
     def active_count(self) -> int:
@@ -107,6 +112,7 @@ class TqdmCaseProgressManager:
             state = CaseProgressState(case_id=case_id, started_at=self._time_fn())
             self.case_states[case_id] = state
         self.active_order.append(case_id)
+        self._had_active_bars = True
         self.bars[case_id] = self._create_bar(case_id, len(self.active_order) - 1)
         self._refresh_bar(case_id)
 
@@ -146,6 +152,7 @@ class TqdmCaseProgressManager:
             if bar is not None:
                 bar.close()
         self.active_order.clear()
+        self._write_line_after_close()
 
     def _rebuild_active_bars(self) -> None:
         """按当前活动顺序重建进度条位置。"""
@@ -186,6 +193,12 @@ class TqdmCaseProgressManager:
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
+
+    def _write_line_after_close(self) -> None:
+        if not self._had_active_bars or self._line_after_close_written:
+            return
+        self._line_writer("")
+        self._line_after_close_written = True
 
 
 @contextmanager
