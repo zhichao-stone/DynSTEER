@@ -17,6 +17,7 @@ from dynsteer.model import TaskCase
 from dynsteer.progress import (
     CaseProgressEvent,
     CaseProgressReporter,
+    DEFAULT_PROGRESS_TOTAL,
     QueueProgressReporter,
     TqdmCaseProgressManager,
     progress_logging_redirect,
@@ -152,6 +153,22 @@ class _DirectProgressReporter:
         self._manager.case_advanced(case_id, step_count)
 
 
+def _progress_total_from_tasks(tasks: list[_HarnessCaseTask]) -> int:
+    """读取当前任务组的进度条估算总步数。"""
+    if tasks is None or not tasks:
+        return DEFAULT_PROGRESS_TOTAL
+    
+    ## 读取当前运行配置的进度条估算总步数。
+    config = tasks[0].config
+    if config is None:
+        raise ValueError("config 不能为空")
+    value = config.metadata.get("max_messages")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_PROGRESS_TOTAL
+    
+    return max(value, 1)
+
+
 def _run_tasks(
     tasks: list[_HarnessCaseTask],
     *,
@@ -174,7 +191,7 @@ def _run_tasks_serial(
     logger: logging.Logger,
 ) -> list[HarnessEvaluationOutput]:
     """串行执行 case，并复用同一套进度管理器。"""
-    manager = TqdmCaseProgressManager(max_workers=1)
+    manager = TqdmCaseProgressManager(max_workers=1, estimated_total=_progress_total_from_tasks(tasks))
     outputs: list[HarnessEvaluationOutput] = []
     with progress_logging_redirect(logger):
         try:
@@ -196,7 +213,7 @@ def _run_tasks_parallel(
     logger: logging.Logger,
 ) -> list[HarnessEvaluationOutput]:
     """并行执行 case，主线程通过 queue 维护进度条。"""
-    manager = TqdmCaseProgressManager(max_workers=max_workers)
+    manager = TqdmCaseProgressManager(max_workers=max_workers, estimated_total=_progress_total_from_tasks(tasks))
     events: Queue[CaseProgressEvent] = Queue()
     outputs_by_order: dict[int, HarnessEvaluationOutput] = {}
     next_index = 0

@@ -52,6 +52,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             configs=configs,
             max_workers=int(args.workers),
         )
+        logger.info("评估完成，输出报告数量: %s", len(outputs), extra={"report_count": len(outputs)})
         for output in outputs:
             print(str(output.report_path))
         return 0

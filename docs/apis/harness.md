@@ -94,7 +94,7 @@ Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)`
 
 `run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
-Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示未知总步数进度条。并行运行时同时活动的进度条数量不超过 `max_workers`；case 完成后会关闭对应进度条并重建剩余进度条位置。warning 通过 tqdm 风格输出显示在进度条下方，文件日志和内存日志仍保留 INFO 结构化内容。
+Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。并行运行时同时活动的进度条数量不超过 `max_workers`；case 完成前会把进度条 total 收敛到实际 step 数，完成后关闭对应进度条并重建剩余进度条位置。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
 
 Harness 模式输出：
 

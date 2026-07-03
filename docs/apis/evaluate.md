@@ -158,6 +158,6 @@ Evaluator 会通过 `dynsteer.evaluate.telemetry` 构造短结构化日志：
 - `evaluator_task_description_mismatch`: `task_description` 与首条用户消息摘要不一致时的观测性 warning。
 - `harness_teardown_failed`: benchmark session 资源释放失败时的错误日志。
 
-终端日志使用 `TerminalLogFormatter` 只对 WARNING 及以上日志追加少量摘要字段；文件日志和内存日志缓冲区仍保留完整结构化 extra。milestone 命中诊断进入 `raw_summary.stage_settlements[].metadata`，不再通过 INFO 日志输出。日志 formatter 会对 dict/list extra 做 JSON 追加，并截断过长字段，避免输出完整 prompt、表格或大型 raw 数据。
+普通终端日志使用 `TerminalLogFormatter` 展示短文本；进度条运行期间终端日志会被静默，文件日志和内存日志缓冲区仍保留完整结构化 extra。milestone 命中诊断进入 `raw_summary.stage_settlements[].metadata`，不再通过 INFO 日志输出。日志 formatter 会对 dict/list extra 做 JSON 追加，并截断过长字段，避免输出完整 prompt、表格或大型 raw 数据。
 
 `runs/` 与 `results/` 下的 `raw_summary.json`、`report.json`、`summary.json` 由 `dynsteer.harness.runner` 直接序列化评估结果写出，不依赖终端日志过滤。

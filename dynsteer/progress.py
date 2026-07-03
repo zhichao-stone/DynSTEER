@@ -9,10 +9,26 @@ from queue import Queue
 from typing import Any, Callable, Iterator, Literal, Protocol
 
 from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 
-ProgressEventKind = Literal["case_started", "case_advanced", "case_finished", "case_warning"]
+ProgressEventKind = Literal["case_started", "case_advanced", "case_finished"]
+DEFAULT_PROGRESS_TOTAL = 100
+TERMINAL_LOG_SILENT_LEVEL = logging.CRITICAL + 1
+
+
+class _SilentStream:
+    """进度条运行期间吞掉第三方 stdout/stderr 文本。"""
+
+    encoding = "utf-8"
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
@@ -60,19 +76,6 @@ class QueueProgressReporter:
         self._events.put(CaseProgressEvent("case_advanced", case_id, step_count=step_count))
 
 
-class TqdmWarningWriter:
-    """用 tqdm.write 风格输出 warning 文本。"""
-
-    def __init__(self, writer: Callable[[str], object] | None = None) -> None:
-        self._writer = writer or tqdm.write
-
-    def write_warning(self, message: str) -> None:
-        """在进度条下方输出 warning。"""
-        if message is None:
-            raise ValueError("message 不能为空")
-        self._writer(str(message))
-
-
 class TqdmCaseProgressManager:
     """管理多个未知总步数的 case 进度条。"""
 
@@ -81,16 +84,20 @@ class TqdmCaseProgressManager:
         max_workers: int,
         bar_factory: Callable[..., Any] | None = None,
         line_writer: Callable[[str], object] | None = None,
+        estimated_total: int = DEFAULT_PROGRESS_TOTAL,
         time_fn: Callable[[], float] | None = None,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers 必须大于 0")
+        if estimated_total < 1:
+            raise ValueError("estimated_total 必须大于 0")
         self.max_workers = max_workers
+        self.estimated_total = estimated_total
         self.active_order: list[str] = []
         self.case_states: dict[str, CaseProgressState] = {}
         self.bars: dict[str, Any] = {}
         self._bar_factory = bar_factory or tqdm
-        self._line_writer = line_writer or (lambda message: tqdm.write(message, file=sys.stderr))
+        self._line_writer = line_writer or (lambda message: tqdm.write(message, file=sys.__stderr__))
         self._time_fn = time_fn or time.monotonic
         self._had_active_bars = False
         self._line_after_close_written = False
@@ -128,6 +135,7 @@ class TqdmCaseProgressManager:
         self._refresh_state(state)
         bar = self.bars.get(case_id)
         if bar is not None:
+            self._grow_bar_total(bar, state.step_count)
             bar.update(step_count)
             self._set_bar_postfix(bar, state)
 
@@ -140,7 +148,7 @@ class TqdmCaseProgressManager:
         self._refresh_state(state)
         bar = self.bars.pop(case_id, None)
         if bar is not None:
-            bar.close()
+            self._finish_bar(bar, state)
         if case_id in self.active_order:
             self.active_order.remove(case_id)
         self._rebuild_active_bars()
@@ -149,8 +157,10 @@ class TqdmCaseProgressManager:
         """关闭所有仍活动的进度条。"""
         for case_id in list(self.active_order):
             bar = self.bars.pop(case_id, None)
+            state = self.case_states[case_id]
+            self._refresh_state(state)
             if bar is not None:
-                bar.close()
+                self._finish_bar(bar, state)
         self.active_order.clear()
         self._write_line_after_close()
 
@@ -168,11 +178,12 @@ class TqdmCaseProgressManager:
         state = self.case_states[case_id]
         return self._bar_factory(
             desc=case_id,
-            total=None,
+            total=max(self.estimated_total, state.step_count),
             unit="step",
             position=position,
             leave=False,
             initial=state.step_count,
+            file=sys.__stderr__,
         )
 
     def _refresh_bar(self, case_id: str) -> None:
@@ -190,6 +201,20 @@ class TqdmCaseProgressManager:
         avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
         bar.set_postfix({"steps": state.step_count, "avg_step": avg_step})
 
+    def _grow_bar_total(self, bar: Any, step_count: int) -> None:
+        current_total = getattr(bar, "total", None)
+        if not isinstance(current_total, int | float) or step_count <= current_total:
+            return
+        bar.total = max(step_count, int(current_total) * 2, self.estimated_total)
+
+    def _finish_bar(self, bar: Any, state: CaseProgressState) -> None:
+        bar.total = state.step_count
+        refresh = getattr(bar, "refresh", None)
+        if callable(refresh):
+            refresh()
+        bar.update(0)
+        bar.close()
+
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
@@ -203,7 +228,7 @@ class TqdmCaseProgressManager:
 
 @contextmanager
 def progress_logging_redirect(logger: logging.Logger | None = None) -> Iterator[None]:
-    """进度条运行期间将终端 INFO 降噪，并把 warning 输出交给 tqdm。"""
+    """进度条运行期间静默终端日志，保留文件与缓冲区日志。"""
     target_logger = logger or logging.getLogger("dynsteer")
     if not isinstance(target_logger, logging.Logger):
         yield
@@ -214,11 +239,17 @@ def progress_logging_redirect(logger: logging.Logger | None = None) -> Iterator[
         if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
     ]
     original_levels = [handler.level for handler in handlers]
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    silent_stream = _SilentStream()
     try:
         for handler in handlers:
-            handler.setLevel(logging.WARNING)
-        with logging_redirect_tqdm(loggers=[target_logger]):
-            yield
+            handler.setLevel(TERMINAL_LOG_SILENT_LEVEL)
+        sys.stdout = silent_stream  # type: ignore[assignment]
+        sys.stderr = silent_stream  # type: ignore[assignment]
+        yield
     finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
         for handler, level in zip(handlers, original_levels, strict=False):
             handler.setLevel(level)
