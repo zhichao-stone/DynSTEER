@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from dynsteer.model import JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, TrajectoryStep
-from dynsteer.stage import build_stage_goal, stage_goal_digest
+from dynsteer.stage import build_stage_goal
 
 
 def judge_input_metadata(
@@ -40,7 +40,6 @@ def judge_input_metadata(
         "task_description": task_case.task_description,
         "prompt_context_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "prompt_task_description_excerpt": _excerpt(task_case.task_description),
-        "stage_goal_digest": stage_goal_digest(stage_goal),
         "stage_goal_objective_excerpt": _excerpt(str(stage_goal_objective) if stage_goal_objective is not None else ""),
         "stage_step_count": len(stage_steps),
         "first_stage_step_excerpt": _step_excerpt(first_step),

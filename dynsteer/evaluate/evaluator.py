@@ -543,41 +543,22 @@ class DynSTEEREvaluator:
         stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
         decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.STANDARD:
-            stage_result = self._run_standard(interval, task_case, trajectory, weights)
+            if self._standard_judge is None:
+                raise JudgeConfigurationError("standard 评估需要配置真实 LLMJudge")
+            stage_result = self._standard_judge.evaluate_stage(interval, task_case, trajectory, weights)
+            stage_result.evaluator_level = EvaluationLevel.STANDARD
             stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
             decision = self.select_evaluation_level(stage_result, self._thresholds)
         if decision.level == EvaluationLevel.EXPENSIVE and stage_result.evaluator_level != EvaluationLevel.EXPENSIVE:
-            stage_result = self._run_expensive(interval, task_case, trajectory, weights)
+            if self._expensive_judge is None:
+                raise JudgeConfigurationError("expensive 评估需要配置真实 LLMJudge")
+            stage_result = self._expensive_judge.evaluate_stage(interval, task_case, trajectory, weights)
+            stage_result.evaluator_level = EvaluationLevel.EXPENSIVE
             stage_result = self._enrich_stage_result(interval, task_case, trajectory, stage_result, scorer)
         next_weights = update_weights(weights, stage_result.dimension_scores, stage_result.uncertainty, self._weight_config)
         stage_result.next_weights = next_weights
         return stage_result, next_weights
-
-    def _run_standard(
-        self,
-        interval: StageInterval,
-        task_case: TaskCase,
-        trajectory: Trajectory,
-        weights: dict[Dimension, float],
-    ) -> StageEvaluationResult:
-        if self._standard_judge is None:
-            raise JudgeConfigurationError("standard 评估需要配置真实 LLMJudge")
-        result = self._standard_judge.evaluate_stage(interval, task_case, trajectory, weights)
-        result.evaluator_level = EvaluationLevel.STANDARD
-        return result
-
-    def _run_expensive(
-        self,
-        interval: StageInterval,
-        task_case: TaskCase,
-        trajectory: Trajectory,
-        weights: dict[Dimension, float],
-    ) -> StageEvaluationResult:
-        if self._expensive_judge is None:
-            raise JudgeConfigurationError("expensive 评估需要配置真实 LLMJudge")
-        result = self._expensive_judge.evaluate_stage(interval, task_case, trajectory, weights)
-        result.evaluator_level = EvaluationLevel.EXPENSIVE
-        return result
+    
 
     def _task_case_with_run_metadata(self, task_case: TaskCase, config: HarnessRunConfig) -> TaskCase:
         """将运行配置中的共享元数据合入任务定义。

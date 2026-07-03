@@ -133,14 +133,6 @@ def build_stage_goal(interval: StageInterval, task_case: TaskCase) -> JsonObject
     }
 
 
-def stage_goal_digest(stage_goal: JsonObject) -> str:
-    """生成阶段目标摘要 digest，便于日志与报告关联。"""
-    if stage_goal is None:
-        raise ValueError("stage_goal 不能为空")
-    payload = json.dumps(stage_goal, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _milestone_by_id(graph: MilestoneGraph, milestone_id: str) -> Milestone:
     if graph is None or milestone_id is None:
         raise ValueError("milestone 查询参数不能为空")
