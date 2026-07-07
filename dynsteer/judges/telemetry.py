@@ -30,6 +30,9 @@ def judge_input_metadata(
         raise ValueError("judge 输入快照参数不能为空")
     stage_goal = resolve_stage_goal(interval, task_case)
     stage_steps = stage_trajectory_steps(interval, trajectory)
+    structured_evidence_count = 0
+    if interval.milestone_score is not None:
+        structured_evidence_count = len(interval.milestone_score.constraint_scores)
     first_step = stage_steps[0] if stage_steps else None
     last_step = stage_steps[-1] if stage_steps else None
     metadata: JsonObject = {
@@ -44,6 +47,7 @@ def judge_input_metadata(
         "prompt_task_description_excerpt": _excerpt(task_case.task_description),
         "stage_goal_objective_excerpt": _excerpt(stage_goal),
         "stage_step_count": len(stage_steps),
+        "structured_milestone_evidence_count": structured_evidence_count,
         "first_stage_step_excerpt": _step_excerpt(first_step),
         "last_stage_step_excerpt": _step_excerpt(last_step),
     }

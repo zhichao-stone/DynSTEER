@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from dynsteer.adapter.loader import adapterd_case_path, load_task_case
+from dynsteer.adapter.loader import adapted_case_path, load_task_case
 from dynsteer.adapter.registry import get_adapter
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
@@ -60,7 +60,7 @@ def _adapt_only_configs(configs: list[HarnessRunConfig]) -> list[Path]:
         loaded_case_ids = [task_case.case_id for task_case in task_cases]
         if loaded_case_ids != case_ids:
             raise ValueError(f"加载的 TaskCase 顺序与配置不一致: {loaded_case_ids}")
-        adapted_paths.extend(adapterd_case_path(run_config.data_root, case_id) for case_id in case_ids)
+        adapted_paths.extend(adapted_case_path(run_config.data_root, case_id) for case_id in case_ids)
     return adapted_paths
 
 

@@ -152,7 +152,9 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 milestone graph 的直接前驱和阶段锚点字段来自 adapter/loader 阶段的预分析：`stage_anchor_predecessor_id` 是在原始 milestone DAG 增加 `__start__` 超级源和 `__finish__` 超级汇后计算得到的直接支配节点。运行期 ready 判定、路径断裂诊断和 stage interval 构造只读取 `Milestone.dependency_predecessor_ids` 与 `Milestone.stage_anchor_predecessor_id`，不在 checkpoint 时重新扫描 `graph.edges`。
 
-`Trajectory` 会维护 `first_step_index` 与 `successor_by_boundary`，运行期阶段起点通过 `stage_start_step_index(successor_by_boundary, boundary_index, end_step_index)` 查询，不再扫描完整 `trajectory.steps`。`StageInterval` 使用左开右闭语义：`start_boundary_step_index < step.index <= end_step_index`。`start_boundary_step_index` 是 anchor 边界 step，不纳入当前阶段；`start_step_index` 是该区间实际纳入评估的首个 step。root milestone 的 `stage_anchor_milestone_id` 为 `__start__`，其 boundary 使用首个真实 step index - 1，因此 step 0 不会被排除。
+`Trajectory` 会维护 `first_step_index` 与 `successor_by_boundary`，运行期阶段起点通过 `stage_start_step_index(successor_by_boundary, boundary_index, end_step_index)` 查询，不再扫描完整 `trajectory.steps`。`StageInterval` 使用左开右闭语义：`start_boundary_step_index < step.index <= end_step_index`。`start_boundary_step_index` 是 anchor 边界 step，不纳入当前阶段；`start_step_index` 是该区间实际纳入评估的首个 step。
+
+`Trajectory.get_interval(min_index, max_index)` 使用左开右闭语义 `min_index < step.index <= max_index`。当 root stage 的 synthetic boundary 小于首个真实 step index 时，函数会把有效下界钳到 `first_step_index - 1`，不会排除首个真实 step。
 
 ## 运行期日志
 

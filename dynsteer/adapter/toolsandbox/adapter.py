@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -14,6 +15,7 @@ from dynsteer.model import (
     JsonObject,
     JsonValue,
     MilestoneGraph,
+    StageGoalSemanticKind,
     TaskCase,
     TaskType,
     Trajectory,
@@ -88,20 +90,66 @@ def tool_trace_from_row(row: dict[str, object]) -> dict[str, JsonValue] | None:
     return json_safe(trace)  # type: ignore[return-value]
 
 
+def tool_arguments_from_agent_content(content: object) -> JsonObject:
+    """从 ToolSandbox agent 代码片段中解析工具调用参数。
+
+    Args:
+        content: SANDBOX 行中的 agent 代码文本。
+
+    Returns:
+        JSON 可序列化的工具参数；无法解析时返回空字典。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return {}
+    # ToolSandbox agent content 常以 *_parameters = {...} 形式记录工具参数。
+    match = re.search(
+        r"[A-Za-z_][A-Za-z0-9_]*_parameters\s*=\s*(\{.*?\})(?:\r?\n|$)",
+        content,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return {}
+    # 使用 literal_eval 解析 Python 字面量，避免执行 agent content 中的任意代码。
+    try:
+        parsed = ast.literal_eval(match.group(1))
+    except (SyntaxError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    safe = json_safe(parsed)
+    return safe if isinstance(safe, dict) else {}
+
+
 def tool_call_from_agent_row(row: dict[str, object], trace: dict[str, JsonValue] | None) -> JsonObject | None:
-    """从 Agent 发给执行环境的行中提取工具调用。"""
+    """从 Agent 发给执行环境的 SANDBOX 行中提取工具调用。
+
+    Args:
+        row: ToolSandbox SANDBOX 消息行。
+        trace: 从 tool_trace 字段解析出的结构化工具轨迹。
+
+    Returns:
+        DynSTEER tool_call JSON；无法识别工具调用时返回 None。
+    """
+    # agent content 中的参数可补足 tool_trace 或 openai function 字段缺失的问题。
+    parsed_arguments = tool_arguments_from_agent_content(row.get("content"))
+    # 优先使用 tool_trace 中的工具名，因为它最接近执行环境真实调用。
     if trace is not None and isinstance(trace.get("tool_name"), str) and trace.get("tool_name"):
         arguments = trace.get("arguments")
-        return {"name": str(trace["tool_name"]), "arguments": arguments if isinstance(arguments, dict) else {}}
+        return {
+            "name": str(trace["tool_name"]),
+            "arguments": arguments if isinstance(arguments, dict) else parsed_arguments,
+        }
+    # 其次使用 OpenAI function name，并复用从 agent content 中解析出的参数。
     if isinstance(row.get("openai_function_name"), str) and row.get("openai_function_name"):
-        return {"name": str(row["openai_function_name"]), "arguments": {}}
+        return {"name": str(row["openai_function_name"]), "arguments": parsed_arguments}
     content = row.get("content")
     if not isinstance(content, str):
         return None
+    # 最后从代码文本中兜底提取函数名。
     match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", content)
     if match is None:
         return None
-    return {"name": match.group(1), "arguments": {}}
+    return {"name": match.group(1), "arguments": parsed_arguments}
 
 
 def sandbox_message_index(row: dict[str, object]) -> int:
@@ -147,6 +195,11 @@ def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, 
                 "tool_call": tool_call,
                 "tool_result": tool_result,
                 "raw_sandbox_message_index": json_safe(row.get("sandbox_message_index")),
+                "sender": enum_name(sender),
+                "recipient": enum_name(recipient),
+                "openai_tool_call_id": json_safe(row.get("openai_tool_call_id")),
+                "openai_function_name": json_safe(row.get("openai_function_name")),
+                "visible_to": json_safe(row.get("visible_to")),
             }
         )
     return steps
@@ -235,6 +288,46 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
         for key, value in dict(partial_keywords).items()
     }
     column_measures = getattr(constraint, "column_similarity_measure", None) or {}
+    reference_index = json_safe(getattr(constraint, "reference_milestone_node_index", None))
+    # guardrail 表达相对参考 milestone 的状态保持，不表达目标数据库为空。
+    if "guardrail" in snapshot_constraint_name:
+        reference = (
+            {"type": "milestone_index", "value": reference_index}
+            if isinstance(reference_index, int)
+            else {"type": "initial_state"}
+        )
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.PRESERVE_STATE.value,
+            "namespace": namespace,
+            "reference": reference,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
+    # SANDBOX namespace 表达可见消息目标，文本匹配采用语义等价策略。
+    elif namespace == "SANDBOX":
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        sender = first.get("sender") if isinstance(first, dict) else None
+        recipient = first.get("recipient") if isinstance(first, dict) else None
+        content = first.get("content") if isinstance(first, dict) else None
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
+            "sender": str(sender or "AGENT"),
+            "recipient": str(recipient or "USER"),
+            "content": str(content or ""),
+            "match_policy": "semantic_equivalent",
+            "evidence_source": "trajectory_or_structured_scorer",
+            "user_visible_required": True,
+        }
+    # 其他 snapshot constraint 表达目标 state namespace 的设置或校验。
+    else:
+        expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.SET_STATE.value,
+            "namespace": namespace,
+            "expected": expected,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
     return {
         "constraint_id": constraint_id,
         "target": "state_snapshot",
@@ -246,13 +339,14 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
         "threshold": 1.0,
         "hard": True,
         "evaluator_hint": "toolsandbox",
+        "stage_goal_semantics": stage_goal_semantics,
         "metadata": {
             "toolsandbox": {
                 "database_namespace": namespace,
                 "snapshot_constraint": snapshot_constraint_name,
                 "snapshot_constraint_module": snapshot_constraint_module,
                 "snapshot_constraint_kwargs": snapshot_constraint_kwargs,
-                "reference_milestone_node_index": json_safe(getattr(constraint, "reference_milestone_node_index", None)),
+                "reference_milestone_node_index": reference_index,
                 "column_similarity_measure": {
                     str(key): callable_spec(value)
                     for key, value in dict(column_measures).items()

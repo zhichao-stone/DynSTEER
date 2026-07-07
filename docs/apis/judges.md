@@ -61,6 +61,12 @@ LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focu
 - `stage_goal`: 当前阶段的权威成功条件字符串，由 adapter/loader 阶段预生成并写入 `TaskCase.stage_goals`。judge prompt 运行期通过 `(stage_anchor_milestone_id, milestone_id)` 组成的 key 读取缓存目标；缺失时抛出异常，不再回退到规则式临时拼接。
 - `rubric_dimension_focus`: 当前 prompt 的维度焦点列表。`TaskCase.stage_goals` 只保存阶段目标文本，不保存维度配置。
 
+Judge prompt 消费已生成的 `stage_goal`，不生成或改写 stage_goal。
+
+Prompt context 中的 `structured_milestone_evidence` 来自 `StageInterval.milestone_score.constraint_scores`，用于提供 scorer 产生的轻量结构化证据。对于 `state_snapshot` 约束，已通过的结构化 evidence 是状态判定依据；judge 使用 `steps` 审计行为过程，但除非 `stage_goal` 明确要求用户可见沟通，否则不要求 agent 额外自然语言复述数据库状态。
+
+`steps[].raw` 会暴露 adapter 保留的轻量原始字段，例如 sender、recipient、openai_tool_call_id、openai_function_name。Prompt 不嵌入完整数据库 snapshot。
+
 `TaskCase.stage_goals` 类型为 `dict[str, str]`，使用稳定 key：`"{anchor_milestone_id}->{milestone_id}"`，value 是对应阶段目标文本。仅当 adapted case 文件不存在、首次调用 adapter 生成 `TaskCase` 时，loader 会执行 milestone graph enrichment 并补充 stage goals 后保存；读取已有 adapted case 文件时只做 parse，不再次 enrichment、不再次校验或补充 stage goals。
 
 stage goal 生成 prompt 中的 `milestone_graph` 使用精简结构：`nodes` 只包含 `milestone_id`、`name`、`description`、`required`、`anchor`、`constraints`；`edges` 优先使用 `graph_analysis.augmented_edges`，包含 `__start__` 与 `__finish__` 增强边。prompt 不输出 `dependency_predecessor_ids`、`stage_anchor_predecessor_id` 或完整 `graph_analysis`。`TaskCase.stage_goals` 保持 `dict[str, str]`，key 为 `"{anchor_milestone_id}->{milestone_id}"`，value 为对应 `stage_goal`。
@@ -77,6 +83,7 @@ stage goal 生成 prompt 中的 `milestone_graph` 使用精简结构：`nodes` �
 - `prompt_task_description_excerpt`: 任务描述摘要。
 - `stage_goal_digest` / `stage_goal_objective_excerpt`: 当前阶段目标摘要，用于定位 LLM judge 是否按阶段目标判分。
 - `stage_step_count` / `first_stage_step_excerpt` / `last_stage_step_excerpt`: 阶段轨迹摘要。
+- `structured_milestone_evidence_count`: prompt context 中结构化 milestone evidence 的数量。
 - `judge_status` / `judge_stage_score` / `judge_confidence`: LLM 输出转换后的阶段结果摘要。
 - `judge_first_diagnosis` / `judge_first_evidence`: LLM 输出的首条诊断和证据摘要。
 

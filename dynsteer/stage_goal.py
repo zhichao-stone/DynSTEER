@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 
-from dynsteer.graph import START_NODE_ID
 from dynsteer.llm import BaseLLM, LLMMessage
-from dynsteer.model import Constraint, JsonObject, Milestone, MilestoneGraph, StageInterval, TaskCase
+from dynsteer.model import (
+    Constraint,
+    JsonObject,
+    JsonValue,
+    Milestone,
+    MilestoneGraph,
+    StageGoalSemanticKind,
+    StageInterval,
+    TaskCase,
+)
+from dynsteer.utils import enum_value
+
+
+StageGoalLLMProvider = Callable[[], BaseLLM | None]
 
 
 def stage_goal_key(anchor_milestone_id: str, milestone_id: str) -> str:
@@ -27,6 +40,72 @@ def required_stage_goal_keys(graph: MilestoneGraph) -> list[str]:
             raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
         keys.append(stage_goal_key(anchor_id, milestone.milestone_id))
     return keys
+
+
+def generate_stage_goals(
+    task_case: TaskCase,
+    mode: str = "auto",
+    llm_provider: StageGoalLLMProvider | None = None,
+) -> dict[str, str]:
+    """集中生成 TaskCase 的 stage_goals。
+
+    Args:
+        task_case: 已完成 milestone graph enrichment 的任务定义。
+        mode: 生成模式，支持 auto、semantic、llm、stored。
+        llm_provider: 仅在需要 LLM fallback 时调用的 provider。
+
+    Returns:
+        完整覆盖 milestone graph 的 stage_goals。
+    """
+    # 规范化生成模式；None 或空字符串沿用 auto。
+    normalized_mode = str(mode or "auto").strip().lower()
+    if normalized_mode == "stored":
+        validate_stage_goals(task_case.milestone_graph, task_case.stage_goals)
+        return dict(task_case.stage_goals)
+    if normalized_mode not in {"auto", "semantic", "llm"}:
+        raise ValueError(f"未知 stage_goal_generation 模式: {mode}")
+
+    # auto/semantic 优先使用公共语义 IR 生成，不读取任何 benchmark 私有 metadata。
+    if normalized_mode in {"auto", "semantic"}:
+        semantic_goals: dict[str, str] = {}
+        graph = task_case.milestone_graph
+        if graph is None:
+            raise ValueError("TaskCase 缺少 milestone_graph")
+        semantic_complete = True
+        for milestone in graph.nodes:
+            anchor_id = milestone.stage_anchor_predecessor_id
+            if not isinstance(anchor_id, str) or not anchor_id:
+                raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
+            key = stage_goal_key(anchor_id, milestone.milestone_id)
+            if not milestone.constraints:
+                semantic_complete = False
+                break
+            pieces: list[str] = []
+            for constraint in milestone.constraints:
+                # 单个 constraint 缺失公共 IR 时，auto 回退 LLM，semantic 直接报错。
+                piece = _constraint_goal_text_from_semantics(constraint)
+                if piece is None:
+                    semantic_complete = False
+                    break
+                pieces.append(piece)
+            if not semantic_complete:
+                break
+            objective = f"Complete milestone {milestone.milestone_id}: {milestone.description or milestone.name}."
+            goal_text = " ".join([objective, *pieces])
+            semantic_goals[key] = goal_text
+        if semantic_complete:
+            validate_stage_goals(task_case.milestone_graph, semantic_goals)
+            return semantic_goals
+        if normalized_mode == "semantic":
+            raise ValueError("stage_goal_generation=semantic 需要所有约束提供 stage_goal_semantics")
+
+    # 无法用语义 IR 完整覆盖时，按配置回退到 LLM 生成。
+    if llm_provider is None:
+        raise ValueError("stage_goal_generation=llm 需要配置 LLM provider")
+    llm = llm_provider()
+    if llm is None:
+        raise ValueError("stage_goal_generation=llm 需要配置 DYNSTEER_JUDGE_PROVIDER")
+    return generate_stage_goals_with_llm(task_case, llm)
 
 
 def build_stage_goal_generation_prompt(task_case: TaskCase) -> str:
@@ -130,7 +209,67 @@ def _parse_stage_goal_from_resp(raw: str) -> dict[str, str]:
         result[key] = stage_goal
     return result
 
+
+def _constraint_goal_text_from_semantics(constraint: Constraint) -> str | None:
+    """根据单个约束的公共语义 IR 生成 stage_goal 文本片段。"""
+    # 缺失或格式错误表示该约束无法走 deterministic 语义生成。
+    semantics = constraint.stage_goal_semantics
+    if semantics is None:
+        return None
+    if not isinstance(semantics, dict):
+        return None
+    try:
+        kind = enum_value(StageGoalSemanticKind, semantics.get("kind"), "stage_goal_semantics.kind")
+    except ValueError:
+        return None
+    # 状态设置类目标依赖结构化 scorer evidence，不要求额外自然语言复述。
+    if kind == StageGoalSemanticKind.SET_STATE:
+        namespace = _semantic_text(semantics.get("namespace"), "state")
+        expected = json.dumps(semantics.get("expected"), ensure_ascii=False, sort_keys=True)
+        return (
+            f"Make or verify {namespace} state satisfies {expected}. "
+            "Use structured scorer evidence for this state requirement; no separate user-facing restatement is required unless another message requirement says so."
+        )
+    # 状态保持类目标表达“相对参考点不变”，不能被误写为数据库为空。
+    if kind == StageGoalSemanticKind.PRESERVE_STATE:
+        namespace = _semantic_text(semantics.get("namespace"), "state")
+        reference = semantics.get("reference")
+        reference_text = "the referenced state"
+        if isinstance(reference, dict) and reference.get("type") == "milestone_index":
+            reference_text = f"reference milestone index {reference.get('value')}"
+        elif isinstance(reference, dict) and reference.get("type") == "initial_state":
+            reference_text = "initial state"
+        return (
+            f"Preserve {namespace} state relative to {reference_text}. "
+            "This means the relevant state should remain unchanged or equivalent, not that the namespace must be empty."
+        )
+    # 消息类目标允许语义等价，避免把自然语言回复锁死为固定字面文本。
+    if kind == StageGoalSemanticKind.EMIT_MESSAGE:
+        sender = _semantic_text(semantics.get("sender"), "sender")
+        recipient = _semantic_text(semantics.get("recipient"), "recipient")
+        content = _semantic_text(semantics.get("content"), "")
+        match_policy = _semantic_text(semantics.get("match_policy"), "semantic_equivalent")
+        exact_note = "Exact wording is required." if match_policy == "exact" else "Exact wording is not required."
+        quoted_content = json.dumps(content, ensure_ascii=False) if content else "the required content"
+        return f"Emit a message from {sender} to {recipient} conveying {quoted_content}. {exact_note}"
+    # 工具调用类目标只描述工具名与参数兼容性，不承担 scorer 私有逻辑。
+    if kind == StageGoalSemanticKind.TOOL_CALL:
+        tool_name = _semantic_text(semantics.get("tool_name"), "the required tool")
+        arguments = semantics.get("arguments")
+        if isinstance(arguments, dict) and arguments:
+            expected_arguments = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+            return f"Call tool {tool_name} with arguments compatible with {expected_arguments}."
+        return f"Call tool {tool_name} with appropriate arguments."
+    return None
+
+
+def _semantic_text(value: object, default: str) -> str:
+    """把可选语义字段转换为非空文本。"""
+    return value if isinstance(value, str) and value.strip() else default
+
+
 def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
+    """构造 LLM fallback prompt 使用的 milestone graph 摘要。"""
     if graph is None:
         raise ValueError("graph 不能为空")
     analysis = graph.metadata.get("graph_analysis") if isinstance(graph.metadata, dict) else None
@@ -146,6 +285,7 @@ def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
 
 
 def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
+    """构造 LLM fallback prompt 使用的 milestone 摘要。"""
     if milestone is None:
         raise ValueError("milestone 不能为空")
     return {
@@ -159,8 +299,7 @@ def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
 
 
 def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
-    if constraint is None:
-        raise ValueError("constraint 不能为空")
+    """构造 LLM fallback prompt 可消费的通用 constraint JSON。"""
     return {
         "constraint_id": constraint.constraint_id,
         "target": constraint.target.value,
@@ -171,10 +310,12 @@ def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
         "hard": constraint.hard,
         "evaluator_hint": constraint.evaluator_hint,
         "expected_summary": _expected_summary(constraint.expected),
+        "stage_goal_semantics": constraint.stage_goal_semantics,
     }
 
 
-def _expected_summary(value: object) -> object:
+def _expected_summary(value: JsonValue) -> object:
+    """把 expected 值压缩为 LLM fallback prompt 摘要。"""
     if isinstance(value, dict):
         rows = value.get("rows")
         columns = value.get("columns")

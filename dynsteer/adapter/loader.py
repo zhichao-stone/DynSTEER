@@ -31,7 +31,7 @@ from dynsteer.model import (
     TrajectoryStep,
     ensure_json_object,
 )
-from dynsteer.stage_goal import generate_stage_goals_with_llm
+from dynsteer.stage_goal import generate_stage_goals
 from dynsteer.utils import enum_value, get_object, json_safe, unknown_fields
 
 
@@ -45,11 +45,20 @@ def safe_case_file_name(case_id: str) -> str:
     return f"{normalized}.json"
 
 
-def adapterd_case_path(data_root: Path, case_id: str) -> Path:
-    """返回 adapted 单 case JSON 路径。"""
+def adapted_case_path(data_root: Path, case_id: str) -> Path:
+    """返回 adapted 单 case JSON 路径。
+
+    Args:
+        data_root: benchmark 数据根目录。
+        case_id: 原始 case 标识。
+
+    Returns:
+        当前 case 对应的 adapted JSON 文件路径。
+    """
+    # 这里保留有路径上下文的 None 校验，便于定位配置缺失。
     if data_root is None:
         raise ValueError("data_root 不能为空")
-    return data_root / "adapterd_cases" / safe_case_file_name(case_id)
+    return data_root / "adapted_cases" / safe_case_file_name(case_id)
 
 
 def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> list[TaskCase]:
@@ -62,7 +71,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
 
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="适配 benchmark 数据"):
-        path = adapterd_case_path(config.data_root, case_id)
+        path = adapted_case_path(config.data_root, case_id)
         if not path.exists():
             task_case = adapter.adapt_task_case(config, case_id)
             if not isinstance(task_case, TaskCase):
@@ -72,27 +81,16 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
             if task_case.milestone_graph is not None:
                 task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
                 if not task_case.stage_goals:
-                    task_case.stage_goals = generate_stage_goals(task_case, config)
+                    task_case.stage_goals = generate_stage_goals(
+                        task_case,
+                        mode=str(config.metadata.get("stage_goal_generation", "auto")),
+                        llm_provider=build_llm_from_env,
+                    )
             save_task_case(path, task_case)
         else:
             task_case = load_task_case_file(path, expected_case_id=case_id)
         task_cases.append(task_case)
     return task_cases
-
-
-def generate_stage_goals(task_case: TaskCase, config: HarnessRunConfig) -> dict[str, str]:
-    """为首次适配的 TaskCase 生成 stage goal 映射。"""
-    if task_case is None or config is None:
-        raise ValueError("task_case 和 config 不能为空")
-    mode = config.metadata.get("stage_goal_generation", "llm")
-    if mode == "stored":
-        raise ValueError("TaskCase 缺少 stage_goals，请先执行 LLM 预生成")
-    if mode != "llm":
-        raise ValueError(f"未知 stage_goal_generation 模式: {mode}")
-    llm = build_llm_from_env()
-    if llm is None:
-        raise ValueError("stage_goal_generation=llm 需要配置 DYNSTEER_JUDGE_PROVIDER")
-    return generate_stage_goals_with_llm(task_case, llm)
 
 
 def load_task_case_file(path: Path, expected_case_id: str) -> TaskCase:
@@ -182,6 +180,11 @@ def parse_constraint(data: JsonObject) -> Constraint:
         threshold=float(constraint_data.get("threshold", 1.0)),
         hard=bool(constraint_data.get("hard", False)),
         evaluator_hint=str(constraint_data.get("evaluator_hint", "rule")),
+        stage_goal_semantics=(
+            ensure_json_object(constraint_data["stage_goal_semantics"])
+            if constraint_data.get("stage_goal_semantics") is not None
+            else None
+        ),
         metadata=_optional_object(constraint_data, "metadata"),
     )
 
@@ -414,6 +417,7 @@ def constraint_to_json(constraint: Constraint) -> JsonObject:
         "threshold": constraint.threshold,
         "hard": constraint.hard,
         "evaluator_hint": constraint.evaluator_hint,
+        "stage_goal_semantics": json_safe(constraint.stage_goal_semantics),
         "metadata": json_safe(constraint.metadata),
     }
 

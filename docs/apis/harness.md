@@ -25,7 +25,15 @@ def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase: .
 def create_harness(self) -> BaseBenchmarkHarness: ...
 ```
 
-adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter)` 按 `data/{benchmark}/adapterd_cases/<case_id>.json` 读取缓存；缺失时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。
+adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter)` 按 `data/{benchmark}/adapted_cases/<case_id>.json` 读取缓存；缺失时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。
+
+## Adapter 与 Stage Goal 语义边界
+
+Adapter 可以理解 benchmark 私有格式，并把私有约束解释为 DynSTEER 通用 `Constraint.stage_goal_semantics`。例如某 benchmark 的“保持参考状态不变”约束应在 Python 代码中映射为 `{"kind": StageGoalSemanticKind.PRESERVE_STATE.value}`，落盘后表现为 `{"kind":"preserve_state"}`。
+
+Adapter 不应直接生成 `TaskCase.stage_goals`，也不应提供 benchmark 专用 stage_goal hook。`TaskCase.stage_goals` 由 `dynsteer.stage_goal.generate_stage_goals(...)` 统一生成。
+
+私有评分字段仍保留在 benchmark 自己的 metadata key 下，供专用 scorer 使用；公共 stage_goal 和 judge prompt 不读取这些私有字段。
 
 ## BaseBenchmarkHarness 接口
 

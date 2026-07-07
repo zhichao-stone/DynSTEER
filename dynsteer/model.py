@@ -90,6 +90,13 @@ class StageStatus(str, Enum):
     INVALID = "invalid"
 
 
+class StageGoalSemanticKind(str, Enum):
+    SET_STATE = "set_state"
+    PRESERVE_STATE = "preserve_state"
+    EMIT_MESSAGE = "emit_message"
+    TOOL_CALL = "tool_call"
+
+
 ## 轨迹与状态模型
 
 @dataclass
@@ -150,6 +157,7 @@ class Constraint:
     threshold: float = 1.0
     hard: bool = False
     evaluator_hint: str = "rule"
+    stage_goal_semantics: JsonObject | None = None
     metadata: JsonObject = field(default_factory=dict)
 
 
@@ -268,19 +276,23 @@ class Trajectory:
         Args:
             min_index: 区间下界（不包含）。
             max_index: 区间上界（包含）。
+
+        Returns:
+            满足左开右闭区间语义的轨迹步骤列表。
         """
-        if min_index is None or max_index is None:
-            raise ValueError("min_index 和 max_index 不能为空")
+        # 保持区间语义有效，避免调用方传入反向边界。
         if min_index >= max_index:
             raise ValueError("min_index 必须小于 max_index")
-        
-        if max_index < self.first_step_index or (self.latest_step_index is not None and min_index > self.latest_step_index):
+        if self.latest_step_index is None:
             return []
-        
-        min_index = self.first_step_index if min_index < self.first_step_index else min_index
-        max_index = self.latest_step_index if self.latest_step_index is not None and max_index > self.latest_step_index else max_index
+        if max_index < self.first_step_index or min_index >= self.latest_step_index:
+            return []
 
-        return [step for step in self.steps if min_index < step.index <= max_index]
+        # synthetic boundary 可能小于首个真实 step，需要钳到 first_step_index - 1，
+        # 这样左开区间不会漏掉首个真实 step。
+        lower_bound = max(min_index, self.first_step_index - 1)
+        upper_bound = min(max_index, self.latest_step_index)
+        return [step for step in self.steps if lower_bound < step.index <= upper_bound]
 
 
 @dataclass
