@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from tqdm import tqdm
+
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.graph import enrich_milestone_graph
 from dynsteer.harness.model import HarnessRunConfig
@@ -59,7 +61,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
         raise ValueError("config.case_ids 不能为空")
 
     task_cases: list[TaskCase] = []
-    for case_id in case_ids:
+    for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="适配 benchmark 数据"):
         path = adapterd_case_path(config.data_root, case_id)
         if not path.exists():
             task_case = adapter.adapt_task_case(config, case_id)

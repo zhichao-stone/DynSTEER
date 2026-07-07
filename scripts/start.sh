@@ -229,81 +229,6 @@ if isinstance(value, str) and value.strip():
 PY
 }
 
-write_manifest_source_root() {
-    local data_root="$1"
-    local source_path="$2"
-    python - "$data_root" "$source_path" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest = Path(sys.argv[1]) / "benchmark.json"
-source_root = sys.argv[2]
-if not manifest.exists():
-    raise SystemExit(0)
-data = json.loads(manifest.read_text(encoding="utf-8"))
-data["source_root"] = source_root
-manifest.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
-PY
-}
-
-runtime_data_root() {
-    local project_root="$1"
-    local benchmark="$2"
-    printf '%s\n' "$project_root/.dynsteer-runtime/data/$benchmark"
-}
-
-absolute_container_path() {
-    local project_root="$1"
-    local input_path="$2"
-    if [[ "$input_path" == /* ]]; then
-        printf '%s\n' "$input_path"
-    else
-        cd -- "$project_root/$input_path" && pwd
-    fi
-}
-
-prepare_runtime_data_root() {
-    local project_root="$1"
-    local benchmark="$2"
-    local data_root="$3"
-    local source_path="$4"
-
-    if [[ -z "$source_path" || "${DYNSTEER_IN_DOCKER:-}" != "1" ]]; then
-        printf '%s\n' "$data_root"
-        return 0
-    fi
-
-    local source_data_root="$data_root"
-    if [[ "$source_data_root" != /* ]]; then
-        source_data_root="$project_root/$source_data_root"
-    fi
-    if [[ ! -d "$source_data_root" ]]; then
-        echo "Benchmark data root not found: $data_root" >&2
-        exit 66
-    fi
-
-    local effective_data_root
-    effective_data_root="$(runtime_data_root "$project_root" "$benchmark")"
-    case "$effective_data_root" in
-        "$project_root"/.dynsteer-runtime/data/*)
-            ;;
-        *)
-            echo "Refusing to prepare runtime data root outside project runtime directory: $effective_data_root" >&2
-            exit 70
-            ;;
-    esac
-
-    rm -rf "$effective_data_root"
-    mkdir -p "$(dirname -- "$effective_data_root")"
-    cp -R "$source_data_root" "$effective_data_root"
-
-    local resolved_source_path
-    resolved_source_path="$(absolute_container_path "$project_root" "$source_path")"
-    write_manifest_source_root "$effective_data_root" "$resolved_source_path"
-    printf '%s\n' "$effective_data_root"
-}
-
 link_manifest_source_root() {
     local project_root="$1"
     local data_root="$2"
@@ -488,7 +413,6 @@ main() {
 
     cd "$project_root"
     ensure_uv_environment "$project_root"
-    effective_data_root="$(prepare_runtime_data_root "$project_root" "$benchmark" "$data_root" "$source_path")"
     if [[ -n "$source_path" ]]; then
         install_benchmark_source "$project_root" "$benchmark" "$effective_data_root" "$source_path"
     fi
