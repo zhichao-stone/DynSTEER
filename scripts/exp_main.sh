@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./scripts/exp_main.sh [--benchmarks a,b,c] [--benchmark NAME ...] [-- start.sh args]
+  ./scripts/exp_main.sh [--benchmarks a,b,c] [--benchmark NAME ...] [--only_adapt] [-- start.sh args]
 
 Examples:
   ./scripts/exp_main.sh --benchmarks toolsandbox
@@ -90,6 +90,10 @@ main() {
                 ;;
             --benchmark=*)
                 benchmarks+=("${1#*=}")
+                shift
+                ;;
+            --only_adapt|--only-adapt)
+                start_args+=(--only_adapt)
                 shift
                 ;;
             -h|--help)
