@@ -100,13 +100,16 @@ Harness 模式输出：
 
 - `runs/<benchmark>/<run_id>/<case_id>/raw/`
 - `runs/<benchmark>/<run_id>/<case_id>/raw_summary.json`
+- `runs/<benchmark>/<run_id>/<case_id>/trajectory.json`
 - `results/<benchmark>/<run_id>/summary.json`
 - `results/<benchmark>/<run_id>/<case_id>/report.json`
 - `results/<benchmark>/<run_id>/<case_id>/summary.json`
 
 `results/<benchmark>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics` 记录 case 评估耗时、轨迹 step 数、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+`trajectory.json` 包含完整 `Trajectory` 序列化结果。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 `step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
+
+`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics` 记录 case 评估耗时、轨迹 step 数、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 

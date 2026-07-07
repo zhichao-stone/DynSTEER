@@ -5,7 +5,8 @@ import sys
 
 from dynsteer.progress import TqdmCaseProgressManager, progress_logging_redirect
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.harness.runner import _progress_total_from_config
+from dynsteer.harness.runner import _HarnessCaseTask, _progress_total_from_tasks
+from dynsteer.model import TaskCase
 
 
 class FakeBar:
@@ -72,11 +73,17 @@ def test_progress_uses_estimated_total_and_closes_at_actual_steps() -> None:
     assert bars[0].closed is True
 
 
-def test_progress_total_uses_config_max_messages(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_progress_total_uses_task_config_max_messages(tmp_path) -> None:  # type: ignore[no-untyped-def]
     config = HarnessRunConfig(
         benchmark="toolsandbox",
         data_root=tmp_path,
         metadata={"max_messages": 30},
     )
+    task = _HarnessCaseTask(
+        order=0,
+        config=config,
+        case_id="case",
+        task_case=TaskCase(task_id="task", task_description="task", case_id="case"),
+    )
 
-    assert _progress_total_from_config(config) == 30
+    assert _progress_total_from_tasks([task]) == 30

@@ -6,7 +6,8 @@ import re
 
 from dynsteer.language import TaskLanguage
 from dynsteer.model import Dimension, JsonObject, StageInterval, TaskCase, Trajectory
-from dynsteer.stage import build_stage_goal
+from dynsteer.stage import stage_trajectory_steps
+from dynsteer.stage_goal import resolve_stage_goal
 
 logger = logging.getLogger(__name__)
 
@@ -235,17 +236,14 @@ def _context_json(
     """
     if interval is None or task_case is None or trajectory is None or weights is None:
         raise ValueError("prompt 上下文参数不能为空")
-    stage_goal = build_stage_goal(interval, task_case)
-    primary_dimensions = stage_goal.pop("primary_dimensions")
+    stage_goal = resolve_stage_goal(interval, task_case)
     data: JsonObject = {
         "task": {
             "task_description": task_case.task_description,
         },
         "stage_goal": stage_goal,
-        "rubric_dimension_focus": list(primary_dimensions) if isinstance(primary_dimensions, list) else [],
+        "rubric_dimension_focus": [dimension.value for dimension in Dimension],
         "interval": {
-            "start_step_index": interval.start_step_index,
-            "end_step_index": interval.end_step_index,
             "status": interval.status.value,
             "evidence": list(interval.evidence),
             "milestone_score": interval.milestone_score.score if interval.milestone_score is not None else None,
@@ -259,8 +257,7 @@ def _context_json(
                 "tool_call": _json_safe_dataclass(step.tool_call),
                 "tool_result": _json_safe_dataclass(step.tool_result),
             }
-            for step in trajectory.steps
-            if interval.start_step_index <= step.index <= interval.end_step_index or interval.start_step_index < 0
+            for step in stage_trajectory_steps(interval, trajectory)
         ],
         "rubric_dimensions": [dimension.value for dimension in Dimension],
         "required_output": _output_schema(language),

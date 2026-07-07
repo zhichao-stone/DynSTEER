@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 
 from dynsteer.model import JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, TrajectoryStep
-from dynsteer.stage import build_stage_goal
+from dynsteer.stage import stage_trajectory_steps
+from dynsteer.stage_goal import resolve_stage_goal
 
 
 def judge_input_metadata(
@@ -27,20 +28,21 @@ def judge_input_metadata(
     """
     if interval is None or task_case is None or trajectory is None or prompt is None:
         raise ValueError("judge 输入快照参数不能为空")
-    stage_goal = build_stage_goal(interval, task_case)
-    stage_goal_objective = stage_goal.get("objective")
-    stage_steps = _stage_steps(interval, trajectory)
+    stage_goal = resolve_stage_goal(interval, task_case)
+    stage_steps = stage_trajectory_steps(interval, trajectory)
     first_step = stage_steps[0] if stage_steps else None
     last_step = stage_steps[-1] if stage_steps else None
     metadata: JsonObject = {
         "stage_id": interval.stage_id,
         "milestone_id": interval.milestone_id,
+        "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
+        "start_boundary_step_index": interval.start_boundary_step_index,
         "start_step_index": interval.start_step_index,
         "end_step_index": interval.end_step_index,
         "task_description": task_case.task_description,
         "prompt_context_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "prompt_task_description_excerpt": _excerpt(task_case.task_description),
-        "stage_goal_objective_excerpt": _excerpt(str(stage_goal_objective) if stage_goal_objective is not None else ""),
+        "stage_goal_objective_excerpt": _excerpt(stage_goal),
         "stage_step_count": len(stage_steps),
         "first_stage_step_excerpt": _step_excerpt(first_step),
         "last_stage_step_excerpt": _step_excerpt(last_step),
@@ -97,16 +99,6 @@ def judge_payload_output_metadata(
         "judge_first_evidence": _first_text(_string_list(payload.get("evidence"))),
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
     }
-
-
-def _stage_steps(interval: StageInterval, trajectory: Trajectory) -> list[TrajectoryStep]:
-    if interval is None or trajectory is None:
-        raise ValueError("stage steps 参数不能为空")
-    return [
-        step
-        for step in trajectory.steps
-        if interval.start_step_index <= step.index <= interval.end_step_index or interval.start_step_index < 0
-    ]
 
 
 def _step_excerpt(step: TrajectoryStep | None) -> str | None:

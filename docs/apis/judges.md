@@ -58,10 +58,12 @@ benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配�
 
 LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focus`：
 
-- `stage_goal`: 当前阶段的权威成功条件，由 `StageInterval` 与 `TaskCase.milestone_graph` 生成。它只包含面向 LLM 可读的自然语言 `objective`、`success_condition`、阶段类型与维度焦点，不向 prompt 暴露 `current_milestone_id`、`stage_anchor_predecessor_id`、`predecessor_milestone_ids` 或 `constraint_targets` 等内部结构字段。standard / expensive judge 必须优先判断该字段，而不是要求阶段片段完成整个 `task.task_description`。
-- `rubric_dimension_focus`: 当前阶段最应关注的维度，例如状态更新阶段关注 `progress`、`state_consistency`、`tool_quality`、`safety`。
+- `stage_goal`: 当前阶段的权威成功条件字符串，由 adapter/loader 阶段预生成并写入 `TaskCase.stage_goals`。judge prompt 运行期通过 `(stage_anchor_milestone_id, milestone_id)` 组成的 key 读取缓存目标；缺失时抛出异常，不再回退到规则式临时拼接。
+- `rubric_dimension_focus`: 当前 prompt 的维度焦点列表。`TaskCase.stage_goals` 只保存阶段目标文本，不保存维度配置。
 
-`stage_goal` 由 `dynsteer.stage.build_stage_goal(...)` 生成，只使用 `Milestone`、`Constraint`、`StageInterval` 等通用字段，不解析 benchmark 私有 metadata。阶段目标会结合当前 milestone 与 `stage_anchor_predecessor_id` 对应 milestone 的描述、约束期望生成自然语言摘要，避免把 LLM 无法理解的内部 ID 当作判断依据。
+`TaskCase.stage_goals` 类型为 `dict[str, str]`，使用稳定 key：`"{anchor_milestone_id}->{milestone_id}"`，value 是对应阶段目标文本。仅当 adapted case 文件不存在、首次调用 adapter 生成 `TaskCase` 时，loader 会执行 milestone graph enrichment 并补充 stage goals 后保存；读取已有 adapted case 文件时只做 parse，不再次 enrichment、不再次校验或补充 stage goals。
+
+stage goal 生成 prompt 中的 `milestone_graph` 使用精简结构：`nodes` 只包含 `milestone_id`、`name`、`description`、`required`、`anchor`、`constraints`；`edges` 优先使用 `graph_analysis.augmented_edges`，包含 `__start__` 与 `__finish__` 增强边。prompt 不输出 `dependency_predecessor_ids`、`stage_anchor_predecessor_id` 或完整 `graph_analysis`。`TaskCase.stage_goals` 保持 `dict[str, str]`，key 为 `"{anchor_milestone_id}->{milestone_id}"`，value 为对应 `stage_goal`。
 
 ## StandardJudge
 
@@ -70,7 +72,7 @@ LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focu
 `StandardJudge` 会在 `StageEvaluationResult.metadata` 中记录轻量观测字段，便于排查 LLM judge 任务目标错位：
 
 - `task_description`: 调用 LLM 前的 `TaskCase.task_description`。
-- `stage_id` / `milestone_id` / `start_step_index` / `end_step_index`: 当前阶段标识与范围。
+- `stage_id` / `milestone_id` / `stage_anchor_milestone_id` / `start_boundary_step_index` / `start_step_index` / `end_step_index`: 当前阶段标识与左开右闭范围。
 - `prompt_context_digest`: 已渲染 standard prompt 的 SHA-256 digest，用于关联输入快照与输出诊断。
 - `prompt_task_description_excerpt`: 任务描述摘要。
 - `stage_goal_digest` / `stage_goal_objective_excerpt`: 当前阶段目标摘要，用于定位 LLM judge 是否按阶段目标判分。

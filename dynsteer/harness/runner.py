@@ -8,7 +8,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.adapter.loader import load_task_case
+from dynsteer.adapter.loader import load_task_case, trajectory_to_json
 from dynsteer.adapter.registry import get_adapter
 from dynsteer.evaluate import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
@@ -34,6 +34,7 @@ class HarnessEvaluationOutput:
     report_path: Path
     summary_path: Path
     raw_summary_path: Path
+    trajectory_path: Path
 
 
 class HarnessCaseExecutionError(RuntimeError):
@@ -407,10 +408,18 @@ def _write_case_outputs(
     report_path = result_dir / "report.json"
     summary_path = result_dir / "summary.json"
     raw_summary_path = raw_run_dir / "raw_summary.json"
+    trajectory_path = raw_run_dir / "trajectory.json"
     raw_summary = dict(harness_result.raw_summary)
     runtime_metrics = dict(report.runtime_metrics)
     if runtime_metrics and not isinstance(raw_summary.get("runtime_metrics"), dict):
         raw_summary["runtime_metrics"] = runtime_metrics
+    trajectory = harness_result.trajectory
+    raw_summary["trajectory_output"] = {
+        "path": "trajectory.json",
+        "step_count": len(trajectory.steps),
+        "snapshot_count": len(trajectory.snapshots),
+        "final_state_present": trajectory.final_state is not None,
+    }
     raw_summary.update(
         {
             "terminated_by_policy": harness_result.terminated_by_policy,
@@ -421,11 +430,13 @@ def _write_case_outputs(
     )
     report_text = json.dumps(report.to_dict(), ensure_ascii=False, indent=4)
     summary_text = json.dumps(report.to_summary_dict(), ensure_ascii=False, indent=4)
+    trajectory_text = json.dumps(trajectory_to_json(trajectory), ensure_ascii=False, indent=4)
     raw_summary_text = json.dumps(raw_summary, ensure_ascii=False, indent=4)
     raw_run_dir.mkdir(parents=True, exist_ok=True)
     result_dir.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report_text, encoding="utf-8")
     summary_path.write_text(summary_text, encoding="utf-8")
+    trajectory_path.write_text(trajectory_text, encoding="utf-8")
     raw_summary_path.write_text(raw_summary_text, encoding="utf-8")
     return HarnessEvaluationOutput(
         run_dir=result_dir,
@@ -434,6 +445,7 @@ def _write_case_outputs(
         report_path=report_path,
         summary_path=summary_path,
         raw_summary_path=raw_summary_path,
+        trajectory_path=trajectory_path,
     )
 
 

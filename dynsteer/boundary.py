@@ -107,6 +107,30 @@ def boundary_snapshot(boundary: Boundary, snapshots: list[StateSnapshot]) -> Sta
     return max(candidates, key=lambda item: item.after_step_index)
 
 
+def candidate_boundary_for_current_step(
+    trajectory: Trajectory,
+    step: TrajectoryStep,
+) -> Boundary:
+    """基于当前新增 step 构造运行期唯一候选边界。
+
+    Args:
+        trajectory: 当前已增量维护的运行期轨迹。
+        step: 当前新增的轨迹步骤。
+
+    Returns:
+        绑定当前 step 与最近状态快照的运行期候选边界。
+    """
+    if trajectory is None or step is None:
+        raise ValueError("trajectory 和 step 不能为空")
+    return Boundary(
+        boundary_id=f"runtime:b{step.index}",
+        step_index=step.index,
+        snapshot_id=_latest_snapshot_id(step.index, trajectory.snapshots),
+        reason=_step_reason(step) or "last_step",
+        step_id=step.step_id,
+    )
+
+
 def generate_candidate_boundaries(trajectory: Trajectory) -> list[Boundary]:
     """根据轨迹事件生成候选阶段边界。
 

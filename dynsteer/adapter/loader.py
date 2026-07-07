@@ -7,6 +7,7 @@ from pathlib import Path
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.graph import enrich_milestone_graph
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.llm import build_llm_from_env
 from dynsteer.model import (
     Actor,
     Constraint,
@@ -28,6 +29,7 @@ from dynsteer.model import (
     TrajectoryStep,
     ensure_json_object,
 )
+from dynsteer.stage_goal import generate_stage_goals_with_llm
 from dynsteer.utils import enum_value, get_object, json_safe, unknown_fields
 
 
@@ -67,11 +69,28 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
                 raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
             if task_case.milestone_graph is not None:
                 task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
+                if not task_case.stage_goals:
+                    task_case.stage_goals = generate_stage_goals(task_case, config)
             save_task_case(path, task_case)
         else:
             task_case = load_task_case_file(path, expected_case_id=case_id)
         task_cases.append(task_case)
     return task_cases
+
+
+def generate_stage_goals(task_case: TaskCase, config: HarnessRunConfig) -> dict[str, str]:
+    """为首次适配的 TaskCase 生成 stage goal 映射。"""
+    if task_case is None or config is None:
+        raise ValueError("task_case 和 config 不能为空")
+    mode = config.metadata.get("stage_goal_generation", "llm")
+    if mode == "stored":
+        raise ValueError("TaskCase 缺少 stage_goals，请先执行 LLM 预生成")
+    if mode != "llm":
+        raise ValueError(f"未知 stage_goal_generation 模式: {mode}")
+    llm = build_llm_from_env()
+    if llm is None:
+        raise ValueError("stage_goal_generation=llm 需要配置 DYNSTEER_JUDGE_PROVIDER")
+    return generate_stage_goals_with_llm(task_case, llm)
 
 
 def load_task_case_file(path: Path, expected_case_id: str) -> TaskCase:
@@ -127,6 +146,19 @@ def _string_list(data: JsonObject, key: str) -> list[str]:
     if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
         raise ValueError(f"字段 {key} 必须是 list[str] 类型")
     return list(values)
+
+
+def _string_dict(data: dict[object, object], key: str) -> dict[str, str]:
+    if data is None or not isinstance(data, dict):
+        raise ValueError(f"字段 {key} 必须是 dict[str, str] 类型")
+    result: dict[str, str] = {}
+    for item_key, item_value in data.items():
+        if not isinstance(item_key, str) or not item_key:
+            raise ValueError(f"字段 {key} 的 key 必须是非空字符串")
+        if not isinstance(item_value, str) or not item_value.strip():
+            raise ValueError(f"字段 {key} 的 value 必须是非空字符串")
+        result[item_key] = item_value
+    return result
 
 
 def parse_constraint(data: JsonObject) -> Constraint:
@@ -239,6 +271,9 @@ def parse_task_case(data: JsonObject) -> TaskCase:
     policy_constraints = get_object(task_data, "policy_constraints", list, default=[], required=False)
     if not isinstance(policy_constraints, list):
         raise ValueError("policy_constraints 必须是数组")
+    stage_goal_values = get_object(task_data, "stage_goals", dict, default={}, required=False)
+    if not isinstance(stage_goal_values, dict):
+        raise ValueError("stage_goals 必须是对象")
     milestone_graph = None
     if task_data.get("milestone_graph") is not None:
         milestone_graph = parse_milestone_graph(ensure_json_object(task_data["milestone_graph"]))
@@ -251,6 +286,7 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         policy_constraints=[ensure_json_object(item) for item in policy_constraints],
         initial_state=_optional_object_or_none(task_data, "initial_state"),
         milestone_graph=milestone_graph,
+        stage_goals=_string_dict(stage_goal_values, "stage_goals"),
         task_types=[enum_value(TaskType, item, "task_types") for item in raw_task_types],  # type: ignore[list-item]
         metadata=_optional_object(task_data, "metadata"),
     )
@@ -434,6 +470,7 @@ def task_case_to_json(task_case: TaskCase) -> JsonObject:
             if task_case.milestone_graph is not None
             else None
         ),
+        "stage_goals": json_safe(task_case.stage_goals),
         "task_types": [item.value for item in task_case.task_types],
         "metadata": json_safe(task_case.metadata),
     }

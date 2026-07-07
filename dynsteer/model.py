@@ -202,6 +202,7 @@ class TaskCase:
     policy_constraints: list[JsonObject] = field(default_factory=list)
     initial_state: Optional[JsonObject] = None
     milestone_graph: Optional[MilestoneGraph] = None
+    stage_goals: dict[str, str] = field(default_factory=dict)
     task_types: list[TaskType] = field(default_factory=list)
     metadata: JsonObject = field(default_factory=dict)
 
@@ -215,6 +216,71 @@ class Trajectory:
     final_state: Optional[JsonObject] = None
     metrics: JsonObject = field(default_factory=dict)
     raw: JsonObject = field(default_factory=dict)
+    first_step_index: int = 0
+    successor_by_boundary: dict[int, int] = field(default_factory=dict)
+    latest_step_index: int | None = None
+
+    def __post_init__(self) -> None:
+        """根据已有 step 序列维护阶段边界 O(1) 查询上下文。"""
+        if self.steps is None:
+            raise ValueError("trajectory.steps 不能为空")
+        self.first_step_index = 0
+        self.successor_by_boundary = {}
+        self.latest_step_index: int | None = None
+        for step in self.steps:
+            if step is None:
+                raise ValueError("trajectory.steps 不能包含空 step")
+            self._append_step_index(step.index)
+
+    def _append_step_index(self, step_index: int) -> None:
+        """仅追加 step index，用于维护阶段边界后继表。"""
+        previous_index = self.latest_step_index
+        if previous_index is not None and step_index <= previous_index:
+            raise ValueError("trajectory step index 必须递增")
+        
+        if previous_index is None:
+            self.first_step_index = step_index
+            self.successor_by_boundary[step_index - 1] = step_index
+        else:
+            self.successor_by_boundary[previous_index] = step_index
+
+        self.latest_step_index = step_index
+
+    ## 可用接口
+    def append_step(self, step: TrajectoryStep) -> None:
+        """追加单个 step，并同步维护首个 step 与 boundary 后继表。
+
+        Args:
+            step: 当前运行期新增的轨迹步骤。
+
+        Raises:
+            ValueError: 当 step 为空或 step index 未保持递增时抛出。
+        """
+        if step is None:
+            raise ValueError("step 不能为空")
+        
+        self.steps.append(step)
+        self._append_step_index(step.index)
+
+    def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
+        """返回指定 step index 区间内的轨迹步骤。
+
+        Args:
+            min_index: 区间下界（不包含）。
+            max_index: 区间上界（包含）。
+        """
+        if min_index is None or max_index is None:
+            raise ValueError("min_index 和 max_index 不能为空")
+        if min_index >= max_index:
+            raise ValueError("min_index 必须小于 max_index")
+        
+        if max_index < self.first_step_index or (self.latest_step_index is not None and min_index > self.latest_step_index):
+            return []
+        
+        min_index = self.first_step_index if min_index < self.first_step_index else min_index
+        max_index = self.latest_step_index if self.latest_step_index is not None and max_index > self.latest_step_index else max_index
+
+        return [step for step in self.steps if min_index < step.index <= max_index]
 
 
 @dataclass
@@ -269,6 +335,8 @@ class MilestoneMapping:
 class StageInterval:
     stage_id: str
     milestone_id: Optional[str]
+    stage_anchor_milestone_id: Optional[str]
+    start_boundary_step_index: int
     start_step_index: int
     end_step_index: int
     status: StageStatus

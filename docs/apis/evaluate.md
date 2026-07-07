@@ -21,7 +21,7 @@ dynsteer/evaluate/
 - runtime.py     # 运行期 raw_summary、pending milestone、scoring context 辅助函数
 - telemetry.py   # 运行期结构化日志 extra 构造函数
 - weights.py     # normalize_weights、select_initial_weights、update_weights
-- milestone.py   # milestone DAG 校验、贪心匹配、评分矩阵和运行期命中判定
+- milestone.py   # milestone DAG 校验、贪心匹配、评分矩阵和运行期 step 命中分析
 - utils.py       # compute_uncertainty、overall_score、enrich_stage_result 等纯函数
 ```
 
@@ -74,12 +74,14 @@ result = evaluator.evaluate(harness, config, task_case)
 1. 校验 `task_case.case_id`，并调用 `harness.prepare_config(config)` 准备 benchmark 运行配置。
 2. 通过 `task_case.case_id` 构造 raw 输出目录并调用 `harness.start_case(...)` 启动原生 session。
 3. 将运行配置 metadata 合入 `task_case.metadata`。
-4. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
-5. 合并 `advance.snapshots`。
-6. 对 `advance.steps` 做 milestone checkpoint 和阶段式动态评估。
-7. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
-8. 当 `advance.continue_running is False` 时结束主循环。
-9. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
+4. 初始化单个运行期 `Trajectory`，并在后续循环中增量维护 `steps`、`snapshots`、`final_state` 与 `metrics`。
+5. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
+6. 将 `advance.snapshots` 按 `snapshot_id` 合并到运行期 `Trajectory`。
+7. 对每个新增 step 调用 `Trajectory.append_step(...)`，再通过 `analyze_milestone_step(...)` 分析 ready milestone 命中或 blocked milestone 诊断。
+8. 只有 ready milestone 正常命中后，才进入阶段结算与阶段式动态评估。
+9. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
+10. 当 `advance.continue_running is False` 时结束主循环。
+11. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
 
 Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 adapter/loader 和 harness 返回契约。
 
@@ -136,7 +138,7 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 `stage_settlements[].metadata` 会包含运行期排查字段：
 
-- `stage_trace`: 当前阶段闭区间 `[start_step_index, end_step_index]` 内的轨迹步骤详情，包含 step id、index、actor、event_type、content、tool_call、tool_result、cost 和 adapter raw 字段。
+- `stage_trace`: 当前阶段左开右闭区间 `(start_boundary_step_index, end_step_index]` 内的轨迹步骤详情，包含 step id、index、actor、event_type、content、tool_call、tool_result、cost 和 adapter raw 字段。
 - `milestone_matching`: milestone 匹配诊断。`mode="runtime_checkpoint"` 表示本阶段由 milestone checkpoint 触发，包含命中的 milestone、boundary、milestone score、constraint scores、命中前 ready milestone 和已匹配 milestone；`mode="runtime_finish"` 表示自然完成阶段，包含已匹配 milestone 与 pending required/optional milestone 列表。
 
 `raw_summary` 会额外包含以下运行期诊断字段：
@@ -149,6 +151,8 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 当 `task_case_snapshot.task_description` 与首条用户消息摘要不一致时，Evaluator 仍输出 `evaluator_task_description_mismatch` warning，不修改 `TaskCase` 原始字段；LLM judge prompt 模板会直接声明 `stage_goal` 优先于 `task.task_description`。
 
 milestone graph 的直接前驱和阶段锚点字段来自 adapter/loader 阶段的预分析：`stage_anchor_predecessor_id` 是在原始 milestone DAG 增加 `__start__` 超级源和 `__finish__` 超级汇后计算得到的直接支配节点。运行期 ready 判定、路径断裂诊断和 stage interval 构造只读取 `Milestone.dependency_predecessor_ids` 与 `Milestone.stage_anchor_predecessor_id`，不在 checkpoint 时重新扫描 `graph.edges`。
+
+`Trajectory` 会维护 `first_step_index` 与 `successor_by_boundary`，运行期阶段起点通过 `stage_start_step_index(successor_by_boundary, boundary_index, end_step_index)` 查询，不再扫描完整 `trajectory.steps`。`StageInterval` 使用左开右闭语义：`start_boundary_step_index < step.index <= end_step_index`。`start_boundary_step_index` 是 anchor 边界 step，不纳入当前阶段；`start_step_index` 是该区间实际纳入评估的首个 step。root milestone 的 `stage_anchor_milestone_id` 为 `__start__`，其 boundary 使用首个真实 step index - 1，因此 step 0 不会被排除。
 
 ## 运行期日志
 

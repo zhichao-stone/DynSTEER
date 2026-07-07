@@ -1,5 +1,7 @@
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.milestone import (
+    MilestoneStepAnalysis,
+    analyze_milestone_step,
     match_milestones,
     milestone_score_matrix,
     ready_milestones,
@@ -41,6 +43,8 @@ __all__ = [
     "first_failure_stage_id",
     "build_trajectory",
     "merge_snapshots",
+    "MilestoneStepAnalysis",
+    "analyze_milestone_step",
     "match_milestones",
     "validate_milestone_graph",
     "milestone_score_matrix",

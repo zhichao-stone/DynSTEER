@@ -15,6 +15,7 @@ from dynsteer.evaluate.diagnostics import (
     build_stage_trace,
 )
 from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
+from dynsteer.graph import START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
 from dynsteer.llm import build_llm_from_env
@@ -37,17 +38,14 @@ from dynsteer.model import (
     StageEvaluationResult,
     StageInterval,
     StageStatus,
-    StateSnapshot,
     TaskCase,
     Trajectory,
-    TrajectoryStep,
     TrajectoryEvaluationReport,
 )
 from dynsteer.progress import CaseProgressReporter
-from dynsteer.stage import build_stage_intervals
+from dynsteer.stage import build_stage_intervals, stage_start_step_index
 from dynsteer.evaluate.milestone import (
-    find_blocked_milestone_hit,
-    find_hit_milestone,
+    analyze_milestone_step,
     match_milestones,
     milestone_score_matrix,
     ready_milestones,
@@ -69,10 +67,8 @@ from dynsteer.evaluate.runtime import (
 )
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.utils import (
-    build_trajectory,
     enrich_stage_result,
     first_failure_stage_id,
-    merge_snapshots,
     overall_score,
 )
 from dynsteer.evaluate.weights import select_initial_weights, update_weights
@@ -250,8 +246,6 @@ class DynSTEEREvaluator:
         raw_output_dir.mkdir(parents=True, exist_ok=True)
 
         session: object | None = None
-        steps: list[TrajectoryStep] = []
-        snapshots: list[StateSnapshot] = []
         terminated_by_policy = False
         termination_code: str | None = None
         termination_reason: str | None = None
@@ -263,6 +257,14 @@ class DynSTEEREvaluator:
             session = harness.start_case(config, case_id, raw_output_dir)
             task_case = self._task_case_with_run_metadata(task_case, config)
             scorer = harness.constraint_scorer()
+            trajectory = Trajectory(
+                run_id=run_id,
+                task_id=task_case.task_id,
+                steps=[],
+                snapshots=[],
+                final_state=harness.final_state_from_session(session),
+                metrics=harness.metrics_from_session(session),
+            )
             state = RuntimeEvaluationState(
                 weights=select_initial_weights(task_case),
                 settlements=[self._start_settlement([])],
@@ -275,12 +277,77 @@ class DynSTEEREvaluator:
                 advance = harness.advance_case(session)
                 if progress_reporter is not None and advance.steps:
                     progress_reporter.case_advanced(case_id, len(advance.steps))
-                snapshots = merge_snapshots(snapshots, advance.snapshots)
+                if advance.snapshots:
+                    snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in trajectory.snapshots}
+                    for snapshot in advance.snapshots:
+                        snapshot_by_id[snapshot.snapshot_id] = snapshot
+                    trajectory.snapshots = sorted(
+                        snapshot_by_id.values(),
+                        key=lambda item: (item.after_step_index, item.snapshot_id),
+                    )
+                trajectory.final_state = harness.final_state_from_session(session)
+                trajectory.metrics = harness.metrics_from_session(session)
 
                 for step in advance.steps:
-                    steps.append(step)
-                    trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
-                    decision = self._evaluate_checkpoint(config, task_case, trajectory, step, state, scorer)
+                    trajectory.append_step(step)
+                    context = scoring_context(task_case, trajectory, state.matched_settlements)
+                    analysis = analyze_milestone_step(
+                        task_case,
+                        trajectory,
+                        step,
+                        state.matched_settlements,
+                        scorer=scorer,
+                        context=context,
+                    )
+                    if analysis.attempt_detail is not None:
+                        state.match_attempts.append(analysis.attempt_detail)
+                    if analysis.hit is None:
+                        if analysis.blocked_detail is not None:
+                            state.match_attempts.append(analysis.blocked_detail)
+                            if config.stop_on_stage_failure:
+                                milestone_id = str(analysis.blocked_detail.get("milestone_id") or "unknown")
+                                termination_code = f"milestone_predecessor_gap:{milestone_id}"
+                                termination_detail = dict(analysis.blocked_detail)
+                                termination_detail["code"] = termination_code
+                                termination_reason = blocked_milestone_termination_reason(analysis.blocked_detail)
+                                decision = RuntimeEvaluationDecision(
+                                    None,
+                                    None,
+                                    state,
+                                    should_stop=True,
+                                    termination_code=termination_code,
+                                    termination_reason=termination_reason,
+                                    termination_detail=termination_detail,
+                                )
+                                terminated_by_policy = True
+                                harness.stop_case(session, termination_reason or "阶段式动态评估触发提前终止")
+                                logger.warning(
+                                    "evaluator_policy_stop",
+                                    extra={
+                                        "事件": "策略提前终止",
+                                        **policy_stop_log_extra(
+                                            case_id,
+                                            task_case,
+                                            decision,
+                                            termination_code,
+                                            termination_reason,
+                                        ),
+                                    },
+                                )
+                                break
+                        continue
+
+                    milestone, boundary, milestone_score = analysis.hit
+                    decision = self._evaluate_checkpoint(
+                        config=config,
+                        task_case=task_case,
+                        trajectory=trajectory,
+                        state=state,
+                        scorer=scorer,
+                        milestone=milestone,
+                        boundary=boundary,
+                        milestone_score=milestone_score,
+                    )
                     state = decision.next_state
                     if decision.should_stop:
                         termination_code = decision.termination_code
@@ -300,7 +367,6 @@ class DynSTEEREvaluator:
                 if terminated_by_policy or not advance.continue_running:
                     break
 
-            trajectory = build_trajectory(run_id, task_case, steps, snapshots, session, harness)
             if not terminated_by_policy:
                 pending_stage_reports = pending_required_stage_results(task_case, state)
                 if pending_stage_reports:
@@ -458,50 +524,14 @@ class DynSTEEREvaluator:
         config: HarnessRunConfig,
         task_case: TaskCase,
         trajectory: Trajectory,
-        step: TrajectoryStep,
         state: RuntimeEvaluationState,
         scorer: GeneralScorer,
+        milestone: Milestone,
+        boundary: Boundary,
+        milestone_score: MilestoneScore,
     ) -> RuntimeEvaluationDecision:
-        context = scoring_context(task_case, trajectory, state.matched_settlements)
-        hit, attempt_detail = find_hit_milestone(
-            task_case,
-            trajectory,
-            step,
-            state.matched_settlements,
-            scorer=scorer,
-            context=context,
-        )
-        if attempt_detail is not None:
-            state.match_attempts.append(attempt_detail)
-        if hit is None:
-            blocked_detail = find_blocked_milestone_hit(
-                task_case,
-                trajectory,
-                step,
-                state.matched_settlements,
-                scorer=scorer,
-                context=context,
-            )
-            if blocked_detail is None:
-                return RuntimeEvaluationDecision(None, None, state)
-            state.match_attempts.append(blocked_detail)
-            next_state = state
-            if not config.stop_on_stage_failure:
-                return RuntimeEvaluationDecision(None, None, next_state)
-            milestone_id = str(blocked_detail.get("milestone_id") or "unknown")
-            termination_code = f"milestone_predecessor_gap:{milestone_id}"
-            termination_detail = dict(blocked_detail)
-            termination_detail["code"] = termination_code
-            return RuntimeEvaluationDecision(
-                None,
-                None,
-                next_state,
-                should_stop=True,
-                termination_code=termination_code,
-                termination_reason=blocked_milestone_termination_reason(blocked_detail),
-                termination_detail=termination_detail,
-            )
-        milestone, boundary, milestone_score = hit
+        if milestone is None or boundary is None or milestone_score is None:
+            raise ValueError("checkpoint 阶段评估参数不能为空")
         settlement, stage_result, next_weights = self._append_milestone_settlement(
             settlements=state.settlements,
             matched=state.matched_settlements,
@@ -656,32 +686,42 @@ class DynSTEEREvaluator:
         if settlements is None or task_case is None or trajectory is None or matched is None or weights is None:
             raise ValueError("finish 结算参数不能为空")
         graph = task_case.milestone_graph or MilestoneGraph()
-        last_step_index = max((step.index for step in trajectory.steps), default=0)
-        predecessor_index = max(
-            (settlement.end_step_index for settlement in matched.values()),
-            default=settlements[0].end_step_index if settlements else 0,
+        last_step_index = trajectory.steps[-1].index if trajectory.steps else 0
+        analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
+        finish_anchor_id = analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else None
+        if finish_anchor_id == START_NODE_ID:
+            boundary_index = trajectory.first_step_index - 1
+        elif isinstance(finish_anchor_id, str) and finish_anchor_id in matched:
+            boundary_index = matched[finish_anchor_id].end_step_index
+        else:
+            boundary_index = max(
+                (settlement.end_step_index for settlement in matched.values()),
+                default=trajectory.first_step_index - 1,
+            )
+        end_step_index = max(boundary_index, last_step_index)
+        start_step_index = stage_start_step_index(
+            trajectory.successor_by_boundary,
+            boundary_index,
+            end_step_index,
         )
-        end_step_index = max(predecessor_index, last_step_index)
         interval = StageInterval(
             stage_id=f"runtime:st{len(settlements)}",
             milestone_id=None,
-            start_step_index=predecessor_index,
+            stage_anchor_milestone_id=finish_anchor_id if isinstance(finish_anchor_id, str) else None,
+            start_boundary_step_index=boundary_index,
+            start_step_index=start_step_index,
             end_step_index=end_step_index,
             status=StageStatus.PASS,
             evidence=["finish 结算节点"],
         )
         stage_result, next_weights = self._evaluate_stage(interval, task_case, trajectory, weights, scorer)
-        stage_trace = build_stage_trace(
-            trajectory=trajectory,
-            start_step_index=predecessor_index,
-            end_step_index=end_step_index,
-        )
+        stage_trace = build_stage_trace(trajectory=trajectory, interval=interval)
         milestone_matching = build_finish_matching_detail(graph=graph, matched=matched)
         settlement = HarnessStageSettlement(
             settlement_id=f"st{len(settlements)}",
             kind="finish",
             milestone_id=None,
-            start_step_index=predecessor_index,
+            start_step_index=start_step_index,
             end_step_index=end_step_index,
             score=stage_result.stage_score,
             status=stage_result.status.value,
@@ -689,7 +729,9 @@ class DynSTEEREvaluator:
             metadata={
                 "stage_report": stage_result.to_dict(),
                 "predecessor_milestone_ids": sorted(matched),
-                "stage_start_step_index": predecessor_index,
+                "stage_anchor_milestone_id": finish_anchor_id if isinstance(finish_anchor_id, str) else None,
+                "stage_start_boundary_step_index": boundary_index,
+                "stage_start_step_index": start_step_index,
                 "stage_end_step_index": end_step_index,
                 "stage_trace": stage_trace,
                 "milestone_matching": milestone_matching,
@@ -710,12 +752,20 @@ class DynSTEEREvaluator:
         scorer: GeneralScorer,
     ) -> tuple[HarnessStageSettlement, StageEvaluationResult, dict[Dimension, float]]:
         graph = task_case.milestone_graph
-        start_settlement = settlements[0] if settlements else None
-        start_step_index = stage_start_for_milestone(graph, milestone.milestone_id, matched, start_settlement)
+        if graph is None:
+            raise ValueError("TaskCase 缺少 milestone_graph")
+        anchor_id, boundary_index = stage_start_for_milestone(graph, milestone.milestone_id, matched, trajectory)
+        start_step_index = stage_start_step_index(
+            trajectory.successor_by_boundary,
+            boundary_index,
+            boundary.step_index,
+        )
         ready_milestone_ids_before_match = [item.milestone_id for item in ready_milestones(graph, matched)]
         interval = StageInterval(
             stage_id=f"runtime:st{len(settlements)}",
             milestone_id=milestone.milestone_id,
+            stage_anchor_milestone_id=anchor_id,
+            start_boundary_step_index=boundary_index,
             start_step_index=start_step_index,
             end_step_index=boundary.step_index,
             status=milestone_score.status,
@@ -724,11 +774,7 @@ class DynSTEEREvaluator:
         )
         stage_result, next_weights = self._evaluate_stage(interval, task_case, trajectory, weights, scorer)
         predecessor_milestone_ids = list(milestone.dependency_predecessor_ids)
-        stage_trace = build_stage_trace(
-            trajectory=trajectory,
-            start_step_index=start_step_index,
-            end_step_index=boundary.step_index,
-        )
+        stage_trace = build_stage_trace(trajectory=trajectory, interval=interval)
         milestone_matching = build_milestone_matching_detail(
             graph=graph,
             matched=matched,
@@ -752,6 +798,9 @@ class DynSTEEREvaluator:
             metadata={
                 "stage_report": stage_result.to_dict(),
                 "predecessor_milestone_ids": predecessor_milestone_ids,
+                "dependency_predecessor_milestone_ids": predecessor_milestone_ids,
+                "stage_anchor_milestone_id": anchor_id,
+                "stage_start_boundary_step_index": boundary_index,
                 "stage_start_step_index": start_step_index,
                 "stage_end_step_index": boundary.step_index,
                 "stage_trace": stage_trace,

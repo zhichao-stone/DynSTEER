@@ -9,9 +9,11 @@ from dynsteer.model import (
     Milestone,
     MilestoneGraph,
     MilestoneScore,
+    StageInterval,
     Trajectory,
     TrajectoryStep,
 )
+from dynsteer.stage import stage_trajectory_steps
 
 
 def trajectory_step_to_dict(step: TrajectoryStep) -> JsonObject:
@@ -58,31 +60,29 @@ def trajectory_step_to_dict(step: TrajectoryStep) -> JsonObject:
 
 def build_stage_trace(
     trajectory: Trajectory,
-    start_step_index: int,
-    end_step_index: int,
+    interval: StageInterval,
 ) -> JsonObject:
-    """构造阶段覆盖的轨迹步骤诊断信息。
+    """序列化当前阶段轨迹诊断信息。
 
     Args:
         trajectory: 当前运行期已采集的 Agent 轨迹。
-        start_step_index: 阶段起始 step index。
-        end_step_index: 阶段结束 step index。
+        interval: 当前阶段区间。
 
     Returns:
-        阶段闭区间内的轨迹步骤列表和范围摘要。
+        当前阶段左开右闭区间内的轨迹步骤和范围摘要。
     """
-    if trajectory is None:
-        raise ValueError("trajectory 不能为空")
-    if start_step_index < 0 or end_step_index < 0 or end_step_index < start_step_index:
-        raise ValueError("阶段 step index 范围非法")
+    if trajectory is None or interval is None:
+        raise ValueError("trajectory 和 interval 不能为空")
     steps = [
         trajectory_step_to_dict(step)
-        for step in trajectory.steps
-        if start_step_index <= step.index <= end_step_index
+        for step in stage_trajectory_steps(interval, trajectory)
     ]
     return {
-        "start_step_index": start_step_index,
-        "end_step_index": end_step_index,
+        "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
+        "start_boundary_step_index": interval.start_boundary_step_index,
+        "start_step_index": interval.start_step_index,
+        "end_step_index": interval.end_step_index,
+        "interval_semantics": "(start_boundary_step_index, end_step_index]",
         "step_count": len(steps),
         "steps": steps,
     }
@@ -357,12 +357,15 @@ def build_final_milestone_diagnostics(
                 {
                     "milestone_id": node.milestone_id,
                     "required": node.required,
+                    "dependency_predecessor_ids": list(node.dependency_predecessor_ids),
+                    "stage_anchor_milestone_id": node.stage_anchor_predecessor_id,
                     "final_state": "matched",
                     "ready_ever": True,
                     "attempt_count": len(candidate_entries),
                     "blocker": None,
                     "settlement_id": settlement.settlement_id,
                     "boundary_step_index": settlement.boundary_step_index,
+                    "stage_start_boundary_step_index": settlement.metadata.get("stage_start_boundary_step_index"),
                     "stage_start_step_index": settlement.start_step_index,
                     "stage_end_step_index": settlement.end_step_index,
                     "best_score": best_entry["score"]["score"] if best_entry is not None else settlement.score,
@@ -390,12 +393,15 @@ def build_final_milestone_diagnostics(
             {
                 "milestone_id": node.milestone_id,
                 "required": node.required,
+                "dependency_predecessor_ids": list(node.dependency_predecessor_ids),
+                "stage_anchor_milestone_id": node.stage_anchor_predecessor_id,
                 "final_state": "pending",
                 "ready_ever": ready_ever,
                 "attempt_count": len(candidate_entries),
                 "blocker": blocker,
                 "settlement_id": None,
                 "boundary_step_index": None,
+                "stage_start_boundary_step_index": None,
                 "stage_start_step_index": None,
                 "stage_end_step_index": None,
                 "best_score": best_entry["score"]["score"] if best_entry is not None else None,

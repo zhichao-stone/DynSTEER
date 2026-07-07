@@ -114,14 +114,12 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
             predecessor for predecessor in predecessors.get(node.milestone_id, []) if predecessor in actualnode_ids
         ]
         anchor_id = idom.get(node.milestone_id)
-        node.stage_anchor_predecessor_id = anchor_id if anchor_id not in {None, START_NODE_ID} else None
+        node.stage_anchor_predecessor_id = anchor_id if isinstance(anchor_id, str) else START_NODE_ID
     finish_anchor = idom.get(FINISH_NODE_ID)
     graph.metadata["graph_analysis"] = {
         "start_node_id": START_NODE_ID,
         "finish_node_id": FINISH_NODE_ID,
         "augmented_edges": [[source, target] for source, target in augmented],
-        "finish_stage_anchor_predecessor_id": (
-            finish_anchor if finish_anchor not in {None, START_NODE_ID} else None
-        ),
+        "finish_stage_anchor_predecessor_id": finish_anchor if isinstance(finish_anchor, str) else START_NODE_ID,
     }
     return graph

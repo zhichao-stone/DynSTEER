@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections import deque
+from dataclasses import dataclass
 
-from dynsteer.boundary import generate_candidate_boundaries
+from dynsteer.boundary import candidate_boundary_for_current_step
 from dynsteer.config import MatchConfig
 from dynsteer.evaluate.diagnostics import (
     build_milestone_candidate_detail,
@@ -26,7 +26,16 @@ from dynsteer.model import (
     Trajectory,
     TrajectoryStep,
 )
-from dynsteer.graph import build_adjacency, topological_order
+from dynsteer.graph import START_NODE_ID, build_adjacency, topological_order
+
+
+@dataclass(frozen=True)
+class MilestoneStepAnalysis:
+    """当前运行期 step 的 milestone 命中分析结果。"""
+
+    hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    attempt_detail: JsonObject | None = None
+    blocked_detail: JsonObject | None = None
 
 
 def _best_candidate(
@@ -177,64 +186,121 @@ def stage_start_for_milestone(
     graph: MilestoneGraph,
     milestone_id: str,
     matched: dict[str, HarnessStageSettlement],
-    start_settlement: HarnessStageSettlement | None,
-) -> int:
-    """根据前驱结算确定 milestone 阶段的起始步骤索引。
+    trajectory: Trajectory,
+) -> tuple[str, int]:
+    """返回 milestone 阶段的 anchor ID 与 exclusive boundary。
 
     Args:
         graph: milestone DAG。
         milestone_id: 目标 milestone ID。
         matched: 已结算 milestone 到结算节点的映射。
-        start_settlement: start 结算节点；无前驱命中时作为兜底。
+        trajectory: 当前轨迹。
 
     Returns:
-        阶段起始步骤索引。
+        `(anchor_id, start_boundary_step_index)`。
     """
-    if graph is None or not milestone_id or matched is None:
+    if graph is None or not milestone_id or matched is None or trajectory is None:
         raise ValueError("阶段起点参数不能为空")
     milestone = next((node for node in graph.nodes if node.milestone_id == milestone_id), None)
     if milestone is None:
         raise KeyError(f"milestone 不存在: {milestone_id}")
-    predecessors = list(milestone.dependency_predecessor_ids)
-    matched_predecessor_indexes = [
-        matched[source].end_step_index
-        for source in predecessors
-        if source in matched
-    ]
-    if matched_predecessor_indexes:
-        return max(matched_predecessor_indexes)
-    anchor = milestone.stage_anchor_predecessor_id
-    if anchor is not None and anchor in matched:
-        return matched[anchor].end_step_index
-    return start_settlement.end_step_index if start_settlement is not None else 0
+    anchor_id = milestone.stage_anchor_predecessor_id
+    if not isinstance(anchor_id, str) or not anchor_id:
+        raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone_id}")
+    if anchor_id == START_NODE_ID:
+        boundary_index = trajectory.first_step_index - 1
+    elif anchor_id in matched:
+        boundary_index = matched[anchor_id].end_step_index
+    else:
+        raise ValueError(f"stage anchor 尚未结算: milestone={milestone_id}, anchor={anchor_id}")
+    return anchor_id, boundary_index
 
 
-def find_blocked_milestone_hit(
+def analyze_milestone_step(
     task_case: TaskCase,
     trajectory: Trajectory,
     step: TrajectoryStep,
     matched: dict[str, HarnessStageSettlement],
     scorer: GeneralScorer | None = None,
     context: ScoringContext | None = None,
-) -> JsonObject | None:
-    """诊断后继 milestone 已命中但前驱 milestone 缺失的路径断裂。"""
+) -> MilestoneStepAnalysis:
+    """分析当前 step 是否命中 ready milestone 或触发 blocked milestone 诊断。
+
+    Args:
+        task_case: 当前任务定义。
+        trajectory: 已包含当前 step 的运行期轨迹。
+        step: 当前新增 step。
+        matched: 已结算 milestone 到结算节点的映射。
+        scorer: 可选评分器；为空时使用通用评分器。
+        context: 可选评分上下文。
+
+    Returns:
+        当前 step 的 ready hit、匹配尝试诊断和 blocked 诊断。
+    """
     if task_case is None or trajectory is None or step is None or matched is None:
-        raise ValueError("blocked milestone 诊断参数不能为空")
+        raise ValueError("milestone step 分析参数不能为空")
     graph = task_case.milestone_graph
     if graph is None or not graph.nodes:
-        return None
-    boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
-    if not boundaries:
-        return None
+        return MilestoneStepAnalysis()
 
+    boundary = candidate_boundary_for_current_step(trajectory, step)
     node_by_id = {node.milestone_id: node for node in graph.nodes}
     predecessor_map = {node.milestone_id: list(node.dependency_predecessor_ids) for node in graph.nodes}
-    ready_ids = {milestone.milestone_id for milestone in ready_milestones(graph, matched)}
+    ready = ready_milestones(graph, matched)
+    ready_ids = {milestone.milestone_id for milestone in ready}
     matched_ids = set(matched)
     effective_scorer = get_effective_scorer(scorer)
 
-    best: tuple[Milestone, Boundary, MilestoneScore, list[str]] | None = None
-    candidate_details: list[JsonObject] = []
+    ready_candidate_details: list[JsonObject] = []
+    ready_hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    for milestone in ready:
+        _, predecessor_start = stage_start_for_milestone(graph, milestone.milestone_id, matched, trajectory)
+        if boundary.step_index <= predecessor_start and predecessor_start > 0:
+            ready_candidate_details.append(
+                build_milestone_candidate_detail(
+                    milestone=milestone,
+                    boundary=boundary,
+                    score=None,
+                    selected=False,
+                    reject_reason="boundary_not_after_predecessor",
+                )
+            )
+            continue
+        score = effective_scorer.score_milestone(
+            milestone,
+            boundary,
+            trajectory,
+            trajectory.snapshots,
+            context=context,
+        )
+        ready_candidate_details.append(
+            build_milestone_candidate_detail(
+                milestone=milestone,
+                boundary=boundary,
+                score=score,
+                selected=False,
+                reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
+            )
+        )
+        if score.status != StageStatus.PASS:
+            continue
+        if ready_hit is None or score.score > ready_hit[2].score:
+            ready_hit = (milestone, boundary, score)
+
+    _mark_selected_candidate_details(ready_candidate_details, ready_hit)
+    attempt_detail = _build_step_attempt_detail(
+        step=step,
+        boundary=boundary,
+        matched_ids=matched_ids,
+        ready=ready,
+        candidate_details=ready_candidate_details,
+        selected=ready_hit,
+    )
+    if ready_hit is not None:
+        return MilestoneStepAnalysis(hit=ready_hit, attempt_detail=attempt_detail)
+
+    blocked_best: tuple[Milestone, Boundary, MilestoneScore, list[str]] | None = None
+    blocked_candidate_details: list[JsonObject] = []
     for milestone in graph.nodes:
         if milestone.milestone_id in matched_ids or milestone.milestone_id in ready_ids:
             continue
@@ -245,32 +311,32 @@ def find_blocked_milestone_hit(
         ]
         if not missing_predecessors:
             continue
-        for boundary in boundaries:
-            score = effective_scorer.score_milestone(
-                milestone,
-                boundary,
-                trajectory,
-                trajectory.snapshots,
-                context=context,
+        score = effective_scorer.score_milestone(
+            milestone,
+            boundary,
+            trajectory,
+            trajectory.snapshots,
+            context=context,
+        )
+        blocked_candidate_details.append(
+            build_milestone_candidate_detail(
+                milestone=milestone,
+                boundary=boundary,
+                score=score,
+                selected=False,
+                reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
             )
-            candidate_details.append(
-                build_milestone_candidate_detail(
-                    milestone=milestone,
-                    boundary=boundary,
-                    score=score,
-                    selected=False,
-                    reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
-                )
-            )
-            if score.status != StageStatus.PASS:
-                continue
-            if best is None or score.score > best[2].score:
-                best = (milestone, boundary, score, missing_predecessors)
+        )
+        if score.status != StageStatus.PASS:
+            continue
+        if blocked_best is None or score.score > blocked_best[2].score:
+            blocked_best = (milestone, boundary, score, missing_predecessors)
 
-    if best is None:
-        return None
+    if blocked_best is None:
+        return MilestoneStepAnalysis(attempt_detail=attempt_detail)
 
-    milestone, boundary, score, missing_predecessors = best
+    milestone, boundary, score, missing_predecessors = blocked_best
+    _mark_selected_candidate_details(blocked_candidate_details, (milestone, boundary, score))
     predecessor_diagnostics: list[JsonObject] = []
     for predecessor_id in missing_predecessors:
         predecessor = node_by_id.get(predecessor_id)
@@ -284,23 +350,22 @@ def find_blocked_milestone_hit(
             )
             continue
         predecessor_candidates: list[JsonObject] = []
-        for predecessor_boundary in boundaries:
-            predecessor_score = effective_scorer.score_milestone(
-                predecessor,
-                predecessor_boundary,
-                trajectory,
-                trajectory.snapshots,
-                context=context,
+        predecessor_score = effective_scorer.score_milestone(
+            predecessor,
+            boundary,
+            trajectory,
+            trajectory.snapshots,
+            context=context,
+        )
+        predecessor_candidates.append(
+            build_milestone_candidate_detail(
+                milestone=predecessor,
+                boundary=boundary,
+                score=predecessor_score,
+                selected=False,
+                reject_reason=None if predecessor_score.status == StageStatus.PASS else "status_not_pass",
             )
-            predecessor_candidates.append(
-                build_milestone_candidate_detail(
-                    milestone=predecessor,
-                    boundary=predecessor_boundary,
-                    score=predecessor_score,
-                    selected=False,
-                    reject_reason=None if predecessor_score.status == StageStatus.PASS else "status_not_pass",
-                )
-            )
+        )
         best_predecessor = None
         scored_predecessors = [
             item for item in predecessor_candidates if isinstance(item.get("score"), dict)
@@ -316,7 +381,7 @@ def find_blocked_milestone_hit(
             }
         )
 
-    return {
+    blocked_detail: JsonObject = {
         "diagnostic_type": "blocked_milestone_hit",
         "step_index": step.index,
         "step_id": step.step_id,
@@ -330,82 +395,39 @@ def find_blocked_milestone_hit(
         "missing_predecessors": list(missing_predecessors),
         "missing_predecessor_ids": list(missing_predecessors),
         "predecessor_diagnostics": predecessor_diagnostics,
+        "candidate_scores": blocked_candidate_details,
+    }
+    return MilestoneStepAnalysis(attempt_detail=attempt_detail, blocked_detail=blocked_detail)
+
+
+def _build_step_attempt_detail(
+    step: TrajectoryStep,
+    boundary: Boundary,
+    matched_ids: set[str],
+    ready: list[Milestone],
+    candidate_details: list[JsonObject],
+    selected: tuple[Milestone, Boundary, MilestoneScore] | None,
+) -> JsonObject:
+    """构造当前 step 的 ready milestone 尝试诊断。"""
+    return {
+        "step_index": step.index,
+        "step_id": step.step_id,
+        "boundaries": [boundary_to_dict(boundary)],
+        "boundary": boundary_to_dict(boundary),
+        "matched_before": sorted(matched_ids),
+        "ready_before": [milestone.milestone_id for milestone in ready],
         "candidate_scores": candidate_details,
+        "selected_milestone_id": selected[0].milestone_id if selected is not None else None,
     }
 
 
-def find_hit_milestone(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    step: TrajectoryStep,
-    matched: dict[str, HarnessStageSettlement],
-    scorer: GeneralScorer | None = None,
-    context: ScoringContext | None = None,
-) -> tuple[tuple[Milestone, Boundary, MilestoneScore] | None, JsonObject | None]:
-    """判断当前步骤是否命中 milestone，并返回未命中候选的诊断信息。
-
-    Args:
-        task_case: 当前任务。
-        trajectory: Agent 轨迹。
-        step: 当前增量步骤。
-        matched: 已结算 milestone 到结算节点的映射。
-        scorer: 可选评分器；为空时使用通用评分器。
-        context: 可选评分上下文。
-
-    Returns:
-        `(命中的 milestone 三元组, 匹配尝试诊断)`；无 milestone 图时诊断为空。
-    """
-    if task_case is None or trajectory is None or step is None or matched is None:
-        raise ValueError("milestone 判定参数不能为空")
-    graph = task_case.milestone_graph
-    if graph is None or not graph.nodes:
-        return None, None
-    boundaries = [boundary for boundary in generate_candidate_boundaries(trajectory) if boundary.step_index == step.index]
-    if not boundaries:
-        return None, None
-
-    ready = ready_milestones(graph, matched)
-    if not ready:
-        return None, None
-    candidate_details: list[JsonObject] = []
-    best: tuple[Milestone, Boundary, MilestoneScore] | None = None
-    for milestone in ready:
-        predecessor_start = stage_start_for_milestone(graph, milestone.milestone_id, matched, None)
-        for boundary in boundaries:
-            if boundary.step_index <= predecessor_start and predecessor_start > 0:
-                candidate_details.append(
-                    build_milestone_candidate_detail(
-                        milestone=milestone,
-                        boundary=boundary,
-                        score=None,
-                        selected=False,
-                        reject_reason="boundary_not_after_predecessor",
-                    )
-                )
-                continue
-            score = get_effective_scorer(scorer).score_milestone(
-                milestone,
-                boundary,
-                trajectory,
-                trajectory.snapshots,
-                context=context,
-            )
-            candidate_details.append(
-                build_milestone_candidate_detail(
-                    milestone=milestone,
-                    boundary=boundary,
-                    score=score,
-                    selected=False,
-                    reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
-                )
-            )
-            if score.status != StageStatus.PASS:
-                continue
-            if best is None or score.score > best[2].score:
-                best = (milestone, boundary, score)
-
-    selected_milestone_id = best[0].milestone_id if best is not None else None
-    selected_boundary_id = best[1].boundary_id if best is not None else None
+def _mark_selected_candidate_details(
+    candidate_details: list[JsonObject],
+    selected: tuple[Milestone, Boundary, MilestoneScore] | None,
+) -> None:
+    """将候选列表中最终命中的候选标记为 selected。"""
+    selected_milestone_id = selected[0].milestone_id if selected is not None else None
+    selected_boundary_id = selected[1].boundary_id if selected is not None else None
     for candidate in candidate_details:
         boundary = candidate.get("boundary")
         is_selected = (
@@ -418,15 +440,3 @@ def find_hit_milestone(
             candidate["reject_reason"] = None
         elif candidate.get("reject_reason") is None:
             candidate["reject_reason"] = "lower_score_than_selected"
-
-    attempt_detail: JsonObject = {
-        "step_index": step.index,
-        "step_id": step.step_id,
-        "boundaries": [boundary_to_dict(boundary) for boundary in boundaries],
-        "boundary": boundary_to_dict(boundaries[0]) if boundaries else None,
-        "matched_before": sorted(matched),
-        "ready_before": [milestone.milestone_id for milestone in ready],
-        "candidate_scores": candidate_details,
-        "selected_milestone_id": selected_milestone_id,
-    }
-    return best, attempt_detail
