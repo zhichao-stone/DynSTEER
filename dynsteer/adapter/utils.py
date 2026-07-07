@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -95,15 +96,19 @@ def load_manifest(data_root: Path, benchmark: str) -> dict[str, object]:
 
 
 def ensure_source_root(data_root: Path, project_root: Path, benchmark: str) -> None:
-    """把 benchmark.json 中的 source_root 加入 sys.path。"""
+    """把运行时覆盖路径或 benchmark.json 中的 source_root 加入 sys.path。"""
     if project_root is None:
         raise ValueError("project_root 不能为空")
-    manifest = load_manifest(data_root, benchmark)
-    raw_source_root = manifest.get("source_root")
+    raw_source_root = os.environ.get("DYNSTEER_BENCHMARK_SOURCE_ROOT")
+    source_label = "DYNSTEER_BENCHMARK_SOURCE_ROOT"
+    if raw_source_root is None:
+        manifest = load_manifest(data_root, benchmark)
+        raw_source_root = manifest.get("source_root")
+        source_label = "benchmark.json source_root"
     if raw_source_root is None:
         return
     if not isinstance(raw_source_root, str) or not raw_source_root.strip():
-        raise ValueError("benchmark.json source_root 必须是非空字符串")
+        raise ValueError(f"{source_label} 必须是非空字符串")
     source_root = Path(raw_source_root.strip())
     if not source_root.is_absolute():
         source_root = project_root / source_root

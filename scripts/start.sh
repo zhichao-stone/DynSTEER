@@ -212,50 +212,10 @@ ensure_uv_environment() {
     (cd "$project_root" && uv sync --frozen --no-dev --no-install-project --inexact)
 }
 
-manifest_source_root() {
-    local data_root="$1"
-    python - "$data_root" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest = Path(sys.argv[1]) / "benchmark.json"
-if not manifest.exists():
-    raise SystemExit(0)
-data = json.loads(manifest.read_text(encoding="utf-8"))
-value = data.get("source_root")
-if isinstance(value, str) and value.strip():
-    print(value.strip())
-PY
-}
-
-link_manifest_source_root() {
-    local project_root="$1"
-    local data_root="$2"
-    local source_path="$3"
-    local raw_source_root
-    raw_source_root="$(manifest_source_root "$data_root")"
-    if [[ -z "$raw_source_root" ]]; then
-        return 0
-    fi
-
-    local manifest_path="$raw_source_root"
-    if [[ "$manifest_path" != /* ]]; then
-        manifest_path="$project_root/$manifest_path"
-    fi
-
-    mkdir -p "$(dirname -- "$manifest_path")"
-    if [[ -e "$manifest_path" || -L "$manifest_path" ]]; then
-        return 0
-    fi
-    ln -s "$source_path" "$manifest_path"
-}
-
 install_benchmark_source() {
     local project_root="$1"
     local benchmark="$2"
-    local data_root="$3"
-    local source_path="$4"
+    local source_path="$3"
 
     if [[ "$source_path" != /* ]]; then
         source_path="$project_root/$source_path"
@@ -269,7 +229,7 @@ install_benchmark_source() {
         exit 66
     fi
 
-    link_manifest_source_root "$project_root" "$data_root" "$source_path"
+    export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_path"
     echo "Installing benchmark source for $benchmark: $source_path"
     uv pip install --python "${UV_PROJECT_ENVIRONMENT:-.venv}/bin/python" --editable "$source_path"
 }
@@ -414,7 +374,9 @@ main() {
     cd "$project_root"
     ensure_uv_environment "$project_root"
     if [[ -n "$source_path" ]]; then
-        install_benchmark_source "$project_root" "$benchmark" "$effective_data_root" "$source_path"
+        install_benchmark_source "$project_root" "$benchmark" "$source_path"
+    else
+        unset DYNSTEER_BENCHMARK_SOURCE_ROOT
     fi
 
     local worker_args=()
