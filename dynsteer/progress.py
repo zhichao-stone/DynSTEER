@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 
 ProgressEventKind = Literal["case_started", "case_advanced", "case_finished"]
-DEFAULT_PROGRESS_TOTAL = 100
+DEFAULT_PROGRESS_TOTAL = 1000
 DEFAULT_VISIBLE_PROGRESS_BARS = 5
 TERMINAL_LOG_SILENT_LEVEL = logging.CRITICAL + 1
 
