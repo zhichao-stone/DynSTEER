@@ -126,13 +126,14 @@ class TqdmCaseProgressManager:
             state = CaseProgressState(case_id=case_id, started_at=self._time_fn())
             self.case_states[case_id] = state
         state.finished = False
+        previous_visible_order = list(self.visible_order)
         self.active_order.append(case_id)
         if case_id in self.visible_order:
             self.visible_order.remove(case_id)
         self.visible_order.append(case_id)
         self._trim_visible_order()
         self._had_active_bars = True
-        self._rebuild_visible_bars()
+        self._sync_visible_bars(previous_visible_order)
 
     def case_advanced(self, case_id: str, step_count: int) -> None:
         """更新指定 case 的累计 step 数。"""
@@ -158,6 +159,7 @@ class TqdmCaseProgressManager:
         state = self.case_states[case_id]
         self._refresh_state(state)
         state.finished = True
+        previous_visible_order = list(self.visible_order)
         if case_id in self.active_order:
             self.active_order.remove(case_id)
         if case_id not in self.visible_order:
@@ -166,7 +168,7 @@ class TqdmCaseProgressManager:
         if bar is not None:
             self._finish_bar(bar, state)
         self._trim_visible_order()
-        self._rebuild_visible_bars()
+        self._sync_visible_bars(previous_visible_order)
 
     def close_all(self) -> None:
         """关闭所有可见进度条，并保留最终窗口。"""
@@ -190,6 +192,28 @@ class TqdmCaseProgressManager:
             self._close_bar(bar, leave=False)
         for position, case_id in enumerate(self.visible_order):
             self.bars[case_id] = self._create_bar(case_id, position)
+            self._refresh_bar(case_id)
+
+    def _sync_visible_bars(self, previous_visible_order: list[str]) -> None:
+        """在位置不变时增量同步可见进度条，避免重建导致 tqdm 计时丢失。"""
+        if previous_visible_order is None:
+            raise ValueError("previous_visible_order 不能为空")
+        previous_positions = {case_id: index for index, case_id in enumerate(previous_visible_order)}
+        should_rebuild = any(
+            case_id in self.bars and previous_positions.get(case_id) != position
+            for position, case_id in enumerate(self.visible_order)
+        )
+        if should_rebuild:
+            self._rebuild_visible_bars()
+            return
+
+        for case_id in list(self.bars):
+            if case_id not in self.visible_order:
+                bar = self.bars.pop(case_id)
+                self._close_bar(bar, leave=False)
+        for position, case_id in enumerate(self.visible_order):
+            if case_id not in self.bars:
+                self.bars[case_id] = self._create_bar(case_id, position)
             self._refresh_bar(case_id)
 
     def _create_bar(self, case_id: str, position: int) -> Any:

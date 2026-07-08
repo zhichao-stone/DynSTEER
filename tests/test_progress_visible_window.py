@@ -88,6 +88,30 @@ def test_progress_visible_bars_uses_at_least_five_and_worker_count_when_larger()
     assert _progress_visible_bars(8) == 8
 
 
+def test_finished_bar_is_not_rebuilt_when_total_converges_and_next_case_starts() -> None:
+    manager = TqdmCaseProgressManager(
+        max_workers=1,
+        max_visible_bars=5,
+        bar_factory=fake_bar_factory,
+        estimated_total=100,
+    )
+
+    manager.case_started("case_1")
+    first_bar = manager.bars["case_1"]
+    manager.case_advanced("case_1", 5)
+    manager.case_finished("case_1")
+
+    assert manager.bars["case_1"] is first_bar
+    assert first_bar.total == 5
+    assert first_bar.n == 5
+    assert first_bar.refreshed is True
+
+    manager.case_started("case_2")
+
+    assert manager.bars["case_1"] is first_bar
+    assert manager.bars["case_2"].position == 1
+
+
 def test_visible_window_never_evicts_active_case() -> None:
     manager = TqdmCaseProgressManager(
         max_workers=2,
