@@ -15,12 +15,14 @@ from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.model import (
     Boundary,
+    Constraint,
     JsonObject,
     Milestone,
     MilestoneGraph,
     MilestoneMapping,
     MilestoneMappingItem,
     MilestoneScore,
+    StageGoalSemanticKind,
     StageStatus,
     TaskCase,
     Trajectory,
@@ -253,6 +255,7 @@ def analyze_milestone_step(
 
     ready_candidate_details: list[JsonObject] = []
     ready_hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    ready_llm_review_hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
     for milestone in ready:
         _, predecessor_start = stage_start_for_milestone(graph, milestone.milestone_id, matched, trajectory)
         if boundary.step_index <= predecessor_start and predecessor_start > 0:
@@ -273,16 +276,27 @@ def analyze_milestone_step(
             trajectory.snapshots,
             context=context,
         )
+        needs_llm_review = _is_llm_semantic_review_candidate(milestone, score)
         ready_candidate_details.append(
             build_milestone_candidate_detail(
                 milestone=milestone,
                 boundary=boundary,
                 score=score,
                 selected=False,
-                reject_reason=None if score.status == StageStatus.PASS else "status_not_pass",
+                reject_reason=(
+                    None
+                    if score.status == StageStatus.PASS
+                    else "needs_llm_semantic_review"
+                    if needs_llm_review
+                    else "status_not_pass"
+                ),
             )
         )
         if score.status != StageStatus.PASS:
+            if needs_llm_review and (
+                ready_llm_review_hit is None or score.score > ready_llm_review_hit[2].score
+            ):
+                ready_llm_review_hit = (milestone, boundary, score)
             continue
         if ready_hit is None or score.score > ready_hit[2].score:
             ready_hit = (milestone, boundary, score)
@@ -298,6 +312,17 @@ def analyze_milestone_step(
     )
     if ready_hit is not None:
         return MilestoneStepAnalysis(hit=ready_hit, attempt_detail=attempt_detail)
+    if ready_llm_review_hit is not None:
+        _mark_selected_candidate_details(ready_candidate_details, ready_llm_review_hit)
+        attempt_detail["selected_milestone_id"] = ready_llm_review_hit[0].milestone_id
+        attempt_detail["llm_semantic_review"] = {
+            "status": "candidate",
+            "milestone_id": ready_llm_review_hit[0].milestone_id,
+            "boundary_id": ready_llm_review_hit[1].boundary_id,
+            "structural_score": ready_llm_review_hit[2].score,
+            "structural_status": ready_llm_review_hit[2].status.value,
+        }
+        return MilestoneStepAnalysis(hit=ready_llm_review_hit, attempt_detail=attempt_detail)
 
     blocked_best: tuple[Milestone, Boundary, MilestoneScore, list[str]] | None = None
     blocked_candidate_details: list[JsonObject] = []
@@ -440,3 +465,38 @@ def _mark_selected_candidate_details(
             candidate["reject_reason"] = None
         elif candidate.get("reject_reason") is None:
             candidate["reject_reason"] = "lower_score_than_selected"
+
+
+def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScore) -> bool:
+    """判断 WARN milestone 是否只是消息语义匹配分不足，值得交给 LLM 复判。"""
+    if milestone is None or score is None:
+        raise ValueError("milestone 和 score 不能为空")
+    if score.status != StageStatus.WARN:
+        return False
+    if score.missing_ratio > 0.0 or not score.hard_constraints_all_pass:
+        return False
+    if not any(_is_semantic_emit_message_constraint(constraint) for constraint in milestone.constraints):
+        return False
+
+    score_by_id = {item.constraint_id: item for item in score.constraint_scores}
+    for constraint in milestone.constraints:
+        if _is_semantic_emit_message_constraint(constraint):
+            continue
+        if not constraint.hard:
+            continue
+        constraint_score = score_by_id.get(constraint.constraint_id)
+        if constraint_score is None or constraint_score.missing or constraint_score.score < constraint.threshold:
+            return False
+    return True
+
+
+def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:
+    """判断约束是否是允许语义等价的用户可见消息。"""
+    if constraint is None:
+        raise ValueError("constraint 不能为空")
+    semantics = constraint.stage_goal_semantics
+    if not isinstance(semantics, dict):
+        return False
+    if semantics.get("kind") != StageGoalSemanticKind.EMIT_MESSAGE.value:
+        return False
+    return str(semantics.get("match_policy") or "semantic_equivalent") == "semantic_equivalent"

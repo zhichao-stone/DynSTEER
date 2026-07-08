@@ -299,9 +299,9 @@ class DynSTEEREvaluator:
                         scorer=scorer,
                         context=context,
                     )
-                    if analysis.attempt_detail is not None:
-                        state.match_attempts.append(analysis.attempt_detail)
                     if analysis.hit is None:
+                        if analysis.attempt_detail is not None:
+                            state.match_attempts.append(analysis.attempt_detail)
                         if analysis.blocked_detail is not None:
                             state.match_attempts.append(analysis.blocked_detail)
                             if config.stop_on_stage_failure:
@@ -338,6 +338,15 @@ class DynSTEEREvaluator:
                         continue
 
                     milestone, boundary, milestone_score = analysis.hit
+                    requires_llm_review = milestone_score.status != StageStatus.PASS
+                    if requires_llm_review and self._standard_judge is None:
+                        if analysis.attempt_detail is not None:
+                            review_detail = analysis.attempt_detail.get("llm_semantic_review")
+                            if isinstance(review_detail, dict):
+                                review_detail["status"] = "skipped_no_standard_judge"
+                            state.match_attempts.append(analysis.attempt_detail)
+                        continue
+
                     decision = self._evaluate_checkpoint(
                         config=config,
                         task_case=task_case,
@@ -348,6 +357,14 @@ class DynSTEEREvaluator:
                         boundary=boundary,
                         milestone_score=milestone_score,
                     )
+                    if requires_llm_review and analysis.attempt_detail is not None:
+                        review_detail = analysis.attempt_detail.get("llm_semantic_review")
+                        if isinstance(review_detail, dict) and decision.stage_result is not None:
+                            review_detail["status"] = "accepted" if decision.checkpoint is not None else "rejected"
+                            review_detail["judge_status"] = decision.stage_result.status.value
+                            review_detail["judge_stage_score"] = decision.stage_result.stage_score
+                    if analysis.attempt_detail is not None:
+                        state.match_attempts.append(analysis.attempt_detail)
                     state = decision.next_state
                     if decision.should_stop:
                         termination_code = decision.termination_code
@@ -543,6 +560,11 @@ class DynSTEEREvaluator:
             weights=state.weights,
             scorer=scorer,
         )
+        if milestone_score.status != StageStatus.PASS and (
+            stage_result.status != StageStatus.PASS
+            or stage_result.stage_score < self._thresholds.pass_threshold
+        ):
+            return RuntimeEvaluationDecision(None, stage_result, state)
         state.matched_settlements[milestone.milestone_id] = settlement
         state.settlements.append(settlement)
         state.stage_reports.append(stage_result)

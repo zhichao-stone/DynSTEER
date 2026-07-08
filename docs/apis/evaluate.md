@@ -77,8 +77,8 @@ result = evaluator.evaluate(harness, config, task_case)
 4. 初始化单个运行期 `Trajectory`，并在后续循环中增量维护 `steps`、`snapshots`、`final_state` 与 `metrics`。
 5. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
 6. 将 `advance.snapshots` 按 `snapshot_id` 合并到运行期 `Trajectory`。
-7. 对每个新增 step 调用 `Trajectory.append_step(...)`，再通过 `analyze_milestone_step(...)` 分析 ready milestone 命中或 blocked milestone 诊断。
-8. 只有 ready milestone 正常命中后，才进入阶段结算与阶段式动态评估。
+7. 对每个新增 step 调用 `Trajectory.append_step(...)`，再通过 `analyze_milestone_step(...)` 分析 ready milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked milestone 诊断。
+8. ready milestone 的 PASS 候选直接进入阶段结算；当没有 PASS、但存在 `emit_message + semantic_equivalent` 且无 missing/硬约束失败的 WARN 候选时，该候选会进入现有 `_evaluate_checkpoint(...)` 通道，由 standard judge 复判。只有 standard judge 判 PASS 且阶段分数达到 pass 阈值时，才会写入 matched settlement。
 9. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
 10. 当 `advance.continue_running is False` 时结束主循环。
 11. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
@@ -147,6 +147,13 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `milestone_graph_summary`: milestone 图定义摘要。
 - `milestone_match_attempts`: 每次 checkpoint 匹配尝试的候选详情。
 - `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
+
+当 WARN 候选进入语义消息 LLM 复判时，`milestone_match_attempts[]` 会包含 `llm_semantic_review`：
+
+- `status="candidate"`：结构化分数为 warn，但满足 LLM 复判条件。
+- `status="accepted"`：standard judge 判 PASS，已结算 milestone。
+- `status="rejected"`：standard judge 未判 PASS，milestone 不结算。
+- `status="skipped_no_standard_judge"`：未配置 standard judge，保持原 pending 行为。
 
 当 `task_case_snapshot.task_description` 与首条用户消息摘要不一致时，Evaluator 仍输出 `evaluator_task_description_mismatch` warning，不修改 `TaskCase` 原始字段；LLM judge prompt 模板会直接声明 `stage_goal` 优先于 `task.task_description`。
 
