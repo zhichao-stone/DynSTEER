@@ -36,3 +36,5 @@ def test_runtime_diagnostics_summary_contains_quality_diagnostics() -> None:
     summary = runtime_diagnostics_summary(task_case=task_case, trajectory=trajectory, state=state)
 
     assert summary["runtime_quality_diagnostics"]["empty_tool_results"][0]["tool_name"] == "search_lat_lon"
+    assert summary["runtime_quality_diagnostics"]["empty_tool_results"][0]["severity"] == "warning"
+    assert summary["runtime_quality_diagnostics"]["empty_tool_results"][0]["result_category"] == "query_empty_payload"

@@ -666,7 +666,7 @@ class DynSTEEREvaluator:
                 for stage in stage_reports
                 if stage.milestone_id is not None
                 and stage.status != StageStatus.MISSING
-                and not stage.stage_id.startswith("runtime:missing:")
+                and stage.metadata.get("synthetic_pending_required") is not True
             }
         required_ids = {node.milestone_id for node in graph.nodes if node.required}
         if not graph.nodes:

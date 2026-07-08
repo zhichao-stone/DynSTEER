@@ -150,6 +150,20 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
 - `runtime_quality_diagnostics`: 不参与评分的轨迹质量诊断，包含 `tool_argument_warnings`、`empty_tool_results`、`failed_tool_results`、`grounding_warnings` 和 `efficiency`。该字段用于解释“工具调用发生但参数/结果没有推进任务”“工具返回空值后 agent 仍给出具体事实答案”“最终状态正确但用户额外负担较高”等情况。
 
+`runtime_quality_diagnostics.empty_tool_results[]` 中每条记录包含：
+
+- `severity`: `info` 或 `warning`。状态修改工具成功返回空载荷时为 `info`；查询类或未知工具成功返回空载荷时为 `warning`。
+- `result_category`: `state_mutation_no_payload`、`query_empty_payload` 或 `unknown_empty_payload`。
+
+只有 `severity="warning"` 的空返回会计入 `warning_count`，并可能触发 `grounding_warnings`。`severity="info"` 的空返回仍保留在 `empty_tool_results` 中，方便审计工具调用行为，但不视为风险。
+
+运行自然结束时仍未完成的 required milestone 会生成 synthetic pending stage，并带有 `metadata.synthetic_pending_required=true`：
+
+- `runtime:fail:<milestone_id>`：milestone 已 ready 或已有候选尝试，但未通过。
+- `runtime:missing:<milestone_id>`：milestone 未 ready、无候选尝试，或因前驱未匹配导致当前 milestone 不可评估。
+
+本方案不新增 `blocked` 状态。若前驱未匹配，阻塞原因记录在 `metadata.blocker="predecessor_not_matched"` 和 `metadata.pending_predecessor_ids` 中。
+
 当 WARN 候选进入语义消息 LLM 复判时，`milestone_match_attempts[]` 会包含 `llm_semantic_review`：
 
 - `status="candidate"`：结构化分数为 warn，但满足 LLM 复判条件。

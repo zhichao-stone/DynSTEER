@@ -117,6 +117,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         ready_ever = bool(item.get("ready_ever"))
         attempt_count = int(item.get("attempt_count") or 0)
         status = StageStatus.FAIL if ready_ever or attempt_count > 0 else StageStatus.MISSING
+        failure_kind = status.value
         evidence = [
             (
                 f"required milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
@@ -127,7 +128,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         ]
         results.append(
             StageEvaluationResult(
-                stage_id=f"runtime:missing:{milestone_id}",
+                stage_id=f"runtime:{failure_kind}:{milestone_id}",
                 milestone_id=milestone_id,
                 evaluator_level=EvaluationLevel.CHEAP,
                 status=status,
@@ -138,7 +139,11 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
                 diagnosis=[f"required milestone {milestone_id} 未完成"],
                 hard_constraints_all_pass=False,
                 required_fields_missing_ratio=1.0,
-                metadata=dict(item),
+                metadata={
+                    **dict(item),
+                    "synthetic_pending_required": True,
+                    "failure_kind": failure_kind,
+                },
             )
         )
     return results

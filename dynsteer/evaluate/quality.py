@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dynsteer.model import Actor, EventType, JsonObject, JsonValue, TaskCase, Trajectory, TrajectoryStep
 
+STATE_MUTATION_TOOL_PREFIXES = ("set_", "modify_", "remove_", "add_", "create_", "delete_", "send_")
+QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
+
 
 def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
     """构造不参与评分的运行期轨迹质量诊断。
@@ -44,28 +47,32 @@ def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajector
                 }
             )
         if success and _is_empty_tool_content(content):
+            classification = _classify_empty_tool_result(tool_name)
             empty = {
                 "step_index": step.index,
                 "step_id": step.step_id,
                 "tool_name": tool_name,
                 "content": content,
+                **classification,
             }
             empty_tool_results.append(empty)
-            answer = _next_agent_message(steps, step.index)
-            if answer is not None:
-                grounding_warnings.append(
-                    {
-                        "warning": "agent_answer_after_empty_tool_result",
-                        "tool_name": tool_name,
-                        "tool_result_step_index": step.index,
-                        "answer_step_index": answer.index,
-                        "answer_excerpt": _excerpt(answer.content or ""),
-                    }
-                )
+            if classification["severity"] == "warning":
+                answer = _next_agent_message(steps, step.index)
+                if answer is not None:
+                    grounding_warnings.append(
+                        {
+                            "warning": "agent_answer_after_empty_tool_result",
+                            "tool_name": tool_name,
+                            "tool_result_step_index": step.index,
+                            "answer_step_index": answer.index,
+                            "answer_excerpt": _excerpt(answer.content or ""),
+                        }
+                    )
 
+    empty_tool_warning_count = sum(1 for item in empty_tool_results if item.get("severity") == "warning")
     warning_count = (
         len(tool_argument_warnings)
-        + len(empty_tool_results)
+        + empty_tool_warning_count
         + len(failed_tool_results)
         + len(grounding_warnings)
         + _efficiency_warning_count(steps)
@@ -79,6 +86,18 @@ def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajector
         "grounding_warnings": grounding_warnings,
         "efficiency": _efficiency_diagnostics(steps),
     }
+
+
+def _classify_empty_tool_result(tool_name: str | None) -> JsonObject:
+    """区分空返回是正常无载荷结果，还是查询类风险结果。"""
+    if tool_name is None or not str(tool_name).strip():
+        return {"severity": "warning", "result_category": "unknown_empty_payload"}
+    normalized = str(tool_name).strip().lower()
+    if normalized.startswith(STATE_MUTATION_TOOL_PREFIXES):
+        return {"severity": "info", "result_category": "state_mutation_no_payload"}
+    if normalized.startswith(QUERY_TOOL_PREFIXES) or normalized in {"timestamp_diff"}:
+        return {"severity": "warning", "result_category": "query_empty_payload"}
+    return {"severity": "warning", "result_category": "unknown_empty_payload"}
 
 
 def _tool_argument_warnings(step: TrajectoryStep) -> list[JsonObject]:

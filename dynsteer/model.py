@@ -453,9 +453,11 @@ def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
     """判断阶段是否来自已匹配 milestone 的动态评估。"""
     if stage is None or stage.milestone_id is None:
         return False
+    if stage.metadata.get("synthetic_pending_required") is True:
+        return False
     if stage.status == StageStatus.MISSING:
         return False
-    return not stage.stage_id.startswith("runtime:missing:")
+    return True
 
 
 ## 通用校验函数

@@ -65,6 +65,35 @@ def test_quality_diagnostics_flags_answer_after_empty_tool_result() -> None:
 
     assert diagnostics["grounding_warnings"][0]["warning"] == "agent_answer_after_empty_tool_result"
     assert diagnostics["grounding_warnings"][0]["tool_name"] == "search_lat_lon"
+    assert diagnostics["warning_count"] == 2
+    assert diagnostics["empty_tool_results"][0]["severity"] == "warning"
+    assert diagnostics["empty_tool_results"][0]["result_category"] == "query_empty_payload"
+
+
+def test_quality_diagnostics_marks_state_mutation_empty_result_as_info() -> None:
+    trajectory = Trajectory(
+        run_id="run",
+        task_id="task",
+        steps=[
+            _step(0, Actor.USER, EventType.MESSAGE, "Turn on Wi-Fi."),
+            _step(
+                1,
+                Actor.AGENT,
+                EventType.TOOL_CALL,
+                tool_call=ToolCall("set_wifi_status", {"on": True}),
+            ),
+            _step(2, Actor.ENVIRONMENT, EventType.TOOL_RESULT, tool_result=ToolResult(True, None)),
+            _step(3, Actor.AGENT, EventType.MESSAGE, "Wi-Fi is now on."),
+        ],
+    )
+
+    diagnostics = build_runtime_quality_diagnostics(TaskCase("task", "desc", "case"), trajectory)
+
+    assert diagnostics["warning_count"] == 0
+    assert diagnostics["empty_tool_results"][0]["tool_name"] == "set_wifi_status"
+    assert diagnostics["empty_tool_results"][0]["severity"] == "info"
+    assert diagnostics["empty_tool_results"][0]["result_category"] == "state_mutation_no_payload"
+    assert diagnostics["grounding_warnings"] == []
 
 
 def test_quality_diagnostics_counts_extra_user_turn_before_first_tool_call() -> None:
