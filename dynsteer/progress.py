@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 ProgressEventKind = Literal["case_started", "case_advanced", "case_finished"]
 DEFAULT_PROGRESS_TOTAL = 100
+DEFAULT_VISIBLE_PROGRESS_BARS = 5
 TERMINAL_LOG_SILENT_LEVEL = logging.CRITICAL + 1
 
 
@@ -50,6 +51,7 @@ class CaseProgressState:
     step_count: int = 0
     elapsed_seconds: float = 0.0
     avg_step_seconds: float | None = None
+    finished: bool = False
 
 
 class CaseProgressReporter(Protocol):
@@ -86,14 +88,19 @@ class TqdmCaseProgressManager:
         line_writer: Callable[[str], object] | None = None,
         estimated_total: int = DEFAULT_PROGRESS_TOTAL,
         time_fn: Callable[[], float] | None = None,
+        max_visible_bars: int = DEFAULT_VISIBLE_PROGRESS_BARS,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers 必须大于 0")
         if estimated_total < 1:
             raise ValueError("estimated_total 必须大于 0")
+        if max_visible_bars < max_workers:
+            raise ValueError("max_visible_bars 不能小于 max_workers")
         self.max_workers = max_workers
+        self.max_visible_bars = max_visible_bars
         self.estimated_total = estimated_total
         self.active_order: list[str] = []
+        self.visible_order: list[str] = []
         self.case_states: dict[str, CaseProgressState] = {}
         self.bars: dict[str, Any] = {}
         self._bar_factory = bar_factory or tqdm
@@ -118,10 +125,14 @@ class TqdmCaseProgressManager:
         if state is None:
             state = CaseProgressState(case_id=case_id, started_at=self._time_fn())
             self.case_states[case_id] = state
+        state.finished = False
         self.active_order.append(case_id)
+        if case_id in self.visible_order:
+            self.visible_order.remove(case_id)
+        self.visible_order.append(case_id)
+        self._trim_visible_order()
         self._had_active_bars = True
-        self.bars[case_id] = self._create_bar(case_id, len(self.active_order) - 1)
-        self._refresh_bar(case_id)
+        self._rebuild_visible_bars()
 
     def case_advanced(self, case_id: str, step_count: int) -> None:
         """更新指定 case 的累计 step 数。"""
@@ -140,37 +151,44 @@ class TqdmCaseProgressManager:
             self._set_bar_postfix(bar, state)
 
     def case_finished(self, case_id: str) -> None:
-        """关闭指定 case 进度条，并重建剩余进度条位置。"""
+        """标记指定 case 完成，并在可见窗口中保留满进度条。"""
         self._validate_case_id(case_id)
         if case_id not in self.case_states:
             return
         state = self.case_states[case_id]
         self._refresh_state(state)
-        bar = self.bars.pop(case_id, None)
-        if bar is not None:
-            self._finish_bar(bar, state)
+        state.finished = True
         if case_id in self.active_order:
             self.active_order.remove(case_id)
-        self._rebuild_active_bars()
+        if case_id not in self.visible_order:
+            self.visible_order.append(case_id)
+        bar = self.bars.get(case_id)
+        if bar is not None:
+            self._finish_bar(bar, state)
+        self._trim_visible_order()
+        self._rebuild_visible_bars()
 
     def close_all(self) -> None:
-        """关闭所有仍活动的进度条。"""
-        for case_id in list(self.active_order):
+        """关闭所有可见进度条，并保留最终窗口。"""
+        for case_id in list(self.visible_order):
             bar = self.bars.pop(case_id, None)
             state = self.case_states[case_id]
             self._refresh_state(state)
             if bar is not None:
-                self._finish_bar(bar, state)
+                if state.finished:
+                    self._finish_bar(bar, state)
+                self._close_bar(bar, leave=True)
         self.active_order.clear()
+        self.visible_order.clear()
         self._write_line_after_close()
 
-    def _rebuild_active_bars(self) -> None:
-        """按当前活动顺序重建进度条位置。"""
+    def _rebuild_visible_bars(self) -> None:
+        """按当前可见顺序重建进度条位置。"""
         old_bars = dict(self.bars)
         self.bars.clear()
         for bar in old_bars.values():
-            bar.close()
-        for position, case_id in enumerate(self.active_order):
+            self._close_bar(bar, leave=False)
+        for position, case_id in enumerate(self.visible_order):
             self.bars[case_id] = self._create_bar(case_id, position)
             self._refresh_bar(case_id)
 
@@ -178,7 +196,7 @@ class TqdmCaseProgressManager:
         state = self.case_states[case_id]
         return self._bar_factory(
             desc=case_id,
-            total=max(self.estimated_total, state.step_count),
+            total=state.step_count if state.finished else max(self.estimated_total, state.step_count),
             unit="step",
             position=position,
             leave=False,
@@ -213,6 +231,29 @@ class TqdmCaseProgressManager:
         if callable(refresh):
             refresh()
         bar.update(0)
+
+    def _trim_visible_order(self) -> None:
+        """保留固定数量的可见进度条，优先移除最早完成的 case。"""
+        while len(self.visible_order) > self.max_visible_bars:
+            evicted = self._oldest_finished_visible_case()
+            if evicted is None:
+                return
+            self.visible_order.remove(evicted)
+            bar = self.bars.pop(evicted, None)
+            if bar is not None:
+                self._close_bar(bar, leave=False)
+
+    def _oldest_finished_visible_case(self) -> str | None:
+        """返回最早进入窗口且已经完成的 case。"""
+        for case_id in self.visible_order:
+            state = self.case_states.get(case_id)
+            if state is not None and state.finished and case_id not in self.active_order:
+                return case_id
+        return None
+
+    def _close_bar(self, bar: Any, leave: bool) -> None:
+        """关闭 tqdm bar，并按需保留终端行。"""
+        setattr(bar, "leave", leave)
         bar.close()
 
     def _validate_case_id(self, case_id: str) -> None:

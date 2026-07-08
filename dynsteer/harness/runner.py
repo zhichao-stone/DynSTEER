@@ -18,6 +18,7 @@ from dynsteer.progress import (
     CaseProgressEvent,
     CaseProgressReporter,
     DEFAULT_PROGRESS_TOTAL,
+    DEFAULT_VISIBLE_PROGRESS_BARS,
     QueueProgressReporter,
     TqdmCaseProgressManager,
     progress_logging_redirect,
@@ -192,7 +193,11 @@ def _run_tasks_serial(
     logger: logging.Logger,
 ) -> list[HarnessEvaluationOutput]:
     """串行执行 case，并复用同一套进度管理器。"""
-    manager = TqdmCaseProgressManager(max_workers=1, estimated_total=_progress_total_from_tasks(tasks))
+    manager = TqdmCaseProgressManager(
+        max_workers=1,
+        estimated_total=_progress_total_from_tasks(tasks),
+        max_visible_bars=DEFAULT_VISIBLE_PROGRESS_BARS,
+    )
     outputs: list[HarnessEvaluationOutput] = []
     with progress_logging_redirect(logger):
         try:
@@ -214,7 +219,11 @@ def _run_tasks_parallel(
     logger: logging.Logger,
 ) -> list[HarnessEvaluationOutput]:
     """并行执行 case，主线程通过 queue 维护进度条。"""
-    manager = TqdmCaseProgressManager(max_workers=max_workers, estimated_total=_progress_total_from_tasks(tasks))
+    manager = TqdmCaseProgressManager(
+        max_workers=max_workers,
+        estimated_total=_progress_total_from_tasks(tasks),
+        max_visible_bars=max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers),
+    )
     events: Queue[CaseProgressEvent] = Queue()
     outputs_by_order: dict[int, HarnessEvaluationOutput] = {}
     next_index = 0
