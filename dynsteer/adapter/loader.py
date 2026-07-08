@@ -61,8 +61,21 @@ def adapted_case_path(data_root: Path, case_id: str) -> Path:
     return data_root / "adapted_cases" / safe_case_file_name(case_id)
 
 
-def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> list[TaskCase]:
-    """按 config.case_ids 逐 case 读取或生成已适配 TaskCase。"""
+def load_task_case(
+    config: HarnessRunConfig,
+    adapter: BaseBenchmarkAdapter,
+    force_adapt: bool = False,
+) -> list[TaskCase]:
+    """按 config.case_ids 逐 case 读取或生成已适配 TaskCase。
+
+    Args:
+        config: benchmark 运行配置。
+        adapter: benchmark adapter。
+        force_adapt: 为 True 时忽略已有 adapted JSON 并重新生成。
+
+    Returns:
+        与 config.case_ids 顺序一致的 TaskCase 列表。
+    """
     if config is None or adapter is None:
         raise ValueError("config 和 adapter 不能为空")
     case_ids = list(config.case_ids or ())
@@ -72,7 +85,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter) -> l
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="适配 benchmark 数据"):
         path = adapted_case_path(config.data_root, case_id)
-        if not path.exists():
+        if force_adapt or not path.exists():
             task_case = adapter.adapt_task_case(config, case_id)
             if not isinstance(task_case, TaskCase):
                 raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")

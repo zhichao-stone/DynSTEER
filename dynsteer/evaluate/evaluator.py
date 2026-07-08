@@ -420,6 +420,7 @@ class DynSTEEREvaluator:
             raw_summary.update(
                 runtime_diagnostics_summary(
                     task_case=task_case,
+                    trajectory=trajectory,
                     state=state,
                 )
             )

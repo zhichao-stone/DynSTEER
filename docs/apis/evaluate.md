@@ -18,6 +18,7 @@ dynsteer/evaluate/
 - evaluator.py   # DynSTEEREvaluator
 - score.py       # GeneralScorer、ScoringContext 和通用约束评分逻辑
 - diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
+- quality.py     # 运行期工具质量、grounding 与效率诊断
 - runtime.py     # 运行期 raw_summary、pending milestone、scoring context 辅助函数
 - telemetry.py   # 运行期结构化日志 extra 构造函数
 - weights.py     # normalize_weights、select_initial_weights、update_weights
@@ -147,6 +148,7 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `milestone_graph_summary`: milestone 图定义摘要。
 - `milestone_match_attempts`: 每次 checkpoint 匹配尝试的候选详情。
 - `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
+- `runtime_quality_diagnostics`: 不参与评分的轨迹质量诊断，包含 `tool_argument_warnings`、`empty_tool_results`、`failed_tool_results`、`grounding_warnings` 和 `efficiency`。该字段用于解释“工具调用发生但参数/结果没有推进任务”“工具返回空值后 agent 仍给出具体事实答案”“最终状态正确但用户额外负担较高”等情况。
 
 当 WARN 候选进入语义消息 LLM 复判时，`milestone_match_attempts[]` 会包含 `llm_semantic_review`：
 

@@ -19,3 +19,5 @@
 - `StageGoalSemanticKind.TOOL_CALL.value == "tool_call"`
 
 私有 scorer metadata 应保留在各 benchmark 自己的 key 下，例如 `metadata["toolsandbox"]`。公共 stage_goal 生成不得读取这些私有 key。
+
+ToolSandbox SANDBOX snapshot constraint 如果 target row 包含 `tool_trace`，adapter 应将其 `stage_goal_semantics.kind` 设置为 `tool_call`，并写入 `tool_name` 与 `arguments`。`stage_goal` 文本应表达为 `Call tool ...`，而不是 `Emit a message from EXECUTION_ENVIRONMENT to AGENT...`。普通 AGENT -> USER 消息仍使用 `emit_message`。

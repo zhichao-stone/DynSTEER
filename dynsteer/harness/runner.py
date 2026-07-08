@@ -171,6 +171,13 @@ def _progress_total_from_tasks(tasks: list[_HarnessCaseTask]) -> int:
     return max(value, 1)
 
 
+def _progress_visible_bars(max_workers: int) -> int:
+    """根据并发数计算终端可见进度条窗口大小。"""
+    if max_workers < 1:
+        raise ValueError("max_workers 必须大于 0")
+    return max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers)
+
+
 def _run_tasks(
     tasks: list[_HarnessCaseTask],
     *,
@@ -196,7 +203,7 @@ def _run_tasks_serial(
     manager = TqdmCaseProgressManager(
         max_workers=1,
         estimated_total=_progress_total_from_tasks(tasks),
-        max_visible_bars=DEFAULT_VISIBLE_PROGRESS_BARS,
+        max_visible_bars=_progress_visible_bars(1),
     )
     outputs: list[HarnessEvaluationOutput] = []
     with progress_logging_redirect(logger):
@@ -222,7 +229,7 @@ def _run_tasks_parallel(
     manager = TqdmCaseProgressManager(
         max_workers=max_workers,
         estimated_total=_progress_total_from_tasks(tasks),
-        max_visible_bars=max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers),
+        max_visible_bars=_progress_visible_bars(max_workers),
     )
     events: Queue[CaseProgressEvent] = Queue()
     outputs_by_order: dict[int, HarnessEvaluationOutput] = {}

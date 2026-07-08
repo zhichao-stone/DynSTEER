@@ -23,14 +23,16 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
     parser.add_argument("--workers", type=int, default=3, help="benchmark case 最大并行 worker 数，默认 3")
     parser.add_argument("--only_adapt", action="store_true", help="仅适配 benchmark 数据并写入 data-root，不执行评估")
+    parser.add_argument("--force_adapt", action="store_true", help="与 --only_adapt 搭配使用，强制重建已有 adapted case")
     return parser.parse_args(argv)
 
 
-def _adapt_only_configs(configs: list[HarnessRunConfig]) -> list[Path]:
+def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = False) -> list[Path]:
     """仅执行 benchmark TaskCase 适配，并返回 adapted case 文件路径。
 
     Args:
         configs: 已从 data-root 加载的 harness 运行配置列表。
+        force_adapt: 是否强制重建已存在的 adapted case。
 
     Returns:
         本次确认可用的 adapted case JSON 文件路径列表。
@@ -56,7 +58,7 @@ def _adapt_only_configs(configs: list[HarnessRunConfig]) -> list[Path]:
             case_ids = [case.case_id for case in cases]
         run_config = replace(config, case_ids=tuple(case_ids))
         harness.prepare_config(run_config)
-        task_cases = load_task_case(run_config, adapter)
+        task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
         loaded_case_ids = [task_case.case_id for task_case in task_cases]
         if loaded_case_ids != case_ids:
             raise ValueError(f"加载的 TaskCase 顺序与配置不一致: {loaded_case_ids}")
@@ -84,6 +86,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise ValueError("运行 benchmark harness 时需要提供可靠的 data-root，通过 --data-root 提供或者使用 data/{benchmark}")
         if int(args.workers) < 1:
             raise ValueError("--workers 必须大于 0")
+        if args.force_adapt and not args.only_adapt:
+            raise ValueError("--force_adapt 必须与 --only_adapt 一起使用，避免普通评估隐式覆盖 adapted 数据")
 
         configs = load_harness_run_configs(
             benchmark=str(args.benchmark),
@@ -92,7 +96,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             results_dir=results_dir,
         )
         if args.only_adapt:
-            adapted_paths = _adapt_only_configs(configs)
+            adapted_paths = _adapt_only_configs(configs, force_adapt=bool(args.force_adapt))
             logger.info("数据适配完成，输出 case 数量: %s", len(adapted_paths), extra={"case_count": len(adapted_paths)})
             for path in adapted_paths:
                 print(str(path))

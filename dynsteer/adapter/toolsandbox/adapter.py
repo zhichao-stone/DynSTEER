@@ -250,8 +250,29 @@ def sandbox_rows_from_context(
     return rows_from_dataframe(dataframe)
 
 
-def task_description_from_steps(steps: list[dict[str, JsonValue]], fallback: str) -> str:
+def task_description_from_steps(
+    steps: list[dict[str, JsonValue]],
+    fallback: str,
+    first_user_sandbox_message_index: int | None = None,
+) -> str:
     """从首条用户消息读取 task_description。"""
+    if steps is None or fallback is None:
+        raise ValueError("steps 和 fallback 不能为空")
+    if first_user_sandbox_message_index is not None:
+        for step in steps:
+            if (
+                step.get("actor") == Actor.USER.value
+                and step.get("raw_sandbox_message_index") == first_user_sandbox_message_index
+                and isinstance(step.get("content"), str)
+            ):
+                return str(step["content"])
+    for step in steps:
+        if (
+            step.get("actor") == Actor.USER.value
+            and isinstance(step.get("content"), str)
+            and not _visible_only_to_user_simulator(step.get("visible_to"))
+        ):
+            return str(step["content"])
     for step in steps:
         if step.get("actor") == Actor.USER.value and isinstance(step.get("content"), str):
             return str(step["content"])
@@ -271,6 +292,62 @@ def task_types_from_categories(categories: list[object]) -> list[TaskType]:
     if not result:
         result.append(TaskType.STATEFUL_TOOL)
     return result
+
+
+def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
+    """从 SANDBOX target row 中解析工具调用 stage_goal 语义。"""
+    if row is None:
+        raise ValueError("SANDBOX row 不能为空")
+    raw_trace = row.get("tool_trace")
+    if raw_trace is None:
+        return None
+    trace_items = _tool_trace_items(raw_trace)
+    if not trace_items:
+        return None
+    trace_value = trace_items[0]
+    tool_name = trace_value.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+    arguments = trace_value.get("arguments")
+    return {
+        "kind": StageGoalSemanticKind.TOOL_CALL.value,
+        "tool_name": tool_name.strip(),
+        "arguments": arguments if isinstance(arguments, dict) else {},
+        "evidence_source": "trajectory_or_structured_scorer",
+        "user_visible_required": False,
+    }
+
+
+def _visible_only_to_user_simulator(value: JsonValue) -> bool:
+    if not isinstance(value, list) or len(value) != 1:
+        return False
+    return str(value[0]) == "USER"
+
+
+def _tool_trace_items(raw_trace: JsonValue) -> list[JsonObject]:
+    trace_value = _parse_tool_trace_value(raw_trace)
+    if isinstance(trace_value, dict):
+        return [trace_value]
+    if not isinstance(trace_value, list):
+        return []
+    items: list[JsonObject] = []
+    for item in trace_value:
+        parsed_item = _parse_tool_trace_value(item)
+        if isinstance(parsed_item, dict):
+            items.append(parsed_item)
+        elif isinstance(parsed_item, list):
+            items.extend(dict(nested) for nested in parsed_item if isinstance(nested, dict))
+    return items
+
+
+def _parse_tool_trace_value(value: JsonValue) -> JsonValue:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return json_safe(parsed)
+    return json_safe(value)
 
 
 def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) -> dict[str, JsonValue]:
@@ -306,18 +383,22 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
     # SANDBOX namespace 表达可见消息目标，文本匹配采用语义等价策略。
     elif namespace == "SANDBOX":
         first = rows[0] if rows and isinstance(rows[0], dict) else {}
-        sender = first.get("sender") if isinstance(first, dict) else None
-        recipient = first.get("recipient") if isinstance(first, dict) else None
-        content = first.get("content") if isinstance(first, dict) else None
-        stage_goal_semantics = {
-            "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
-            "sender": str(sender or "AGENT"),
-            "recipient": str(recipient or "USER"),
-            "content": str(content or ""),
-            "match_policy": "semantic_equivalent",
-            "evidence_source": "trajectory_or_structured_scorer",
-            "user_visible_required": True,
-        }
+        tool_trace_semantics = _tool_trace_stage_goal_semantics(first) if isinstance(first, dict) else None
+        if tool_trace_semantics is not None:
+            stage_goal_semantics = tool_trace_semantics
+        else:
+            sender = first.get("sender") if isinstance(first, dict) else None
+            recipient = first.get("recipient") if isinstance(first, dict) else None
+            content = first.get("content") if isinstance(first, dict) else None
+            stage_goal_semantics = {
+                "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
+                "sender": str(sender or "AGENT"),
+                "recipient": str(recipient or "USER"),
+                "content": str(content or ""),
+                "match_policy": "semantic_equivalent",
+                "evidence_source": "trajectory_or_structured_scorer",
+                "user_visible_required": True,
+            }
     # 其他 snapshot constraint 表达目标 state namespace 的设置或校验。
     else:
         expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
@@ -616,9 +697,14 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
         rows = sandbox_rows_from_context(context, module_loader)
         steps = sandbox_rows_to_step_dicts(rows)
         graph = milestone_graph_from_scenario(scenario)
+        first_user_index = getattr(context, "first_user_sandbox_message_index", None)
         return TaskCase(
             task_id=f"toolsandbox::{case_id}",
-            task_description=task_description_from_steps(steps, case_id),
+            task_description=task_description_from_steps(
+                steps,
+                case_id,
+                first_user_sandbox_message_index=first_user_index if isinstance(first_user_index, int) else None,
+            ),
             case_id=case_id,
             environment_schema={"source": "toolsandbox"},
             tool_schema={"source": "toolsandbox"},

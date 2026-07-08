@@ -3,6 +3,7 @@ from __future__ import annotations
 from dynsteer.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary
 from dynsteer.evaluate.models import RuntimeEvaluationState
+from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
 from dynsteer.evaluate.score import ScoringContext
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
@@ -20,17 +21,22 @@ from dynsteer.model import (
 )
 
 
-def runtime_diagnostics_summary(task_case: TaskCase, state: RuntimeEvaluationState) -> JsonObject:
-    """构造运行期 raw_summary 的 milestone 诊断信息。
+def runtime_diagnostics_summary(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    state: RuntimeEvaluationState,
+) -> JsonObject:
+    """构造运行期 raw_summary 的 milestone 与质量诊断信息。
 
     Args:
         task_case: 当前任务定义。
+        trajectory: 当前完整轨迹。
         state: 运行结束时的评估状态。
 
     Returns:
         可合入 raw_summary 的诊断字段。
     """
-    if task_case is None or state is None:
+    if task_case is None or trajectory is None or state is None:
         raise ValueError("运行期诊断参数不能为空")
     graph = task_case.milestone_graph or MilestoneGraph()
     return {
@@ -41,6 +47,7 @@ def runtime_diagnostics_summary(task_case: TaskCase, state: RuntimeEvaluationSta
             matched=state.matched_settlements,
             match_attempts=state.match_attempts,
         ),
+        "runtime_quality_diagnostics": build_runtime_quality_diagnostics(task_case, trajectory),
     }
 
 
