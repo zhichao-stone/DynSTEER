@@ -8,6 +8,16 @@ DynSTEER 是阶段式动态 Agent 轨迹评估实验入口。第一阶段实现�
 uv run python main.py --input examples/minimal_experiment.json --results-dir results
 ```
 
+## 查看静态评估看板
+
+生成展示数据：
+
+```powershell
+uv run python display/build.py --runs-dir runs --results-dir results --output display/data.js
+```
+
+然后直接打开 `display/index.html` 查看中文评估看板。页面会展示 run/scenario 切换、执行轨迹、milestone graph、阶段评估与点击联动。
+
 ## 运行测试
 
 ```bash
