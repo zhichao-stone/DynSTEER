@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -8,16 +9,7 @@ from dynsteer.model import JsonObject, JsonValue, MISSING
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    """将数值裁剪到 [lower, upper] 闭区间。
-
-    Args:
-        value: 待裁剪的数值。
-        lower: 闭区间下界，默认 0.0。
-        upper: 闭区间上界，默认 1.0。
-
-    Returns:
-        裁剪后的数值：小于下界返回下界，大于上界返回上界，否则原样返回。
-    """
+    """将数值裁剪到 [lower, upper] 闭区间。"""
     if value < lower:
         return lower
     if value > upper:
@@ -26,15 +18,7 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
 
 
 def read_token(current: Any, token: str) -> Any:
-    """读取轻量 JSON selector 中的单个 token。
-
-    Args:
-        current: 当前待读取的 JSON 层级，可为 dict、list 或标量。
-        token: selector 拆分后的单段路径，支持 `name`、`name[index]` 和 `[index]` 形式。
-
-    Returns:
-        命中的值；路径不存在、类型不匹配或数组下标非法时返回 MISSING。
-    """
+    """读取轻量 JSON selector 中的单个 token。"""
     value = current
     rest = token
     while rest:
@@ -69,15 +53,7 @@ def read_token(current: Any, token: str) -> Any:
 
 
 def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
-    """判断 actual JSON 是否包含 expected JSON 的结构和值。
-
-    Args:
-        actual: 实际 JSON 值。
-        expected: 期望 JSON 子结构；dict 要求键递归匹配，list 要求前缀元素递归匹配。
-
-    Returns:
-        actual 能覆盖 expected 的全部结构和值时返回 True，否则返回 False。
-    """
+    """判断 actual JSON 是否包含 expected JSON 的结构和值。"""
     if isinstance(expected, dict):
         if not isinstance(actual, dict):
             return False
@@ -93,19 +69,37 @@ def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
 
 
 def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None:
-    """从配置来源读取非空字符串并去除首尾空白。
-
-    Args:
-        source: 字符串配置映射，例如环境变量。
-        key: 需要读取的配置键。
-
-    Returns:
-        去除首尾空白后的字符串；值不存在、不是字符串或为空白时返回 None。
-    """
+    """从配置来源读取非空字符串并去除首尾空白。"""
     value = source.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def compact_text(value: object, limit: int = 160) -> str:
+    """压缩任意值为单行短文本。"""
+    if value is None:
+        raise ValueError("摘要文本不能为空")
+    if limit < 0:
+        raise ValueError("摘要长度不能为负数")
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)] + "..."
+
+
+def first_text(values: list[str], limit: int = 160) -> str | None:
+    """返回列表中的首条短文本。"""
+    if not values:
+        return None
+    return compact_text(values[0], limit)
+
+
+def string_list(value: object) -> list[str]:
+    """将 list 值转换为字符串列表，非 list 返回空列表。"""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def get_object(
@@ -115,18 +109,7 @@ def get_object(
     default: object = None,
     required: bool = True,
 ) -> object:
-    """从 JSON 对象读取字段，并按需校验存在性和类型。
-
-    Args:
-        data: 待读取的 JSON 对象。
-        key: 字段名。
-        type: 可选的 `isinstance` 类型或类型元组。
-        default: 字段缺失且非必填时返回的默认值。
-        required: 字段是否必填。
-
-    Returns:
-        字段值或默认值。
-    """
+    """从 JSON 对象读取字段，并按需校验存在性和类型。"""
     if data is None:
         raise ValueError("待读取字段的 JSON 对象不能为空")
     if key not in data:
@@ -177,8 +160,12 @@ def json_safe(value: object) -> JsonValue:
         return value
     if isinstance(value, Path):
         return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: json_safe(getattr(value, field.name)) for field in fields(value)}
     enum_raw_value = getattr(value, "value", None)
-    if isinstance(enum_raw_value, (str, int, float, bool)) or enum_raw_value is None and isinstance(value, Enum):
+    if isinstance(enum_raw_value, (str, int, float, bool)) or (
+        enum_raw_value is None and isinstance(value, Enum)
+    ):
         return enum_raw_value
     if isinstance(value, dict):
         return {str(key): json_safe(item) for key, item in value.items()}

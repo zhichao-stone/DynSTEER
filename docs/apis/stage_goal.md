@@ -1,6 +1,6 @@
 # Stage Goal API
 
-`dynsteer.stage_goal.generate_stage_goals(task_case, mode="auto", llm_provider=None)` 是 stage_goals 的唯一生成入口。
+`dynsteer.stage.generate_stage_goals(task_case, mode="auto", llm_provider=None)` 是 stage_goals 的唯一生成入口。
 
 支持模式：
 

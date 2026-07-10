@@ -19,15 +19,6 @@ class ThresholdConfig:
 
 
 @dataclass(frozen=True)
-class MatchConfig:
-    beam_width: int = 16
-    candidate_min_score: float = 0.4
-    missing_required_penalty: float = 0.2
-    order_violation_penalty: float = 1.0
-    excessive_delay_penalty: float = 0.02
-
-
-@dataclass(frozen=True)
 class DynamicWeightConfig:
     alpha: float
     beta: float
@@ -115,11 +106,7 @@ DEFAULT_FOCUS: dict[Dimension, float] = {
 
 
 def default_dynamic_weight_config() -> DynamicWeightConfig:
-    """创建默认动态权重配置。
-
-    Returns:
-        默认动态权重超参数。
-    """
+    """创建默认动态权重配置。"""
     return DynamicWeightConfig(
         alpha=0.8,
         beta=0.4,

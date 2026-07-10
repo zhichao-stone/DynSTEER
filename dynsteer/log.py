@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dynsteer.model import JsonObject, JsonValue
+from dynsteer.utils import compact_text
 
 _LOG_BUFFER: list[JsonObject] = []
 LOG_BUFFER_LIMIT = 2000
@@ -44,14 +45,7 @@ class StructuredLogFormatter(logging.Formatter):
     """在日志消息后追加轻量 JSON extra 的 formatter。"""
 
     def format(self, record: logging.LogRecord) -> str:
-        """格式化日志记录并追加结构化 extra。
-
-        Args:
-            record: logging 产生的日志记录。
-
-        Returns:
-            原始日志文本加可选 JSON extra。
-        """
+        """格式化日志记录并追加结构化 extra。"""
         message = super().format(record)
         extra = log_extra_from_record(record)
         if not extra:
@@ -63,14 +57,7 @@ class TerminalLogFormatter(logging.Formatter):
     """终端专用 formatter，仅展示少量摘要字段。"""
 
     def format(self, record: logging.LogRecord) -> str:
-        """格式化终端日志并追加受控摘要。
-
-        Args:
-            record: logging 产生的日志记录。
-
-        Returns:
-            终端可读的短日志文本。
-        """
+        """格式化终端日志并追加受控摘要。"""
         message = super().format(record)
         extra = terminal_log_extra_from_record(record)
         if not extra:
@@ -80,14 +67,7 @@ class TerminalLogFormatter(logging.Formatter):
 
 class BufferLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
-        """将日志记录写入内存缓冲区。
-
-        Args:
-            record: logging 产生的日志记录。
-
-        Returns:
-            None。
-        """
+        """将日志记录写入内存缓冲区。"""
         try:
             entry: JsonObject = {
                 "time": datetime.fromtimestamp(record.created).isoformat(timespec="seconds"),
@@ -106,14 +86,7 @@ class BufferLogHandler(logging.Handler):
 
 
 def configure_logger(log_dir: str | Path) -> logging.Logger:
-    """配置 DynSTEER 结构化中文日志。
-
-    Args:
-        log_dir: 日志文件目录。
-
-    Returns:
-        已配置的 logger。
-    """
+    """配置 DynSTEER 结构化中文日志。"""
     if log_dir is None:
         raise ValueError("log_dir 不能为空")
     with _LOGGER_LOCK:
@@ -142,34 +115,19 @@ def configure_logger(log_dir: str | Path) -> logging.Logger:
 
 
 def get_log_buffer() -> list[JsonObject]:
-    """获取内存日志缓冲区。
-
-    Returns:
-        当前进程内的结构化日志列表。
-    """
+    """获取内存日志缓冲区。"""
     with _LOG_BUFFER_LOCK:
         return list(_LOG_BUFFER)
 
 
 def clear_log_buffer() -> None:
-    """清空内存日志缓冲区。
-
-    Returns:
-        None。
-    """
+    """清空内存日志缓冲区。"""
     with _LOG_BUFFER_LOCK:
         _LOG_BUFFER.clear()
 
 
 def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
-    """从 LogRecord 提取并清洗业务 extra。
-
-    Args:
-        record: logging 产生的日志记录。
-
-    Returns:
-        仅包含业务字段的 JSON 对象。
-    """
+    """从 LogRecord 提取并清洗业务 extra。"""
     if record is None:
         raise ValueError("record 不能为空")
     extra: JsonObject = {}
@@ -181,14 +139,7 @@ def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
 
 
 def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
-    """从 LogRecord 中提取终端展示用的精简 extra。
-
-    Args:
-        record: logging 产生的日志记录。
-
-    Returns:
-        仅包含 case、milestone、分数、诊断和证据的 JSON 对象。
-    """
+    """从 LogRecord 中提取终端展示用的精简 extra。"""
     if record is None:
         raise ValueError("record 不能为空")
     if record.levelno < logging.WARNING:
@@ -198,18 +149,11 @@ def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
 
 
 def sanitize_log_value(value: object) -> JsonValue:
-    """清洗日志 extra 值，避免长字段刷屏。
-
-    Args:
-        value: 任意业务日志值。
-
-    Returns:
-        JSON 可序列化且长度受控的值。
-    """
+    """清洗日志 extra 值，避免长字段刷屏。"""
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
-        return _truncate_text(value)
+        return compact_text(value, _LOG_EXTRA_TEXT_LIMIT)
     if isinstance(value, list):
         return [sanitize_log_value(item) for item in value[:_LOG_EXTRA_LIST_LIMIT]]
     if isinstance(value, dict):
@@ -217,7 +161,7 @@ def sanitize_log_value(value: object) -> JsonValue:
             str(key): sanitize_log_value(item)
             for key, item in list(value.items())[:_LOG_EXTRA_LIST_LIMIT]
         }
-    return _truncate_text(str(value))
+    return compact_text(value, _LOG_EXTRA_TEXT_LIMIT)
 
 
 def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
@@ -242,9 +186,3 @@ def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
         result["evidence"] = evidence
     return result
 
-
-def _truncate_text(value: str) -> str:
-    text = " ".join(str(value).split())
-    if len(text) <= _LOG_EXTRA_TEXT_LIMIT:
-        return text
-    return text[: max(_LOG_EXTRA_TEXT_LIMIT - 3, 0)] + "..."

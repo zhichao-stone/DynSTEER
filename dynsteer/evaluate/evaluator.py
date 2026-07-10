@@ -7,14 +7,13 @@ from datetime import datetime, timezone
 import time
 from typing import Mapping, TYPE_CHECKING
 
-from dynsteer.boundary import generate_candidate_boundaries
-from dynsteer.config import DynamicWeightConfig, MatchConfig, ThresholdConfig
+from dynsteer.config import DynamicWeightConfig, ThresholdConfig
 from dynsteer.evaluate.diagnostics import (
     build_finish_matching_detail,
     build_milestone_matching_detail,
     build_stage_trace,
 )
-from dynsteer.evaluate.score import GeneralScorer, ScoringContext, get_effective_scorer
+from dynsteer.evaluate.scoring import GeneralScorer, ScoringContext, get_effective_scorer
 from dynsteer.graph import START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
@@ -43,15 +42,13 @@ from dynsteer.model import (
     TrajectoryEvaluationReport,
 )
 from dynsteer.progress import CaseProgressReporter
-from dynsteer.stage import build_stage_intervals, stage_start_step_index
+from dynsteer.stage import stage_start_step_index
 from dynsteer.evaluate.milestone import (
     analyze_milestone_step,
-    match_milestones,
-    milestone_score_matrix,
     ready_milestones,
     stage_start_for_milestone,
 )
-from dynsteer.evaluate.models import (
+from dynsteer.evaluate.runtime import (
     HarnessTeardownError,
     JudgeConfigurationError,
     RuntimeEvaluationDecision,
@@ -66,12 +63,12 @@ from dynsteer.evaluate.runtime import (
     task_description_mismatched,
 )
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
-from dynsteer.evaluate.utils import (
+from dynsteer.evaluate.scoring import (
     enrich_stage_result,
     first_failure_stage_id,
     overall_score,
 )
-from dynsteer.evaluate.weights import select_initial_weights, update_weights
+from dynsteer.evaluate.scoring import select_initial_weights, update_weights
 
 if TYPE_CHECKING:
     from dynsteer.adapter.base import BaseBenchmarkHarness
@@ -88,27 +85,17 @@ class DynSTEEREvaluator:
         standard_judge: BaseJudge | None = None,
         expensive_judge: BaseJudge | None = None,
         thresholds: ThresholdConfig | None = None,
-        match_config: MatchConfig | None = None,
         weight_config: DynamicWeightConfig | None = None,
     ) -> None:
         self._cheap_judge = cheap_judge or CheapJudge()
         self._standard_judge = standard_judge
         self._expensive_judge = expensive_judge
         self._thresholds = thresholds or ThresholdConfig()
-        self._match_config = match_config or MatchConfig()
         self._weight_config = weight_config
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "DynSTEEREvaluator":
-        """从环境变量构建评估器。
-
-        Args:
-            env: 环境变量映射；测试时可传入 fake env。
-
-        Returns:
-            未配置 LLM 时仅启用 CheapJudge；已配置 LLM 时共享同一个 BaseLLM
-            启用 StandardJudge 与 ExpensiveJudge。
-        """
+        """从环境变量构建评估器。"""
         source = env if env is not None else os.environ
         llm = build_llm_from_env(source)
         if llm is None:
@@ -127,17 +114,7 @@ class DynSTEEREvaluator:
         scorer: GeneralScorer | None = None,
         context: ScoringContext | None = None,
     ) -> tuple[list[JsonObject], float, bool]:
-        """评估轨迹是否触发 minefield。
-
-        Args:
-            graph: milestone 图，包含 minefield 定义。
-            trajectory: 待检查的轨迹。
-            scorer: 可选评分器；为空时使用通用评分器。
-            context: 可选评分上下文。
-
-        Returns:
-            三元组：命中的 minefield 列表、最高 minefield 分数、是否触发 fatal minefield。
-        """
+        """评估轨迹是否触发 minefield。"""
         if graph is None or trajectory is None:
             raise ValueError("graph 和 trajectory 不能为空")
         matches: list[JsonObject] = []
@@ -177,15 +154,7 @@ class DynSTEEREvaluator:
         result: StageEvaluationResult,
         thresholds: ThresholdConfig | None = None,
     ) -> EvaluationDecision:
-        """根据阶段风险选择评估粒度。
-
-        Args:
-            result: 当前阶段已有评估结果。
-            thresholds: 阈值配置；为空时使用评估器默认阈值。
-
-        Returns:
-            评估粒度决策。
-        """
+        """根据阶段风险选择评估粒度。"""
         if result is None:
             raise ValueError("result 不能为空")
         effective_thresholds = thresholds or self._thresholds
@@ -224,17 +193,7 @@ class DynSTEEREvaluator:
         task_case: TaskCase,
         progress_reporter: CaseProgressReporter | None = None,
     ) -> HarnessRunResult:
-        """执行 benchmark case，并进行阶段式动态评估。
-
-        Args:
-            harness: 已适配为 DynSTEER 公开执行接口的 benchmark harness。
-            config: harness 运行配置。
-            task_case: 已由 adapter/loader 适配完成的任务定义。
-            progress_reporter: 可选进度上报器，用于记录新增轨迹 step 数。
-
-        Returns:
-            benchmark 运行结果，包含轨迹、阶段结算和主实验评估报告。
-        """
+        """执行 benchmark case，并进行阶段式动态评估。"""
         if harness is None or config is None or task_case is None:
             raise ValueError("harness、config 和 task_case 不能为空")
         case_id = task_case.case_id
@@ -255,7 +214,9 @@ class DynSTEEREvaluator:
 
         try:
             session = harness.start_case(config, case_id, raw_output_dir)
-            task_case = self._task_case_with_run_metadata(task_case, config)
+            language = config.metadata.get("language")
+            if isinstance(language, str) and language.strip():
+                task_case.metadata["language"] = language.strip()
             scorer = harness.constraint_scorer()
             trajectory = Trajectory(
                 run_id=run_id,
@@ -267,7 +228,16 @@ class DynSTEEREvaluator:
             )
             state = RuntimeEvaluationState(
                 weights=select_initial_weights(task_case),
-                settlements=[self._start_settlement([])],
+                settlements=[
+                    HarnessStageSettlement(
+                        settlement_id="st0",
+                        kind="start",
+                        milestone_id=None,
+                        start_step_index=0,
+                        end_step_index=0,
+                        evidence=["start 结算节点"],
+                    )
+                ],
                 matched_settlements={},
                 stage_reports=[],
                 match_attempts=[],
@@ -459,84 +429,6 @@ class DynSTEEREvaluator:
             finally:
                 reset_runtime_metrics_recorder(metrics_token)
 
-    def evaluate_trajectory(
-        self,
-        task_case: TaskCase,
-        trajectory: Trajectory,
-        scorer: GeneralScorer | None = None,
-    ) -> TrajectoryEvaluationReport:
-        """对完整轨迹执行阶段式动态评估。
-
-        Args:
-            task_case: 任务定义。
-            trajectory: 待评估 Agent 轨迹。
-            scorer: 可选评分器；为空时使用通用评分器。
-
-        Returns:
-            轨迹评估报告。
-        """
-        if task_case is None or trajectory is None:
-            raise ValueError("task_case 和 trajectory 不能为空")
-        graph = task_case.milestone_graph or MilestoneGraph()
-        effective_scorer = get_effective_scorer(scorer)
-
-        context = ScoringContext(task_case=task_case)
-        minefield_matches, minefield_score, fatal_minefield = self.evaluate_minefields(
-            graph,
-            trajectory,
-            scorer=effective_scorer,
-            context=context,
-        )
-        if fatal_minefield:
-            return TrajectoryEvaluationReport(
-                run_id=trajectory.run_id,
-                task_id=trajectory.task_id,
-                milestone_coverage="none" if not graph.nodes else "partial",
-                overall_score=0.0,
-                stage_reports=[],
-                minefield_matches=minefield_matches,
-                first_failure_stage_id=(
-                    f"minefield:{minefield_matches[0]['minefield_id']}" if minefield_matches else "minefield"
-                ),
-            )
-        if len(graph.nodes) == 0:
-            return TrajectoryEvaluationReport(
-                run_id=trajectory.run_id,
-                task_id=trajectory.task_id,
-                milestone_coverage="none",
-                overall_score=overall_score([], minefield_score),
-                stage_reports=[],
-                minefield_matches=minefield_matches,
-            )
-
-        boundaries = generate_candidate_boundaries(trajectory)
-        matrix = milestone_score_matrix(graph, boundaries, trajectory, scorer=effective_scorer, context=context)
-        mapping = match_milestones(graph, boundaries, matrix, self._match_config)
-        intervals = build_stage_intervals(graph, mapping, trajectory)
-        weights = select_initial_weights(task_case)
-        stage_reports: list[StageEvaluationResult] = []
-        for interval in intervals:
-            stage_result, weights = self._evaluate_stage(
-                interval,
-                task_case,
-                trajectory,
-                weights,
-                effective_scorer,
-            )
-            stage_reports.append(stage_result)
-
-        failed = first_failure_stage_id(stage_reports)
-        coverage = "full" if not mapping.missing_required else "partial"
-        return TrajectoryEvaluationReport(
-            run_id=trajectory.run_id,
-            task_id=trajectory.task_id,
-            milestone_coverage=coverage,
-            overall_score=overall_score(stage_reports, minefield_score),
-            stage_reports=stage_reports,
-            minefield_matches=minefield_matches,
-            first_failure_stage_id=failed,
-        )
-
     def _evaluate_checkpoint(
         self,
         config: HarnessRunConfig,
@@ -613,23 +505,6 @@ class DynSTEEREvaluator:
         return stage_result, next_weights
     
 
-    def _task_case_with_run_metadata(self, task_case: TaskCase, config: HarnessRunConfig) -> TaskCase:
-        """将运行配置中的共享元数据合入任务定义。
-
-        Args:
-            task_case: harness 提取的任务定义。
-            config: 当前运行配置。
-
-        Returns:
-            合入 prompt 语言等运行元数据后的任务定义。
-        """
-        if task_case is None or config is None:
-            raise ValueError("task_case 和 config 不能为空")
-        language = config.metadata.get("language")
-        if isinstance(language, str) and language.strip():
-            task_case.metadata["language"] = language.strip()
-        return task_case
-
     def _enrich_stage_result(
         self,
         interval: StageInterval,
@@ -685,18 +560,6 @@ class DynSTEEREvaluator:
             first_failure_stage_id=first_failure_stage_id(stage_reports),
         )
 
-    def _start_settlement(self, settlements: list[HarnessStageSettlement]) -> HarnessStageSettlement:
-        if settlements is None:
-            raise ValueError("settlements 不能为空")
-        return HarnessStageSettlement(
-            settlement_id=f"st{len(settlements)}",
-            kind="start",
-            milestone_id=None,
-            start_step_index=0,
-            end_step_index=0,
-            evidence=["start 结算节点"],
-        )
-
     def _finish_settlement(
         self,
         settlements: list[HarnessStageSettlement],
@@ -737,30 +600,19 @@ class DynSTEEREvaluator:
             status=StageStatus.PASS,
             evidence=["finish 结算节点"],
         )
-        stage_result, next_weights = self._evaluate_stage(interval, task_case, trajectory, weights, scorer)
-        stage_trace = build_stage_trace(trajectory=trajectory, interval=interval)
-        milestone_matching = build_finish_matching_detail(graph=graph, matched=matched)
-        settlement = HarnessStageSettlement(
-            settlement_id=f"st{len(settlements)}",
+        return self._append_stage_settlement(
+            settlements=settlements,
             kind="finish",
-            milestone_id=None,
-            start_step_index=start_step_index,
-            end_step_index=end_step_index,
-            score=stage_result.stage_score,
-            status=stage_result.status.value,
-            evidence=list(stage_result.evidence),
+            interval=interval,
+            matching_detail=build_finish_matching_detail(graph=graph, matched=matched),
+            task_case=task_case,
+            trajectory=trajectory,
+            weights=weights,
+            scorer=scorer,
             metadata={
-                "stage_report": stage_result.to_dict(),
                 "predecessor_milestone_ids": sorted(matched),
-                "stage_anchor_milestone_id": finish_anchor_id if isinstance(finish_anchor_id, str) else None,
-                "stage_start_boundary_step_index": boundary_index,
-                "stage_start_step_index": start_step_index,
-                "stage_end_step_index": end_step_index,
-                "stage_trace": stage_trace,
-                "milestone_matching": milestone_matching,
             },
         )
-        return settlement, stage_result, next_weights
 
     def _append_milestone_settlement(
         self,
@@ -795,40 +647,71 @@ class DynSTEEREvaluator:
             milestone_score=milestone_score,
             evidence=list(milestone_score.evidence),
         )
-        stage_result, next_weights = self._evaluate_stage(interval, task_case, trajectory, weights, scorer)
         predecessor_milestone_ids = list(milestone.dependency_predecessor_ids)
-        stage_trace = build_stage_trace(trajectory=trajectory, interval=interval)
-        milestone_matching = build_milestone_matching_detail(
-            graph=graph,
-            matched=matched,
-            milestone=milestone,
-            boundary=boundary,
-            milestone_score=milestone_score,
-            ready_milestone_ids_before_match=ready_milestone_ids_before_match,
-        )
-        settlement = HarnessStageSettlement(
-            settlement_id=f"st{len(settlements)}",
+        return self._append_stage_settlement(
+            settlements=settlements,
             kind="milestone",
-            milestone_id=milestone.milestone_id,
-            start_step_index=start_step_index,
-            end_step_index=boundary.step_index,
+            interval=interval,
+            matching_detail=build_milestone_matching_detail(
+                graph=graph,
+                matched=matched,
+                milestone=milestone,
+                boundary=boundary,
+                milestone_score=milestone_score,
+                ready_milestone_ids_before_match=ready_milestone_ids_before_match,
+            ),
+            task_case=task_case,
+            trajectory=trajectory,
+            weights=weights,
+            scorer=scorer,
             boundary_id=boundary.boundary_id,
             boundary_step_index=boundary.step_index,
-            score=stage_result.stage_score,
-            status=stage_result.status.value,
             checkpointed=True,
-            evidence=list(stage_result.evidence),
             metadata={
-                "stage_report": stage_result.to_dict(),
                 "predecessor_milestone_ids": predecessor_milestone_ids,
                 "dependency_predecessor_milestone_ids": predecessor_milestone_ids,
-                "stage_anchor_milestone_id": anchor_id,
-                "stage_start_boundary_step_index": boundary_index,
-                "stage_start_step_index": start_step_index,
-                "stage_end_step_index": boundary.step_index,
-                "stage_trace": stage_trace,
-                "milestone_matching": milestone_matching,
             },
+        )
+
+    def _append_stage_settlement(
+        self,
+        settlements: list[HarnessStageSettlement],
+        kind: str,
+        interval: StageInterval,
+        matching_detail: JsonObject,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        weights: dict[Dimension, float],
+        scorer: GeneralScorer,
+        boundary_id: str | None = None,
+        boundary_step_index: int | None = None,
+        checkpointed: bool = False,
+        metadata: JsonObject | None = None,
+    ) -> tuple[HarnessStageSettlement, StageEvaluationResult, dict[Dimension, float]]:
+        stage_result, next_weights = self._evaluate_stage(interval, task_case, trajectory, weights, scorer)
+        merged_metadata: JsonObject = {
+            "stage_report": stage_result.to_dict(),
+            "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
+            "stage_start_boundary_step_index": interval.start_boundary_step_index,
+            "stage_start_step_index": interval.start_step_index,
+            "stage_end_step_index": interval.end_step_index,
+            **(metadata or {}),
+            "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
+            "milestone_matching": matching_detail,
+        }
+        settlement = HarnessStageSettlement(
+            settlement_id=f"st{len(settlements)}",
+            kind=kind,
+            milestone_id=interval.milestone_id,
+            start_step_index=interval.start_step_index,
+            end_step_index=interval.end_step_index,
+            boundary_id=boundary_id,
+            boundary_step_index=boundary_step_index,
+            score=stage_result.stage_score,
+            status=stage_result.status.value,
+            checkpointed=checkpointed,
+            evidence=list(stage_result.evidence),
+            metadata=merged_metadata,
         )
         return settlement, stage_result, next_weights
 

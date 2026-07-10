@@ -53,18 +53,16 @@ _GEMINI_AGENT_CONFIGS = {
     "Gemini_1_5": "gemini-1.5-pro-001",
     "Gemini_1_5_Flash": "gemini-1.5-flash-001",
 }
+_OPENAI_USER_CLASSES = {
+    "GPT_3_5_0125": "GPT_3_5_0125_User",
+    "GPT_4_0125": "GPT_4_0125_User",
+    "GPT_4_o_2024_05_13": "GPT_4_o_2024_05_13_User",
+}
 _TOOL_SANDBOX_AGENT_FALLBACK_NAMES = {"Cli", "Unhelpful"}
+_TOOL_SANDBOX_USER_FALLBACK_NAMES = {"Cli"}
 
 
 def get_agent_factory(role_impl_type: object) -> Callable[[], object] | None:
-    """根据 ToolSandbox role 类型创建 DynSTEER 本地 agent 工厂。
-
-    Args:
-        role_impl_type: ToolSandbox 的 RoleImplType 枚举值。
-
-    Returns:
-        可直接实例化 agent 的零参数工厂；没有本地适配时返回 None。
-    """
     if role_impl_type is None:
         raise ValueError("role_impl_type 不能为空")
     role_name = _role_impl_name(role_impl_type)
@@ -81,8 +79,18 @@ def get_agent_factory(role_impl_type: object) -> Callable[[], object] | None:
     return _generic_openai_agent_factory(role_name)
 
 
+def get_user_factory(role_impl_type: object) -> Callable[[], object] | None:
+    if role_impl_type is None:
+        raise ValueError("role_impl_type 不能为空")
+    role_name = _role_impl_name(role_impl_type)
+    if role_name in _OPENAI_USER_CLASSES:
+        return _environment_openai_user_type(_OPENAI_USER_CLASSES[role_name])
+    if role_name in _TOOL_SANDBOX_USER_FALLBACK_NAMES:
+        return None
+    return _generic_openai_user_factory(role_name)
+
+
 def _role_impl_name(role_impl_type: object) -> str:
-    """读取 ToolSandbox RoleImplType 的稳定名称。"""
     if isinstance(role_impl_type, str):
         raw_name = role_impl_type.strip()
         if not raw_name:
@@ -100,7 +108,6 @@ def _role_impl_name(role_impl_type: object) -> str:
 
 
 def _env_value(name: str) -> str | None:
-    """读取非空环境变量值。"""
     if not isinstance(name, str) or not name.strip():
         raise ValueError("环境变量名称不能为空")
     value = os.environ.get(name)
@@ -111,7 +118,6 @@ def _env_value(name: str) -> str | None:
 
 
 def _required_env_value(name: str) -> str:
-    """读取必填环境变量值。"""
     value = _env_value(name)
     if value is None:
         raise ValueError(f"环境变量 {name} 未配置")
@@ -119,7 +125,6 @@ def _required_env_value(name: str) -> str:
 
 
 def _openai_client_from_env(default_api_key: str | None = None) -> object:
-    """使用 OPENAI_API_KEY 与 OPENAI_BASE_URL 创建 OpenAI client。"""
     from openai import OpenAI
 
     api_key = _env_value("OPENAI_API_KEY") or default_api_key
@@ -133,7 +138,6 @@ def _openai_client_from_env(default_api_key: str | None = None) -> object:
 
 
 def _anthropic_client_from_env() -> object:
-    """使用 ANTHROPIC_API_KEY 与 ANTHROPIC_BASE_URL 创建 Anthropic client。"""
     import anthropic
 
     kwargs: dict[str, str] = {"api_key": _required_env_value("ANTHROPIC_API_KEY")}
@@ -144,127 +148,81 @@ def _anthropic_client_from_env() -> object:
 
 
 def _openai_agent_factory(parent_class_name: str) -> Callable[[], object]:
-    agent_type = _environment_openai_agent_type(parent_class_name)
-    return agent_type
+    return _environment_role_type("tool_sandbox.roles.openai_api_agent", parent_class_name, "openai")
 
 
 def _generic_openai_agent_factory(model_name: str) -> Callable[[], object]:
-    agent_type = _generic_openai_agent_type()
-
-    def factory() -> object:
-        return agent_type(model_name=model_name)
-
-    return factory
-
-
-@lru_cache(maxsize=None)
-def _environment_openai_agent_type(parent_class_name: str) -> type:
-    parent_type = getattr(
-        importlib.import_module("tool_sandbox.roles.openai_api_agent"),
-        parent_class_name,
+    return _model_factory(
+        _environment_role_type("tool_sandbox.roles.openai_api_agent", "OpenAIAPIAgent", "openai", needs_model_name=True),
+        model_name,
     )
 
-    class DynsteerOpenAIEnvironmentAgent(parent_type):  # type: ignore[misc, valid-type]
-        def __init__(self) -> None:
-            self.openai_client = _openai_client_from_env()
 
-    DynsteerOpenAIEnvironmentAgent.__name__ = f"DynSTEER{parent_type.__name__}"
-    DynsteerOpenAIEnvironmentAgent.__qualname__ = DynsteerOpenAIEnvironmentAgent.__name__
-    return DynsteerOpenAIEnvironmentAgent
-
-
-@lru_cache(maxsize=1)
-def _generic_openai_agent_type() -> type:
-    parent_type = getattr(
-        importlib.import_module("tool_sandbox.roles.openai_api_agent"),
-        "OpenAIAPIAgent",
+def _generic_openai_user_factory(model_name: str) -> Callable[[], object]:
+    return _model_factory(
+        _environment_role_type("tool_sandbox.roles.openai_api_user", "OpenAIAPIUser", "openai", needs_model_name=True),
+        model_name,
     )
-
-    class DynsteerGenericOpenAIEnvironmentAgent(parent_type):  # type: ignore[misc, valid-type]
-        def __init__(self, model_name: str) -> None:
-            self.model_name = model_name
-            self.openai_client = _openai_client_from_env()
-
-    DynsteerGenericOpenAIEnvironmentAgent.__name__ = f"DynSTEER{parent_type.__name__}"
-    DynsteerGenericOpenAIEnvironmentAgent.__qualname__ = DynsteerGenericOpenAIEnvironmentAgent.__name__
-    return DynsteerGenericOpenAIEnvironmentAgent
 
 
 def _anthropic_agent_factory(parent_class_name: str) -> Callable[[], object]:
-    agent_type = _environment_anthropic_agent_type(parent_class_name)
-    return agent_type
-
-
-@lru_cache(maxsize=None)
-def _environment_anthropic_agent_type(parent_class_name: str) -> type:
-    parent_type = getattr(
-        importlib.import_module("tool_sandbox.roles.anthropic_api_agent"),
-        parent_class_name,
-    )
-
-    class DynsteerAnthropicEnvironmentAgent(parent_type):  # type: ignore[misc, valid-type]
-        def __init__(self) -> None:
-            self.client = _anthropic_client_from_env()
-            logging.getLogger("httpx").setLevel(logging.WARNING)
-
-    DynsteerAnthropicEnvironmentAgent.__name__ = f"DynSTEER{parent_type.__name__}"
-    DynsteerAnthropicEnvironmentAgent.__qualname__ = DynsteerAnthropicEnvironmentAgent.__name__
-    return DynsteerAnthropicEnvironmentAgent
+    return _environment_role_type("tool_sandbox.roles.anthropic_api_agent", parent_class_name, "anthropic")
 
 
 def _openai_server_agent_factory(
     config: tuple[str, str, str, str],
 ) -> Callable[[], object]:
     module_name, parent_class_name, model_name, client_attr = config
-    agent_type = _environment_openai_server_agent_type(
-        module_name,
-        parent_class_name,
-        client_attr,
+    return _model_factory(
+        _environment_role_type(module_name, parent_class_name, "openai_server", client_attr=client_attr),
+        model_name,
     )
 
+
+def _gemini_agent_factory(model_name: str) -> Callable[[], object]:
+    return _model_factory(_environment_role_type("tool_sandbox.roles.gemini_agent", "GeminiAgent", "pass"), model_name)
+
+
+@lru_cache(maxsize=None)
+def _environment_openai_user_type(parent_class_name: str) -> type:
+    return _environment_role_type("tool_sandbox.roles.openai_api_user", parent_class_name, "openai")
+
+
+@lru_cache(maxsize=None)
+def _model_factory(role_type: type, model_name: str) -> Callable[[], object]:
     def factory() -> object:
-        return agent_type(model_name=model_name)
+        return role_type(model_name=model_name)
 
     return factory
 
 
 @lru_cache(maxsize=None)
-def _environment_openai_server_agent_type(
+def _environment_role_type(
     module_name: str,
     parent_class_name: str,
-    client_attr: str,
+    mode: str,
+    needs_model_name: bool = False,
+    client_attr: str = "openai_client",
 ) -> type:
     parent_type = getattr(importlib.import_module(module_name), parent_class_name)
 
-    class DynsteerOpenAICompatibleServerAgent(parent_type):  # type: ignore[misc, valid-type]
+    class DynsteerEnvironmentRole(parent_type):  # type: ignore[misc, valid-type]
         def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, **kwargs)
-            setattr(self, client_attr, _openai_client_from_env(default_api_key="EMPTY"))
+            if mode == "openai_server":
+                super().__init__(*args, **kwargs)
+                setattr(self, client_attr, _openai_client_from_env(default_api_key="EMPTY"))
+                return
+            if mode == "pass":
+                super().__init__(*args, **kwargs)
+                return
+            if needs_model_name:
+                self.model_name = str(kwargs.get("model_name") if "model_name" in kwargs else args[0])
+            if mode == "anthropic":
+                self.client = _anthropic_client_from_env()
+                logging.getLogger("httpx").setLevel(logging.WARNING)
+            else:
+                self.openai_client = _openai_client_from_env()
 
-    DynsteerOpenAICompatibleServerAgent.__name__ = f"DynSTEER{parent_type.__name__}"
-    DynsteerOpenAICompatibleServerAgent.__qualname__ = DynsteerOpenAICompatibleServerAgent.__name__
-    return DynsteerOpenAICompatibleServerAgent
-
-
-def _gemini_agent_factory(model_name: str) -> Callable[[], object]:
-    agent_type = _environment_gemini_agent_type()
-
-    def factory() -> object:
-        return agent_type(model_name=model_name)
-
-    return factory
-
-
-@lru_cache(maxsize=1)
-def _environment_gemini_agent_type() -> type:
-    parent_type = getattr(
-        importlib.import_module("tool_sandbox.roles.gemini_agent"),
-        "GeminiAgent",
-    )
-
-    class DynsteerGeminiEnvironmentAgent(parent_type):  # type: ignore[misc, valid-type]
-        pass
-
-    DynsteerGeminiEnvironmentAgent.__name__ = f"DynSTEER{parent_type.__name__}"
-    DynsteerGeminiEnvironmentAgent.__qualname__ = DynsteerGeminiEnvironmentAgent.__name__
-    return DynsteerGeminiEnvironmentAgent
+    DynsteerEnvironmentRole.__name__ = f"DynSTEER{parent_type.__name__}"
+    DynsteerEnvironmentRole.__qualname__ = DynsteerEnvironmentRole.__name__
+    return DynsteerEnvironmentRole

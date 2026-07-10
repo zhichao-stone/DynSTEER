@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 from dynsteer.model import Actor, EventType, JsonObject, JsonValue, TaskCase, Trajectory, TrajectoryStep
+from dynsteer.utils import compact_text
 
 STATE_MUTATION_TOOL_PREFIXES = ("set_", "modify_", "remove_", "add_", "create_", "delete_", "send_")
 QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
 
 
 def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
-    """构造不参与评分的运行期轨迹质量诊断。
-
-    Args:
-        task_case: 当前任务定义。
-        trajectory: 当前完整轨迹。
-
-    Returns:
-        可写入 raw_summary 的工具质量、grounding 与效率诊断。
-    """
+    """构造不参与评分的运行期轨迹质量诊断。"""
     if task_case is None or trajectory is None:
         raise ValueError("质量诊断参数不能为空")
     steps = list(trajectory.steps)
@@ -65,7 +58,7 @@ def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajector
                             "tool_name": tool_name,
                             "tool_result_step_index": step.index,
                             "answer_step_index": answer.index,
-                            "answer_excerpt": _excerpt(answer.content or ""),
+                            "answer_excerpt": compact_text(answer.content or ""),
                         }
                     )
 
@@ -218,11 +211,3 @@ def _is_empty_tool_content(value: JsonValue) -> bool:
         return len(value) == 0
     return False
 
-
-def _excerpt(value: str, limit: int = 160) -> str:
-    if value is None:
-        raise ValueError("摘要文本不能为空")
-    text = " ".join(value.split())
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 3, 0)] + "..."

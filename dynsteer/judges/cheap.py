@@ -22,18 +22,7 @@ class CheapJudge(BaseJudge):
         trajectory: Trajectory,
         weights: dict[Dimension, float],
     ) -> StageEvaluationResult:
-        """使用结构化分数生成确定性阶段评估结果。
-
-        Args:
-            interval: 阶段区间。
-            task_case: 当前任务。
-            trajectory: Agent 轨迹。
-            level: 评估粒度。
-            weights: 当前维度权重。
-
-        Returns:
-            不访问网络的本地评估结果。
-        """
+        """使用结构化分数生成确定性阶段评估结果。"""
         if interval is None or task_case is None or trajectory is None or weights is None:
             raise ValueError("CheapJudge 入参不能为空")
         

@@ -1,42 +1,53 @@
 from __future__ import annotations
 
-from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
-from dynsteer.adapter.toolsandbox.adapter import ToolSandboxAdapter
+from importlib import import_module
+from typing import TypeVar
 
-_ADAPTERS: dict[str, type[BaseBenchmarkAdapter]] = {
-    "toolsandbox": ToolSandboxAdapter,
+from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
+
+_T = TypeVar("_T")
+_RegisteredType = type[_T] | str
+
+_ADAPTERS: dict[str, _RegisteredType[BaseBenchmarkAdapter]] = {
+    "toolsandbox": "dynsteer.adapter.toolsandbox.adapter:ToolSandboxAdapter",
+}
+_HARNESSES: dict[str, _RegisteredType[BaseBenchmarkHarness]] = {
+    "toolsandbox": "dynsteer.adapter.toolsandbox.harness:ToolSandboxHarness",
 }
 
 
 def get_adapter(benchmark: str) -> BaseBenchmarkAdapter:
-    """按 benchmark 名称获取 adapter。
-
-    Args:
-        benchmark: benchmark 名称。
-
-    Returns:
-        对应 benchmark adapter。
-
-    Raises:
-        ValueError: benchmark 为空时抛出。
-        KeyError: benchmark 不支持时抛出。
-    """
-    if benchmark is None or not benchmark.strip():
-        raise ValueError("benchmark 不能为空")
-    normalized = benchmark.strip().lower()
+    """按 benchmark 名称获取 adapter。"""
+    normalized = _normalize_benchmark(benchmark)
     adapter_type = _ADAPTERS.get(normalized)
     if adapter_type is None:
         raise KeyError(f"不支持的 benchmark: {benchmark}")
-    return adapter_type()
+    return _load_registered_type(adapter_type, BaseBenchmarkAdapter)()
 
 
 def get_harness(benchmark: str) -> BaseBenchmarkHarness:
-    """按 benchmark 名称获取 harness。
+    """按 benchmark 名称获取运行期 harness。"""
+    normalized = _normalize_benchmark(benchmark)
+    harness_type = _HARNESSES.get(normalized)
+    if harness_type is None:
+        raise KeyError(f"不支持的 benchmark: {benchmark}")
+    return _load_registered_type(harness_type, BaseBenchmarkHarness)()
 
-    Args:
-        benchmark: benchmark 名称。
 
-    Returns:
-        对应 benchmark harness。
-    """
-    return get_adapter(benchmark).create_harness()
+def _normalize_benchmark(benchmark: str) -> str:
+    if benchmark is None or not benchmark.strip():
+        raise ValueError("benchmark 不能为空")
+    return benchmark.strip().lower()
+
+
+def _load_registered_type(target: _RegisteredType[_T], base_type: type[_T]) -> type[_T]:
+    if isinstance(target, type):
+        loaded = target
+    else:
+        module_name, separator, attr_name = target.partition(":")
+        if not module_name or separator != ":" or not attr_name:
+            raise ValueError(f"注册类型路径非法: {target}")
+        loaded = getattr(import_module(module_name), attr_name)
+    if not isinstance(loaded, type) or not issubclass(loaded, base_type):
+        raise TypeError(f"注册类型必须继承 {base_type.__name__}: {loaded}")
+    return loaded

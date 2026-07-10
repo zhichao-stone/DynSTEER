@@ -10,11 +10,12 @@
 dynsteer/judges/
 - __init__.py    # 导出 BaseJudge、LLMJudge、CheapJudge、StandardJudge、ExpensiveJudge 及相关错误
 - base.py        # BaseJudge、LLMJudge、LLMJudgeConfig、LLMJudgeConfigurationError、LLMJudgeResponseError
-- prompt.py      # PromptTemplate、系统 prompt 与 standard/expensive 多语言 prompt 构造函数
 - cheap.py       # CheapJudge
 - standard.py    # StandardJudge
 - expensive.py   # ExpensiveJudge
 ```
+
+Prompt 构造与模板文件已统一迁入 `dynsteer.prompt`，其中 `dynsteer.prompt.judge` 提供系统 prompt 与通用 `build_judge_prompt(...)` 构造函数，`dynsteer.prompt.template` 提供 `PromptTemplate` 与模板读取。
 
 `dynsteer/judge.py` 与 `dynsteer/judges/llm.py` 已删除，`from dynsteer.judge import ...` 和 `from dynsteer.judges.llm import ...` 不再可用。
 
@@ -52,7 +53,7 @@ judge = ExpensiveJudge(llm=llm, expensive_passes=3)
 
 `dynsteer.language` 提供 `TaskLanguage`、`normalize_task_language(...)`、`language_from_metadata(...)` 和 `language_from_task(...)`。外部配置中的 `en`、`english` 会归一为 `TaskLanguage.ENGLISH`；`zh`、`ch`、`chinese`、`zhongwen`、`中文` 会归一为 `TaskLanguage.CHINESE`。未知语言会抛出 `ValueError`，避免静默使用错误语言。
 
-`dynsteer.judges.prompt` 负责维护多语言 prompt。`PromptTemplate.render(language=TaskLanguage.ENGLISH, **kwargs)` 默认使用英文模板；模板渲染使用 `_safe_format(...)`，只替换 `{key}` 占位符，保留 JSON 示例中的 `{{` / `}}` 字面花括号。`build_judge_system_prompt(...)` 负责生成 LLMJudge 系统 prompt，避免在 `base.py` 中写死中文系统消息。
+`dynsteer.prompt` 负责维护多语言 prompt。`PromptTemplate.render(language=TaskLanguage.ENGLISH, **kwargs)` 默认使用英文模板；模板渲染使用 `_safe_format(...)`，只替换 `{key}` 占位符，保留 JSON 示例中的 `{{` / `}}` 字面花括号。`build_judge_system_prompt(...)` 负责生成 LLMJudge 系统 prompt，避免在 `base.py` 中写死中文系统消息。
 
 benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配置，并在 `load_harness_run_configs(...)` 中写入 `HarnessRunConfig.metadata["language"]`；`DynSTEEREvaluator.evaluate(...)` 会合并到 `TaskCase.metadata`，judge 通过 `dynsteer.language.language_from_task(...)` 读取并归一为 `TaskLanguage`。
 

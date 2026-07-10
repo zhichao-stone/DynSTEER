@@ -29,14 +29,7 @@ _LANGUAGE_ALIASES: dict[str, TaskLanguage] = {
 
 
 def normalize_task_language(value: object) -> TaskLanguage:
-    """将外部语言配置归一化为 TaskLanguage。
-
-    Args:
-        value: 语言配置值；None 表示默认英文。
-
-    Returns:
-        归一化后的任务语言枚举。
-    """
+    """将外部语言配置归一化为 TaskLanguage。"""
     if value is None:
         return TaskLanguage.ENGLISH
     if isinstance(value, TaskLanguage):
@@ -51,28 +44,14 @@ def normalize_task_language(value: object) -> TaskLanguage:
 
 
 def language_from_metadata(metadata: Mapping[str, object] | None) -> TaskLanguage:
-    """从元数据中读取并归一化任务语言。
-
-    Args:
-        metadata: 任务或运行配置元数据。
-
-    Returns:
-        归一化后的任务语言枚举。
-    """
+    """从元数据中读取并归一化任务语言。"""
     if metadata is None:
         return TaskLanguage.ENGLISH
     return normalize_task_language(metadata.get("language"))
 
 
 def language_from_task(task_case: object | None) -> TaskLanguage:
-    """从 TaskCase 读取 prompt 语言。
-
-    Args:
-        task_case: 当前任务定义。
-
-    Returns:
-        归一化后的任务语言枚举。
-    """
+    """从 TaskCase 读取 prompt 语言。"""
     if task_case is None:
         return TaskLanguage.ENGLISH
     metadata = getattr(task_case, "metadata", None)

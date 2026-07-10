@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dynsteer.evaluate.models import RuntimeEvaluationDecision
+from dynsteer.evaluate.runtime import RuntimeEvaluationDecision
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     JsonObject,
@@ -9,6 +9,7 @@ from dynsteer.model import (
     StageEvaluationResult,
     TaskCase,
 )
+from dynsteer.utils import compact_text, first_text
 
 _TEXT_LIMIT = 160
 _LIST_LIMIT = 8
@@ -21,18 +22,7 @@ def policy_stop_log_extra(
     termination_code: str | None,
     termination_reason: str | None,
 ) -> JsonObject:
-    """构造策略提前终止 warning 摘要。
-
-    Args:
-        case_id: benchmark case ID。
-        task_case: 当前任务定义。
-        decision: 触发终止的运行期决策。
-        termination_code: 终止代码。
-        termination_reason: 中文终止原因。
-
-    Returns:
-        可放入 logger extra 的轻量 JSON 摘要。
-    """
+    """构造策略提前终止 warning 摘要。"""
     if case_id is None or task_case is None or decision is None:
         raise ValueError("策略终止日志参数不能为空")
     stage_result = decision.stage_result
@@ -55,8 +45,8 @@ def policy_stop_log_extra(
         "stage_score": stage_result.stage_score if stage_result is not None else None,
         "stage_status": stage_result.status.value if stage_result is not None else None,
         "evaluator_level": stage_result.evaluator_level.value if stage_result is not None else None,
-        "stage_first_evidence": _first_text(stage_result.evidence) if stage_result is not None else None,
-        "stage_first_diagnosis": _first_text(stage_result.diagnosis) if stage_result is not None else None,
+        "stage_first_evidence": first_text(stage_result.evidence, _TEXT_LIMIT) if stage_result is not None else None,
+        "stage_first_diagnosis": first_text(stage_result.diagnosis, _TEXT_LIMIT) if stage_result is not None else None,
         "last_match_step_index": last_attempt.get("step_index") if last_attempt is not None else None,
         "last_selected_milestone_id": (
             last_attempt.get("selected_milestone_id") if last_attempt is not None else None
@@ -105,16 +95,10 @@ def _last_match_attempt(attempts: list[JsonObject]) -> JsonObject | None:
     return None
 
 
-def _first_text(values: list[str]) -> str | None:
-    if not values:
-        return None
-    return _truncate(str(values[0]))
-
-
 def _optional_str(value: object) -> str | None:
     if value is None:
         return None
-    return _truncate(str(value))
+    return compact_text(value, _TEXT_LIMIT)
 
 
 def _optional_float(value: object) -> float | None:
@@ -133,16 +117,9 @@ def _sanitize_value(value: object) -> JsonValue:
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
-        return _truncate(value)
+        return compact_text(value, _TEXT_LIMIT)
     if isinstance(value, list):
         return [_sanitize_value(item) for item in value[:_LIST_LIMIT]]
     if isinstance(value, dict):
         return {str(key): _sanitize_value(item) for key, item in list(value.items())[:_LIST_LIMIT]}
-    return _truncate(str(value))
-
-
-def _truncate(value: str, limit: int = _TEXT_LIMIT) -> str:
-    text = " ".join(str(value).split())
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 3, 0)] + "..."
+    return compact_text(value, _TEXT_LIMIT)

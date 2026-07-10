@@ -2,20 +2,32 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from difflib import SequenceMatcher
-from typing import Any, Mapping
+import math
+from typing import Any, Mapping, Optional
 
 from dynsteer.boundary import boundary_snapshot, boundary_step
+from dynsteer.config import (
+    DEFAULT_FOCUS,
+    DEFAULT_TARGETS,
+    TASK_TYPE_WEIGHTS,
+    DynamicWeightConfig,
+    ThresholdConfig,
+    default_dynamic_weight_config,
+)
 from dynsteer.model import (
     Boundary,
     Constraint,
     ConstraintScore,
     ConstraintTarget,
+    Dimension,
     JsonObject,
     JsonValue,
     MISSING,
     Milestone,
     MilestoneScore,
     Operator,
+    StageEvaluationResult,
+    StageInterval,
     StageStatus,
     StateSnapshot,
     TaskCase,
@@ -24,17 +36,8 @@ from dynsteer.model import (
 )
 from dynsteer.utils import clamp, json_subsumes, read_token
 
-
 @dataclass(frozen=True)
 class ScoringContext:
-    """评分上下文，用于传递运行期已命中节点和 benchmark 扩展信息。
-
-    Args:
-        task_case: 当前任务定义；离线评估或单元测试中可为空。
-        matched_boundaries: 已命中 milestone 到 boundary 的映射。
-        matched_snapshots: 已命中 milestone 到状态快照的映射。
-        metadata: benchmark 扩展上下文。
-    """
 
     task_case: TaskCase | None = None
     matched_boundaries: Mapping[str, Boundary] = field(default_factory=dict)
@@ -43,18 +46,8 @@ class ScoringContext:
 
 
 class GeneralScorer:
-    """DynSTEER 通用 milestone / minefield 评分器。"""
 
     def select_value(self, source: JsonValue, selector: str) -> JsonValue:
-        """根据轻量 JSON selector 读取值。
-
-        Args:
-            source: JSON 值，通常为 dict 或 list。
-            selector: 支持 `$`、`$.a.b`、`$.items[0]` 的 selector。
-
-        Returns:
-            命中的 JSON 值；未命中时返回 None。
-        """
         if selector is None or selector == "" or source is None:
             return None
         if selector == "$":
@@ -71,19 +64,6 @@ class GeneralScorer:
         return current
 
     def score_operator(self, actual: JsonValue, operator: Operator, expected: JsonValue) -> float:
-        """计算单个通用 operator 的规则分数。
-
-        Args:
-            actual: 实际值。
-            operator: 约束算子。
-            expected: 期望值或参考值。
-
-        Returns:
-            `[0, 1]` 区间内的规则分数。
-
-        Raises:
-            ValueError: 直接传入 `Operator.CUSTOM` 时抛出。
-        """
         if operator == Operator.CUSTOM:
             raise ValueError("Operator.CUSTOM 必须由 score_custom_constraint() 或 benchmark scorer 处理")
         if operator == Operator.EQUALS:
@@ -125,19 +105,6 @@ class GeneralScorer:
         reference_value: JsonValue,
         context: ScoringContext | None = None,
     ) -> ConstraintScore:
-        """处理通用评分器不支持的 CUSTOM 约束。
-
-        Args:
-            constraint: 当前约束定义。
-            source: 当前值来源。
-            reference_source: 参考值来源。
-            actual: 当前 selector 命中的实际值。
-            reference_value: 当前约束的参考值。
-            context: 可选评分上下文。
-
-        Returns:
-            带 evidence 的显式不支持评分结果。
-        """
         return ConstraintScore(
             constraint_id=constraint.constraint_id,
             score=0.0,
@@ -158,17 +125,6 @@ class GeneralScorer:
         reference_source: object | None = None,
         context: ScoringContext | None = None,
     ) -> ConstraintScore:
-        """计算单条约束在给定来源上的得分。
-
-        Args:
-            constraint: 待评分约束。
-            source: 当前值来源，可为快照、步骤或字典。
-            reference_source: 参考值来源，用于状态变更类算子。
-            context: 可选评分上下文。
-
-        Returns:
-            单条约束评分。
-        """
         if constraint is None:
             raise ValueError("constraint 不能为空")
         current_source = self._resolve_source(constraint, source)
@@ -218,18 +174,6 @@ class GeneralScorer:
         reference_snapshots: list[StateSnapshot],
         context: ScoringContext | None = None,
     ) -> MilestoneScore:
-        """计算 milestone 在候选 boundary 上的完成度。
-
-        Args:
-            milestone: 待评估 milestone。
-            boundary: 候选阶段边界。
-            trajectory: Agent 轨迹。
-            reference_snapshots: 可用于状态约束的快照列表。
-            context: 可选评分上下文。
-
-        Returns:
-            milestone 匹配分数和状态。
-        """
         if milestone is None or boundary is None or trajectory is None:
             raise ValueError("milestone、boundary、trajectory 均不能为空")
         if len(milestone.constraints) == 0:
@@ -248,8 +192,7 @@ class GeneralScorer:
         weight_sum = 0.0
         hard_pass = True
         for constraint in milestone.constraints:
-            source = self._source_for_constraint(constraint, boundary, trajectory, reference_snapshots)
-            reference = self._reference_for_constraint(constraint, reference_snapshots)
+            source, reference = self._constraint_sources(constraint, boundary, trajectory, reference_snapshots)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             weight = max(float(constraint.weight), 0.0)
@@ -283,14 +226,12 @@ class GeneralScorer:
         )
 
     def _snapshot_namespace(self, snapshot: StateSnapshot, namespace: str | None) -> JsonValue:
-        """从状态快照中读取指定命名空间的数据。"""
         selected_namespace = namespace or "default"
         if selected_namespace in snapshot.namespaces:
             return snapshot.namespaces[selected_namespace]
         return snapshot.namespaces
 
     def _step_to_source(self, step: TrajectoryStep) -> JsonObject:
-        """将轨迹步骤转换为 selector 可读取的 JSON 对象。"""
         data: dict[str, JsonValue] = {
             "step_id": step.step_id,
             "index": step.index,
@@ -308,7 +249,6 @@ class GeneralScorer:
         return data
 
     def _resolve_source(self, constraint: Constraint, source: object | None) -> JsonValue:
-        """根据约束目标把输入来源转换为 JSON 评分对象。"""
         if source is None:
             return None
         if isinstance(source, StateSnapshot):
@@ -326,34 +266,153 @@ class GeneralScorer:
             return source
         return None
 
-    def _source_for_constraint(
+    def _constraint_sources(
         self,
         constraint: Constraint,
         boundary: Boundary,
         trajectory: Trajectory,
         snapshots: list[StateSnapshot],
-    ) -> object:
-        """查找 milestone 约束在候选边界上的当前值来源。"""
+    ) -> tuple[object, StateSnapshot | None]:
         if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
-            return boundary_snapshot(boundary, snapshots)
-        if constraint.target == ConstraintTarget.METRIC:
-            return trajectory.metrics
-        return boundary_step(trajectory, boundary)
-
-    def _reference_for_constraint(
-        self,
-        constraint: Constraint,
-        snapshots: list[StateSnapshot],
-    ) -> StateSnapshot | None:
-        """查找状态变更类约束使用的参考快照。"""
+            source: object = boundary_snapshot(boundary, snapshots)
+        elif constraint.target == ConstraintTarget.METRIC:
+            source = trajectory.metrics
+        else:
+            source = boundary_step(trajectory, boundary)
         if constraint.reference_milestone_id is None:
-            return None
+            return source, None
         for snapshot in snapshots:
             if snapshot.snapshot_id == constraint.reference_milestone_id:
-                return snapshot
-        return None
+                return source, snapshot
+        return source, None
 
 
 def get_effective_scorer(scorer: GeneralScorer | None) -> GeneralScorer:
-    """返回有效评分器，未传入时使用通用评分器。"""
     return scorer if scorer is not None else GeneralScorer()
+
+
+def compute_uncertainty(
+    top1_score: float,
+    top2_score: float,
+    missing_ratio: float,
+    stage_score: float,
+    evidence_conflict: bool,
+    judge_uncertainty: float,
+    thresholds: Optional[ThresholdConfig] = None,
+) -> float:
+    effective_thresholds = thresholds or ThresholdConfig()
+    margin = max(top1_score - top2_score, 0.0)
+    u_margin = 1.0 - clamp(margin / 0.3)
+    u_missing = clamp(missing_ratio)
+    threshold_distance = min(
+        abs(stage_score - effective_thresholds.pass_threshold),
+        abs(stage_score - effective_thresholds.warn_threshold),
+        abs(stage_score - effective_thresholds.fail_threshold),
+    )
+    u_threshold = 1.0 - clamp(threshold_distance / effective_thresholds.threshold_margin)
+    u_conflict = 1.0 if evidence_conflict else 0.0
+    u_judge = clamp(judge_uncertainty)
+    return clamp(
+        0.30 * u_margin
+        + 0.25 * u_missing
+        + 0.20 * u_threshold
+        + 0.15 * u_conflict
+        + 0.10 * u_judge
+    )
+
+
+def overall_score(stage_reports: list[StageEvaluationResult], minefield_score: float) -> float:
+    if not stage_reports:
+        return 1.0 if minefield_score == 0 else 0.0
+    raw = sum(stage.stage_score for stage in stage_reports) / len(stage_reports)
+    return clamp(raw * (1.0 - clamp(minefield_score)))
+
+
+def enrich_stage_result(
+    interval: StageInterval,
+    result: StageEvaluationResult,
+    minefield_score: float,
+    fatal_minefield: bool,
+    thresholds: ThresholdConfig,
+) -> StageEvaluationResult:
+    if interval is None or result is None or thresholds is None:
+        raise ValueError("enrich_stage_result 入参不能为空")
+    top1 = interval.milestone_score.score if interval.milestone_score is not None else result.stage_score
+    uncertainty = compute_uncertainty(
+        top1_score=top1,
+        top2_score=0.0,
+        missing_ratio=result.required_fields_missing_ratio,
+        stage_score=result.stage_score,
+        evidence_conflict=False,
+        judge_uncertainty=1.0 - result.judge_confidence,
+        thresholds=thresholds,
+    )
+    result.uncertainty = uncertainty
+    result.minefield_score = minefield_score
+    result.fatal_minefield_score = minefield_score if fatal_minefield else 0.0
+    return result
+
+
+def first_failure_stage_id(stage_reports: list[StageEvaluationResult]) -> str | None:
+    if stage_reports is None:
+        raise ValueError("stage_reports 不能为空")
+    return next(
+        (
+            stage.stage_id
+            for stage in stage_reports
+            if stage.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}
+        ),
+        None,
+    )
+
+
+def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]:
+    if weights is None:
+        raise ValueError("weights 不能为空")
+    normalized_source = {dimension: max(float(weights.get(dimension, 0.0)), 0.0) for dimension in Dimension}
+    total = sum(normalized_source.values())
+    if total <= 0:
+        return {dimension: 1 / len(Dimension) for dimension in Dimension}
+    return {dimension: value / total for dimension, value in normalized_source.items()}
+
+
+def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
+    if task_case is None:
+        raise ValueError("task_case 不能为空")
+    task_types = task_case.task_types or []
+    if not task_types:
+        task_types = [next(iter(TASK_TYPE_WEIGHTS))]
+    merged = {dimension: 0.0 for dimension in Dimension}
+    valid_count = 0
+    for task_type in task_types:
+        weights = TASK_TYPE_WEIGHTS.get(task_type)
+        if weights is None:
+            continue
+        valid_count += 1
+        for dimension in Dimension:
+            merged[dimension] += weights.get(dimension, 0.0)
+    if valid_count == 0:
+        return normalize_weights(TASK_TYPE_WEIGHTS[next(iter(TASK_TYPE_WEIGHTS))])
+    return normalize_weights({dimension: value / valid_count for dimension, value in merged.items()})
+
+
+def update_weights(
+    current: dict[Dimension, float],
+    scores: dict[Dimension, float],
+    uncertainty: float,
+    config: Optional[DynamicWeightConfig] = None,
+) -> dict[Dimension, float]:
+    if current is None or scores is None:
+        raise ValueError("current 和 scores 不能为空")
+    effective_config = config or default_dynamic_weight_config()
+    next_weights: dict[Dimension, float] = {}
+    for dimension in Dimension:
+        base = max(float(current.get(dimension, 0.0)), 1e-9)
+        score = float(scores.get(dimension, 0.0))
+        target = effective_config.targets.get(dimension, DEFAULT_TARGETS[dimension])
+        focus = effective_config.focus.get(dimension, DEFAULT_FOCUS[dimension])
+        deficit = max(0.0, target - score)
+        next_weights[dimension] = base * math.exp(
+            effective_config.alpha * deficit + effective_config.beta * clamp(uncertainty) * focus
+        )
+    return normalize_weights(next_weights)

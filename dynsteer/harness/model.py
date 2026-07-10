@@ -8,16 +8,7 @@ from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory, Traj
 
 @dataclass(frozen=True)
 class HarnessRunConfig:
-    """benchmark harness 单次运行配置。
-
-    Args:
-        benchmark: benchmark 名称，例如 toolsandbox。
-        data_root: benchmark 静态配置与 manifest 目录。
-        case_ids: 可选 case ID 列表；为空时由 runner 运行全部 case。
-        runs_dir: 中间过程、原生输出与 raw summary 目录。
-        results_dir: 最终 DynSTEER 评估报告目录。
-        metadata: 额外运行配置。
-    """
+    """benchmark harness 单次运行配置。"""
 
     benchmark: str
     data_root: Path
@@ -46,14 +37,7 @@ class HarnessRunConfig:
 
 @dataclass(frozen=True)
 class BenchmarkCase:
-    """benchmark 中的单个测试任务描述。
-
-    Args:
-        benchmark: benchmark 名称。
-        case_id: benchmark 内唯一场景 ID。
-        categories: 场景类别。
-        metadata: 原始 benchmark 元数据。
-    """
+    """benchmark 中的单个测试任务描述。"""
 
     benchmark: str
     case_id: str
@@ -67,11 +51,7 @@ class BenchmarkCase:
             raise ValueError("case_id 不能为空")
 
     def to_dict(self) -> JsonObject:
-        """转换为 JSON 可序列化字典。
-
-        Returns:
-            可写入 JSON 的 benchmark case 字典。
-        """
+        """转换为 JSON 可序列化字典。"""
         return {
             "benchmark": self.benchmark,
             "case_id": self.case_id,
@@ -82,14 +62,7 @@ class BenchmarkCase:
 
 @dataclass(frozen=True)
 class HarnessAdvanceResult:
-    """benchmark 单次推进结果。
-
-    Args:
-        steps: 本次推进新增的轨迹步骤。
-        snapshots: 本批推进后可见的状态快照。
-        continue_running: 处理完本批步骤后是否继续推进。
-        reason: 停止继续推进时的中文原因。
-    """
+    """benchmark 单次推进结果。"""
 
     steps: list[TrajectoryStep]
     snapshots: list[StateSnapshot]
@@ -109,22 +82,7 @@ class HarnessAdvanceResult:
 
 @dataclass(frozen=True)
 class HarnessStageSettlement:
-    """记录 harness 运行期的阶段结算节点。
-
-    Args:
-        settlement_id: 结算节点 ID。
-        kind: 结算类型，支持 start、milestone、finish。
-        milestone_id: 命中的 milestone ID；start/finish 可为空。
-        start_step_index: 本阶段评估区间起点 step index。
-        end_step_index: 本阶段评估区间终点 step index。
-        boundary_id: 触发 milestone 的候选边界 ID。
-        boundary_step_index: 触发 milestone 的边界 step index。
-        score: 阶段评估分数。
-        status: 阶段评估状态。
-        checkpointed: 是否因 milestone checkpoint 暂停 rollout 并执行阶段评估。
-        evidence: 阶段证据摘要。
-        metadata: 额外阶段评估元数据。
-    """
+    """记录 harness 运行期的阶段结算节点。"""
 
     settlement_id: str
     kind: str
@@ -152,11 +110,7 @@ class HarnessStageSettlement:
             raise ValueError("end_step_index 不能小于 start_step_index")
 
     def to_dict(self) -> JsonObject:
-        """转换为 JSON 可序列化字典。
-
-        Returns:
-            可写入 raw_summary 的阶段结算字典。
-        """
+        """转换为 JSON 可序列化字典。"""
         return {
             "settlement_id": self.settlement_id,
             "kind": self.kind,
@@ -175,17 +129,7 @@ class HarnessStageSettlement:
 
 @dataclass(frozen=True)
 class HarnessRunResult:
-    """benchmark harness 运行结果。
-
-    Args:
-        benchmark: benchmark 名称。
-        case_id: 场景 ID。
-        run_id: 本次运行 ID。
-        task_case: 转换后的 DynSTEER 任务。
-        trajectory: 转换后的 DynSTEER 轨迹。
-        raw_output_dir: 原生 benchmark 输出目录。
-        raw_summary: 原生 benchmark 摘要。
-    """
+    """benchmark harness 运行结果。"""
 
     benchmark: str
     case_id: str

@@ -10,14 +10,7 @@ from dynsteer.model import JsonObject
 
 
 def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObject:
-    """从环境变量读取 LLMJudge 配置。
-
-    Args:
-        env: 环境变量映射；测试时可传入 fake env。
-
-    Returns:
-        不包含 API key 明文的 judge 配置摘要；未配置 provider 时返回空字典。
-    """
+    """从环境变量读取 LLMJudge 配置。"""
     source = env or os.environ
     provider = source.get("DYNSTEER_JUDGE_PROVIDER")
     if provider is None or not provider.strip():
@@ -37,15 +30,7 @@ def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObje
 
 
 def _read_json_object(path: Path, label: str) -> JsonObject:
-    """读取 JSON 对象配置文件。
-
-    Args:
-        path: JSON 文件路径。
-        label: 面向错误消息的配置名称。
-
-    Returns:
-        JSON 对象。
-    """
+    """读取 JSON 对象配置文件。"""
     if path is None:
         raise ValueError(f"{label} 路径不能为空")
     if not path.exists():
@@ -60,15 +45,7 @@ def _read_json_object(path: Path, label: str) -> JsonObject:
 
 
 def _read_json_array(path: Path, label: str) -> list[Any]:
-    """读取 JSON 数组配置文件。
-
-    Args:
-        path: JSON 文件路径。
-        label: 面向错误消息的配置名称。
-
-    Returns:
-        JSON 数组。
-    """
+    """读取 JSON 数组配置文件。"""
     if path is None:
         raise ValueError(f"{label} 路径不能为空")
     if not path.exists():
@@ -83,16 +60,7 @@ def _read_json_array(path: Path, label: str) -> list[Any]:
 
 
 def _required_str(data: dict[str, Any], key: str, label: str) -> str:
-    """读取必填字符串字段。
-
-    Args:
-        data: 配置对象。
-        key: 字段名。
-        label: 配置名称。
-
-    Returns:
-        去除首尾空白后的字符串。
-    """
+    """读取必填字符串字段。"""
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} 必须提供非空字符串字段 {key}")
@@ -100,15 +68,7 @@ def _required_str(data: dict[str, Any], key: str, label: str) -> str:
 
 
 def _optional_str(data: dict[str, Any], key: str) -> str | None:
-    """读取可选字符串字段。
-
-    Args:
-        data: 配置对象。
-        key: 字段名。
-
-    Returns:
-        去除首尾空白后的字符串；未配置时返回 None。
-    """
+    """读取可选字符串字段。"""
     value = data.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -116,14 +76,7 @@ def _optional_str(data: dict[str, Any], key: str) -> str | None:
 
 
 def _manifest_language(manifest: dict[str, Any]) -> str:
-    """读取 benchmark prompt 语言配置。
-
-    Args:
-        manifest: benchmark.json 内容。
-
-    Returns:
-        prompt 语言代码，默认 en。
-    """
+    """读取 benchmark prompt 语言配置。"""
     value = manifest.get("language", "en")
     if not isinstance(value, str) or not value.strip():
         raise ValueError("benchmark.json language 必须是非空字符串")
@@ -162,17 +115,7 @@ def load_harness_run_configs(
     runs_dir: Path,
     results_dir: Path,
 ) -> list[HarnessRunConfig]:
-    """从 benchmark data-root 加载多组 harness 运行配置。
-
-    Args:
-        benchmark: benchmark 名称。
-        data_root: 包含 benchmark.json 与 run_configs.json 的目录。
-        runs_dir: benchmark 原生输出与中间产物目录。
-        results_dir: DynSTEER 评估结果目录。
-
-    Returns:
-        按 run_configs.json 顺序生成的 HarnessRunConfig 列表。
-    """
+    """从 benchmark data-root 加载多组 harness 运行配置。"""
     if benchmark is None or not benchmark.strip():
         raise ValueError("benchmark 不能为空")
     if data_root is None:

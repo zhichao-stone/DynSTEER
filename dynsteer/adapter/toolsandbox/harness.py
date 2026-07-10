@@ -7,16 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.adapter.toolsandbox.adapter import (
-    TOOL_SANDBOX_DEPENDENCY_ERROR,
-    _tool_backend,
+from dynsteer.adapter.toolsandbox.utils.convert import (
     sandbox_message_index,
     sandbox_rows_to_step_dicts,
     snapshots_from_context,
     trajectory_from_sandbox_rows,
 )
+from dynsteer.adapter.toolsandbox.utils.runtime import (
+    TOOL_SANDBOX_DEPENDENCY_ERROR,
+    load_toolsandbox_module,
+    tool_backend,
+)
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
-from dynsteer.adapter.utils import import_module, rows_from_dataframe
+from dynsteer.adapter.utils import rows_from_dataframe
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject
 from dynsteer.utils import enum_name
@@ -50,7 +53,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def constraint_scorer(self) -> ToolSandboxConstraintScorer:
         """返回 ToolSandbox 专用约束评分器。"""
-        return ToolSandboxConstraintScorer(module_loader=self._module_loader)
+        return ToolSandboxConstraintScorer(module_loader=load_toolsandbox_module)
 
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
         """列出 ToolSandbox 场景。"""
@@ -101,8 +104,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         """推进 ToolSandbox 一个原生单步并返回新增步骤。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
+        session = self._require_session(session)
         if session.finished:
             return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")
         self._advance_native_session(session)
@@ -114,11 +116,11 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if rows:
             session.last_sandbox_message_index = max(sandbox_message_index(row) for row in rows)
         steps = sandbox_rows_to_step_dicts(rows)
-        snapshot_data = snapshots_from_context(session.context, steps, self._module_loader) if session.context is not None else []
+        snapshot_data = snapshots_from_context(session.context, steps, load_toolsandbox_module) if session.context is not None else []
         trajectory = trajectory_from_sandbox_rows(
             run_id=session.run_id,
             task_id=f"toolsandbox::{session.case_id}",
-            rows=rows,
+            steps=steps,
             snapshots=snapshot_data,
         )
         if not trajectory.steps and not session.finished:
@@ -132,26 +134,22 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def case_finished(self, session: object) -> bool:
         """判断 ToolSandbox session 是否完成。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
+        session = self._require_session(session)
         return session.finished
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 运行期 metrics。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
+        self._require_session(session)
         return {"native_evaluation_skipped": True}
 
     def raw_summary_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 原生摘要。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
+        session = self._require_session(session)
         return {"native_evaluation_skipped": True, "case_id": session.case_id}
 
     def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止 ToolSandbox session。"""
-        if not isinstance(session, ToolSandboxSession):
-            raise TypeError("session 必须是 ToolSandboxSession")
+        session = self._require_session(session)
         if not reason:
             raise ValueError("reason 不能为空")
         session.finished = True
@@ -187,15 +185,22 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if errors:
             raise RuntimeError(f"ToolSandbox role 资源释放失败: {len(errors)} 个 role 释放失败") from errors[0]
 
+    def _require_session(self, session: object) -> ToolSandboxSession:
+        if not isinstance(session, ToolSandboxSession):
+            raise TypeError("session 必须是 ToolSandboxSession")
+        return session
+
     def _named_scenarios(self, config: HarnessRunConfig) -> dict[str, Any]:
         """获取 ToolSandbox 原生场景字典。"""
-        scenarios = self._module_loader("tool_sandbox.scenarios").named_scenarios(preferred_tool_backend=_tool_backend(config, self._module_loader))
+        scenarios = load_toolsandbox_module("tool_sandbox.scenarios").named_scenarios(
+            preferred_tool_backend=tool_backend(config, load_toolsandbox_module)
+        )
         if not isinstance(scenarios, dict):
             raise ValueError("ToolSandbox named_scenarios 必须返回字典")
         return scenarios
 
     def _role_impl_type(self, role_name: object, role_label: str) -> object:
-        cli_utils = self._module_loader("tool_sandbox.cli.utils")
+        cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
         role_impl_type = getattr(cli_utils, "RoleImplType")
         if not isinstance(role_name, str) or not role_name.strip():
             raise ValueError(f"ToolSandbox run_configs.json 必须提供 {role_label}")
@@ -210,11 +215,10 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _toolsandbox_roles(self, config: HarnessRunConfig) -> dict[object, object]:
         """创建 ToolSandbox 原生 role。"""
-        execution_context = self._module_loader("tool_sandbox.common.execution_context")
-        execution_environment = self._module_loader("tool_sandbox.roles.execution_environment")
-        cli_utils = self._module_loader("tool_sandbox.cli.utils")
-        from dynsteer.adapter.toolsandbox.agents import get_agent_factory
-        from dynsteer.adapter.toolsandbox.users import get_user_factory
+        execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
+        execution_environment = load_toolsandbox_module("tool_sandbox.roles.execution_environment")
+        cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
+        from dynsteer.adapter.toolsandbox.utils.roles import get_agent_factory, get_user_factory
 
         role_type = getattr(execution_context, "RoleType")
         agent_type = self._role_impl_type(config.metadata.get("agent"), "agent")
@@ -311,7 +315,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """读取 ToolSandbox SANDBOX 数据库。"""
         if context is None:
             raise ValueError("context 不能为空")
-        execution_context = self._module_loader("tool_sandbox.common.execution_context")
+        execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         database_namespace = getattr(execution_context, "DatabaseNamespace")
         return context.get_database(
             database_namespace.SANDBOX,
@@ -358,15 +362,12 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         values = dataframe[column]  # type: ignore[index]
         return values[-1]
 
-    def _module_loader(self, module_name: str) -> object:
-        return import_module(module_name, TOOL_SANDBOX_DEPENDENCY_ERROR)
-
     def _set_current_context(self, context: object) -> None:
-        execution_context = self._module_loader("tool_sandbox.common.execution_context")
+        execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         set_current_context = getattr(execution_context, "set_current_context")
         set_current_context(context)
 
     def _get_current_context(self) -> object:
-        execution_context = self._module_loader("tool_sandbox.common.execution_context")
+        execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         get_current_context = getattr(execution_context, "get_current_context")
         return get_current_context()

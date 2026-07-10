@@ -8,29 +8,13 @@ from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError, LLMMess
 class OpenaiLLM(BaseLLM):
     """基于 OpenAI-compatible Chat Completions 的 LLM 实现。"""
 
-    def __init__(self, config: LLMConfig) -> None:
-        """初始化 OpenAI-compatible LLM。
-
-        Args:
-            config: LLM provider 运行配置。
-        """
-        super().__init__(config)
-
     def _get_response_from_client(
         self,
         client: OpenAI,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
-        """使用 OpenAI client 调用 Chat Completions。
-
-        Args:
-            messages: 已校验的消息列表。
-            request_params: 已转换的 OpenAI 请求参数。
-
-        Returns:
-            OpenAI Chat Completions 响应对象。
-        """
+        """使用 OpenAI client 调用 Chat Completions。"""
         request: dict[str, object] = {
             "model": self._config.model,
             "messages": [{"role": message.role, "content": message.content} for message in messages],
@@ -39,11 +23,7 @@ class OpenaiLLM(BaseLLM):
         return client.chat.completions.create(**request)
 
     def _create_client(self) -> OpenAI:
-        """根据配置构造 OpenAI SDK client。
-
-        Returns:
-            OpenAI SDK client。
-        """
+        """根据配置构造 OpenAI SDK client。"""
         kwargs: dict[str, object] = {"timeout": self._config.timeout_seconds}
         if self._config.api_key is not None:
             kwargs["api_key"] = self._config.api_key

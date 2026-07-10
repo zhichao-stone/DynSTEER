@@ -5,7 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from dynsteer.judges.prompt import build_judge_system_prompt
+from dynsteer.prompt.judge import build_judge_system_prompt
 from dynsteer.language import TaskLanguage
 from dynsteer.llm.base import BaseLLM, LLMMessage, LLMResponseError
 from dynsteer.model import (
@@ -58,26 +58,11 @@ class BaseJudge(ABC):
         trajectory: Trajectory,
         weights: dict[Dimension, float],
     ) -> StageEvaluationResult:
-        """评估单个阶段。
-
-        Args:
-            interval: 阶段区间。
-            task_case: 当前任务。
-            trajectory: Agent 轨迹。
-            weights: 当前维度权重。
-
-        Returns:
-            阶段评估结果。
-        """
+        """评估单个阶段。"""
 
 
 class LLMJudge(BaseJudge):
-    """基于 BaseLLM 的 LLM-as-a-Judge 抽象基类。
-
-    仅封装入参检查、prompt 构造、JSON 调用、响应解析、结果转换和通用异常，
-    不实现 evaluate_stage，也不直接决定评估等级；具体评估流程由
-    StandardJudge 与 ExpensiveJudge 在各自 evaluate_stage 中实现。
-    """
+    """基于 BaseLLM 的 LLM-as-a-Judge 抽象基类。"""
 
     def __init__(self, llm: BaseLLM, expensive_passes: int = 3) -> None:
         if llm is None:
@@ -88,15 +73,7 @@ class LLMJudge(BaseJudge):
         self._config = LLMJudgeConfig(expensive_passes=int(expensive_passes))
 
     def _call_json(self, prompt: str, language: TaskLanguage = TaskLanguage.ENGLISH) -> JsonObject:
-        """调用 LLM 并解析为 JSON 对象。
-
-        Args:
-            prompt: 已渲染的 judge prompt。
-            language: 系统 prompt 语言。
-
-        Returns:
-            LLM 返回的 JSON 对象。
-        """
+        """调用 LLM 并解析为 JSON 对象。"""
         if prompt is None or not prompt.strip():
             raise LLMJudgeConfigurationError("prompt 不能为空")
         messages = [
@@ -114,14 +91,7 @@ class LLMJudge(BaseJudge):
         return data
 
     def _parse_json_text(self, text: str) -> JsonObject:
-        """解析完整 JSON 或单个 fenced JSON block。
-
-        Args:
-            text: LLM 原始回复文本。
-
-        Returns:
-            JSON 对象。
-        """
+        """解析完整 JSON 或单个 fenced JSON block。"""
         if text is None or not isinstance(text, str) or not text.strip():
             raise LLMJudgeResponseError("LLMJudge 返回内容为空")
         raw = text.strip()
@@ -163,14 +133,7 @@ class LLMJudge(BaseJudge):
         )
 
     def _validate_payload(self, payload: JsonObject) -> _ValidatedJudgePayload:
-        """校验 Judge JSON payload 的必需字段和可选元数据。
-
-        Args:
-            payload: LLM 返回的 JSON 对象。
-
-        Returns:
-            解析后的强类型 Judge payload。
-        """
+        """校验 Judge JSON payload 的必需字段和可选元数据。"""
         if not isinstance(payload, dict):
             raise LLMJudgeResponseError("LLMJudge 返回内容必须是 JSON 对象")
         try:
@@ -234,14 +197,7 @@ class LLMJudge(BaseJudge):
         return [str(item) for item in value]
 
     def _metadata_object(self, value: object) -> JsonObject:
-        """校验可选 metadata 字段。
-
-        Args:
-            value: 待校验值。
-
-        Returns:
-            metadata 对象；未提供时返回空字典。
-        """
+        """校验可选 metadata 字段。"""
         if value is None:
             return {}
         if not isinstance(value, dict):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from dynsteer.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary
-from dynsteer.evaluate.models import RuntimeEvaluationState
 from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
-from dynsteer.evaluate.score import ScoringContext
+from dynsteer.evaluate.scoring import ScoringContext
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Actor,
@@ -18,7 +19,40 @@ from dynsteer.model import (
     StateSnapshot,
     TaskCase,
     Trajectory,
+    TrajectoryStep,
 )
+from dynsteer.utils import compact_text
+
+@dataclass
+class RuntimeEvaluationState:
+    """保存单个 case 运行期间的评估状态。"""
+
+    weights: dict[Dimension, float]
+    settlements: list[HarnessStageSettlement]
+    matched_settlements: dict[str, HarnessStageSettlement]
+    stage_reports: list[StageEvaluationResult]
+    match_attempts: list[JsonObject]
+
+
+@dataclass
+class RuntimeEvaluationDecision:
+    """单步运行期阶段评估决策。"""
+
+    checkpoint: HarnessStageSettlement | None
+    stage_result: StageEvaluationResult | None
+    next_state: RuntimeEvaluationState
+    should_stop: bool = False
+    termination_code: str | None = None
+    termination_reason: str | None = None
+    termination_detail: JsonObject | None = None
+
+
+class JudgeConfigurationError(RuntimeError):
+    """LLM judge 配置缺失或不合法时抛出。"""
+
+
+class HarnessTeardownError(RuntimeError):
+    """benchmark session 资源释放失败时抛出。"""
 
 
 def runtime_diagnostics_summary(
@@ -26,16 +60,7 @@ def runtime_diagnostics_summary(
     trajectory: Trajectory,
     state: RuntimeEvaluationState,
 ) -> JsonObject:
-    """构造运行期 raw_summary 的 milestone 与质量诊断信息。
-
-    Args:
-        task_case: 当前任务定义。
-        trajectory: 当前完整轨迹。
-        state: 运行结束时的评估状态。
-
-    Returns:
-        可合入 raw_summary 的诊断字段。
-    """
+    """构造运行期 raw_summary 的 milestone 与质量诊断信息。"""
     if task_case is None or trajectory is None or state is None:
         raise ValueError("运行期诊断参数不能为空")
     graph = task_case.milestone_graph or MilestoneGraph()
@@ -52,14 +77,7 @@ def runtime_diagnostics_summary(
 
 
 def blocked_milestone_termination_reason(detail: JsonObject) -> str:
-    """根据前驱断裂诊断生成中文终止原因。
-
-    Args:
-        detail: `analyze_milestone_step()` 返回的 blocked 诊断对象。
-
-    Returns:
-        面向日志和 stop_case 的中文终止原因。
-    """
+    """根据前驱断裂诊断生成中文终止原因。"""
     if detail is None:
         raise ValueError("路径断裂诊断不能为空")
     current_step = detail.get("current_step")
@@ -91,15 +109,7 @@ def blocked_milestone_termination_reason(detail: JsonObject) -> str:
 
 
 def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
-    """为自然结束时仍未完成的 required milestone 生成失败阶段报告。
-
-    Args:
-        task_case: 当前任务定义。
-        state: 运行结束时的评估状态。
-
-    Returns:
-        与缺失 required milestone 对应的运行期失败阶段结果。
-    """
+    """为自然结束时仍未完成的 required milestone 生成失败阶段报告。"""
     if task_case is None or state is None:
         raise ValueError("pending required stage 参数不能为空")
     graph = task_case.milestone_graph or MilestoneGraph()
@@ -154,16 +164,7 @@ def scoring_context(
     trajectory: Trajectory,
     matched: dict[str, HarnessStageSettlement],
 ) -> ScoringContext:
-    """构造运行期评分上下文。
-
-    Args:
-        task_case: 当前任务定义。
-        trajectory: 当前已观测轨迹。
-        matched: 已结算 milestone 映射。
-
-    Returns:
-        包含初始快照、已命中边界和已命中快照的评分上下文。
-    """
+    """构造运行期评分上下文。"""
     if task_case is None or trajectory is None or matched is None:
         raise ValueError("评分上下文参数不能为空")
     matched_boundaries: dict[str, Boundary] = {}
@@ -199,16 +200,7 @@ def scoring_context(
 
 
 def task_case_snapshot(case_id: str, task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
-    """构造可审计的任务快照摘要。
-
-    Args:
-        case_id: benchmark case ID。
-        task_case: 当前任务定义。
-        trajectory: 当前完整轨迹。
-
-    Returns:
-        包含 task_description 与首条用户消息摘要的轻量快照。
-    """
+    """构造可审计的任务快照摘要。"""
     if case_id is None or not str(case_id).strip() or task_case is None or trajectory is None:
         raise ValueError("task_case 快照参数不能为空")
     metadata = dict(task_case.metadata)
@@ -239,14 +231,6 @@ def _initial_user_message_excerpt(trajectory: Trajectory) -> str | None:
         raise ValueError("trajectory 不能为空")
     for step in trajectory.steps:
         if step.actor == Actor.USER and isinstance(step.content, str) and step.content.strip():
-            return _excerpt(step.content)
+            return compact_text(step.content, 240)
     return None
 
-
-def _excerpt(value: str, limit: int = 240) -> str:
-    if value is None:
-        raise ValueError("摘要文本不能为空")
-    text = " ".join(str(value).split())
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 3, 0)] + "..."

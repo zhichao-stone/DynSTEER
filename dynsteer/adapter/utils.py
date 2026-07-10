@@ -13,14 +13,7 @@ from dynsteer.utils import json_safe
 
 
 def callable_name(value: object) -> str:
-    """读取 callable 的稳定名称。
-
-    Args:
-        value: callable、functools.partial 或任意对象。
-
-    Returns:
-        可写入 JSON 元数据的函数名。
-    """
+    """读取 callable 的稳定名称。"""
     if isinstance(value, functools.partial):
         return callable_name(value.func)
     name = getattr(value, "__name__", None)
@@ -29,25 +22,17 @@ def callable_name(value: object) -> str:
     return str(value)
 
 
-def _callable_keyword_value(value: object) -> JsonValue:
-    if callable(value):
-        return callable_name(value)
-    return json_safe(value)
-
-
 def callable_spec(value: object) -> JsonValue:
     """将 callable 或 functools.partial 转换为 JSON 安全规格。"""
     if isinstance(value, functools.partial):
         return {
             "callable": callable_name(value.func),
             "partial_keywords": {
-                str(key): _callable_keyword_value(item)
+                str(key): callable_name(item) if callable(item) else json_safe(item)
                 for key, item in dict(value.keywords or {}).items()
             },
         }
-    if callable(value):
-        return callable_name(value)
-    return json_safe(value)
+    return callable_name(value) if callable(value) else json_safe(value)
 
 
 def rows_from_dataframe(dataframe: object | None) -> list[dict[str, object]]:

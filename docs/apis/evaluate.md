@@ -5,28 +5,22 @@
 `dynsteer.evaluate` 是一个包，`DynSTEEREvaluator` 是 DynSTEER 的主评估入口。它承担两类能力：
 
 - `evaluate(harness, config, task_case)`: 主实验入口，消费 adapter/loader 已适配的 `TaskCase`，编排 benchmark 原生执行并进行阶段式动态评估。
-- `evaluate_trajectory(task_case, trajectory)`: 对完整轨迹执行评估，保留给后续对比实验或消融实验复用。
 
-模块级函数 `evaluate_trajectory()` 已删除，调用方需要先构造 `DynSTEEREvaluator`。
+历史离线整轨迹入口 `evaluate_trajectory()` 已删除；当前只支持运行期 `evaluate()` 主流程。
 
 ## 包结构
 
 ```text
 dynsteer/evaluate/
 - __init__.py    # 导出 DynSTEEREvaluator、JudgeConfigurationError、权重工具和通用工具
-- models.py      # RuntimeEvaluationState、RuntimeEvaluationDecision、JudgeConfigurationError
 - evaluator.py   # DynSTEEREvaluator
-- score.py       # GeneralScorer、ScoringContext 和通用约束评分逻辑
-- diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
-- quality.py     # 运行期工具质量、grounding 与效率诊断
-- runtime.py     # 运行期 raw_summary、pending milestone、scoring context 辅助函数
-- telemetry.py   # 运行期结构化日志 extra 构造函数
-- weights.py     # normalize_weights、select_initial_weights、update_weights
-- milestone.py   # milestone DAG 校验、贪心匹配、评分矩阵和运行期 step 命中分析
-- utils.py       # compute_uncertainty、overall_score、enrich_stage_result 等纯函数
+- runtime/       # RuntimeEvaluationState、raw_summary、pending milestone、trajectory 与 telemetry
+- scoring/       # GeneralScorer、ScoringContext、权重和阶段结果评分工具
+- diagnostics/   # 运行期 stage trace 与 milestone matching 诊断序列化
+- milestone/     # milestone DAG 校验和运行期 step 命中分析
 ```
 
-`dynsteer/match.py` 已并入 `dynsteer/evaluate/milestone.py`，`from dynsteer.match import ...` 不再可用。
+`dynsteer/match.py` 已并入 `dynsteer/evaluate/milestone/`，`from dynsteer.match import ...` 不再可用。
 
 ## 构造函数
 
@@ -36,7 +30,6 @@ evaluator = DynSTEEREvaluator(
     standard_judge=None,
     expensive_judge=None,
     thresholds=None,
-    match_config=None,
     weight_config=None,
 )
 ```
@@ -45,7 +38,6 @@ evaluator = DynSTEEREvaluator(
 - `standard_judge`: standard 层使用的 judge，通常是 `StandardJudge`。
 - `expensive_judge`: expensive 层使用的 judge，通常是 `ExpensiveJudge`。
 - `thresholds`: 阶段通过、告警、失败和不确定性阈值。
-- `match_config`: 整轨迹评估时的 milestone 匹配配置。
 - `weight_config`: 动态维度权重配置。
 
 `DynSTEEREvaluator` 不再接收单个 `llm_judge` 参数；standard 与 expensive 两档分别注入，避免由一个对象在内部按 `EvaluationLevel` 分发。如果阶段调度需要 standard 或 expensive，但对应 judge 未配置，会抛出 `JudgeConfigurationError`，不会回退到 `CheapJudge`。
@@ -86,27 +78,14 @@ result = evaluator.evaluate(harness, config, task_case)
 
 Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 adapter/loader 和 harness 返回契约。
 
-## 整轨迹入口
+## 历史整轨迹入口
 
-```python
-report = evaluator.evaluate_trajectory(task_case, trajectory, scorer=None)
-```
-
-该入口会对完整轨迹执行 milestone matching、stage interval 构造、cheap -> standard -> expensive 动态调度和权重更新。本阶段 `main.py --benchmark` 不使用该入口作为主实验流程。
-
-`scorer` 为空时使用 `GeneralScorer()`；需要处理 benchmark 专有 `Operator.CUSTOM` 约束时，可传入继承自 `GeneralScorer` 的专用评分器：
-
-```python
-report = DynSTEEREvaluator().evaluate_trajectory(
-    task_case,
-    trajectory,
-    scorer=MyBenchmarkScorer(),
-)
-```
+离线整轨迹评估 API 已删除。当前评估链只保留 `evaluate(harness, config, task_case)`，
+由 harness 逐步推进 benchmark，并在运行期按当前 step 触发 milestone 结算。
 
 ### `GeneralScorer`
 
-`GeneralScorer` 是 DynSTEER 默认 milestone / minefield 评分器，位于 `dynsteer.evaluate.score`。
+`GeneralScorer` 是 DynSTEER 默认 milestone / minefield 评分器，位于 `dynsteer.evaluate.scoring`。
 它提供 `score_operator()`、`score_constraint()`、`score_milestone()` 三个核心方法。
 
 `Operator.CUSTOM` 不属于通用 operator。默认 `GeneralScorer` 会返回带 evidence 的 0 分约束结果；benchmark 需要通过 `BaseBenchmarkHarness.constraint_scorer()` 返回专用 scorer 处理 CUSTOM。
@@ -181,7 +160,7 @@ milestone graph 的直接前驱和阶段锚点字段来自 adapter/loader 阶段
 
 ## 运行期日志
 
-Evaluator 会通过 `dynsteer.evaluate.telemetry` 构造短结构化日志：
+Evaluator 会通过 `dynsteer.evaluate.runtime.telemetry` 构造短结构化日志：
 
 - `evaluator_policy_stop`: 策略提前终止，记录 termination code、matched/pending milestone、stage 结果和首条诊断。
 - `evaluator_task_description_mismatch`: `task_description` 与首条用户消息摘要不一致时的观测性 warning。

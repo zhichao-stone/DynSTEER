@@ -1,0 +1,543 @@
+from __future__ import annotations
+
+import ast
+import json
+import re
+
+from dynsteer.adapter.loader import parse_milestone_graph
+from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
+from dynsteer.model import (
+    Actor,
+    EventType,
+    JsonObject,
+    JsonValue,
+    MilestoneGraph,
+    StageGoalSemanticKind,
+    StateSnapshot,
+    TaskType,
+    ToolCall,
+    ToolResult,
+    Trajectory,
+    TrajectoryStep,
+)
+from dynsteer.utils import enum_name, json_safe
+
+
+def role_to_actor(sender: object, recipient: object) -> str:
+    sender_name = enum_name(sender)
+    recipient_name = enum_name(recipient)
+    if sender_name == "SYSTEM":
+        return Actor.SYSTEM.value
+    if sender_name == "USER":
+        return Actor.USER.value
+    if sender_name == "AGENT":
+        return Actor.AGENT.value
+    if sender_name == "EXECUTION_ENVIRONMENT":
+        return Actor.ENVIRONMENT.value
+    if recipient_name == "AGENT":
+        return Actor.ENVIRONMENT.value
+    return Actor.AGENT.value
+
+
+def tool_trace_from_row(row: dict[str, object]) -> dict[str, JsonValue] | None:
+    raw_trace = row.get("tool_trace")
+    if raw_trace is None:
+        return None
+    trace_items = list(raw_trace) if isinstance(raw_trace, list) else [raw_trace]
+    if not trace_items or trace_items[0] is None:
+        return None
+    first = trace_items[0]
+    if isinstance(first, dict):
+        return json_safe(first)  # type: ignore[return-value]
+    try:
+        trace = json.loads(str(first))
+    except json.JSONDecodeError as exc:
+        raise ValueError("ToolSandbox tool_trace 不是合法 JSON") from exc
+    if not isinstance(trace, dict):
+        return None
+    return json_safe(trace)  # type: ignore[return-value]
+
+
+def tool_arguments_from_agent_content(content: object) -> JsonObject:
+    if not isinstance(content, str) or not content.strip():
+        return {}
+    # ToolSandbox agent content 常以 *_parameters = {...} 形式记录工具参数。
+    match = re.search(
+        r"[A-Za-z_][A-Za-z0-9_]*_parameters\s*=\s*(\{.*?\})(?:\r?\n|$)",
+        content,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return {}
+    # 使用 literal_eval 解析 Python 字面量，避免执行 agent content 中的任意代码。
+    try:
+        parsed = ast.literal_eval(match.group(1))
+    except (SyntaxError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    safe = json_safe(parsed)
+    return safe if isinstance(safe, dict) else {}
+
+
+def tool_call_from_agent_row(row: dict[str, object], trace: dict[str, JsonValue] | None) -> JsonObject | None:
+    # agent content 中的参数可补足 tool_trace 或 openai function 字段缺失的问题。
+    parsed_arguments = tool_arguments_from_agent_content(row.get("content"))
+    # 优先使用 tool_trace 中的工具名，因为它最接近执行环境真实调用。
+    if trace is not None and isinstance(trace.get("tool_name"), str) and trace.get("tool_name"):
+        arguments = trace.get("arguments")
+        return {
+            "name": str(trace["tool_name"]),
+            "arguments": arguments if isinstance(arguments, dict) else parsed_arguments,
+        }
+    # 其次使用 OpenAI function name，并复用从 agent content 中解析出的参数。
+    if isinstance(row.get("openai_function_name"), str) and row.get("openai_function_name"):
+        return {"name": str(row["openai_function_name"]), "arguments": parsed_arguments}
+    content = row.get("content")
+    if not isinstance(content, str):
+        return None
+    # 最后从代码文本中兜底提取函数名。
+    match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", content)
+    if match is None:
+        return None
+    return {"name": match.group(1), "arguments": parsed_arguments}
+
+
+def sandbox_message_index(row: dict[str, object]) -> int:
+    value = row.get("sandbox_message_index")
+    if isinstance(value, int):
+        return value
+    return -1
+
+
+def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, JsonValue]]:
+    if rows is None:
+        raise ValueError("rows 不能为空")
+    steps: list[dict[str, JsonValue]] = []
+    for row in rows:
+        raw_index = sandbox_message_index(row)
+        step_index = raw_index if raw_index >= 0 else len(steps)
+        sender = row.get("sender")
+        recipient = row.get("recipient")
+        trace = tool_trace_from_row(row)
+        actor = role_to_actor(sender, recipient)
+        event_type = EventType.MESSAGE.value
+        tool_call: JsonObject | None = None
+        tool_result: JsonObject | None = None
+        if enum_name(sender) == "AGENT" and enum_name(recipient) == "EXECUTION_ENVIRONMENT":
+            event_type = EventType.TOOL_CALL.value
+            tool_call = tool_call_from_agent_row(row, trace)
+        elif enum_name(sender) == "EXECUTION_ENVIRONMENT" and enum_name(recipient) == "AGENT":
+            event_type = EventType.TOOL_RESULT.value
+            tool_result = {
+                "success": row.get("tool_call_exception") is None,
+                "content": trace.get("result") if trace is not None else json_safe(row.get("content")),
+                "exception": row.get("tool_call_exception") if isinstance(row.get("tool_call_exception"), str) else None,
+            }
+        steps.append(
+            {
+                "step_id": f"s{step_index}",
+                "index": step_index,
+                "actor": actor,
+                "event_type": event_type,
+                "content": row.get("content") if isinstance(row.get("content"), str) else None,
+                "tool_call": tool_call,
+                "tool_result": tool_result,
+                "raw_sandbox_message_index": json_safe(row.get("sandbox_message_index")),
+                "sender": enum_name(sender),
+                "recipient": enum_name(recipient),
+                "openai_tool_call_id": json_safe(row.get("openai_tool_call_id")),
+                "openai_function_name": json_safe(row.get("openai_function_name")),
+                "visible_to": json_safe(row.get("visible_to")),
+            }
+        )
+    return steps
+
+
+def _database_namespace(module_loader: object) -> object:
+    execution_context = module_loader("tool_sandbox.common.execution_context")
+    return getattr(execution_context, "DatabaseNamespace")
+
+
+def _namespace_members(database_namespace: object) -> list[object]:
+    try:
+        return list(database_namespace)
+    except TypeError:
+        members = []
+        for name in dir(database_namespace):
+            if name.startswith("_"):
+                continue
+            value = getattr(database_namespace, name)
+            if callable(value):
+                continue
+            members.append(value)
+        return members
+
+
+def _sandbox_namespace(database_namespace: object) -> object:
+    for namespace in _namespace_members(database_namespace):
+        if enum_name(namespace) == "SANDBOX":
+            return namespace
+    return getattr(database_namespace, "SANDBOX")
+
+
+def sandbox_rows_from_context(
+    context: object | None,
+    module_loader: object,
+    *,
+    get_all_history_snapshots: bool = True,
+) -> list[dict[str, object]]:
+    if context is None:
+        return []
+    database_namespace = _database_namespace(module_loader)
+    dataframe = context.get_database(
+        _sandbox_namespace(database_namespace),
+        get_all_history_snapshots=get_all_history_snapshots,
+        drop_sandbox_message_index=False,
+    )
+    return rows_from_dataframe(dataframe)
+
+
+def task_description_from_steps(
+    steps: list[dict[str, JsonValue]],
+    fallback: str,
+    first_user_sandbox_message_index: int | None = None,
+) -> str:
+    if steps is None or fallback is None:
+        raise ValueError("steps 和 fallback 不能为空")
+    if first_user_sandbox_message_index is not None:
+        for step in steps:
+            if (
+                step.get("actor") == Actor.USER.value
+                and step.get("raw_sandbox_message_index") == first_user_sandbox_message_index
+                and isinstance(step.get("content"), str)
+            ):
+                return str(step["content"])
+    for step in steps:
+        if (
+            step.get("actor") == Actor.USER.value
+            and isinstance(step.get("content"), str)
+            and not _visible_only_to_user_simulator(step.get("visible_to"))
+        ):
+            return str(step["content"])
+    for step in steps:
+        if step.get("actor") == Actor.USER.value and isinstance(step.get("content"), str):
+            return str(step["content"])
+    return fallback
+
+
+def task_types_from_categories(categories: list[object]) -> list[TaskType]:
+    names = {enum_name(item) for item in categories}
+    result: list[TaskType] = []
+    if "STATE_DEPENDENCY" in names or "SINGLE_TOOL_CALL" in names or "MULTIPLE_TOOL_CALL" in names:
+        result.append(TaskType.STATEFUL_TOOL)
+    if "MULTIPLE_USER_TURN" in names:
+        result.append(TaskType.DIALOGUE_INTERACTION)
+    if "INSUFFICIENT_INFORMATION" in names:
+        result.append(TaskType.SAFETY_SENSITIVE)
+    if not result:
+        result.append(TaskType.STATEFUL_TOOL)
+    return result
+
+
+def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
+    if row is None:
+        raise ValueError("SANDBOX row 不能为空")
+    raw_trace = row.get("tool_trace")
+    if raw_trace is None:
+        return None
+    trace_items = _tool_trace_items(raw_trace)
+    if not trace_items:
+        return None
+    trace_value = trace_items[0]
+    tool_name = trace_value.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+    arguments = trace_value.get("arguments")
+    return {
+        "kind": StageGoalSemanticKind.TOOL_CALL.value,
+        "tool_name": tool_name.strip(),
+        "arguments": arguments if isinstance(arguments, dict) else {},
+        "evidence_source": "trajectory_or_structured_scorer",
+        "user_visible_required": False,
+    }
+
+
+def _visible_only_to_user_simulator(value: JsonValue) -> bool:
+    if not isinstance(value, list) or len(value) != 1:
+        return False
+    return str(value[0]) == "USER"
+
+
+def _tool_trace_items(raw_trace: JsonValue) -> list[JsonObject]:
+    trace_value = _parse_tool_trace_value(raw_trace)
+    if isinstance(trace_value, dict):
+        return [trace_value]
+    if not isinstance(trace_value, list):
+        return []
+    items: list[JsonObject] = []
+    for item in trace_value:
+        parsed_item = _parse_tool_trace_value(item)
+        if isinstance(parsed_item, dict):
+            items.append(parsed_item)
+        elif isinstance(parsed_item, list):
+            items.extend(dict(nested) for nested in parsed_item if isinstance(nested, dict))
+    return items
+
+
+def _parse_tool_trace_value(value: JsonValue) -> JsonValue:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return json_safe(parsed)
+    return json_safe(value)
+
+
+def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) -> dict[str, JsonValue]:
+    namespace = enum_name(getattr(constraint, "database_namespace", None))
+    target_dataframe = getattr(constraint, "target_dataframe", None)
+    rows = [json_safe(row) for row in rows_from_dataframe(target_dataframe)]
+    snapshot_constraint = getattr(constraint, "snapshot_constraint", None)
+    base_snapshot_constraint = getattr(snapshot_constraint, "func", snapshot_constraint)
+    snapshot_constraint_name = getattr(base_snapshot_constraint, "__name__", str(base_snapshot_constraint))
+    snapshot_constraint_module = getattr(base_snapshot_constraint, "__module__", None)
+    partial_keywords = getattr(snapshot_constraint, "keywords", None) or {}
+    snapshot_constraint_kwargs = {
+        str(key): callable_name(value) if callable(value) else json_safe(value)
+        for key, value in dict(partial_keywords).items()
+    }
+    column_measures = getattr(constraint, "column_similarity_measure", None) or {}
+    reference_index = json_safe(getattr(constraint, "reference_milestone_node_index", None))
+    # guardrail 表达相对参考 milestone 的状态保持，不表达目标数据库为空。
+    if "guardrail" in snapshot_constraint_name:
+        reference = (
+            {"type": "milestone_index", "value": reference_index}
+            if isinstance(reference_index, int)
+            else {"type": "initial_state"}
+        )
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.PRESERVE_STATE.value,
+            "namespace": namespace,
+            "reference": reference,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
+    # SANDBOX namespace 表达可见消息目标，文本匹配采用语义等价策略。
+    elif namespace == "SANDBOX":
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        tool_trace_semantics = _tool_trace_stage_goal_semantics(first) if isinstance(first, dict) else None
+        if tool_trace_semantics is not None:
+            stage_goal_semantics = tool_trace_semantics
+        else:
+            sender = first.get("sender") if isinstance(first, dict) else None
+            recipient = first.get("recipient") if isinstance(first, dict) else None
+            content = first.get("content") if isinstance(first, dict) else None
+            stage_goal_semantics = {
+                "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
+                "sender": str(sender or "AGENT"),
+                "recipient": str(recipient or "USER"),
+                "content": str(content or ""),
+                "match_policy": "semantic_equivalent",
+                "evidence_source": "trajectory_or_structured_scorer",
+                "user_visible_required": True,
+            }
+    # 其他 snapshot constraint 表达目标 state namespace 的设置或校验。
+    else:
+        expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.SET_STATE.value,
+            "namespace": namespace,
+            "expected": expected,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
+    return {
+        "constraint_id": constraint_id,
+        "target": "state_snapshot",
+        "namespace": namespace,
+        "selector": "$",
+        "operator": "custom",
+        "expected": {"rows": rows, "columns": list(rows[0].keys()) if rows else []},
+        "weight": 1.0,
+        "threshold": 1.0,
+        "hard": True,
+        "evaluator_hint": "toolsandbox",
+        "stage_goal_semantics": stage_goal_semantics,
+        "metadata": {
+            "toolsandbox": {
+                "database_namespace": namespace,
+                "snapshot_constraint": snapshot_constraint_name,
+                "snapshot_constraint_module": snapshot_constraint_module,
+                "snapshot_constraint_kwargs": snapshot_constraint_kwargs,
+                "reference_milestone_node_index": reference_index,
+                "column_similarity_measure": {
+                    str(key): callable_spec(value)
+                    for key, value in dict(column_measures).items()
+                },
+                "guardrail": "guardrail" in snapshot_constraint_name,
+            }
+        },
+    }
+
+
+def _matcher_nodes(matcher: object | None, prefix: str, required: bool) -> list[dict[str, JsonValue]]:
+    if matcher is None:
+        return []
+    label = "milestone" if required else "minefield"
+    id_key = "milestone_id" if required else "minefield_id"
+    result: list[dict[str, JsonValue]] = []
+    for index, node in enumerate(getattr(matcher, "milestones", []) or []):
+        item: dict[str, JsonValue] = {
+            id_key: f"{prefix}{index}",
+            "name": f"ToolSandbox {label} {index}",
+            "description": f"ToolSandbox {label} {index}",
+            "constraints": [
+                constraint_from_snapshot_constraint(f"{prefix}{index}_c{constraint_index}", constraint)
+                for constraint_index, constraint in enumerate(getattr(node, "snapshot_constraints", []) or [])
+            ],
+            "metadata": {"toolsandbox": {f"{label}_index": index}},
+        }
+        if required:
+            item["required"] = True
+        else:
+            item["severity"] = "fatal"
+            item["penalty"] = {"mode": "fixed", "value": 1.0}
+        result.append(item)
+    return result
+
+
+def edge_list(matcher: object | None, prefix: str) -> list[list[str]]:
+    if matcher is None:
+        return []
+    milestones = list(getattr(matcher, "milestones", []) or [])
+    raw_edges = getattr(matcher, "edge_list", None)
+    edges = raw_edges if raw_edges is not None else [(index, index + 1) for index in range(len(milestones) - 1)]
+    return [[f"{prefix}{source}", f"{prefix}{target}"] for source, target in list(edges or [])]
+
+
+def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
+    evaluation = getattr(scenario, "evaluation", None)
+    if evaluation is None:
+        return parse_milestone_graph({"nodes": [], "edges": [], "minefields": [], "metadata": {"benchmark": "toolsandbox"}})
+    milestone_matcher = getattr(evaluation, "milestone_matcher", None)
+    minefield_matcher = getattr(evaluation, "minefield_matcher", None)
+    return parse_milestone_graph(
+        {
+            "nodes": _matcher_nodes(milestone_matcher, "m", True),
+            "edges": edge_list(milestone_matcher, "m"),
+            "minefields": _matcher_nodes(minefield_matcher, "mf", False),
+            "metadata": {
+                "benchmark": "toolsandbox",
+                "constraint_semantics": "toolsandbox_custom_metadata",
+            },
+        }
+    )
+
+
+def database_namespaces(module_loader: object, include_sandbox: bool = False) -> list[object]:
+    namespaces = _namespace_members(_database_namespace(module_loader))
+    if include_sandbox:
+        return namespaces
+    return [namespace for namespace in namespaces if enum_name(namespace) != "SANDBOX"]
+
+
+def initial_state_from_context(context: object, module_loader: object) -> dict[str, JsonValue]:
+    if context is None:
+        raise ValueError("context 不能为空")
+    namespaces: dict[str, JsonValue] = {}
+    first_user_index = getattr(context, "first_user_sandbox_message_index", None)
+    for namespace in database_namespaces(module_loader):
+        dataframe = context.get_database(namespace=namespace, sandbox_message_index=first_user_index)
+        namespaces[enum_name(namespace)] = [json_safe(row) for row in rows_from_dataframe(dataframe)]
+    return {"namespaces": namespaces}
+
+
+def snapshots_from_context(
+    context: object,
+    steps: list[dict[str, JsonValue]],
+    module_loader: object,
+) -> list[dict[str, JsonValue]]:
+    if context is None:
+        raise ValueError("context 不能为空")
+    if not steps:
+        return []
+    sandbox_indexes = [
+        int(step["raw_sandbox_message_index"])
+        for step in steps
+        if isinstance(step.get("raw_sandbox_message_index"), int)
+    ]
+    if not sandbox_indexes:
+        return []
+    step_by_sandbox_index = {
+        int(step["raw_sandbox_message_index"]): step
+        for step in steps
+        if isinstance(step.get("raw_sandbox_message_index"), int)
+    }
+    snapshots: list[dict[str, JsonValue]] = []
+    for sandbox_index in sorted(set(sandbox_indexes)):
+        step = step_by_sandbox_index[sandbox_index]
+        namespaces: dict[str, JsonValue] = {}
+        for namespace in database_namespaces(module_loader, include_sandbox=True):
+            dataframe = context.get_database(
+                namespace=namespace,
+                sandbox_message_index=sandbox_index,
+                drop_sandbox_message_index=False,
+            )
+            namespaces[enum_name(namespace)] = [json_safe(row) for row in rows_from_dataframe(dataframe)]
+        snapshots.append(
+            {
+                "snapshot_id": f"toolsandbox:{sandbox_index}",
+                "after_step_id": str(step["step_id"]),
+                "after_step_index": int(step["index"]),
+                "namespaces": namespaces,
+                "raw": {"sandbox_message_index": sandbox_index},
+            }
+        )
+    return snapshots
+
+
+def trajectory_from_sandbox_rows(
+    run_id: str,
+    task_id: str,
+    steps: list[dict[str, JsonValue]],
+    snapshots: list[dict[str, JsonValue]] | None = None,
+) -> Trajectory:
+    if not run_id or not task_id or steps is None:
+        raise ValueError("run_id、task_id 和 steps 不能为空")
+    return Trajectory(
+        run_id=run_id,
+        task_id=task_id,
+        steps=[_trajectory_step_from_dict(step) for step in steps],
+        snapshots=[_snapshot_from_dict(snapshot) for snapshot in snapshots or []],
+    )
+
+
+def _trajectory_step_from_dict(step: dict[str, JsonValue]) -> TrajectoryStep:
+    tool_call = step.get("tool_call")
+    tool_result = step.get("tool_result")
+    return TrajectoryStep(
+        step_id=str(step["step_id"]),
+        index=int(step["index"]),
+        actor=Actor(str(step["actor"])),
+        event_type=EventType(str(step["event_type"])),
+        content=step.get("content") if isinstance(step.get("content"), str) else None,
+        tool_call=ToolCall(str(tool_call["name"]), dict(tool_call.get("arguments", {}))) if isinstance(tool_call, dict) else None,
+        tool_result=ToolResult(
+            bool(tool_result.get("success")),
+            tool_result.get("content"),
+            tool_result.get("exception") if isinstance(tool_result.get("exception"), str) else None,
+        ) if isinstance(tool_result, dict) else None,
+        raw={key: value for key, value in step.items() if key not in {"step_id", "index", "actor", "event_type", "content", "tool_call", "tool_result"}},
+    )
+
+
+def _snapshot_from_dict(snapshot: dict[str, JsonValue]) -> StateSnapshot:
+    return StateSnapshot(
+        snapshot_id=str(snapshot["snapshot_id"]),
+        after_step_id=str(snapshot["after_step_id"]),
+        after_step_index=int(snapshot["after_step_index"]),
+        namespaces=dict(snapshot.get("namespaces", {})),
+        raw=dict(snapshot.get("raw", {})) if isinstance(snapshot.get("raw"), dict) else {},
+    )

@@ -6,7 +6,8 @@ import json
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
-from dynsteer.evaluate.score import ScoringContext
+from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
+from dynsteer.evaluate.scoring import ScoringContext
 from dynsteer.model import (
     Boundary,
     Constraint,
@@ -78,10 +79,9 @@ _FALLBACK_TOOLSANDBOX_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
-    """ToolSandbox 专用约束评分器。"""
 
     def __init__(self, module_loader: Callable[[str], Any] | None = None) -> None:
-        self._module_loader = module_loader
+        self._module_loader = module_loader or load_toolsandbox_module
 
     def score_milestone(
         self,
@@ -91,7 +91,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_snapshots: list[StateSnapshot],
         context: ScoringContext | None = None,
     ) -> MilestoneScore:
-        """按 ToolSandbox 原生语义聚合 milestone 约束分数。"""
         if milestone is None or boundary is None or trajectory is None or reference_snapshots is None:
             raise ValueError("ToolSandbox milestone 评分参数不能为空")
         if not any(self._is_toolsandbox_constraint(constraint) for constraint in milestone.constraints):
@@ -116,8 +115,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         non_guardrail_count = 0
         hard_pass = True
         for constraint in milestone.constraints:
-            source = self._source_for_constraint(constraint, boundary, trajectory, reference_snapshots)
-            reference = self._reference_for_constraint(constraint, reference_snapshots)
+            source, reference = self._constraint_sources(constraint, boundary, trajectory, reference_snapshots)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             constraint_score = clamp(float(result.score))
@@ -161,19 +159,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_value: JsonValue,
         context: ScoringContext | None = None,
     ) -> ConstraintScore:
-        """计算 ToolSandbox custom snapshot constraint 分数。
-
-        Args:
-            constraint: 当前 ToolSandbox 约束。
-            source: 当前值来源。
-            reference_source: 参考值来源。
-            actual: 当前 selector 命中的实际值。
-            reference_value: 当前约束的参考值。
-            context: 可选评分上下文。
-
-        Returns:
-            单条 ToolSandbox 约束评分。
-        """
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return super().score_custom_constraint(
@@ -211,13 +196,11 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         )
 
     def _is_toolsandbox_constraint(self, constraint: Constraint) -> bool:
-        """判断约束是否来自 ToolSandbox 适配层。"""
         if constraint is None:
             return False
         return isinstance(constraint.metadata.get("toolsandbox"), dict)
 
     def _is_toolsandbox_guardrail(self, constraint: Constraint) -> bool:
-        """读取 ToolSandbox guardrail 标记。"""
         metadata = constraint.metadata.get("toolsandbox") if constraint is not None else None
         return isinstance(metadata, dict) and bool(metadata.get("guardrail"))
 
@@ -227,7 +210,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         actual: JsonValue,
         exc: BaseException,
     ) -> ConstraintScore:
-        """将 ToolSandbox 原生评分异常转换为可诊断的约束失败。"""
         exc_type = f"{exc.__class__.__module__}.{exc.__class__.__name__}"
         return ConstraintScore(
             constraint_id=constraint.constraint_id,
@@ -238,7 +220,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         )
 
     def _is_pyo3_panic_exception(self, exc: BaseException) -> bool:
-        """判断异常是否为 Polars/PyO3 Rust panic 包装异常。"""
         exc_type = exc.__class__
         module_name = str(getattr(exc_type, "__module__", ""))
         class_name = str(getattr(exc_type, "__name__", ""))
@@ -252,7 +233,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_value: JsonValue,
         context: ScoringContext | None,
     ) -> float:
-        """调用 ToolSandbox 原生 snapshot similarity 函数。"""
         if not measure_name:
             raise ValueError("缺少 snapshot_constraint")
         evaluation = self._load_toolsandbox_evaluation_module()
@@ -276,16 +256,10 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         )
 
     def _load_toolsandbox_evaluation_module(self) -> Any:
-        """加载 ToolSandbox evaluation 模块。"""
-        if self._module_loader is not None:
-            return self._module_loader("tool_sandbox.common.evaluation")
-        raise ModuleNotFoundError("tool_sandbox.common.evaluation")
+        return self._module_loader("tool_sandbox.common.evaluation")
 
     def _load_tool_trace_extractors_module(self) -> Any:
-        """加载 ToolSandbox tool_trace extractor 模块。"""
-        if self._module_loader is not None:
-            return self._module_loader("tool_sandbox.common.tool_trace_extractors")
-        raise ModuleNotFoundError("tool_sandbox.common.tool_trace_extractors")
+        return self._module_loader("tool_sandbox.common.tool_trace_extractors")
 
     def _rows_to_dataframe(
         self,
@@ -293,7 +267,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         namespace: str | None = None,
         target: bool = False,
     ) -> pl.DataFrame:
-        """将 DynSTEER JSON rows 转为 polars DataFrame。"""
         rows: JsonValue
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
             rows = value["rows"]
@@ -308,7 +281,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return self._restore_namespace_schema(pl.DataFrame(rows), namespace, target=target)
 
     def _normalize_sandbox_target_rows(self, rows: list[JsonValue]) -> list[JsonValue]:
-        """将 SANDBOX target rows 恢复为原生 similarity 期望的单元格类型。"""
         if rows is None:
             raise ValueError("SANDBOX target rows 不能为空")
         normalized: list[JsonValue] = []
@@ -323,7 +295,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return normalized
 
     def _serialize_target_tool_trace(self, value: JsonValue) -> JsonValue:
-        """把 target `tool_trace` 转成 ToolSandbox 原生列相似度要求的 JSON 字符串。"""
         if value is None or isinstance(value, str):
             return value
         if isinstance(value, dict):
@@ -345,7 +316,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return json.dumps(value, ensure_ascii=False)
 
     def _toolsandbox_namespace(self, constraint: Constraint) -> str:
-        """读取 ToolSandbox 约束对应的数据库命名空间。"""
         metadata = constraint.metadata.get("toolsandbox")
         if isinstance(metadata, dict):
             namespace = metadata.get("database_namespace")
@@ -359,7 +329,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         namespace: str | None,
         target: bool = False,
     ) -> pl.DataFrame:
-        """恢复 ToolSandbox JSON 快照丢失的 Null 列类型。"""
         if dataframe is None or not namespace:
             return dataframe
         schema = self._namespace_schema(namespace)
@@ -381,7 +350,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         schema: dict[str, Any],
         target: bool = False,
     ) -> pl.DataFrame:
-        """恢复 SANDBOX 消息表的原生 enum/list schema。"""
         if dataframe is None or schema is None:
             raise ValueError("SANDBOX schema 恢复参数不能为空")
         result = dataframe
@@ -399,7 +367,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return result
 
     def _namespace_schema(self, namespace: str) -> dict[str, Any]:
-        """获取 ToolSandbox namespace 的列类型定义。"""
         normalized = namespace.upper()
         try:
             execution_context = self._load_toolsandbox_execution_context_module()
@@ -412,13 +379,9 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return _FALLBACK_TOOLSANDBOX_SCHEMAS.get(normalized, {})
 
     def _load_toolsandbox_execution_context_module(self) -> Any:
-        """加载 ToolSandbox execution_context 模块。"""
-        if self._module_loader is not None:
-            return self._module_loader("tool_sandbox.common.execution_context")
-        raise ModuleNotFoundError("tool_sandbox.common.execution_context")
+        return self._module_loader("tool_sandbox.common.execution_context")
 
     def _snapshot_constraint_kwargs(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
-        """恢复 ToolSandbox partial snapshot constraint 的关键字参数。"""
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return {}
@@ -438,7 +401,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return kwargs
 
     def _column_similarities(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
-        """读取 ToolSandbox 默认列相似度并应用约束级覆盖。"""
         metadata = constraint.metadata.get("toolsandbox")
         namespace = ""
         if isinstance(metadata, dict):
@@ -456,7 +418,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return column_similarities
 
     def _restore_column_similarity(self, evaluation: Any, measure_spec: object) -> Any:
-        """从字符串或结构化 partial 规格恢复 ToolSandbox 列相似度函数。"""
         if isinstance(measure_spec, str):
             measure = getattr(evaluation, measure_spec, None)
             if not callable(measure):
@@ -478,7 +439,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
 
     def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None) -> pl.DataFrame | None:
-        """根据 ScoringContext 查找 ToolSandbox reference snapshot。"""
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return None

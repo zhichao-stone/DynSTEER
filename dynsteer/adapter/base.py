@@ -3,50 +3,27 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from dynsteer.adapter.utils import ensure_source_root
-from dynsteer.evaluate.score import GeneralScorer
+from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, TaskCase
 
 
 class BaseBenchmarkConstraintScorer(GeneralScorer):
-    """benchmark 约束评分器基类。
-
-    默认继承 DynSTEER 通用评分逻辑；特定 benchmark 可以覆写
-    score_custom_constraint() 或其他评分方法实现专有语义。
-    """
+    """benchmark 约束评分器基类。"""
 
 
 class BaseBenchmarkAdapter(ABC):
-    """benchmark 离线数据转换与 harness 工厂基类。"""
+    """benchmark 离线数据转换基类。"""
 
     benchmark: str
 
     @abstractmethod
     def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
-        """将 benchmark 原生 case 转换为 DynSTEER TaskCase。
-
-        Args:
-            config: harness 运行配置。
-            case_id: benchmark 原生 case ID。
-
-        Returns:
-            已适配的 DynSTEER 任务定义。
-        """
-
-    @abstractmethod
-    def create_harness(self) -> "BaseBenchmarkHarness":
-        """创建当前 benchmark 对应的运行期 harness。
-
-        Returns:
-            可执行 benchmark case 的 harness。
-        """
+        """将 benchmark 原生 case 转换为 DynSTEER TaskCase。"""
 
 
 class BaseBenchmarkHarness(ABC):
-    """benchmark 运行期执行接口基类。
-
-    Harness 负责 benchmark 原生 session 生命周期、增量步骤采集和原生摘要提取。
-    """
+    """benchmark 运行期执行接口基类。"""
 
     benchmark: str
     dependency_error_message: str | None = None
@@ -55,76 +32,33 @@ class BaseBenchmarkHarness(ABC):
 
     @abstractmethod
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
-        """列出可运行 case。
-
-        Args:
-            config: harness 运行配置。
-
-        Returns:
-            benchmark case 列表。
-        """
+        """列出可运行 case。"""
 
     @abstractmethod
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object:
-        """初始化 benchmark 原生 session。
-
-        Args:
-            config: harness 运行配置。
-            case_id: benchmark 场景 ID。
-            raw_output_dir: 原生输出目录。
-
-        Returns:
-            子类私有 session 对象。
-        """
+        """初始化 benchmark 原生 session。"""
 
     @abstractmethod
     def advance_case(self, session: object) -> HarnessAdvanceResult:
-        """推进 benchmark session 一个可中断执行批次。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            本批次新增步骤、可见快照与是否继续推进的结构化结果。
-        """
+        """推进 benchmark session 一个可中断执行批次。"""
 
     @abstractmethod
     def case_finished(self, session: object) -> bool:
-        """判断 benchmark session 是否自然完成。
-
-        该方法保留为公开查询接口或子类内部辅助能力，`DynSTEEREvaluator.evaluate()`
-        不使用它作为主循环条件。
-        """
+        """判断 benchmark session 是否自然完成。"""
 
     ## 基类自身实现
 
     def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
-        """返回当前 benchmark 的约束评分器。
-
-        Returns:
-            默认通用 benchmark scorer；子类可返回专用 scorer。
-        """
+        """返回当前 benchmark 的约束评分器。"""
         return BaseBenchmarkConstraintScorer()
 
     def prepare_config(self, config: HarnessRunConfig) -> None:
-        """校验配置并准备 benchmark source_root。
-
-        Args:
-            config: harness 运行配置。
-        """
+        """校验配置并准备 benchmark source_root。"""
         self._validate_config(config)
         ensure_source_root(config.data_root, self._project_root(), self.benchmark)
 
     def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str:
-        """构造安全的运行 ID。
-
-        Args:
-            config: harness 运行配置。
-            case_id: benchmark 场景 ID。
-
-        Returns:
-            可用于目录名的 run_id。
-        """
+        """构造安全的运行 ID。"""
         if config is None or case_id is None:
             raise ValueError("config 和 case_id 不能为空")
         raw_run_id = config.metadata.get("run_id")
@@ -138,65 +72,32 @@ class BaseBenchmarkHarness(ABC):
         return safe
 
     def metrics_from_session(self, session: object) -> JsonObject:
-        """从 session 提取运行期 metrics。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            当前 metrics 字典；默认为空。
-        """
+        """从 session 提取运行期 metrics。"""
         if session is None:
             raise ValueError("session 不能为空")
         return {}
 
     def final_state_from_session(self, session: object) -> JsonObject | None:
-        """从 session 提取最终或当前状态。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            当前 final_state 字典；默认为空。
-        """
+        """从 session 提取最终或当前状态。"""
         if session is None:
             raise ValueError("session 不能为空")
         return None
 
     def raw_summary_from_session(self, session: object) -> JsonObject:
-        """提取 benchmark 原生摘要。
-
-        Args:
-            session: 子类私有 session 对象。
-
-        Returns:
-            原生摘要字典。
-        """
+        """提取 benchmark 原生摘要。"""
         if session is None:
             raise ValueError("session 不能为空")
         return {}
 
     def stop_case(self, session: object, reason: str) -> None:
-        """按 DynSTEER 策略终止当前 benchmark session。
-
-        Args:
-            session: 子类私有 session 对象。
-            reason: 中文终止原因。
-        """
+        """按 DynSTEER 策略终止当前 benchmark session。"""
         if session is None:
             raise ValueError("session 不能为空")
         if not reason:
             raise ValueError("reason 不能为空")
 
     def teardown_case(self, session: object) -> None:
-        """释放 benchmark 原生 session 资源。
-
-        子类应尽力释放全部外部资源并断开大对象引用。若部分资源释放失败，
-        应继续尝试释放剩余资源，并在最后抛出包含失败摘要的异常。
-
-        Args:
-            session: 子类私有 session 对象。
-        """
+        """释放 benchmark 原生 session 资源。"""
         if session is None:
             return
 

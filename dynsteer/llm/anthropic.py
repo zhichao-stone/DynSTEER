@@ -8,32 +8,13 @@ from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError, LLMMess
 class AnthropicLLM(BaseLLM):
     """基于官方 Anthropic SDK 的 LLM 实现。"""
 
-    def __init__(self, config: LLMConfig) -> None:
-        """初始化 Anthropic LLM 封装。
-
-        Args:
-            config: LLM provider 运行配置，必须包含非空 model。
-
-        Raises:
-            LLMConfigurationError: config 或 model 缺失时抛出。
-        """
-        super().__init__(config)
-
     def _get_response_from_client(
         self,
         client: Anthropic,
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
-        """使用 Anthropic client 调用 Messages API。
-
-        Args:
-            messages: 已校验的消息列表。
-            request_params: 已转换的 Anthropic 请求参数。
-
-        Returns:
-            Anthropic Messages API 响应对象。
-        """
+        """使用 Anthropic client 调用 Messages API。"""
         system_text = "\n".join(message.content for message in messages if message.role == "system")
         request: dict[str, object] = {
             "model": self._config.model,
@@ -49,11 +30,7 @@ class AnthropicLLM(BaseLLM):
         return client.messages.create(**request)
 
     def _create_client(self) -> Anthropic:
-        """根据 LLMConfig 构造官方 Anthropic client。
-
-        Returns:
-            Anthropic SDK client。
-        """
+        """根据 LLMConfig 构造官方 Anthropic client。"""
         kwargs: dict[str, object] = {"timeout": self._config.timeout_seconds}
         if self._config.api_key is not None:
             kwargs["api_key"] = self._config.api_key
@@ -102,17 +79,7 @@ class AnthropicLLM(BaseLLM):
         return model_max_tokens
 
     def _response_text(self, response: object) -> str:
-        """从 Anthropic SDK 响应中提取首个非空文本块。
-
-        Args:
-            response: Anthropic Messages API 返回对象。
-
-        Returns:
-            首个非空 text block 内容。
-
-        Raises:
-            LLMResponseError: 响应中没有可用文本块时抛出。
-        """
+        """从 Anthropic SDK 响应中提取首个非空文本块。"""
         content = getattr(response, "content", None)
         if isinstance(content, list):
             for block in content:
@@ -122,14 +89,7 @@ class AnthropicLLM(BaseLLM):
         raise LLMResponseError("Anthropic 返回内容缺少 text block")
 
     def _text_from_block(self, block: object) -> str | None:
-        """读取 Anthropic text block 的文本内容。
-
-        Args:
-            block: SDK 返回的内容块，可为对象或字典。
-
-        Returns:
-            text 类型内容块的文本；类型不匹配时返回 None。
-        """
+        """读取 Anthropic text block 的文本内容。"""
         if isinstance(block, dict):
             if block.get("type") == "text":
                 text = block.get("text")

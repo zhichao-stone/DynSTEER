@@ -14,17 +14,7 @@ _ANTHROPIC_PROVIDERS = {"anthropic", "claude"}
 
 
 def build_llm(config: LLMConfig) -> BaseLLM:
-    """根据 provider 构建对应的 BaseLLM 实例。
-
-    Args:
-        config: LLM provider 运行配置。
-
-    Returns:
-        与 provider 匹配的 BaseLLM 实现。
-
-    Raises:
-        LLMConfigurationError: provider 不受支持时抛出。
-    """
+    """根据 provider 构建对应的 BaseLLM 实例。"""
     if config is None:
         raise LLMConfigurationError("LLMConfig 不能为空")
     provider = config.provider.strip().lower()
@@ -36,17 +26,7 @@ def build_llm(config: LLMConfig) -> BaseLLM:
 
 
 def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
-    """从环境变量构建 BaseLLM。
-
-    Args:
-        env: 环境变量映射；测试时可传入 fake env。
-
-    Returns:
-        未配置 provider 时返回 None；配置 provider 时返回对应 BaseLLM。
-
-    Raises:
-        LLMConfigurationError: provider 已配置但其余必填项缺失或不合法时抛出。
-    """
+    """从环境变量构建 BaseLLM。"""
     source = env if env is not None else os.environ
 
     provider_raw = normalize_str_from_source(source, "DYNSTEER_JUDGE_PROVIDER")
@@ -91,16 +71,7 @@ def _read_max_tokens(value: str | None) -> int | None:
 
 
 def _read_positive_int(value: str | None, label: str, default: int) -> int:
-    """读取正整数环境变量。
-
-    Args:
-        value: 环境变量原始值。
-        label: 环境变量名。
-        default: 缺失时默认值。
-
-    Returns:
-        正整数。
-    """
+    """读取正整数环境变量。"""
     if value is None or not value.strip():
         return default
     parsed = int(value)
@@ -110,16 +81,7 @@ def _read_positive_int(value: str | None, label: str, default: int) -> int:
 
 
 def _read_non_negative_float(value: str | None, label: str, default: float) -> float:
-    """读取非负浮点环境变量。
-
-    Args:
-        value: 环境变量原始值。
-        label: 环境变量名。
-        default: 缺失时默认值。
-
-    Returns:
-        非负浮点数。
-    """
+    """读取非负浮点环境变量。"""
     if value is None or not value.strip():
         return default
     parsed = float(value)

@@ -46,11 +46,7 @@ class BaseLLM(ABC):
     """对外只暴露交互响应接口的 LLM 抽象基类。"""
 
     def __init__(self, config: LLMConfig) -> None:
-        """初始化 LLM 基类配置。
-
-        Args:
-            config: LLM provider 运行配置。
-        """
+        """初始化 LLM 基类配置。"""
         if config is None:
             raise LLMConfigurationError("LLMConfig 不能为空")
         if not isinstance(config.provider, str) or not config.provider.strip():
@@ -64,15 +60,7 @@ class BaseLLM(ABC):
         self._config = config
 
     def chat(self, messages: list[LLMMessage], **infer_params: object) -> str:
-        """与 LLM 交互并返回回复文本。
-
-        Args:
-            messages: 角色与内容组成的消息列表。
-            infer_params: 本次推理请求的可选参数。
-
-        Returns:
-            LLM 回复的纯文本内容。
-        """
+        """与 LLM 交互并返回回复文本。"""
         self._validate_messages(messages)
         client = self._create_client()
         request_params = self._normalize_infer_params(infer_params, client)
@@ -149,11 +137,7 @@ class BaseLLM(ABC):
         )
 
     def _validate_messages(self, messages: list[LLMMessage]) -> None:
-        """校验对话消息列表。
-
-        Args:
-            messages: 待发送给 provider 的消息列表。
-        """
+        """校验对话消息列表。"""
         if messages is None or len(messages) == 0:
             raise LLMConfigurationError("messages 不能为空")
         for index, message in enumerate(messages):
@@ -165,27 +149,12 @@ class BaseLLM(ABC):
                 raise LLMConfigurationError(f"messages[{index}].content 不能为空")
 
     def _retry_delay(self, attempt: int) -> float:
-        """计算指数退避等待时间。
-
-        Args:
-            attempt: 当前失败尝试次数，从 1 开始。
-
-        Returns:
-            本次重试前等待秒数。
-        """
+        """计算指数退避等待时间。"""
         delay = self._config.retry_base_seconds * (2 ** max(attempt - 1, 0))
         return min(delay, self._config.retry_max_seconds)
 
     def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
-        """归一化推理参数。
-
-        Args:
-            infer_params: chat 调用传入的推理参数。
-            client: 本次 chat 调用创建的 provider SDK client。
-
-        Returns:
-            去除 None 值后的参数字典。
-        """
+        """归一化推理参数。"""
         if client is None:
             raise LLMConfigurationError("provider client 不能为空")
         if infer_params is None:
@@ -206,11 +175,7 @@ class BaseLLM(ABC):
 
     @abstractmethod
     def _create_client(self) -> object:
-        """创建 provider SDK client。
-
-        Returns:
-            provider SDK client。
-        """
+        """创建 provider SDK client。"""
 
     @abstractmethod
     def _get_response_from_client(
@@ -219,24 +184,8 @@ class BaseLLM(ABC):
         messages: list[LLMMessage],
         request_params: dict[str, object],
     ) -> object:
-        """使用 provider SDK client 获取响应。
-
-        Args:
-            client: 本次 chat 调用创建的 provider SDK client。
-            messages: 已校验的消息列表。
-            request_params: 已归一化的 provider 请求参数。
-
-        Returns:
-            provider 原始响应对象。
-        """
+        """使用 provider SDK client 获取响应。"""
 
     @abstractmethod
     def _response_text(self, response: object) -> str:
-        """从 provider 响应中提取文本。
-
-        Args:
-            response: provider 原始响应对象。
-
-        Returns:
-            响应文本。
-        """
+        """从 provider 响应中提取文本。"""

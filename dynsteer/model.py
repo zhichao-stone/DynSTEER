@@ -256,14 +256,7 @@ class Trajectory:
 
     ## 可用接口
     def append_step(self, step: TrajectoryStep) -> None:
-        """追加单个 step，并同步维护首个 step 与 boundary 后继表。
-
-        Args:
-            step: 当前运行期新增的轨迹步骤。
-
-        Raises:
-            ValueError: 当 step 为空或 step index 未保持递增时抛出。
-        """
+        """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
         if step is None:
             raise ValueError("step 不能为空")
         
@@ -271,15 +264,7 @@ class Trajectory:
         self._append_step_index(step.index)
 
     def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
-        """返回指定 step index 区间内的轨迹步骤。
-
-        Args:
-            min_index: 区间下界（不包含）。
-            max_index: 区间上界（包含）。
-
-        Returns:
-            满足左开右闭区间语义的轨迹步骤列表。
-        """
+        """返回指定 step index 区间内的轨迹步骤。"""
         # 保持区间语义有效，避免调用方传入反向边界。
         if min_index >= max_index:
             raise ValueError("min_index 必须小于 max_index")
@@ -323,22 +308,6 @@ class MilestoneScore:
     missing_ratio: float = 0.0
     hard_constraints_all_pass: bool = True
     constraint_scores: list[ConstraintScore] = field(default_factory=list)
-
-
-@dataclass
-class MilestoneMappingItem:
-    milestone_id: str
-    boundary_id: str
-    boundary_step_index: int
-    score: MilestoneScore
-
-
-@dataclass
-class MilestoneMapping:
-    assignments: dict[str, MilestoneMappingItem] = field(default_factory=dict)
-    missing_required: list[str] = field(default_factory=list)
-    objective: float = 0.0
-    evidence: list[str] = field(default_factory=list)
 
 
 ## 评估决策与结果模型
@@ -463,17 +432,7 @@ def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
 ## 通用校验函数
 
 def ensure_json_object(value: Any) -> JsonObject:
-    """校验输入是否为 JSON 对象。
-
-    Args:
-        value: 待校验的任意值。
-
-    Returns:
-        校验后的 JSON 对象。
-
-    Raises:
-        ValueError: 当输入不是字典时抛出。
-    """
+    """校验输入是否为 JSON 对象。"""
     if value is None or not isinstance(value, dict):
         raise ValueError("输入必须是 JSON 对象")
     return value

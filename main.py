@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 from dynsteer.adapter.loader import adapted_case_path, load_task_case
-from dynsteer.adapter.registry import get_adapter
+from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
+from dynsteer.harness.selection import config_with_case_ids, select_case_ids, validate_loaded_task_cases
 from dynsteer.log import configure_logger
 
 
@@ -28,15 +28,7 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
 
 
 def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = False) -> list[Path]:
-    """仅执行 benchmark TaskCase 适配，并返回 adapted case 文件路径。
-
-    Args:
-        configs: 已从 data-root 加载的 harness 运行配置列表。
-        force_adapt: 是否强制重建已存在的 adapted case。
-
-    Returns:
-        本次确认可用的 adapted case JSON 文件路径列表。
-    """
+    """仅执行 benchmark TaskCase 适配，并返回 adapted case 文件路径。"""
     if configs is None:
         raise ValueError("configs 不能为空")
     adapted_paths: list[Path] = []
@@ -44,7 +36,7 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
         if config is None:
             raise ValueError("configs 不能包含空配置")
         adapter = get_adapter(config.benchmark)
-        harness = adapter.create_harness()
+        harness = get_harness(config.benchmark)
         cases = harness.list_cases(config)
         if not cases:
             raise ValueError("benchmark 没有可适配场景")
@@ -67,14 +59,7 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """主实验入口：加载 benchmark 配置列表并执行评估。
-
-    Args:
-        argv: 可选命令行参数，测试时可直接传入。
-
-    Returns:
-        0 表示成功，1 表示输入解析错误，2 表示评估执行错误。
-    """
+    """主实验入口：加载 benchmark 配置列表并执行评估。"""
     args = _parse_args(argv)
     logger = configure_logger(args.log_dir)
     runs_dir = Path(args.runs_dir)
