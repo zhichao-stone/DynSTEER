@@ -54,6 +54,14 @@ class CaseProgressState:
     finished: bool = False
 
 
+@dataclass
+class CaseProgressBars:
+    """单个 case 在终端中占用的标题行与进度条行。"""
+
+    title_bar: Any
+    progress_bar: Any
+
+
 class CaseProgressReporter(Protocol):
     """接收 evaluator 推进事件的协议。"""
 
@@ -102,7 +110,7 @@ class TqdmCaseProgressManager:
         self.active_order: list[str] = []
         self.visible_order: list[str] = []
         self.case_states: dict[str, CaseProgressState] = {}
-        self.bars: dict[str, Any] = {}
+        self.bars: dict[str, CaseProgressBars] = {}
         self._bar_factory = bar_factory or tqdm
         self._line_writer = line_writer or (lambda message: tqdm.write(message, file=sys.__stderr__))
         self._time_fn = time_fn or time.monotonic
@@ -145,11 +153,11 @@ class TqdmCaseProgressManager:
         state = self.case_states[case_id]
         state.step_count += step_count
         self._refresh_state(state)
-        bar = self.bars.get(case_id)
-        if bar is not None:
-            self._grow_bar_total(bar, state.step_count)
-            bar.update(step_count)
-            self._set_bar_postfix(bar, state)
+        bars = self.bars.get(case_id)
+        if bars is not None:
+            self._grow_bar_total(bars.progress_bar, state.step_count)
+            bars.progress_bar.update(step_count)
+            self._set_bar_postfix(bars.progress_bar, state)
 
     def case_finished(self, case_id: str) -> None:
         """标记指定 case 完成，并在可见窗口中保留满进度条。"""
@@ -164,22 +172,22 @@ class TqdmCaseProgressManager:
             self.active_order.remove(case_id)
         if case_id not in self.visible_order:
             self.visible_order.append(case_id)
-        bar = self.bars.get(case_id)
-        if bar is not None:
-            self._finish_bar(bar, state)
+        bars = self.bars.get(case_id)
+        if bars is not None:
+            self._finish_bar(bars.progress_bar, state)
         self._trim_visible_order()
         self._sync_visible_bars(previous_visible_order)
 
     def close_all(self) -> None:
         """关闭所有可见进度条，并保留最终窗口。"""
         for case_id in list(self.visible_order):
-            bar = self.bars.pop(case_id, None)
+            bars = self.bars.pop(case_id, None)
             state = self.case_states[case_id]
             self._refresh_state(state)
-            if bar is not None:
+            if bars is not None:
                 if state.finished:
-                    self._finish_bar(bar, state)
-                self._close_bar(bar, leave=True)
+                    self._finish_bar(bars.progress_bar, state)
+                self._close_bars(bars, leave=True)
         self.active_order.clear()
         self.visible_order.clear()
         self._write_line_after_close()
@@ -188,8 +196,8 @@ class TqdmCaseProgressManager:
         """按当前可见顺序重建进度条位置。"""
         old_bars = dict(self.bars)
         self.bars.clear()
-        for bar in old_bars.values():
-            self._close_bar(bar, leave=False)
+        for bars in old_bars.values():
+            self._close_bars(bars, leave=False)
         for position, case_id in enumerate(self.visible_order):
             self.bars[case_id] = self._create_bar(case_id, position)
             self._refresh_bar(case_id)
@@ -209,31 +217,41 @@ class TqdmCaseProgressManager:
 
         for case_id in list(self.bars):
             if case_id not in self.visible_order:
-                bar = self.bars.pop(case_id)
-                self._close_bar(bar, leave=False)
+                bars = self.bars.pop(case_id)
+                self._close_bars(bars, leave=False)
         for position, case_id in enumerate(self.visible_order):
             if case_id not in self.bars:
                 self.bars[case_id] = self._create_bar(case_id, position)
             self._refresh_bar(case_id)
 
-    def _create_bar(self, case_id: str, position: int) -> Any:
+    def _create_bar(self, case_id: str, position: int) -> CaseProgressBars:
         state = self.case_states[case_id]
-        return self._bar_factory(
+        title_bar = self._bar_factory(
             desc=case_id,
+            total=0,
+            position=position * 2,
+            leave=False,
+            initial=0,
+            bar_format=self._title_bar_format(case_id),
+            file=sys.__stderr__,
+        )
+        progress_bar = self._bar_factory(
+            desc=self._progress_description(),
             total=state.step_count if state.finished else max(self.estimated_total, state.step_count),
             unit="step",
-            position=position,
+            position=position * 2 + 1,
             leave=False,
             initial=state.step_count,
             file=sys.__stderr__,
         )
+        return CaseProgressBars(title_bar=title_bar, progress_bar=progress_bar)
 
     def _refresh_bar(self, case_id: str) -> None:
         state = self.case_states[case_id]
         self._refresh_state(state)
-        bar = self.bars.get(case_id)
-        if bar is not None:
-            self._set_bar_postfix(bar, state)
+        bars = self.bars.get(case_id)
+        if bars is not None:
+            self._set_bar_postfix(bars.progress_bar, state)
 
     def _refresh_state(self, state: CaseProgressState) -> None:
         state.elapsed_seconds = max(self._time_fn() - state.started_at, 0.0)
@@ -263,9 +281,9 @@ class TqdmCaseProgressManager:
             if evicted is None:
                 return
             self.visible_order.remove(evicted)
-            bar = self.bars.pop(evicted, None)
-            if bar is not None:
-                self._close_bar(bar, leave=False)
+            bars = self.bars.pop(evicted, None)
+            if bars is not None:
+                self._close_bars(bars, leave=False)
 
     def _oldest_finished_visible_case(self) -> str | None:
         """返回最早进入窗口且已经完成的 case。"""
@@ -279,6 +297,17 @@ class TqdmCaseProgressManager:
         """关闭 tqdm bar，并按需保留终端行。"""
         setattr(bar, "leave", leave)
         bar.close()
+
+    def _close_bars(self, bars: CaseProgressBars, leave: bool) -> None:
+        """关闭单个 case 占用的两行 tqdm bar。"""
+        self._close_bar(bars.progress_bar, leave)
+        self._close_bar(bars.title_bar, leave)
+
+    def _progress_description(self) -> str:
+        return f"执行进度（最多{self.estimated_total}步）"
+
+    def _title_bar_format(self, case_id: str) -> str:
+        return case_id.replace("{", "{{").replace("}", "}}")
 
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
