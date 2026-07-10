@@ -369,6 +369,8 @@ def first_failure_stage_id(stage_reports: list[StageEvaluationResult]) -> str | 
 def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]:
     normalized_source = {dimension: max(float(weights.get(dimension, 0.0)), 0.0) for dimension in Dimension}
     total = sum(normalized_source.values())
+    if total <= 0:
+        return {dimension: 1 / len(Dimension) for dimension in Dimension}
     return {dimension: value / total for dimension, value in normalized_source.items()}
 
 
@@ -408,6 +410,6 @@ def update_weights(
         target = effective_config.targets.get(dimension, DEFAULT_TARGETS[dimension])
         focus = effective_config.focus.get(dimension, DEFAULT_FOCUS[dimension])
         next_weights[dimension] = base * math.exp(
-            effective_config.alpha * (target - score) + effective_config.beta * clamp(uncertainty) * focus
+            effective_config.alpha * max(0.0, target - score) + effective_config.beta * clamp(uncertainty) * focus
         )
     return normalize_weights(next_weights)
