@@ -14,8 +14,9 @@
 
 - `dict[str, Any]`：包含 `generated_at` 与 `runs` 的展示数据。
   - `scenario.milestone_graph` 会合并 adapted case 中的增强图信息，包含 `__start__`、`__finish__` 超级节点、增强边和阶段锚点 metadata。
-  - `scenario.stage_reports[]` 包含 `dimension_scores` 与 `next_weights`，用于展示阶段级评估动态。
+  - `scenario.stage_reports[]` 包含 `dimension_scores`、`next_weights`、`metadata.active_evaluation_policy` 与 `metadata.next_evaluation_policy`，用于展示阶段级评估动态和跨阶段评估策略。
   - `scenario.stage_settlements[].milestone_matching` 包含 milestone 命中边界、匹配分数和约束得分摘要，用于中列节点展开详情。
+  - `scenario.minefield_matches[]` 包含运行期 boundary 级 minefield 命中、`severity`、`score` 与 `penalty`，用于解释最终总分扣罚。
 
 ## `write_display_data_js`
 

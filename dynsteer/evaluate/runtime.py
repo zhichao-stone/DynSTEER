@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dynsteer.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary
+from dynsteer.evaluate.policy import EvaluationPolicyState, initial_evaluation_policy
 from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
 from dynsteer.evaluate.scoring import ScoringContext
 from dynsteer.harness.model import HarnessStageSettlement
@@ -32,6 +33,10 @@ class RuntimeEvaluationState:
     matched_settlements: dict[str, HarnessStageSettlement]
     stage_reports: list[StageEvaluationResult]
     match_attempts: list[JsonObject]
+    evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
+    minefield_matches: list[JsonObject] = field(default_factory=list)
+    max_minefield_score: float = 0.0
+    fatal_minefield: bool = False
 
 
 @dataclass
@@ -143,10 +148,10 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
                 evaluator_level=EvaluationLevel.CHEAP,
                 status=status,
                 stage_score=0.0,
-                uncertainty=0.0,
+                uncertainty=1.0,
                 dimension_scores={dimension: 0.0 for dimension in Dimension},
                 evidence=evidence,
-                diagnosis=[f"required milestone {milestone_id} 未完成"],
+                diagnosis=[f"required milestone {milestone_id} 未完成，结果高风险"],
                 hard_constraints_all_pass=False,
                 required_fields_missing_ratio=1.0,
                 metadata={

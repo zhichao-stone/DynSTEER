@@ -326,12 +326,6 @@ class StageInterval:
 
 
 @dataclass
-class EvaluationDecision:
-    level: EvaluationLevel
-    reason: str
-
-
-@dataclass
 class StageEvaluationResult:
     stage_id: str
     milestone_id: Optional[str]

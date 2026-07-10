@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from dynsteer.prompt.judge import build_judge_system_prompt
+from dynsteer.evaluate.scoring import stage_score_from_dimensions
 from dynsteer.language import TaskLanguage
 from dynsteer.llm.base import BaseLLM, LLMMessage, LLMResponseError
 from dynsteer.model import (
@@ -124,7 +125,7 @@ class LLMJudge(BaseJudge):
             evaluator_level=level,
             status=validated.status,
             stage_score=stage_score,
-            uncertainty=0.0,
+            uncertainty=max(0.0, min(1.0, 1.0 - validated.judge_confidence)),
             dimension_scores=validated.dimension_scores,
             evidence=validated.evidence,
             diagnosis=validated.diagnosis,
@@ -157,21 +158,10 @@ class LLMJudge(BaseJudge):
         """根据维度分数和内部权重计算阶段总分。"""
         if not isinstance(dimension_scores, dict) or not isinstance(weights, dict):
             raise LLMJudgeConfigurationError("stage_score 计算参数必须是字典")
-        weighted_score = 0.0
-        total_weight = 0.0
-        for dimension in Dimension:
-            score = dimension_scores[dimension]
-            raw_weight = weights.get(dimension, 0.0)
-            if isinstance(raw_weight, bool) or not isinstance(raw_weight, int | float):
-                raise LLMJudgeConfigurationError(f"{dimension.value} 权重必须是数字")
-            weight = float(raw_weight)
-            if weight <= 0.0:
-                continue
-            weighted_score += score * weight
-            total_weight += weight
-        if total_weight <= 0.0:
-            return sum(dimension_scores.values()) / len(Dimension)
-        return weighted_score / total_weight
+        try:
+            return stage_score_from_dimensions(dimension_scores, weights)
+        except ValueError as exc:
+            raise LLMJudgeConfigurationError("stage_score 计算参数不合法") from exc
 
     def _dimension_scores(self, value: object) -> dict[Dimension, float]:
         if not isinstance(value, dict):

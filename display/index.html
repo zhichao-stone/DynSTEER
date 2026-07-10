@@ -844,6 +844,8 @@
       const weights = weightRows(report);
       if (dimensions) body.append(stageScoreSection("维度分数", dimensions));
       if (weights) body.append(stageScoreSection("动态权重", weights));
+      const policy = policySection(report);
+      if (policy) body.append(policy);
       card.append(body);
       return card;
     }
@@ -1222,6 +1224,18 @@
 
     function weightRows(report) {
       return scoreRows(report.next_weights || {}, "weight-fill");
+    }
+
+    function policySection(report) {
+      const metadata = report.metadata || {};
+      const active = metadata.active_evaluation_policy;
+      const next = metadata.next_evaluation_policy;
+      if (!active && !next) return null;
+      return detailBlock("评估策略", JSON.stringify({
+        active_evaluation_policy: active || null,
+        next_evaluation_policy: next || null,
+        update: metadata.evaluation_policy_update || null
+      }, null, 2));
     }
 
     function scoreRows(values, fillClassName) {

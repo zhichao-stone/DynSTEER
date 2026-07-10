@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from dynsteer.evaluate.quality import build_stage_quality_diagnostics
+from dynsteer.evaluate.scoring import stage_score_from_dimensions
 from dynsteer.judges.base import BaseJudge
 from dynsteer.model import (
     Dimension,
     EvaluationLevel,
+    JsonObject,
     StageEvaluationResult,
     StageInterval,
     StageStatus,
     TaskCase,
     Trajectory,
 )
+from dynsteer.utils import clamp
 
 
 class CheapJudge(BaseJudge):
@@ -43,46 +47,73 @@ class CheapJudge(BaseJudge):
         else:
             score = 0.0
 
+        diagnostics = build_stage_quality_diagnostics(interval, trajectory)
+        dimension_scores = self._dimension_scores(score, interval.status, diagnostics)
+        stage_score = stage_score_from_dimensions(dimension_scores, weights)
+        judge_confidence = self._confidence(interval.status, missing_ratio, diagnostics)
         return StageEvaluationResult(
             stage_id=interval.stage_id,
             milestone_id=interval.milestone_id,
             evaluator_level=EvaluationLevel.CHEAP,
             status=interval.status,
-            stage_score=score,
-            uncertainty=0.0,
-            dimension_scores=self._dimension_scores(score, interval.status, weights),
+            stage_score=stage_score,
+            uncertainty=max(min(missing_ratio, 1.0), 1.0 - judge_confidence),
+            dimension_scores=dimension_scores,
             evidence=evidence,
             diagnosis=self._diagnosis(interval.status, score, missing_ratio),
             hard_constraints_all_pass=hard_pass,
             required_fields_missing_ratio=missing_ratio,
-            judge_confidence=self._confidence(interval.status, missing_ratio),
+            judge_confidence=judge_confidence,
+            metadata={
+                "stage_quality_diagnostics": diagnostics,
+            },
         )
 
     def _dimension_scores(
         self,
-        score: float,
+        progress_score: float,
         status: StageStatus,
-        weights: dict[Dimension, float],
+        diagnostics: JsonObject,
     ) -> dict[Dimension, float]:
-        base = max(0.0, min(score, 1.0))
-        result = {dimension: base for dimension in Dimension}
+        progress = clamp(progress_score)
+        base = self._base_quality_score(status)
+        failed_count = len(diagnostics.get("failed_tool_results", []))
+        empty_warning_count = sum(
+            1
+            for item in diagnostics.get("empty_tool_results", [])
+            if isinstance(item, dict) and item.get("severity") == "warning"
+        )
+        argument_warning_count = len(diagnostics.get("tool_argument_warnings", []))
+        grounding_warning_count = len(diagnostics.get("grounding_warnings", []))
+        efficiency = diagnostics.get("efficiency", {})
+        extra_user_turns = (
+            int(efficiency.get("extra_user_turns_before_first_tool_call") or 0)
+            if isinstance(efficiency, dict)
+            else 0
+        )
+        step_count = int(diagnostics.get("step_count") or 0)
+        result = {
+            Dimension.PROGRESS: progress,
+            Dimension.STATE_CONSISTENCY: clamp(base - 0.10 * failed_count),
+            Dimension.TOOL_QUALITY: clamp(
+                base - 0.18 * failed_count - 0.12 * empty_warning_count - 0.08 * argument_warning_count
+            ),
+            Dimension.EFFICIENCY: clamp(base - 0.10 * extra_user_turns - 0.02 * max(step_count - 12, 0)),
+            Dimension.SAFETY: clamp(base - 0.15 * failed_count),
+            Dimension.INTERACTION_QUALITY: clamp(base - 0.08 * grounding_warning_count),
+            Dimension.RECOVERY: clamp(base - 0.20 * failed_count),
+        }
         if status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}:
-            result[Dimension.PROGRESS] = min(base, 0.2)
-            result[Dimension.RECOVERY] = min(base, 0.3)
-        if Dimension.SAFETY not in weights:
-            result[Dimension.SAFETY] = base
+            result[Dimension.PROGRESS] = min(progress, 0.2)
+            result[Dimension.RECOVERY] = min(result[Dimension.RECOVERY], 0.3)
         return result
 
-    def _confidence(self, status: StageStatus, missing_ratio: float) -> float:
-        # base = {
-        #     EvaluationLevel.CHEAP: 0.75,
-        #     EvaluationLevel.STANDARD: 0.85,
-        #     EvaluationLevel.EXPENSIVE: 0.92,
-        # }[level]
+    def _confidence(self, status: StageStatus, missing_ratio: float, diagnostics: JsonObject) -> float:
         base = 0.75
         if status in {StageStatus.MISSING, StageStatus.AMBIGUOUS, StageStatus.INVALID}:
             base -= 0.25
         base -= min(max(missing_ratio, 0.0), 1.0) * 0.25
+        base -= min(float(diagnostics.get("warning_count") or 0.0), 5.0) * 0.03
         return max(0.0, min(base, 1.0))
 
     def _diagnosis(self, status: StageStatus, score: float, missing_ratio: float) -> list[str]:
@@ -94,3 +125,13 @@ class CheapJudge(BaseJudge):
         if score < 0.6:
             diagnosis.append("阶段完成度偏低")
         return diagnosis
+
+    def _base_quality_score(self, status: StageStatus) -> float:
+        """根据阶段结构状态给非 progress 维度提供低成本基础分。"""
+        if status == StageStatus.PASS:
+            return 0.85
+        if status == StageStatus.WARN:
+            return 0.65
+        if status == StageStatus.AMBIGUOUS:
+            return 0.55
+        return 0.35

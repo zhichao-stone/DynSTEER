@@ -36,11 +36,14 @@ class BaseJudge(ABC):
 
 ## CheapJudge
 
-`CheapJudge(BaseJudge)` 是本地结构化评估器，只用于 cheap 层，不访问网络。它根据 `StageInterval.milestone_score` 与 `status` 生成确定性阶段评估结果。
+`CheapJudge(BaseJudge)` 是本地结构化评估器，只用于 cheap 层，不访问网络。它会读取 `stage_trajectory_steps(interval, trajectory)` 的当前阶段区间，结合 milestone 分数、工具失败、空查询结果、疑似别名参数、额外用户负担和错误恢复情况生成维度分数。
+
+milestone 分数只作为 `progress` 维度证据，不再复制到所有维度。`stage_score` 由 `dynsteer.evaluate.scoring.stage_score_from_dimensions(...)` 按动态权重计算，阶段质量诊断写入 `StageEvaluationResult.metadata["stage_quality_diagnostics"]`。
 
 ## LLMJudge
 
 `LLMJudge(BaseJudge)` 是 LLM-as-a-Judge 抽象基类。它只封装入参检查、prompt 构造、JSON 调用、响应解析、结果转换和通用异常，依赖注入的 `BaseLLM.chat(...)`，不直接导入 `openai.OpenAI`。
+直接调用 standard / expensive judge 时，初始 `uncertainty` 至少反映 `1.0 - judge_confidence`；进入主流程后仍由 `enrich_stage_result(...)` 统一覆盖最终不确定性并记录 `uncertainty_inputs`。
 
 `LLMJudge` 不实现 `evaluate_stage(...)`，也不保留 `_evaluate_standard(...)`、`_evaluate_expensive(...)`，因此不能直接实例化。共用 helper 包括 `_call_json(...)`、`_result_from_payload(...)`、`_dimension_scores(...)`、`_float_in_unit(...)`、`_string_list(...)`。
 
@@ -102,7 +105,9 @@ stage goal 生成 prompt 中的 `milestone_graph` 使用精简结构：`nodes` �
 
 ## 分发约定
 
-评估等级分发由 `DynSTEEREvaluator` 根据 `EvaluationDecision` 完成：cheap 不足时调用 `StandardJudge`，standard 不足时调用 `ExpensiveJudge`。`LLMJudge` 基类不承担分发，避免出现只调用基类方法的一行中转函数。
+评估等级分发由 `DynSTEEREvaluator` 读取 `RuntimeEvaluationState.evaluation_policy.effective_level()` 完成。当前阶段只调用一个 judge；阶段完成后根据结果生成下一阶段 `EvaluationPolicyState`。旧的“cheap 不足时同阶段调用 StandardJudge，standard 不足时同阶段调用 ExpensiveJudge”链路已删除。
+
+逐维策略会保存在 stage metadata 中，但当前 standard / expensive judge 仍是整阶段全维度评估器；当任一维度要求更高粒度时，实际调用取基础粒度与逐维粒度中的最高成本档。
 
 ## 异常
 

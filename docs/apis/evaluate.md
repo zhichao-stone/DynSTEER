@@ -14,10 +14,12 @@
 dynsteer/evaluate/
 - __init__.py    # 导出 DynSTEEREvaluator、JudgeConfigurationError、权重工具和通用工具
 - evaluator.py   # DynSTEEREvaluator
-- runtime/       # RuntimeEvaluationState、raw_summary、pending milestone、trajectory 与 telemetry
-- scoring/       # GeneralScorer、ScoringContext、权重和阶段结果评分工具
-- diagnostics/   # 运行期 stage trace 与 milestone matching 诊断序列化
-- milestone/     # milestone DAG 校验和运行期 step 命中分析
+- runtime.py     # RuntimeEvaluationState、raw_summary、pending milestone、trajectory 与 telemetry
+- policy.py      # 跨阶段评估粒度策略
+- minefield.py   # 运行期 boundary 级 minefield 扫描
+- scoring.py     # GeneralScorer、ScoringContext、权重和阶段结果评分工具
+- diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
+- milestone.py   # milestone DAG 校验和运行期 step 命中分析
 ```
 
 `dynsteer/match.py` 已并入 `dynsteer/evaluate/milestone/`，`from dynsteer.match import ...` 不再可用。
@@ -70,11 +72,13 @@ result = evaluator.evaluate(harness, config, task_case)
 4. 初始化单个运行期 `Trajectory`，并在后续循环中增量维护 `steps`、`snapshots`、`final_state` 与 `metrics`。
 5. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
 6. 将 `advance.snapshots` 按 `snapshot_id` 合并到运行期 `Trajectory`。
-7. 对每个新增 step 调用 `Trajectory.append_step(...)`，再通过 `analyze_milestone_step(...)` 分析 ready milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked milestone 诊断。
-8. ready milestone 的 PASS 候选直接进入阶段结算；当没有 PASS、但存在 `emit_message + semantic_equivalent` 且无 missing/硬约束失败的 WARN 候选时，该候选会进入现有 `_evaluate_checkpoint(...)` 通道，由 standard judge 复判。只有 standard judge 判 PASS 且阶段分数达到 pass 阈值时，才会写入 matched settlement。
-9. 根据阶段结果执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
-10. 当 `advance.continue_running is False` 时结束主循环。
-11. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
+7. 对每个新增 step 调用 `Trajectory.append_step(...)`，立即按当前 boundary / snapshot / step 扫描 minefield；fatal minefield 且 `config.stop_on_minefield=True` 时复用策略终止路径。
+8. 未触发 minefield 停止时，通过 `analyze_milestone_step(...)` 分析 ready milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked milestone 诊断。
+9. ready milestone 的 PASS 候选直接进入阶段结算；当没有 PASS、但存在 `emit_message + semantic_equivalent` 且无 missing/硬约束失败的 WARN 候选时，该候选会进入现有 `_evaluate_checkpoint(...)` 通道，由运行期评估策略指定的 judge 复判。
+10. 阶段结算时使用 `state.evaluation_policy.effective_level()` 选择本阶段唯一 judge；阶段完成后同时更新 `state.weights` 与 `state.evaluation_policy`，不再在同一阶段内执行 cheap -> standard -> expensive 升级链路。
+11. 根据阶段结果和策略终止决策执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
+12. 当 `advance.continue_running is False` 时结束主循环。
+13. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
 
 Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 adapter/loader 和 harness 返回契约。
 
@@ -86,7 +90,7 @@ Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 
 ### `GeneralScorer`
 
 `GeneralScorer` 是 DynSTEER 默认 milestone / minefield 评分器，位于 `dynsteer.evaluate.scoring`。
-它提供 `score_operator()`、`score_constraint()`、`score_milestone()` 三个核心方法。
+它提供 `score_operator()`、`score_constraint()`、`score_milestone()` 和 `constraint_sources()` 四个核心方法。
 
 `Operator.CUSTOM` 不属于通用 operator。默认 `GeneralScorer` 会返回带 evidence 的 0 分约束结果；benchmark 需要通过 `BaseBenchmarkHarness.constraint_scorer()` 返回专用 scorer 处理 CUSTOM。
 
@@ -98,8 +102,13 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 ## 成员评估函数
 
-- `evaluate_minefields(graph, trajectory, scorer=None, context=None) -> (matches, max_score, fatal)`: 评估轨迹是否触发 minefield。
-- `select_evaluation_level(result, thresholds=None) -> EvaluationDecision`: 根据阶段风险选择评估粒度；`thresholds` 为空时使用评估器默认阈值。
+- `evaluate_minefields(graph, trajectory, scorer=None, context=None) -> (matches, max_score, fatal)`: 对轨迹历史 boundary 扫描 minefield，并返回带 `boundary_id` 与 `penalty` 的命中记录。
+
+评估粒度不再通过公开的 `select_evaluation_level(...)` 在同阶段临时升级，而是由 `RuntimeEvaluationState.evaluation_policy` 保存跨阶段策略：
+
+- 当前阶段读取 `active_evaluation_policy.effective_level()` 选择 cheap / standard / expensive。
+- 当前阶段完成后根据阶段分数、不确定性、fatal minefield 和逐维分数生成 `next_evaluation_policy`。
+- 低分阶段生成 `evaluation_policy_stop` 终止决策，不升级到 expensive。
 
 ## Judge 与 LLM
 
@@ -120,6 +129,13 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 - `stage_trace`: 当前阶段左开右闭区间 `(start_boundary_step_index, end_step_index]` 内的轨迹步骤详情，包含 step id、index、actor、event_type、content、tool_call、tool_result、cost 和 adapter raw 字段。
 - `milestone_matching`: milestone 匹配诊断。`mode="runtime_checkpoint"` 表示本阶段由 milestone checkpoint 触发，包含命中的 milestone、boundary、milestone score、constraint scores、命中前 ready milestone 和已匹配 milestone；`mode="runtime_finish"` 表示自然完成阶段，包含已匹配 milestone 与 pending required/optional milestone 列表。
+- `stage_report.metadata.active_evaluation_policy`: 本阶段使用的评估粒度策略。
+- `stage_report.metadata.next_evaluation_policy`: 本阶段完成后生成的下一阶段策略。
+- `stage_report.metadata.evaluation_policy_update`: 是否触发策略终止及终止原因。
+- `stage_report.metadata.uncertainty_inputs`: 最终 `uncertainty` 的审计输入，包含 top1/top2、缺失比例、阶段分数和 judge uncertainty。
+- `stage_report.metadata.stage_quality_diagnostics`: cheap judge 使用的阶段区间质量诊断，包含工具失败、空结果、参数别名、grounding warning 和效率统计。
+
+`evaluation_report.minefield_matches[]` 中每条命中包含 `minefield_id`、`boundary_id`、`boundary_step_index`、`score`、`severity`、`evidence` 和 `penalty`。最终 `overall_score` 使用 `minefield_penalty_score(matches)` 聚合 penalty 后扣分；`penalty.mode="fixed"` 时按 `score * penalty.value` 计算扣罚比例。
 
 `raw_summary` 会额外包含以下运行期诊断字段：
 
@@ -142,6 +158,7 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `runtime:missing:<milestone_id>`：milestone 未 ready、无候选尝试，或因前驱未匹配导致当前 milestone 不可评估。
 
 本方案不新增 `blocked` 状态。若前驱未匹配，阻塞原因记录在 `metadata.blocker="predecessor_not_matched"` 和 `metadata.pending_predecessor_ids` 中。
+synthetic pending stage 的 `uncertainty=1.0`，诊断中会标记 required milestone 未完成导致结果高风险。
 
 当 WARN 候选进入语义消息 LLM 复判时，`milestone_match_attempts[]` 会包含 `llm_semantic_review`：
 

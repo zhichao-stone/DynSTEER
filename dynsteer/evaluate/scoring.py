@@ -192,7 +192,7 @@ class GeneralScorer:
         weight_sum = 0.0
         hard_pass = True
         for constraint in milestone.constraints:
-            source, reference = self._constraint_sources(constraint, boundary, trajectory, reference_snapshots)
+            source, reference = self.constraint_sources(constraint, boundary, trajectory, reference_snapshots)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             weight = max(float(constraint.weight), 0.0)
@@ -266,13 +266,16 @@ class GeneralScorer:
             return source
         return None
 
-    def _constraint_sources(
+    def constraint_sources(
         self,
         constraint: Constraint,
         boundary: Boundary,
         trajectory: Trajectory,
         snapshots: list[StateSnapshot],
     ) -> tuple[object, StateSnapshot | None]:
+        """按约束目标解析 boundary 上的评分 source 与 reference。"""
+        if constraint is None or boundary is None or trajectory is None or snapshots is None:
+            raise ValueError("constraint source 参数不能为空")
         if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
             source: object = boundary_snapshot(boundary, snapshots)
         elif constraint.target == ConstraintTarget.METRIC:
@@ -285,6 +288,16 @@ class GeneralScorer:
             if snapshot.snapshot_id == constraint.reference_milestone_id:
                 return source, snapshot
         return source, None
+
+    def _constraint_sources(
+        self,
+        constraint: Constraint,
+        boundary: Boundary,
+        trajectory: Trajectory,
+        snapshots: list[StateSnapshot],
+    ) -> tuple[object, StateSnapshot | None]:
+        """兼容内部旧调用，统一转发到公共 source 解析方法。"""
+        return self.constraint_sources(constraint, boundary, trajectory, snapshots)
 
 
 def get_effective_scorer(scorer: GeneralScorer | None) -> GeneralScorer:
@@ -321,11 +334,57 @@ def compute_uncertainty(
     )
 
 
+def stage_score_from_dimensions(
+    dimension_scores: dict[Dimension, float],
+    weights: dict[Dimension, float],
+) -> float:
+    """根据维度分数和动态权重计算阶段综合分数。"""
+    if dimension_scores is None or weights is None:
+        raise ValueError("阶段分数计算参数不能为空")
+    weighted_score = 0.0
+    total_weight = 0.0
+    for dimension in Dimension:
+        raw_score = dimension_scores.get(dimension)
+        if isinstance(raw_score, bool) or not isinstance(raw_score, int | float):
+            raise ValueError(f"{dimension.value} 维度分数必须是数字")
+        raw_weight = weights.get(dimension, 0.0)
+        if isinstance(raw_weight, bool) or not isinstance(raw_weight, int | float):
+            raise ValueError(f"{dimension.value} 权重必须是数字")
+        weight = max(float(raw_weight), 0.0)
+        if weight <= 0.0:
+            continue
+        weighted_score += clamp(float(raw_score)) * weight
+        total_weight += weight
+    if total_weight <= 0.0:
+        return sum(clamp(float(dimension_scores[dimension])) for dimension in Dimension) / len(Dimension)
+    return weighted_score / total_weight
+
+
 def overall_score(stage_reports: list[StageEvaluationResult], minefield_score: float) -> float:
     if not stage_reports:
         return 1.0 if minefield_score == 0 else 0.0
     raw = sum(stage.stage_score for stage in stage_reports) / len(stage_reports)
     return clamp(raw * (1.0 - clamp(minefield_score)))
+
+
+def minefield_penalty_score(matches: list[JsonObject]) -> float:
+    """根据 minefield 命中记录计算最终总分扣罚比例。"""
+    if matches is None:
+        raise ValueError("minefield matches 不能为空")
+    max_penalty = 0.0
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        raw_score = match.get("score", 0.0)
+        score = float(raw_score) if isinstance(raw_score, int | float) and not isinstance(raw_score, bool) else 0.0
+        penalty = match.get("penalty")
+        if isinstance(penalty, dict) and penalty.get("mode") == "fixed":
+            raw_value = penalty.get("value", 0.0)
+            value = float(raw_value) if isinstance(raw_value, int | float) and not isinstance(raw_value, bool) else 0.0
+            max_penalty = max(max_penalty, score * value)
+        else:
+            max_penalty = max(max_penalty, score)
+    return clamp(max_penalty)
 
 
 def enrich_stage_result(
@@ -350,6 +409,13 @@ def enrich_stage_result(
     result.uncertainty = uncertainty
     result.minefield_score = minefield_score
     result.fatal_minefield_score = minefield_score if fatal_minefield else 0.0
+    result.metadata["uncertainty_inputs"] = {
+        "top1_score": top1,
+        "top2_score": 0.0,
+        "missing_ratio": result.required_fields_missing_ratio,
+        "stage_score": result.stage_score,
+        "judge_uncertainty": 1.0 - result.judge_confidence,
+    }
     return result
 
 

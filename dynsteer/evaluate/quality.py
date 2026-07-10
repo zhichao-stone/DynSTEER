@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dynsteer.model import Actor, EventType, JsonObject, JsonValue, TaskCase, Trajectory, TrajectoryStep
+from dynsteer.model import StageInterval
+from dynsteer.stage import stage_trajectory_steps
 from dynsteer.utils import compact_text
 
 STATE_MUTATION_TOOL_PREFIXES = ("set_", "modify_", "remove_", "add_", "create_", "delete_", "send_")
@@ -11,7 +13,20 @@ def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajector
     """构造不参与评分的运行期轨迹质量诊断。"""
     if task_case is None or trajectory is None:
         raise ValueError("质量诊断参数不能为空")
-    steps = list(trajectory.steps)
+    return _build_quality_diagnostics(task_case.case_id, list(trajectory.steps))
+
+
+def build_stage_quality_diagnostics(interval: StageInterval, trajectory: Trajectory) -> JsonObject:
+    """构造当前阶段区间内的低成本轨迹质量诊断。"""
+    if interval is None or trajectory is None:
+        raise ValueError("阶段质量诊断参数不能为空")
+    return _build_quality_diagnostics(None, stage_trajectory_steps(interval, trajectory))
+
+
+def _build_quality_diagnostics(case_id: str | None, steps: list[TrajectoryStep]) -> JsonObject:
+    """基于给定轨迹步骤构造质量诊断。"""
+    if steps is None:
+        raise ValueError("质量诊断 steps 不能为空")
     tool_argument_warnings: list[JsonObject] = []
     empty_tool_results: list[JsonObject] = []
     failed_tool_results: list[JsonObject] = []
@@ -71,7 +86,8 @@ def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajector
         + _efficiency_warning_count(steps)
     )
     return {
-        "case_id": task_case.case_id,
+        "case_id": case_id,
+        "step_count": len(steps),
         "warning_count": warning_count,
         "tool_argument_warnings": tool_argument_warnings,
         "empty_tool_results": empty_tool_results,
