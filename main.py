@@ -4,12 +4,13 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from dataclasses import replace
+
 from dynsteer.adapter.loader import adapted_case_path, load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
-from dynsteer.harness.selection import config_with_case_ids, select_case_ids, validate_loaded_task_cases
 from dynsteer.log import configure_logger
 
 
