@@ -20,6 +20,12 @@
       --warn: #c77a00;
       --bad: #c93636;
       --ink: #2b3447;
+      --trajectory-fr: 34;
+      --graph-fr: 30;
+      --stage-fr: 36;
+      --trajectory-col: 34fr;
+      --graph-col: 30fr;
+      --stage-col: 36fr;
     }
 
     * {
@@ -101,8 +107,13 @@
 
     .workspace {
       display: grid;
-      grid-template-columns: minmax(320px, 34%) minmax(320px, 30%) minmax(340px, 36%);
-      gap: 12px;
+      grid-template-columns:
+        minmax(300px, var(--trajectory-col))
+        10px
+        minmax(320px, var(--graph-col))
+        10px
+        minmax(340px, var(--stage-col));
+      gap: 0;
       padding: 12px;
       flex: 1;
       min-height: 0;
@@ -110,6 +121,7 @@
     }
 
     .panel {
+      --panel-scale: 1;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -118,6 +130,32 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
+    }
+
+    .panel-splitter {
+      position: relative;
+      align-self: stretch;
+      width: 10px;
+      border: 0;
+      background: transparent;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .panel-splitter::before {
+      content: "";
+      position: absolute;
+      inset: 8px 4px;
+      width: 2px;
+      border-radius: 999px;
+      background: var(--line-strong);
+      transition: background 120ms ease, box-shadow 120ms ease;
+    }
+
+    .panel-splitter:hover::before,
+    .panel-splitter:focus-visible::before {
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.12);
     }
 
     .panel-title {
@@ -132,14 +170,14 @@
 
     .panel-title h2 {
       margin: 0;
-      font-size: 16px;
+      font-size: calc(16px * var(--panel-scale));
       line-height: 1.3;
     }
 
     .panel-title p {
       margin: 4px 0 0;
       color: var(--muted);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       line-height: 1.4;
     }
 
@@ -148,6 +186,50 @@
       overflow: auto;
       min-height: 0;
       flex: 1;
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .panel-legend {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: calc(11px * var(--panel-scale));
+      line-height: 1.2;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 9px;
+      border: 2px solid var(--line-strong);
+      border-radius: 3px;
+      background: #ffffff;
+    }
+
+    .legend-swatch.pass {
+      border-color: rgba(16, 138, 66, 0.72);
+    }
+
+    .legend-swatch.fail {
+      border-color: rgba(201, 54, 54, 0.76);
+    }
+
+    .legend-swatch.selected {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .legend-swatch.virtual {
+      border-style: dashed;
     }
 
     .run-list,
@@ -195,7 +277,7 @@
       border-radius: 999px;
       min-height: 28px;
       padding: 5px 9px;
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       line-height: 1.25;
       white-space: nowrap;
     }
@@ -278,7 +360,7 @@
 
     .step-index {
       color: var(--text);
-      font-size: 13px;
+      font-size: calc(13px * var(--panel-scale));
       font-weight: 800;
     }
 
@@ -287,13 +369,13 @@
       padding: 3px 7px;
       background: #eef2f8;
       color: #344258;
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       font-weight: 700;
     }
 
     .event-type {
       color: var(--muted);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
     }
 
     .content {
@@ -305,7 +387,7 @@
       border: 1px solid var(--line);
       border-radius: 6px;
       color: #263246;
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       line-height: 1.55;
       max-height: 220px;
       overflow: auto;
@@ -318,10 +400,11 @@
       background: #fbfcff;
     }
 
-    summary {
+    summary,
+    .detail-summary {
       cursor: pointer;
       color: var(--ink);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       font-weight: 700;
       padding: 7px 9px;
     }
@@ -332,13 +415,56 @@
       white-space: pre-wrap;
       word-break: break-word;
       color: var(--muted);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       line-height: 1.45;
+    }
+
+    .milestone-detail-card {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      max-height: min(42vh, 420px);
+      overflow: auto;
+    }
+
+    .milestone-detail-card.empty {
+      padding: 14px;
+      color: var(--muted);
+      background: #fbfcff;
+    }
+
+    .milestone-detail-head {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .milestone-detail-head h3 {
+      margin: 0;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+      font-size: calc(14px * var(--panel-scale));
+    }
+
+    .milestone-detail-body {
+      padding: 2px 10px 10px;
     }
 
     .graph-svg {
       width: 100%;
-      min-height: 520px;
+      min-width: calc(520px * var(--panel-scale));
+      min-height: calc(520px * var(--panel-scale));
       display: block;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -388,7 +514,7 @@
 
     .milestone-node text {
       fill: var(--text);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
       font-weight: 700;
       pointer-events: none;
     }
@@ -433,7 +559,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 14px;
+      font-size: calc(14px * var(--panel-scale));
       font-weight: 800;
     }
 
@@ -447,7 +573,7 @@
       overflow: hidden;
     }
 
-    .score-section .section-title {
+    .score-section .detail-summary {
       margin: 0;
       padding: 8px 10px;
     }
@@ -460,13 +586,6 @@
       padding-bottom: 8px;
     }
 
-    .section-title {
-      margin: 0 0 6px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-    }
-
     .score-row {
       display: grid;
       grid-template-columns: minmax(96px, 1fr) minmax(80px, 42%);
@@ -474,7 +593,7 @@
       gap: 8px;
       min-height: 24px;
       color: var(--ink);
-      font-size: 12px;
+      font-size: calc(12px * var(--panel-scale));
     }
 
     .score-label {
@@ -509,13 +628,6 @@
       background: var(--warn);
     }
 
-    .milestone-detail {
-      fill: var(--muted);
-      font-size: 11px;
-      font-weight: 600;
-      pointer-events: none;
-    }
-
     @media (max-width: 1100px) {
       body {
         overflow: auto;
@@ -533,7 +645,12 @@
 
       .workspace {
         grid-template-columns: 1fr;
+        gap: 12px;
         overflow: visible;
+      }
+
+      .panel-splitter {
+        display: none;
       }
 
       .panel {
@@ -554,7 +671,9 @@
     </header>
     <section class="workspace">
       <section class="panel trajectory-panel" aria-label="执行轨迹"></section>
+      <div class="panel-splitter trajectory-graph-splitter" role="separator" aria-label="调整执行轨迹和里程碑图宽度" data-left="trajectory" data-right="graph" tabindex="0"></div>
       <section class="panel graph-panel" aria-label="里程碑图"></section>
+      <div class="panel-splitter graph-stage-splitter" role="separator" aria-label="调整里程碑图和评估阶段宽度" data-left="graph" data-right="stage" tabindex="0"></div>
       <section class="panel stage-panel" aria-label="评估阶段"></section>
     </section>
   </main>
@@ -566,14 +685,18 @@
       scenarioIndex: 0,
       selectedMilestoneId: null,
       selectedStageId: null,
-      openStageIds: new Set()
+      openStageIds: new Set(),
+      panelFractions: { trajectory: 34, graph: 30, stage: 36 },
+      resizeObserver: null
     };
 
     window.addEventListener("DOMContentLoaded", init);
 
     function init() {
       state.data = window.DYNSTEER_DATA || { runs: [] };
+      initPanelResize();
       renderAll();
+      updatePanelScales();
     }
 
     function currentRun() {
@@ -591,6 +714,106 @@
       renderTrajectory();
       renderGraph();
       renderStages();
+      updatePanelScales();
+    }
+
+    function initPanelResize() {
+      const workspace = document.querySelector(".workspace");
+      if (!workspace) return;
+      applyPanelFractions();
+      workspace.querySelectorAll(".panel-splitter").forEach((splitter) => {
+        splitter.addEventListener("pointerdown", (event) => startPanelResize(event, splitter));
+        splitter.addEventListener("keydown", (event) => resizePanelWithKeyboard(event, splitter));
+      });
+      window.addEventListener("resize", updatePanelScales);
+      if (window.ResizeObserver) {
+        state.resizeObserver = new ResizeObserver(updatePanelScales);
+        document.querySelectorAll(".panel").forEach((panel) => state.resizeObserver.observe(panel));
+      }
+    }
+
+    function startPanelResize(event, splitter) {
+      if (window.matchMedia("(max-width: 1100px)").matches) return;
+      const leftKey = splitter.dataset.left;
+      const rightKey = splitter.dataset.right;
+      if (!leftKey || !rightKey) return;
+      event.preventDefault();
+      const workspace = document.querySelector(".workspace");
+      const workspaceWidth = workspace ? workspace.getBoundingClientRect().width : 0;
+      if (!workspaceWidth) return;
+      const startX = event.clientX;
+      const startLeft = state.panelFractions[leftKey];
+      const startRight = state.panelFractions[rightKey];
+      const totalFraction = state.panelFractions.trajectory + state.panelFractions.graph + state.panelFractions.stage;
+      const fractionPerPixel = totalFraction / workspaceWidth;
+
+      const handleMove = (moveEvent) => {
+        const delta = (moveEvent.clientX - startX) * fractionPerPixel;
+        applyPanelPairFractions(leftKey, rightKey, startLeft + delta, startRight - delta);
+      };
+      const stopMove = () => {
+        document.removeEventListener("pointermove", handleMove);
+        document.removeEventListener("pointerup", stopMove);
+        document.removeEventListener("pointercancel", stopMove);
+      };
+      document.addEventListener("pointermove", handleMove);
+      document.addEventListener("pointerup", stopMove);
+      document.addEventListener("pointercancel", stopMove);
+    }
+
+    function resizePanelWithKeyboard(event, splitter) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const leftKey = splitter.dataset.left;
+      const rightKey = splitter.dataset.right;
+      if (!leftKey || !rightKey) return;
+      event.preventDefault();
+      const delta = event.key === "ArrowLeft" ? -2 : 2;
+      applyPanelPairFractions(
+        leftKey,
+        rightKey,
+        state.panelFractions[leftKey] + delta,
+        state.panelFractions[rightKey] - delta
+      );
+    }
+
+    function applyPanelPairFractions(leftKey, rightKey, leftValue, rightValue) {
+      const minimum = { trajectory: 18, graph: 20, stage: 20 };
+      const pairTotal = state.panelFractions[leftKey] + state.panelFractions[rightKey];
+      let nextLeft = Math.max(minimum[leftKey], leftValue);
+      let nextRight = pairTotal - nextLeft;
+      if (nextRight < minimum[rightKey]) {
+        nextRight = minimum[rightKey];
+        nextLeft = pairTotal - nextRight;
+      }
+      state.panelFractions[leftKey] = Number(nextLeft.toFixed(2));
+      state.panelFractions[rightKey] = Number(nextRight.toFixed(2));
+      applyPanelFractions();
+      updatePanelScales();
+    }
+
+    function applyPanelFractions() {
+      const workspace = document.querySelector(".workspace");
+      if (!workspace) return;
+      ["trajectory", "graph", "stage"].forEach((key) => {
+        const value = state.panelFractions[key];
+        workspace.style.setProperty(`--${key}-fr`, String(value));
+        workspace.style.setProperty(`--${key}-col`, `${value}fr`);
+      });
+    }
+
+    function updatePanelScales() {
+      const specs = [
+        [".trajectory-panel", 360],
+        [".graph-panel", 400],
+        [".stage-panel", 420]
+      ];
+      specs.forEach(([selector, baseWidth]) => {
+        const panel = document.querySelector(selector);
+        if (!panel) return;
+        const width = panel.getBoundingClientRect().width || baseWidth;
+        const scale = clamp(width / baseWidth, 0.78, 1.18);
+        panel.style.setProperty("--panel-scale", scale.toFixed(3));
+      });
     }
 
     function renderRunRow() {
@@ -688,7 +911,7 @@
       const scenario = currentScenario();
       const container = document.querySelector(".graph-panel");
       clear(container);
-      appendPanelTitle(container, "里程碑图", "milestone 拓扑与命中状态");
+      appendPanelTitle(container, "里程碑图", "milestone 拓扑与命中状态", graphLegend());
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
@@ -710,7 +933,7 @@
       const stageNodeIds = stageMilestoneIds(state.selectedStageId, scenario);
       drawEdges(svg, layout, stageNodeIds, scenario);
       drawNodes(svg, layout, scenario, stageNodeIds);
-      body.append(svg);
+      body.append(svg, milestoneDetailCard(state.selectedMilestoneId, scenario));
     }
 
     function renderStages() {
@@ -748,6 +971,96 @@
       body.append(fragment);
     }
 
+    function graphLegend() {
+      const legend = el("div", "panel-legend");
+      legend.append(
+        legendItem("pass", "通过"),
+        legendItem("fail", "失败或 fatal"),
+        legendItem("selected", "当前选中/阶段路径"),
+        legendItem("virtual", "虚拟节点")
+      );
+      return legend;
+    }
+
+    function legendItem(kind, label) {
+      const item = el("span", "legend-item");
+      const swatch = el("span", `legend-swatch ${kind}`);
+      const text = el("span");
+      text.textContent = label;
+      item.append(swatch, text);
+      return item;
+    }
+
+    function milestoneDetailCard(milestoneId, scenario) {
+      if (!milestoneId || !scenario) {
+        const empty = el("article", "milestone-detail-card empty");
+        empty.textContent = "选择一个 milestone 查看完整详情";
+        return empty;
+      }
+      const node = graphNodeForMilestone(milestoneId, scenario);
+      const card = el("article", "milestone-detail-card");
+      const head = el("div", "milestone-detail-head");
+      const title = el("h3");
+      title.textContent = milestoneId;
+      const status = statusBadge(milestoneStatus(milestoneId, scenario) || "unknown");
+      head.append(title, status);
+      const body = el("div", "milestone-detail-body");
+      const definition = stageDefinitionForMilestone(milestoneId, scenario);
+      const description = node ? node.description || node.name || "" : "";
+      const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
+      const matching = milestoneMatchingFor(milestoneId, scenario);
+
+      body.append(
+        detailBlock("阶段目标", definition ? definition.stage_goal || "无" : "无", true),
+        detailBlock("milestone 描述", description || "无", true),
+        detailBlock("约束定义", constraints.length ? constraints.map(constraintDetailText).join("\n\n") : "无", true),
+        detailBlock("匹配诊断", matching ? matchingDetailText(matching) : "无", true)
+      );
+      card.append(head, body);
+      return card;
+    }
+
+    function constraintDetailText(constraint) {
+      if (!constraint) return "无";
+      return [
+        `constraint_id: ${formatValue(constraint.constraint_id)}`,
+        `target: ${formatValue(constraint.target)}`,
+        `namespace: ${formatValue(constraint.namespace)}`,
+        `operator: ${formatValue(constraint.operator)}`,
+        `threshold: ${formatValue(constraint.threshold)}`,
+        `hard: ${formatValue(constraint.hard)}`,
+        `evaluator_hint: ${formatValue(constraint.evaluator_hint)}`,
+        `expected_summary: ${formatValue(constraint.expected_summary)}`,
+        `expected_detail: ${formatValue(constraint.expected_detail)}`
+      ].join("\n");
+    }
+
+    function matchingDetailText(matching) {
+      const score = matching.score || {};
+      const boundary = matching.boundary || {};
+      const parts = [
+        `mode: ${formatValue(matching.mode)}`,
+        `matched: ${formatValue(matching.matched)}`,
+        `boundary_id: ${formatValue(boundary.boundary_id)}`,
+        `boundary_step: ${formatValue(boundary.step_index)}`,
+        `score: ${formatScore(score.score)}`,
+        `status: ${formatValue(score.status)}`,
+        `missing_ratio: ${formatScore(score.missing_ratio)}`,
+        `hard_constraints_all_pass: ${formatValue(score.hard_constraints_all_pass)}`
+      ];
+      const constraintScores = score.constraint_scores || [];
+      if (constraintScores.length) {
+        parts.push("constraint_scores:");
+        constraintScores.forEach((item) => {
+          const evidence = Array.isArray(item.evidence) && item.evidence.length
+            ? ` evidence=${item.evidence.join(" | ")}`
+            : "";
+          parts.push(`- ${item.constraint_id || "constraint"} score=${formatScore(item.score)} missing=${formatValue(item.missing)}${evidence}`);
+        });
+      }
+      return parts.join("\n");
+    }
+
     function focusMilestone(milestoneId) {
       state.selectedMilestoneId = milestoneId;
       state.selectedStageId = null;
@@ -755,6 +1068,7 @@
       renderGraph();
       renderStages();
       scrollToMatchedStep(milestoneId);
+      requestAnimationFrame(() => scrollToMilestoneNode(milestoneId));
     }
 
     function focusStage(stageId) {
@@ -772,6 +1086,10 @@
       renderGraph();
       renderStages();
       scrollToStepRange(settlement);
+      requestAnimationFrame(() => scrollToStageCard(stageId));
+      if (state.selectedMilestoneId) {
+        requestAnimationFrame(() => scrollToMilestoneNode(state.selectedMilestoneId));
+      }
     }
 
     function stepInSelectedStage(stepIndex) {
@@ -825,6 +1143,7 @@
       const stageId = report.stage_id || (definition && definition.stage_id) || "";
       const settlement = settlementForStage(stageId);
       const card = el("details", "stage-card stage-detail-card");
+      card.dataset.stageId = stageId;
       card.classList.toggle("selected", state.selectedStageId === stageId);
       card.open = state.openStageIds.has(stageId);
 
@@ -888,6 +1207,7 @@
     function settlementCard(settlement) {
       const stageId = settlement.stage_id || settlement.settlement_id || "";
       const card = el("article", "stage-card");
+      card.dataset.stageId = stageId;
       card.classList.toggle("selected", state.selectedStageId === stageId);
       card.addEventListener("click", () => focusStage(stageId));
       const head = el("div", "stage-head");
@@ -985,9 +1305,9 @@
         if (!source || !target) return;
         const line = document.createElementNS(SVG_NS, "line");
         line.setAttribute("x1", String(source.x));
-        line.setAttribute("y1", String(source.y + nodeBox(source.node.milestone_id, scenario).height / 2 - 4));
+        line.setAttribute("y1", String(source.y + nodeBox().height / 2 - 4));
         line.setAttribute("x2", String(target.x));
-        line.setAttribute("y2", String(target.y - nodeBox(target.node.milestone_id, scenario).height / 2 + 4));
+        line.setAttribute("y2", String(target.y - nodeBox().height / 2 + 4));
         line.classList.add("graph-edge");
         if (stageNodeIds.has(edge.source) && stageNodeIds.has(edge.target)) {
           line.classList.add("selected-stage");
@@ -1000,12 +1320,14 @@
       layout.nodes.forEach((item, milestoneId) => {
         const group = document.createElementNS(SVG_NS, "g");
         group.classList.add("milestone-node");
+        group.dataset.milestoneId = milestoneId;
+        group.setAttribute("data-milestone-id", milestoneId);
         group.classList.toggle("selected", state.selectedMilestoneId === milestoneId);
         group.classList.toggle("selected-stage", stageNodeIds.has(milestoneId));
         group.classList.toggle("virtual", Boolean(item.node.virtual));
         const status = milestoneStatus(milestoneId, scenario);
         if (status) group.classList.add(status);
-        const box = nodeBox(milestoneId, scenario);
+        const box = nodeBox();
         group.setAttribute("transform", `translate(${item.x - box.width / 2}, ${item.y - box.height / 2})`);
         group.addEventListener("click", () => focusMilestone(milestoneId));
 
@@ -1023,50 +1345,12 @@
         meta.setAttribute("font-weight", "400");
         meta.textContent = truncate(milestoneSubtitle(item.node), 18);
         group.append(rect, name, meta);
-        milestoneDetailLines(milestoneId, scenario).forEach((line, index) => {
-          const detail = document.createElementNS(SVG_NS, "text");
-          detail.classList.add("milestone-detail");
-          detail.setAttribute("x", "12");
-          detail.setAttribute("y", String(64 + index * 16));
-          detail.textContent = truncate(line, 24);
-          group.append(detail);
-        });
         svg.append(group);
       });
     }
 
-    function nodeBox(milestoneId, scenario) {
-      const hasDetail = state.selectedMilestoneId === milestoneId && milestoneDetailLines(milestoneId, scenario).length > 0;
-      return hasDetail ? { width: 190, height: 118 } : { width: 152, height: 56 };
-    }
-
-    function milestoneDetailLines(milestoneId, scenario) {
-      if (state.selectedMilestoneId !== milestoneId) return [];
-      const matching = milestoneMatchingFor(milestoneId, scenario);
-      const lines = [];
-      const definition = stageDefinitionForMilestone(milestoneId, scenario);
-      if (definition && definition.stage_goal) {
-        lines.push(truncate(definition.stage_goal, 80));
-      }
-      if (matching && Object.keys(matching).length) {
-        const score = matching.score || {};
-        const boundary = matching.boundary || {};
-        if (score.score !== null && score.score !== undefined) {
-          lines.push(`匹配分数 ${formatScore(score.score)} ${score.status || ""}`);
-        }
-        if (boundary.step_index !== null && boundary.step_index !== undefined) {
-          lines.push(`边界 step ${formatValue(boundary.step_index)}`);
-        }
-        (score.constraint_scores || []).slice(0, 2).forEach((item) => {
-          lines.push(`${item.constraint_id || "constraint"} ${formatScore(item.score)}`);
-        });
-        if (!lines.length && (matching.matched_milestone_ids || []).length) {
-          lines.push(`已命中 ${matching.matched_milestone_ids.length}`);
-        }
-        if (!lines.length && matching.mode) lines.push(matching.mode);
-      }
-      constraintDefinitionLines(milestoneId, scenario).forEach((line) => lines.push(line));
-      return lines;
+    function nodeBox() {
+      return { width: 152, height: 56 };
     }
 
     function milestoneMatchingFor(milestoneId, scenario) {
@@ -1201,6 +1485,37 @@
       panel.scrollTo({ top: Math.max(0, centeredTop), behavior: "smooth" });
     }
 
+    function scrollToMilestoneNode(milestoneId) {
+      if (!milestoneId) return;
+      const panel = document.querySelector(".graph-panel .panel-body");
+      const nodes = panel ? Array.from(panel.querySelectorAll(".milestone-node")) : [];
+      const target = nodes.find((node) => node.dataset.milestoneId === milestoneId);
+      if (!panel || !target) return;
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
+      const targetLeft = targetRect.left - panelRect.left + panel.scrollLeft;
+      const centeredTop = targetTop - (panel.clientHeight - targetRect.height) / 2;
+      const centeredLeft = targetLeft - (panel.clientWidth - targetRect.width) / 2;
+      panel.scrollTo({
+        top: Math.max(0, centeredTop),
+        left: Math.max(0, centeredLeft),
+        behavior: "smooth"
+      });
+    }
+
+    function scrollToStageCard(stageId) {
+      if (!stageId) return;
+      const panel = document.querySelector(".stage-panel .panel-body");
+      const target = panel ? panel.querySelector(`[data-stage-id="${stageId}"]`) : null;
+      if (!panel || !target) return;
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
+      const centeredTop = targetTop - (panel.clientHeight - targetRect.height) / 2;
+      panel.scrollTo({ top: Math.max(0, centeredTop), behavior: "smooth" });
+    }
+
     function scrollToMatchedStep(milestoneId) {
       const scenario = currentScenario();
       if (!scenario) return;
@@ -1259,7 +1574,7 @@
     function stageScoreSection(title, rows) {
       if (!rows || !rows.length) return null;
       const section = el("details", "stage-section score-section");
-      const heading = el("summary", "section-title");
+      const heading = el("summary", "detail-summary");
       heading.textContent = title;
       section.append(heading, ...rows);
       return section;
@@ -1350,7 +1665,7 @@
       return labels[key] || key;
     }
 
-    function appendPanelTitle(container, title, subtitle) {
+    function appendPanelTitle(container, title, subtitle, extra) {
       const head = el("div", "panel-title");
       const text = el("div");
       const h2 = el("h2");
@@ -1359,6 +1674,7 @@
       p.textContent = subtitle || "";
       text.append(h2, p);
       head.append(text);
+      if (extra) head.append(extra);
       container.append(head);
     }
 
@@ -1374,12 +1690,13 @@
       container.append(node);
     }
 
-    function detailBlock(title, text) {
+    function detailBlock(title, text, open) {
       const block = el("details");
-      const summary = el("summary");
+      const summary = el("summary", "detail-summary");
       summary.textContent = title;
       const body = el("pre", "detail-text");
       body.textContent = text || "无";
+      block.open = Boolean(open);
       block.append(summary, body);
       return block;
     }
@@ -1426,6 +1743,10 @@
     function formatValue(value) {
       if (value === null || value === undefined || value === "") return "无";
       return String(value);
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
     }
 
     function truncate(value, limit) {

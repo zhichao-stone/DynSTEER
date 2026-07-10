@@ -85,9 +85,40 @@ def test_build_display_data_normalizes_legacy_runtime_stage_ids(tmp_path: Path) 
     assert '"stage_id": "runtime:' not in json.dumps(scenario, ensure_ascii=False)
 
 
+def test_build_display_data_exports_constraint_expected_detail(tmp_path: Path) -> None:
+    runs_dir, results_dir, data_dir = _write_display_fixture(
+        tmp_path,
+        constraints=[
+            {
+                "constraint_id": "c_rows",
+                "target": "table",
+                "namespace": "result",
+                "operator": "contains",
+                "threshold": 0.8,
+                "hard": True,
+                "evaluator_hint": "检查结果表",
+                "expected": {
+                    "columns": ["name", "score"],
+                    "rows": [{"name": "alpha", "score": 1}],
+                },
+            }
+        ],
+    )
+
+    data = build_display_data(runs_dir, results_dir, data_dir)
+    nodes = data["runs"][0]["scenarios"][0]["milestone_graph"]["nodes"]
+    milestone = next(item for item in nodes if item["milestone_id"] == "m0")
+    constraints = milestone["constraints"]
+
+    assert constraints[0]["expected_summary"] == "rows=1; columns=name,score"
+    assert '"name": "alpha"' in constraints[0]["expected_detail"]
+    assert '"score": 1' in constraints[0]["expected_detail"]
+
+
 def _write_display_fixture(
     tmp_path: Path,
     stage_goals: dict[str, str] | None = None,
+    constraints: list[dict] | None = None,
 ) -> tuple[Path, Path, Path]:
     runs_dir = tmp_path / "runs"
     results_dir = tmp_path / "results"
@@ -130,7 +161,7 @@ def _write_display_fixture(
                         "name": "M0",
                         "description": "First milestone",
                         "required": True,
-                        "constraints": [],
+                        "constraints": constraints or [],
                         "stage_anchor_predecessor_id": "__start__",
                     },
                     {

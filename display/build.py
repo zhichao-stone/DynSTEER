@@ -520,6 +520,7 @@ def _constraint_definition(constraint: JsonObject) -> JsonObject:
         "hard": constraint.get("hard"),
         "evaluator_hint": _text(constraint.get("evaluator_hint"), 240),
         "expected_summary": _expected_summary(constraint.get("expected")),
+        "expected_detail": _expected_detail(constraint.get("expected")),
     }
 
 
@@ -535,6 +536,10 @@ def _expected_summary(expected: Any) -> str:
         if parts:
             return "; ".join(parts)
     return _text(expected, 240)
+
+
+def _expected_detail(expected: Any) -> str:
+    return _text(expected, 1200)
 
 
 def _graph_edges(graph: JsonObject, adapted_graph: JsonObject) -> list[JsonObject]:

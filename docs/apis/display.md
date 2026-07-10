@@ -28,7 +28,14 @@
 
 静态面板右列以 `stage_definitions` 为骨架渲染，使用 `stage_reports` 按相同 `stage_id` 回填状态、分数、诊断、证据和策略 metadata。阶段标题固定显示为 `{stage_id}:{status}`，例如 `m3->m4:fail`、`m4->__finish__:pass`。若某个定义阶段尚无报告，面板使用 `status="not_started"` 的空报告展示该固定阶段；但失败后的后续阶段不会进入该骨架。
 
-中列 milestone 节点展开时，会展示以该 milestone 结尾的 `stage_goal` 摘要，并补充 adapted case 中的轻量 constraint 摘要。`stage_goal` 是阶段定义真源，constraint 摘要只用于解释节点要求。
+中列 milestone 节点点击后，会在图下方详情卡展示以该 milestone 结尾的 `stage_goal`、milestone 描述、constraint 定义与匹配诊断。SVG 节点只展示短摘要，避免长文本撑开拓扑图。
+
+constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`，每项包含：
+
+- `constraint_id`、`target`、`namespace`、`operator`、`threshold`、`hard`。
+- `evaluator_hint`：面向评估器的提示摘要。
+- `expected_summary`：适合节点或短摘要使用的 expected 概览。
+- `expected_detail`：适合详情卡展示的 expected 完整截断内容，最长约 1200 字符。
 
 ## `write_display_data_js`
 
