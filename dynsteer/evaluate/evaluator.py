@@ -22,7 +22,7 @@ from dynsteer.evaluate.policy import (
     initial_evaluation_policy,
     update_evaluation_policy,
 )
-from dynsteer.graph import START_NODE_ID
+from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
 from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
 from dynsteer.llm import build_llm_from_env
@@ -48,7 +48,7 @@ from dynsteer.model import (
     TrajectoryEvaluationReport,
 )
 from dynsteer.progress import CaseProgressReporter
-from dynsteer.stage import stage_start_step_index
+from dynsteer.stage import stage_goal_key, stage_start_step_index
 from dynsteer.evaluate.milestone import (
     analyze_milestone_step,
     ready_milestones,
@@ -367,19 +367,20 @@ class DynSTEEREvaluator:
                 pending_stage_reports = pending_required_stage_results(task_case, state)
                 if pending_stage_reports:
                     state.stage_reports.extend(pending_stage_reports)
-                settlement, stage_result, next_weights, policy_update = self._finish_settlement(
-                    state.settlements,
-                    task_case,
-                    trajectory,
-                    state.matched_settlements,
-                    state.weights,
-                    state.evaluation_policy,
-                    scorer,
-                )
-                state.settlements.append(settlement)
-                state.stage_reports.append(stage_result)
-                state.weights = next_weights
-                state.evaluation_policy = policy_update.next_policy
+                else:
+                    settlement, stage_result, next_weights, policy_update = self._finish_settlement(
+                        state.settlements,
+                        task_case,
+                        trajectory,
+                        state.matched_settlements,
+                        state.weights,
+                        state.evaluation_policy,
+                        scorer,
+                    )
+                    state.settlements.append(settlement)
+                    state.stage_reports.append(stage_result)
+                    state.weights = next_weights
+                    state.evaluation_policy = policy_update.next_policy
             report = self._runtime_report(
                 task_case,
                 trajectory,
@@ -637,10 +638,13 @@ class DynSTEEREvaluator:
         graph = task_case.milestone_graph or MilestoneGraph()
         last_step_index = trajectory.steps[-1].index if trajectory.steps else 0
         analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
-        finish_anchor_id = analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else None
+        finish_anchor_id = analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else START_NODE_ID
+        if not isinstance(finish_anchor_id, str) or not finish_anchor_id:
+            finish_anchor_id = START_NODE_ID
+        finish_node_id = str(analysis.get("finish_node_id") or FINISH_NODE_ID) if isinstance(analysis, dict) else FINISH_NODE_ID
         if finish_anchor_id == START_NODE_ID:
             boundary_index = trajectory.first_step_index - 1
-        elif isinstance(finish_anchor_id, str) and finish_anchor_id in matched:
+        elif finish_anchor_id in matched:
             boundary_index = matched[finish_anchor_id].end_step_index
         else:
             boundary_index = max(
@@ -654,9 +658,9 @@ class DynSTEEREvaluator:
             end_step_index,
         )
         interval = StageInterval(
-            stage_id=f"runtime:st{len(settlements)}",
-            milestone_id=None,
-            stage_anchor_milestone_id=finish_anchor_id if isinstance(finish_anchor_id, str) else None,
+            stage_id=stage_goal_key(finish_anchor_id, finish_node_id),
+            milestone_id=finish_node_id,
+            stage_anchor_milestone_id=finish_anchor_id,
             start_boundary_step_index=boundary_index,
             start_step_index=start_step_index,
             end_step_index=end_step_index,
@@ -702,7 +706,7 @@ class DynSTEEREvaluator:
         )
         ready_milestone_ids_before_match = [item.milestone_id for item in ready_milestones(graph, matched)]
         interval = StageInterval(
-            stage_id=f"runtime:st{len(settlements)}",
+            stage_id=stage_goal_key(anchor_id, milestone.milestone_id),
             milestone_id=milestone.milestone_id,
             stage_anchor_milestone_id=anchor_id,
             start_boundary_step_index=boundary_index,

@@ -663,7 +663,8 @@
       const scenario = currentScenario();
       const container = document.querySelector(".trajectory-panel");
       clear(container);
-      appendPanelTitle(container, "执行轨迹", scenario ? scenario.task_id : "等待选择 scenario");
+      const steps = scenario && scenario.trajectory ? scenario.trajectory.steps || [] : [];
+      appendPanelTitle(container, "执行轨迹", scenario ? `${scenario.task_id} · 共 ${steps.length} 步` : "等待选择 scenario");
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
@@ -671,7 +672,6 @@
         return;
       }
 
-      const steps = (scenario.trajectory && scenario.trajectory.steps) || [];
       if (!steps.length) {
         appendEmpty(body, "当前 scenario 没有轨迹步骤");
         return;
@@ -725,16 +725,23 @@
         return;
       }
 
+      const definitions = scenario.stage_definitions || [];
       const reports = scenario.stage_reports || [];
       const settlements = scenario.stage_settlements || [];
-      if (!reports.length && !settlements.length) {
+      if (!definitions.length && !reports.length && !settlements.length) {
         appendEmpty(body, "当前 scenario 没有阶段评估数据");
         return;
       }
 
       const fragment = document.createDocumentFragment();
-      if (reports.length) {
-        reports.forEach((report) => fragment.append(stageCard(report)));
+      if (definitions.length) {
+        const reportsByStage = new Map((scenario.stage_reports || []).map((report) => [report.stage_id, report]));
+        definitions.forEach((definition) => {
+          const report = reportsByStage.get(definition.stage_id) || emptyStageReport(definition);
+          fragment.append(stageCard(report, definition));
+        });
+      } else if (reports.length) {
+        reports.forEach((report) => fragment.append(stageCard(report, stageDefinitionForStage(report.stage_id, scenario))));
       } else {
         settlements.forEach((settlement) => fragment.append(settlementCard(settlement)));
       }
@@ -751,12 +758,16 @@
     }
 
     function focusStage(stageId) {
+      const scenario = currentScenario();
       state.selectedStageId = stageId;
       const settlement = settlementForStage(stageId);
-      const metadata = ((currentScenario() || {}).milestone_graph || {}).metadata || {};
+      const definition = stageDefinitionForStage(stageId, scenario);
+      const metadata = ((scenario || {}).milestone_graph || {}).metadata || {};
       state.selectedMilestoneId = settlement && settlement.milestone_id
         ? settlement.milestone_id
-        : (settlement && settlement.kind === "finish" ? metadata.finish_node_id || "__finish__" : null);
+        : definition && definition.milestone_id
+          ? definition.milestone_id
+          : (settlement && settlement.kind === "finish" ? metadata.finish_node_id || "__finish__" : null);
       renderTrajectory();
       renderGraph();
       renderStages();
@@ -810,8 +821,8 @@
       return card;
     }
 
-    function stageCard(report) {
-      const stageId = report.stage_id || "";
+    function stageCard(report, definition) {
+      const stageId = report.stage_id || (definition && definition.stage_id) || "";
       const settlement = settlementForStage(stageId);
       const card = el("details", "stage-card stage-detail-card");
       card.classList.toggle("selected", state.selectedStageId === stageId);
@@ -824,7 +835,7 @@
       });
       const head = el("div", "stage-head");
       const title = el("div", "stage-title");
-      title.textContent = stageId || "未命名阶段";
+      title.textContent = `${report.stage_id || "unknown"}:${report.status || "unknown"}`;
       const status = statusBadge(report.status);
       head.append(title, status);
 
@@ -834,7 +845,7 @@
         metric("总分", formatScore(report.stage_score)),
         metric("置信", formatScore(report.judge_confidence)),
         metric("不确定", formatScore(report.uncertainty)),
-        metric("milestone", report.milestone_id || "无"),
+        metric("milestone", report.milestone_id || (definition && definition.milestone_id) || "无"),
         metric("范围", settlement ? stepRangeText(settlement) : "未匹配")
       );
       summary.append(head, meta);
@@ -842,12 +853,36 @@
       const body = el("div", "stage-detail-body");
       const dimensions = dimensionRows(report);
       const weights = weightRows(report);
+      const stageGoal = (definition && definition.stage_goal) || ((report.metadata || {}).stage_goal) || "";
+      if (stageGoal) body.append(detailBlock("阶段目标", stageGoal));
       if (dimensions) body.append(stageScoreSection("维度分数", dimensions));
       if (weights) body.append(stageScoreSection("动态权重", weights));
+      const diagnosis = arrayDetailBlock("诊断", report.diagnosis);
+      const evidence = arrayDetailBlock("证据", report.evidence);
+      if (diagnosis) body.append(diagnosis);
+      if (evidence) body.append(evidence);
+      const pending = pendingMetadataSection(report);
+      if (pending) body.append(pending);
       const policy = policySection(report);
       if (policy) body.append(policy);
       card.append(body);
       return card;
+    }
+
+    function emptyStageReport(definition) {
+      return {
+        stage_id: definition.stage_id,
+        milestone_id: definition.milestone_id,
+        status: "not_started",
+        stage_score: null,
+        judge_confidence: null,
+        uncertainty: null,
+        dimension_scores: {},
+        next_weights: {},
+        evidence: [],
+        diagnosis: [],
+        metadata: { stage_goal: definition.stage_goal }
+      };
     }
 
     function settlementCard(settlement) {
@@ -1008,23 +1043,29 @@
     function milestoneDetailLines(milestoneId, scenario) {
       if (state.selectedMilestoneId !== milestoneId) return [];
       const matching = milestoneMatchingFor(milestoneId, scenario);
-      if (!matching || !Object.keys(matching).length) return [];
       const lines = [];
-      const score = matching.score || {};
-      const boundary = matching.boundary || {};
-      if (score.score !== null && score.score !== undefined) {
-        lines.push(`匹配分数 ${formatScore(score.score)} ${score.status || ""}`);
+      const definition = stageDefinitionForMilestone(milestoneId, scenario);
+      if (definition && definition.stage_goal) {
+        lines.push(truncate(definition.stage_goal, 80));
       }
-      if (boundary.step_index !== null && boundary.step_index !== undefined) {
-        lines.push(`边界 step ${formatValue(boundary.step_index)}`);
+      if (matching && Object.keys(matching).length) {
+        const score = matching.score || {};
+        const boundary = matching.boundary || {};
+        if (score.score !== null && score.score !== undefined) {
+          lines.push(`匹配分数 ${formatScore(score.score)} ${score.status || ""}`);
+        }
+        if (boundary.step_index !== null && boundary.step_index !== undefined) {
+          lines.push(`边界 step ${formatValue(boundary.step_index)}`);
+        }
+        (score.constraint_scores || []).slice(0, 2).forEach((item) => {
+          lines.push(`${item.constraint_id || "constraint"} ${formatScore(item.score)}`);
+        });
+        if (!lines.length && (matching.matched_milestone_ids || []).length) {
+          lines.push(`已命中 ${matching.matched_milestone_ids.length}`);
+        }
+        if (!lines.length && matching.mode) lines.push(matching.mode);
       }
-      (score.constraint_scores || []).slice(0, 2).forEach((item) => {
-        lines.push(`${item.constraint_id || "constraint"} ${formatScore(item.score)}`);
-      });
-      if (!lines.length && (matching.matched_milestone_ids || []).length) {
-        lines.push(`已命中 ${matching.matched_milestone_ids.length}`);
-      }
-      if (!lines.length && matching.mode) lines.push(matching.mode);
+      constraintDefinitionLines(milestoneId, scenario).forEach((line) => lines.push(line));
       return lines;
     }
 
@@ -1044,7 +1085,8 @@
       const metadata = graph.metadata || {};
       const settlement = settlementForStage(stageId);
       const report = stageReportForStage(stageId, scenario);
-      let targetId = (settlement && settlement.milestone_id) || (report && report.milestone_id) || "";
+      const definition = stageDefinitionForStage(stageId, scenario);
+      let targetId = (settlement && settlement.milestone_id) || (report && report.milestone_id) || (definition && definition.milestone_id) || "";
       if (!targetId && settlement && settlement.kind === "finish") {
         targetId = metadata.finish_node_id || "__finish__";
       }
@@ -1054,6 +1096,7 @@
       const anchorId = (
         (settlement && settlement.stage_anchor_milestone_id) ||
         reportMetadata.stage_anchor_milestone_id ||
+        (definition && definition.anchor_milestone_id) ||
         stageAnchorForMilestone(targetId, scenario) ||
         (targetId === (metadata.finish_node_id || "__finish__") ? metadata.finish_stage_anchor_predecessor_id : "")
       );
@@ -1126,11 +1169,17 @@
 
     function stageReportForStage(stageId, scenario) {
       if (!stageId || !scenario) return null;
-      const suffix = String(stageId).split(":").pop();
-      return (scenario.stage_reports || []).find((report) => (
-        report.stage_id === stageId ||
-        report.stage_id === suffix
-      )) || null;
+      return (scenario.stage_reports || []).find((report) => report.stage_id === stageId) || null;
+    }
+
+    function stageDefinitionForStage(stageId, scenario) {
+      if (!stageId || !scenario) return null;
+      return (scenario.stage_definitions || []).find((definition) => definition.stage_id === stageId) || null;
+    }
+
+    function stageDefinitionForMilestone(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      return (scenario.stage_definitions || []).find((definition) => definition.milestone_id === milestoneId) || null;
     }
 
     function milestoneSubtitle(node) {
@@ -1174,11 +1223,9 @@
       if (!stageId) return null;
       const scenario = currentScenario();
       if (!scenario) return null;
-      const suffix = String(stageId).split(":").pop();
       return (scenario.stage_settlements || []).find((settlement) => (
         settlement.stage_id === stageId ||
-        settlement.settlement_id === stageId ||
-        settlement.settlement_id === suffix
+        settlement.settlement_id === stageId
       )) || null;
     }
 
@@ -1230,12 +1277,41 @@
       const metadata = report.metadata || {};
       const active = metadata.active_evaluation_policy;
       const next = metadata.next_evaluation_policy;
-      if (!active && !next) return null;
+      const update = metadata.evaluation_policy_update;
+      if (!active && !next && !update) return null;
       return detailBlock("评估策略", JSON.stringify({
         active_evaluation_policy: active || null,
         next_evaluation_policy: next || null,
-        update: metadata.evaluation_policy_update || null
+        evaluation_policy_update: update || null
       }, null, 2));
+    }
+
+    function pendingMetadataSection(report) {
+      const metadata = report.metadata || {};
+      const keys = ["blocker", "last_reject_reason", "attempt_count", "best_score", "best_boundary_step_index", "failure_kind"];
+      const payload = {};
+      keys.forEach((key) => {
+        if (metadata[key] !== null && metadata[key] !== undefined && metadata[key] !== "") {
+          payload[key] = metadata[key];
+        }
+      });
+      return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function arrayDetailBlock(title, values) {
+      if (!Array.isArray(values) || !values.length) return null;
+      return detailBlock(title, values.map((item) => `- ${String(item)}`).join("\n"));
+    }
+
+    function constraintDefinitionLines(milestoneId, scenario) {
+      const node = graphNodeForMilestone(milestoneId, scenario);
+      if (!node || !Array.isArray(node.constraints)) return [];
+      return node.constraints.slice(0, 2).map((constraint) => {
+        const id = constraint.constraint_id || "constraint";
+        const operator = constraint.operator || "";
+        const hard = constraint.hard ? "hard" : "soft";
+        return `${id} ${operator} ${hard}`.trim();
+      });
     }
 
     function scoreRows(values, fillClassName) {

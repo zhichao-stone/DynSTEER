@@ -125,6 +125,10 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `termination_code` / `termination_reason`: 策略终止摘要。
 - `raw_summary["runtime_metrics"]` 与 `evaluation_report.runtime_metrics`: 当前 case 的运行统计，包含 `elapsed_seconds`、`step_count`、`tool_call_count`、轨迹 token/latency 聚合和 LLM judge token usage 聚合。
 
+`StageEvaluationResult.stage_id` 使用 `stage_goal_key(anchor_milestone_id, milestone_id)` 生成，格式为 `{anchor_milestone_id}->{milestone_id}`，例如 `__start__->m0`、`m3->m4`。运行期不再生成 `runtime:stN`、`runtime:fail:<milestone_id>` 或 `runtime:missing:<milestone_id>` 作为阶段身份。
+
+`__finish__` 只表示完整 agent 轨迹中未被此前 milestone 锚定阶段覆盖的正常尾段。只有当前序 required milestone 没有 pending / fail / missing，并且流程未被策略提前终止时，运行自然结束才会生成 finish 阶段报告。该阶段的 `stage_id` 为 `{finish_stage_anchor_predecessor_id}->{finish_node_id}`，例如 `m4->__finish__`；若 adapted case 的 `stage_goals` 未显式提供该 key，评估器使用默认 finish 目标文案。若自然结束后仍存在 pending required milestone，评估报告以对应 pending stage 结束，不再追加 `stage_settlements(kind="finish")` 或 `__finish__` stage report。
+
 `stage_settlements[].metadata` 会包含运行期排查字段：
 
 - `stage_trace`: 当前阶段左开右闭区间 `(start_boundary_step_index, end_step_index]` 内的轨迹步骤详情，包含 step id、index、actor、event_type、content、tool_call、tool_result、cost 和 adapter raw 字段。
@@ -152,13 +156,15 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 只有 `severity="warning"` 的空返回会计入 `warning_count`，并可能触发 `grounding_warnings`。`severity="info"` 的空返回仍保留在 `empty_tool_results` 中，方便审计工具调用行为，但不视为风险。
 
-运行自然结束时仍未完成的 required milestone 会生成 synthetic pending stage，并带有 `metadata.synthetic_pending_required=true`：
+运行自然结束时仍未完成的 required milestone 会生成 synthetic pending stage，并带有 `metadata.synthetic_pending_required=true`。pending report 沿用该 milestone 对应的固定 `stage_id`，只通过 `status` 表达失败类型：
 
-- `runtime:fail:<milestone_id>`：milestone 已 ready 或已有候选尝试，但未通过。
-- `runtime:missing:<milestone_id>`：milestone 未 ready、无候选尝试，或因前驱未匹配导致当前 milestone 不可评估。
+- `status="fail"`：milestone 已 ready 或已有候选尝试，但未通过。
+- `status="missing"`：milestone 未 ready、无候选尝试，或因前驱未匹配导致当前 milestone 不可评估。
 
 本方案不新增 `blocked` 状态。若前驱未匹配，阻塞原因记录在 `metadata.blocker="predecessor_not_matched"` 和 `metadata.pending_predecessor_ids` 中。
 synthetic pending stage 的 `uncertainty=1.0`，诊断中会标记 required milestone 未完成导致结果高风险。
+
+`stage_count` 表示当前报告中已评估或补充诊断的 `stage_reports` 数量。静态看板中的 `stage_definitions` 表示当前 scenario 实际应展示的阶段定义；提前退出或 pending required 后，后续未进入评估流程的阶段不会强行写入 `stage_reports`。
 
 当 WARN 候选进入语义消息 LLM 复判时，`milestone_match_attempts[]` 会包含 `llm_semantic_review`：
 

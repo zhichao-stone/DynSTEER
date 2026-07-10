@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import json
 
+from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.llm import BaseLLM, LLMMessage
 from dynsteer.model import (
     Constraint,
@@ -38,6 +39,7 @@ def stage_trajectory_steps(interval: StageInterval, trajectory: Trajectory) -> l
 
 
 StageGoalLLMProvider = Callable[[], BaseLLM | None]
+DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
 
 
 def stage_goal_key(anchor_milestone_id: str, milestone_id: str) -> str:
@@ -144,7 +146,14 @@ def resolve_stage_goal(interval: StageInterval, task_case: TaskCase) -> str:
     if interval is None or task_case is None:
         raise ValueError("阶段目标参数不能为空")
     if interval.milestone_id is None:
-        return "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
+        return DEFAULT_FINISH_STAGE_GOAL
+    if interval.milestone_id == FINISH_NODE_ID:
+        if isinstance(interval.stage_anchor_milestone_id, str) and interval.stage_anchor_milestone_id:
+            key = stage_goal_key(interval.stage_anchor_milestone_id, interval.milestone_id)
+            stage_goal = task_case.stage_goals.get(key)
+            if isinstance(stage_goal, str) and stage_goal.strip():
+                return stage_goal
+        return DEFAULT_FINISH_STAGE_GOAL
     if not isinstance(interval.stage_anchor_milestone_id, str) or not interval.stage_anchor_milestone_id:
         raise ValueError(f"milestone 阶段缺少 stage_anchor_milestone_id: {interval.milestone_id}")
     key = stage_goal_key(interval.stage_anchor_milestone_id, interval.milestone_id)
@@ -249,6 +258,7 @@ def _semantic_text(value: object, default: str) -> str:
 
 __all__ = [
     "StageGoalLLMProvider",
+    "DEFAULT_FINISH_STAGE_GOAL",
     "generate_stage_goals",
     "generate_stage_goals_with_llm",
     "required_stage_goal_keys",

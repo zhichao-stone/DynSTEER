@@ -10,6 +10,7 @@ JsonObject = dict[str, Any]
 CaseKey = tuple[str, str, str]
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
+DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
 
 
 def build_display_data(runs_dir: Path, results_dir: Path, data_dir: Path | None = None) -> JsonObject:
@@ -75,14 +76,24 @@ def _scenario(
     summary = _load_json(result_case_dir / "summary.json")
     report = _load_json(result_case_dir / "report.json")
     adapted_case = _load_json(data_dir / benchmark / "adapted_cases" / f"{scenario_id}.json")
+    all_stage_definitions = _stage_definitions(adapted_case)
+    stage_reports, report_stage_id_map = _stage_reports(report.get("stage_reports", []), all_stage_definitions)
+    stage_definitions = _active_stage_definitions(all_stage_definitions, stage_reports)
+    stage_settlements, settlement_stage_id_map = _settlement_summaries(
+        raw_summary.get("stage_settlements", []),
+        all_stage_definitions,
+    )
+    stage_settlements = _active_stage_settlements(stage_settlements, stage_reports)
+    stage_id_map = {**settlement_stage_id_map, **report_stage_id_map}
     return {
         "scenario_id": scenario_id,
         "task_id": str(summary.get("task_id") or trajectory.get("task_id") or f"{benchmark}::{scenario_id}"),
-        "summary": _summary_payload(summary),
+        "summary": _normalize_summary_stage_ids(_summary_payload(summary), stage_definitions, stage_id_map),
         "trajectory": {"steps": trajectory.get("steps", [])},
         "milestone_graph": _graph_summary(raw_summary, adapted_case),
-        "stage_reports": report.get("stage_reports", []),
-        "stage_settlements": [_settlement_summary(item) for item in raw_summary.get("stage_settlements", [])],
+        "stage_definitions": stage_definitions,
+        "stage_reports": stage_reports,
+        "stage_settlements": stage_settlements,
         "match_attempts": raw_summary.get("milestone_match_attempts", []),
         "minefield_matches": report.get("minefield_matches", []),
     }
@@ -160,14 +171,99 @@ def _graph_summary(raw_summary: JsonObject, adapted_case: JsonObject) -> JsonObj
     return {"nodes": _with_virtual_graph_nodes(nodes, edges, metadata), "edges": edges, "metadata": metadata}
 
 
-def _settlement_summary(settlement: JsonObject) -> JsonObject:
+def _stage_reports(reports: Any, definitions: list[JsonObject]) -> tuple[list[JsonObject], dict[str, str]]:
+    if not isinstance(reports, list):
+        return [], {}
+    normalized: list[JsonObject] = []
+    stage_id_map: dict[str, str] = {}
+    terminal_before_finish = False
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        item = _json_copy(report)
+        old_stage_id = str(item.get("stage_id") or "")
+        definition = _stage_definition_for_report(item, definitions)
+        new_stage_id = _normalized_stage_id(old_stage_id, definitions, stage_id_map, definition)
+        if terminal_before_finish and definition is not None and definition.get("milestone_id") == FINISH_NODE_ID:
+            if old_stage_id and old_stage_id != new_stage_id:
+                stage_id_map[old_stage_id] = new_stage_id
+            continue
+        if new_stage_id:
+            item = _replace_string(item, old_stage_id, new_stage_id)
+            item["stage_id"] = new_stage_id
+            if definition is not None:
+                if not item.get("milestone_id"):
+                    item["milestone_id"] = definition.get("milestone_id")
+                metadata = item.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    item["metadata"] = metadata
+                metadata["stage_goal"] = definition.get("stage_goal")
+                metadata["stage_anchor_milestone_id"] = definition.get("anchor_milestone_id")
+            if old_stage_id and old_stage_id != new_stage_id:
+                stage_id_map[old_stage_id] = new_stage_id
+        normalized.append(item)
+        if item.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(item.get("status")):
+            terminal_before_finish = True
+    return normalized, stage_id_map
+
+
+def _settlement_summaries(settlements: Any, definitions: list[JsonObject]) -> tuple[list[JsonObject], dict[str, str]]:
+    if not isinstance(settlements, list):
+        return [], {}
+    summaries: list[JsonObject] = []
+    stage_id_map: dict[str, str] = {}
+    for settlement in settlements:
+        if not isinstance(settlement, dict):
+            continue
+        old_stage_id = _settlement_stage_id(settlement)
+        summary = _settlement_summary(settlement, definitions)
+        new_stage_id = str(summary.get("stage_id") or "")
+        if old_stage_id and new_stage_id and old_stage_id != new_stage_id:
+            stage_id_map[old_stage_id] = new_stage_id
+        summaries.append(summary)
+    return summaries, stage_id_map
+
+
+def _active_stage_definitions(definitions: list[JsonObject], reports: list[JsonObject]) -> list[JsonObject]:
+    if not reports:
+        return definitions
+    if not any(
+        report.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(report.get("status"))
+        for report in reports
+    ):
+        return definitions
+    reported_ids = {str(report.get("stage_id") or "") for report in reports}
+    return [definition for definition in definitions if str(definition.get("stage_id") or "") in reported_ids]
+
+
+def _active_stage_settlements(settlements: list[JsonObject], reports: list[JsonObject]) -> list[JsonObject]:
+    if not any(
+        report.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(report.get("status"))
+        for report in reports
+    ):
+        return settlements
+    return [
+        settlement
+        for settlement in settlements
+        if settlement.get("kind") != "finish" and settlement.get("milestone_id") != FINISH_NODE_ID
+    ]
+
+
+def _settlement_summary(settlement: JsonObject, definitions: list[JsonObject] | None = None) -> JsonObject:
     metadata = settlement.get("metadata", {}) if isinstance(settlement.get("metadata"), dict) else {}
     stage_report = metadata.get("stage_report", {}) if isinstance(metadata.get("stage_report"), dict) else {}
+    old_stage_id = str(stage_report.get("stage_id") or "")
+    definition = _stage_definition_for_settlement(settlement, definitions or [])
+    stage_id = _normalized_stage_id(old_stage_id, definitions or [], {}, definition)
+    milestone_id = settlement.get("milestone_id")
+    if not milestone_id and definition is not None:
+        milestone_id = definition.get("milestone_id")
     return {
         "settlement_id": str(settlement.get("settlement_id") or ""),
-        "stage_id": str(stage_report.get("stage_id") or f"runtime:{settlement.get('settlement_id')}"),
+        "stage_id": stage_id,
         "kind": str(settlement.get("kind") or ""),
-        "milestone_id": str(settlement.get("milestone_id") or ""),
+        "milestone_id": str(milestone_id or ""),
         "start_step_index": _number(settlement.get("start_step_index")),
         "end_step_index": _number(settlement.get("end_step_index")),
         "boundary_id": str(settlement.get("boundary_id") or ""),
@@ -237,8 +333,208 @@ def _node_summary(node: JsonObject, adapted_node: JsonObject | None = None) -> J
         "constraint_count": _number(node.get("constraint_count")),
         "pass_threshold": _number(node.get("pass_threshold")),
         "stage_anchor_predecessor_id": str(node.get("stage_anchor_predecessor_id") or adapted.get("stage_anchor_predecessor_id") or ""),
+        "constraints": _constraint_definitions(adapted.get("constraints") or node.get("constraints")),
         "virtual": False,
     }
+
+
+def _settlement_stage_id(settlement: JsonObject) -> str:
+    metadata = settlement.get("metadata", {}) if isinstance(settlement.get("metadata"), dict) else {}
+    stage_report = metadata.get("stage_report", {}) if isinstance(metadata.get("stage_report"), dict) else {}
+    return str(stage_report.get("stage_id") or "")
+
+
+def _stage_definitions(adapted_case: JsonObject) -> list[JsonObject]:
+    if adapted_case is None:
+        raise ValueError("adapted_case 不能为空")
+    stage_goals = adapted_case.get("stage_goals", {})
+    if not isinstance(stage_goals, dict):
+        return []
+    definitions: list[JsonObject] = []
+    for stage_id, stage_goal in stage_goals.items():
+        anchor_id, milestone_id = _split_stage_id(str(stage_id))
+        if milestone_id == FINISH_NODE_ID:
+            continue
+        definitions.append(
+            {
+                "stage_id": str(stage_id),
+                "anchor_milestone_id": anchor_id,
+                "milestone_id": milestone_id,
+                "stage_goal": _text(stage_goal, 1200),
+            }
+        )
+    finish_definition = _finish_stage_definition(adapted_case, stage_goals)
+    if finish_definition:
+        definitions.append(finish_definition)
+    return definitions
+
+
+def _normalize_summary_stage_ids(
+    summary: JsonObject,
+    definitions: list[JsonObject],
+    stage_id_map: dict[str, str],
+) -> JsonObject:
+    if summary is None:
+        raise ValueError("summary 不能为空")
+    normalized = _json_copy(summary)
+    first_failure = normalized.get("first_failure_stage_id")
+    if isinstance(first_failure, str):
+        normalized["first_failure_stage_id"] = _normalized_stage_id(first_failure, definitions, stage_id_map, None)
+    return normalized
+
+
+def _stage_definition_for_report(report: JsonObject, definitions: list[JsonObject]) -> JsonObject | None:
+    if report is None:
+        raise ValueError("stage report 不能为空")
+    stage_id = str(report.get("stage_id") or "")
+    direct = _definition_for_stage_id(stage_id, definitions)
+    if direct is not None:
+        return direct
+    milestone_id = report.get("milestone_id")
+    if isinstance(milestone_id, str) and milestone_id:
+        return _definition_for_milestone(milestone_id, definitions)
+    if not milestone_id:
+        return _finish_definition(definitions)
+    return None
+
+
+def _stage_definition_for_settlement(settlement: JsonObject, definitions: list[JsonObject]) -> JsonObject | None:
+    if settlement is None:
+        raise ValueError("settlement 不能为空")
+    stage_id = _settlement_stage_id(settlement)
+    direct = _definition_for_stage_id(stage_id, definitions)
+    if direct is not None:
+        return direct
+    milestone_id = settlement.get("milestone_id")
+    if isinstance(milestone_id, str) and milestone_id:
+        return _definition_for_milestone(milestone_id, definitions)
+    if settlement.get("kind") == "finish":
+        return _finish_definition(definitions)
+    return None
+
+
+def _definition_for_stage_id(stage_id: str, definitions: list[JsonObject]) -> JsonObject | None:
+    if not stage_id:
+        return None
+    for definition in definitions:
+        if definition.get("stage_id") == stage_id:
+            return definition
+    legacy_milestone_id = _legacy_pending_milestone_id(stage_id)
+    return _definition_for_milestone(legacy_milestone_id, definitions) if legacy_milestone_id else None
+
+
+def _definition_for_milestone(milestone_id: str, definitions: list[JsonObject]) -> JsonObject | None:
+    if not milestone_id:
+        return None
+    return next((definition for definition in definitions if definition.get("milestone_id") == milestone_id), None)
+
+
+def _finish_definition(definitions: list[JsonObject]) -> JsonObject | None:
+    return _definition_for_milestone(FINISH_NODE_ID, definitions)
+
+
+def _legacy_pending_milestone_id(stage_id: str) -> str:
+    for prefix in ("runtime:fail:", "runtime:missing:"):
+        if stage_id.startswith(prefix):
+            return stage_id[len(prefix):]
+    return ""
+
+
+def _normalized_stage_id(
+    stage_id: str,
+    definitions: list[JsonObject],
+    stage_id_map: dict[str, str],
+    definition: JsonObject | None,
+) -> str:
+    if definition is not None:
+        return str(definition.get("stage_id") or "")
+    if stage_id in stage_id_map:
+        return stage_id_map[stage_id]
+    direct = _definition_for_stage_id(stage_id, definitions)
+    if direct is not None:
+        return str(direct.get("stage_id") or "")
+    return stage_id
+
+
+def _is_terminal_stage_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in {"fail", "missing", "invalid", "fatal"}
+
+
+def _json_copy(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _replace_string(value: Any, source: str, target: str) -> Any:
+    if not source or source == target:
+        return value
+    if isinstance(value, str):
+        return target if value == source else value
+    if isinstance(value, list):
+        return [_replace_string(item, source, target) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_string(item, source, target) for key, item in value.items()}
+    return value
+
+
+def _finish_stage_definition(adapted_case: JsonObject, stage_goals: JsonObject) -> JsonObject:
+    if adapted_case is None or stage_goals is None:
+        raise ValueError("finish 阶段定义参数不能为空")
+    graph = adapted_case.get("milestone_graph", {})
+    metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
+    analysis = metadata.get("graph_analysis", {}) if isinstance(metadata, dict) else {}
+    finish_id = str(analysis.get("finish_node_id") or FINISH_NODE_ID) if isinstance(analysis, dict) else FINISH_NODE_ID
+    anchor_id = str(analysis.get("finish_stage_anchor_predecessor_id") or "") if isinstance(analysis, dict) else ""
+    if not anchor_id:
+        return {}
+    stage_id = f"{anchor_id}->{finish_id}"
+    return {
+        "stage_id": stage_id,
+        "anchor_milestone_id": anchor_id,
+        "milestone_id": finish_id,
+        "stage_goal": _text(stage_goals.get(stage_id) or DEFAULT_FINISH_STAGE_GOAL, 1200),
+    }
+
+
+def _split_stage_id(stage_id: str) -> tuple[str, str]:
+    if not isinstance(stage_id, str) or "->" not in stage_id:
+        raise ValueError(f"stage_id 必须使用 anchor->milestone 格式: {stage_id}")
+    anchor_id, milestone_id = stage_id.split("->", 1)
+    if not anchor_id or not milestone_id:
+        raise ValueError(f"stage_id 必须包含非空 anchor 和 milestone: {stage_id}")
+    return anchor_id, milestone_id
+
+
+def _constraint_definitions(value: Any) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_constraint_definition(item) for item in value[:8] if isinstance(item, dict)]
+
+
+def _constraint_definition(constraint: JsonObject) -> JsonObject:
+    return {
+        "constraint_id": str(constraint.get("constraint_id") or ""),
+        "target": str(constraint.get("target") or ""),
+        "namespace": str(constraint.get("namespace") or ""),
+        "operator": str(constraint.get("operator") or ""),
+        "threshold": _number(constraint.get("threshold")),
+        "hard": constraint.get("hard"),
+        "evaluator_hint": _text(constraint.get("evaluator_hint"), 240),
+        "expected_summary": _expected_summary(constraint.get("expected")),
+    }
+
+
+def _expected_summary(expected: Any) -> str:
+    if isinstance(expected, dict):
+        rows = expected.get("rows")
+        columns = expected.get("columns")
+        parts: list[str] = []
+        if isinstance(rows, list):
+            parts.append(f"rows={len(rows)}")
+        if isinstance(columns, list):
+            parts.append(f"columns={','.join(str(item) for item in columns[:4])}")
+        if parts:
+            return "; ".join(parts)
+    return _text(expected, 240)
 
 
 def _graph_edges(graph: JsonObject, adapted_graph: JsonObject) -> list[JsonObject]:

@@ -22,6 +22,7 @@ from dynsteer.model import (
     Trajectory,
     TrajectoryStep,
 )
+from dynsteer.stage import stage_goal_key
 from dynsteer.utils import compact_text
 
 @dataclass
@@ -123,11 +124,18 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         matched=state.matched_settlements,
         match_attempts=state.match_attempts,
     )
+    milestones_by_id = {node.milestone_id: node for node in graph.nodes}
     results: list[StageEvaluationResult] = []
     for item in diagnostics:
         if item.get("required") is not True or item.get("final_state") == "matched":
             continue
         milestone_id = str(item.get("milestone_id") or "unknown")
+        milestone = milestones_by_id.get(milestone_id)
+        if milestone is None:
+            raise ValueError(f"pending required milestone 不存在: {milestone_id}")
+        anchor_id = milestone.stage_anchor_predecessor_id
+        if not isinstance(anchor_id, str) or not anchor_id:
+            raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone_id}")
         blocker = str(item.get("blocker") or "unknown")
         ready_ever = bool(item.get("ready_ever"))
         attempt_count = int(item.get("attempt_count") or 0)
@@ -143,7 +151,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         ]
         results.append(
             StageEvaluationResult(
-                stage_id=f"runtime:{failure_kind}:{milestone_id}",
+                stage_id=stage_goal_key(anchor_id, milestone_id),
                 milestone_id=milestone_id,
                 evaluator_level=EvaluationLevel.CHEAP,
                 status=status,
@@ -158,6 +166,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
                     **dict(item),
                     "synthetic_pending_required": True,
                     "failure_kind": failure_kind,
+                    "stage_anchor_milestone_id": anchor_id,
                 },
             )
         )
