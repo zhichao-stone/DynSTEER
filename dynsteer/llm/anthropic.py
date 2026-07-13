@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from anthropic import Anthropic
 
-from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError, LLMMessage, LLMResponseError
+from dynsteer.llm.base import BaseLLM, LLMConfigurationError, LLMResponseError
+from dynsteer.model import LLMMessage
 
 
 class AnthropicLLM(BaseLLM):

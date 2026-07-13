@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 import logging
 import sys
 import time
 from queue import Queue
-from typing import Any, Callable, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
+from dynsteer.model import CaseProgressBars, CaseProgressEvent, CaseProgressState
 from tqdm import tqdm
 
 
-ProgressEventKind = Literal["case_started", "case_advanced", "case_finished"]
 DEFAULT_PROGRESS_TOTAL = 1000
 DEFAULT_VISIBLE_PROGRESS_BARS = 5
 TERMINAL_LOG_SILENT_LEVEL = logging.CRITICAL + 1
@@ -30,37 +29,6 @@ class _SilentStream:
 
     def isatty(self) -> bool:
         return False
-
-
-@dataclass(frozen=True)
-class CaseProgressEvent:
-    """跨线程传递的 case 进度事件。"""
-
-    kind: ProgressEventKind
-    case_id: str
-    step_count: int = 0
-    message: str | None = None
-
-
-@dataclass
-class CaseProgressState:
-    """单个 case 的进度条状态。"""
-
-    case_id: str
-    started_at: float
-    case_index: int | None = None
-    step_count: int = 0
-    elapsed_seconds: float = 0.0
-    avg_step_seconds: float | None = None
-    finished: bool = False
-
-
-@dataclass
-class CaseProgressBars:
-    """单个 case 在终端中占用的标题行与进度条行。"""
-
-    title_bar: Any
-    progress_bar: Any
 
 
 class CaseProgressReporter(Protocol):

@@ -1,63 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from dynsteer.config import ThresholdConfig
-from dynsteer.model import Dimension, EvaluationLevel, JsonObject, StageEvaluationResult, StageStatus
-
-_LEVEL_ORDER: dict[EvaluationLevel, int] = {
-    EvaluationLevel.CHEAP: 0,
-    EvaluationLevel.STANDARD: 1,
-    EvaluationLevel.EXPENSIVE: 2,
-}
-
-
-@dataclass(frozen=True)
-class EvaluationPolicyState:
-    """保存当前阶段采用的跨阶段评估粒度策略。"""
-
-    base_level: EvaluationLevel
-    dimension_levels: dict[Dimension, EvaluationLevel]
-    reason: str = "initial"
-
-    def effective_level(self) -> EvaluationLevel:
-        """返回基础粒度与逐维粒度中的最高成本粒度。"""
-        if self.base_level is None or self.dimension_levels is None:
-            raise ValueError("评估策略状态不能为空")
-        levels = [self.base_level, *self.dimension_levels.values()]
-        return max(levels, key=lambda level: _LEVEL_ORDER[level])
-
-    def to_dict(self) -> JsonObject:
-        """转换为可序列化策略字典。"""
-        return {
-            "base_level": self.base_level.value,
-            "dimension_levels": {
-                dimension.value: level.value
-                for dimension, level in self.dimension_levels.items()
-            },
-            "effective_level": self.effective_level().value,
-            "reason": self.reason,
-        }
-
-
-@dataclass(frozen=True)
-class EvaluationPolicyUpdate:
-    """描述一次阶段评估后产生的下一阶段策略决策。"""
-
-    current_policy: EvaluationPolicyState
-    next_policy: EvaluationPolicyState
-    should_stop: bool
-    termination_code: str | None
-    termination_reason: str | None
-
-
-def initial_evaluation_policy() -> EvaluationPolicyState:
-    """创建默认初始评估策略。"""
-    return EvaluationPolicyState(
-        base_level=EvaluationLevel.CHEAP,
-        dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in Dimension},
-        reason="initial",
-    )
+from dynsteer.model import (
+    Dimension,
+    EvaluationLevel,
+    EvaluationPolicyState,
+    EvaluationPolicyUpdate,
+    StageEvaluationResult,
+    StageStatus,
+    ThresholdConfig,
+)
 
 
 def update_evaluation_policy(

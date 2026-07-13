@@ -4,9 +4,10 @@ from collections.abc import Callable
 import json
 
 from dynsteer.graph import FINISH_NODE_ID
-from dynsteer.llm import BaseLLM, LLMMessage
+from dynsteer.llm import BaseLLM
 from dynsteer.model import (
     Constraint,
+    LLMMessage,
     MilestoneGraph,
     StageGoalSemanticKind,
     StageInterval,

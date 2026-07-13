@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import logging
 import time
 
-from dynsteer.metrics import LLMCallMetrics, current_runtime_metrics_recorder
+from dynsteer.metrics import current_runtime_metrics_recorder
+from dynsteer.model import LLMCallMetrics, LLMConfig, LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -16,30 +16,6 @@ class LLMConfigurationError(ValueError):
 
 class LLMResponseError(ValueError):
     """LLM 返回内容无法解析时抛出。"""
-
-
-@dataclass(frozen=True)
-class LLMMessage:
-    """单条对话消息。"""
-
-    role: str
-    content: str
-
-
-@dataclass(frozen=True)
-class LLMConfig:
-    """LLM provider 运行配置。"""
-
-    provider: str
-    model: str
-    api_key: str | None = None
-    base_url: str | None = None
-    timeout_seconds: float = 60.0
-    temperature: float = 0.0
-    max_tokens: int | None = None
-    max_retries: int = 3
-    retry_base_seconds: float = 1.0
-    retry_max_seconds: float = 8.0
 
 
 class BaseLLM(ABC):

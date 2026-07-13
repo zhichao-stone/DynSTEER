@@ -4,7 +4,6 @@ from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Boundary,
     Constraint,
-    ConstraintScore,
     JsonObject,
     Milestone,
     MilestoneGraph,
@@ -40,10 +39,6 @@ def build_stage_trace(
         "step_count": len(steps),
         "steps": steps,
     }
-
-
-def constraint_score_to_dict(score: ConstraintScore) -> JsonObject:
-    return json_safe(score)  # type: ignore[return-value]
 
 
 def milestone_score_to_dict(score: MilestoneScore) -> JsonObject:

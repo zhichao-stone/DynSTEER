@@ -7,7 +7,6 @@ from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
-from dynsteer.evaluate.scoring import ScoringContext
 from dynsteer.model import (
     Boundary,
     Constraint,
@@ -16,6 +15,7 @@ from dynsteer.model import (
     Milestone,
     MilestoneScore,
     Operator,
+    ScoringContext,
     StageStatus,
     StateSnapshot,
     Trajectory,
@@ -178,7 +178,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 measure_name=measure_name,
                 constraint=constraint,
                 actual=actual,
-                reference_value=reference_value,
                 context=context,
             )
         except Exception as exc:
@@ -230,7 +229,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         measure_name: str,
         constraint: Constraint,
         actual: JsonValue,
-        reference_value: JsonValue,
         context: ScoringContext | None,
     ) -> float:
         if not measure_name:
@@ -244,7 +242,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         target = self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True)
         column_similarities = self._column_similarities(evaluation, constraint)
         reference_snapshot = self._reference_dataframe(constraint, context)
-        kwargs = self._snapshot_constraint_kwargs(evaluation, constraint)
+        kwargs = self._snapshot_constraint_kwargs(constraint)
         return float(
             measure(
                 snapshot=snapshot,
@@ -381,7 +379,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
     def _load_toolsandbox_execution_context_module(self) -> Any:
         return self._module_loader("tool_sandbox.common.execution_context")
 
-    def _snapshot_constraint_kwargs(self, evaluation: Any, constraint: Constraint) -> dict[str, Any]:
+    def _snapshot_constraint_kwargs(self, constraint: Constraint) -> dict[str, Any]:
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return {}

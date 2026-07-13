@@ -16,7 +16,6 @@ from dynsteer.model import (
     ConstraintTarget,
     EventType,
     JsonObject,
-    JsonValue,
     Milestone,
     MilestoneGraph,
     Minefield,
@@ -67,41 +66,26 @@ def load_task_case(
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="适配 benchmark 数据"):
         path = adapted_case_path(config.data_root, case_id)
         if force_adapt or not path.exists():
-            task_case = adapter.adapt_task_case(config, case_id)
-            if not isinstance(task_case, TaskCase):
-                raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
-            if task_case.case_id != case_id:
-                raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
-            if task_case.milestone_graph is not None:
-                task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
-                if not task_case.stage_goals:
-                    task_case.stage_goals = generate_stage_goals(
-                        task_case,
-                        mode=str(config.metadata.get("stage_goal_generation", "auto")),
-                        llm_provider=build_llm_from_env,
-                    )
+            task_case = _adapt_task_case(config, adapter, case_id)
             save_task_case(path, task_case)
         else:
-            task_case = load_task_case_file(path, expected_case_id=case_id)
+            ### load task case from file
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"TaskCase 文件不是合法 JSON: {path}") from exc
+            if not isinstance(data, dict):
+                raise ValueError(f"TaskCase 文件必须是 JSON 对象: {path}")
+            task_case = parse_task_case(ensure_json_object(data))
+            if task_case.case_id != case_id:
+                raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
+
+            ### adapt task case if milestone_graph is None
+            if task_case.milestone_graph is None:
+                task_case = _adapt_task_case(config, adapter, case_id)
+                save_task_case(path, task_case)
         task_cases.append(task_case)
     return task_cases
-
-
-def load_task_case_file(path: Path, expected_case_id: str) -> TaskCase:
-    if path is None or expected_case_id is None:
-        raise ValueError("path 和 expected_case_id 不能为空")
-    if not path.exists():
-        raise FileNotFoundError(f"缺少已适配 TaskCase 文件: {path}")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"TaskCase 文件不是合法 JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"TaskCase 文件必须是 JSON 对象: {path}")
-    task_case = parse_task_case(ensure_json_object(data))
-    if task_case.case_id != expected_case_id:
-        raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {expected_case_id}")
-    return task_case
 
 
 def save_task_case(path: Path, task_case: TaskCase) -> None:
@@ -112,6 +96,29 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
         json.dumps(json_safe(task_case), ensure_ascii=False, indent=4),
         encoding="utf-8",
     )
+
+
+def _adapt_task_case(
+    config: HarnessRunConfig,
+    adapter: BaseBenchmarkAdapter,
+    case_id: str,
+) -> TaskCase:
+    task_case = adapter.adapt_task_case(config, case_id)
+    if not isinstance(task_case, TaskCase):
+        raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
+    if task_case.case_id != case_id:
+        raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
+    if task_case.milestone_graph is None:
+        raise ValueError(f"TaskCase 缺少 milestone_graph: {case_id}")
+
+    task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
+    if not task_case.stage_goals:
+        task_case.stage_goals = generate_stage_goals(
+            task_case,
+            mode=str(config.metadata.get("stage_goal_generation", "auto")),
+            llm_provider=build_llm_from_env,
+        )
+    return task_case
 
 
 ## 解析JSON对象为DynSTEER模型对象

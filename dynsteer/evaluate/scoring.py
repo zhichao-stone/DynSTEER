@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, is_dataclass
 from difflib import SequenceMatcher
 import math
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
-from dynsteer.boundary import boundary_snapshot, boundary_step
+from dynsteer.evaluate.matching.boundary import boundary_snapshot, boundary_step
 from dynsteer.config import (
     DEFAULT_FOCUS,
     DEFAULT_TARGETS,
     TASK_TYPE_WEIGHTS,
-    DynamicWeightConfig,
-    ThresholdConfig,
     default_dynamic_weight_config,
 )
 from dynsteer.model import (
@@ -20,29 +18,24 @@ from dynsteer.model import (
     ConstraintScore,
     ConstraintTarget,
     Dimension,
+    DynamicWeightConfig,
     JsonObject,
     JsonValue,
     MISSING,
     Milestone,
     MilestoneScore,
     Operator,
+    ScoringContext,
     StageEvaluationResult,
     StageInterval,
     StageStatus,
     StateSnapshot,
     TaskCase,
+    ThresholdConfig,
     Trajectory,
     TrajectoryStep,
 )
 from dynsteer.utils import clamp, json_subsumes, read_token
-
-@dataclass(frozen=True)
-class ScoringContext:
-
-    task_case: TaskCase | None = None
-    matched_boundaries: Mapping[str, Boundary] = field(default_factory=dict)
-    matched_snapshots: Mapping[str, StateSnapshot] = field(default_factory=dict)
-    metadata: JsonObject = field(default_factory=dict)
 
 
 class GeneralScorer:

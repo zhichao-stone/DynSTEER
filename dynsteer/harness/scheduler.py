@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from queue import Empty, Queue
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.adapter.registry import get_harness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.harness.outputs import HarnessEvaluationOutput, write_case_outputs
+from dynsteer.harness.outputs import write_case_outputs
 from dynsteer.harness.selection import config_with_case_ids
-from dynsteer.model import TaskCase
+from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput
 from dynsteer.progress import (
     CaseProgressEvent,
     CaseProgressReporter,
@@ -21,16 +20,6 @@ from dynsteer.progress import (
     progress_logging_redirect,
 )
 import logging
-
-
-@dataclass(frozen=True)
-class HarnessCaseTask:
-    """已加载 TaskCase 后的单 case 执行任务。"""
-
-    order: int
-    config: HarnessRunConfig
-    case_id: str
-    task_case: TaskCase
 
 
 class HarnessCaseExecutionError(RuntimeError):

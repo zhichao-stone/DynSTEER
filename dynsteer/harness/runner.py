@@ -6,15 +6,14 @@ from pathlib import Path
 from dynsteer.adapter.loader import load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.harness.outputs import HarnessEvaluationOutput, write_run_level_summaries
+from dynsteer.harness.outputs import write_run_level_summaries
 from dynsteer.harness.scheduler import (
     HarnessCaseExecutionError,
-    HarnessCaseTask,
-    _progress_visible_bars,
     run_case_tasks,
 )
 from dynsteer.harness.selection import config_with_case_ids, select_case_ids, validate_loaded_task_cases
 from dynsteer.log import configure_logger
+from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput
 
 
 def run_harness_configs(

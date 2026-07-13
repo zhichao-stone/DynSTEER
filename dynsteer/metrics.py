@@ -2,54 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-import time
 from typing import Iterator
 
-from dynsteer.model import EventType, JsonObject, Trajectory
-
-
-@dataclass(frozen=True)
-class LLMCallMetrics:
-    """单次 LLM provider 调用统计。"""
-
-    provider: str
-    model: str
-    elapsed_seconds: float
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    success: bool = True
-    error: str | None = None
-
-    def to_dict(self) -> JsonObject:
-        """转换为 JSON 可序列化字典。"""
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "elapsed_seconds": self.elapsed_seconds,
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "total_tokens": self.total_tokens,
-            "success": self.success,
-            "error": self.error,
-        }
-
-
-@dataclass
-class RuntimeMetricsRecorder:
-    """记录单个 case 评估期间的运行统计。"""
-
-    started_monotonic: float = field(default_factory=time.perf_counter)
-    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    llm_calls: list[LLMCallMetrics] = field(default_factory=list)
-
-    def record_llm_call(self, call: LLMCallMetrics) -> None:
-        """记录一次 LLM provider 调用。"""
-        if call is None:
-            raise ValueError("call 不能为空")
-        self.llm_calls.append(call)
+from dynsteer.model import EventType, JsonObject, LLMCallMetrics, RuntimeMetricsRecorder, Trajectory
 
 
 _CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar(

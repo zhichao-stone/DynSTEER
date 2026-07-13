@@ -6,6 +6,7 @@ from dynsteer.language import TaskLanguage
 from dynsteer.model import Constraint, Dimension, JsonObject, JsonValue, Milestone, StageInterval, TaskCase, Trajectory
 from dynsteer.prompt.template import PromptTemplate, load_prompt_text
 from dynsteer.stage import stage_trajectory_steps
+from dynsteer.utils import json_safe
 
 
 def build_judge_system_prompt(language: TaskLanguage = TaskLanguage.ENGLISH) -> str:
@@ -60,8 +61,8 @@ def _context_json(
                 "actor": step.actor.value,
                 "event_type": step.event_type.value,
                 "content": step.content,
-                "tool_call": _json_safe_dataclass(step.tool_call),
-                "tool_result": _json_safe_dataclass(step.tool_result),
+                "tool_call": json_safe(step.tool_call),
+                "tool_result": json_safe(step.tool_result),
                 "raw": dict(step.raw),
             }
             for step in stage_trajectory_steps(interval, trajectory)
@@ -77,16 +78,6 @@ def _context_json(
 def _render_template(name: str, language: TaskLanguage, **kwargs: object) -> str:
     template_text = load_prompt_text("judge", name, language)
     return PromptTemplate(**{language.value: template_text}).render(language=language, **kwargs)
-
-
-def _json_safe_dataclass(value: object) -> object:
-    """将简单 dataclass 转换为 JSON 友好对象。"""
-    if value is None:
-        return None
-    raw = getattr(value, "__dict__", None)
-    if isinstance(raw, dict):
-        return dict(raw)
-    return value
 
 
 def _structured_milestone_evidence(interval: StageInterval, task_case: TaskCase) -> list[JsonObject]:

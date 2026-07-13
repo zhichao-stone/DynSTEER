@@ -12,17 +12,29 @@
 
 ```text
 dynsteer/evaluate/
-- __init__.py    # 导出 DynSTEEREvaluator、JudgeConfigurationError、权重工具和通用工具
-- evaluator.py   # DynSTEEREvaluator
-- runtime.py     # RuntimeEvaluationState、raw_summary、pending milestone、trajectory 与 telemetry
-- policy.py      # 跨阶段评估粒度策略
-- minefield.py   # 运行期 boundary 级 minefield 扫描
-- scoring.py     # GeneralScorer、ScoringContext、权重和阶段结果评分工具
-- diagnostics.py # 运行期 stage trace 与 milestone matching 诊断序列化
-- milestone.py   # milestone DAG 校验和运行期 step 命中分析
+- __init__.py       # 评估包入口
+- evaluator.py      # DynSTEEREvaluator 生命周期编排
+- step.py           # 单 step 运行期 minefield / milestone 匹配处理
+- runtime.py        # RuntimeEvaluationState、raw_summary、pending milestone、trajectory 与 telemetry
+- policy.py         # 跨阶段评估粒度策略
+- scoring.py        # GeneralScorer、ScoringContext、权重和阶段结果评分工具
+- diagnostics.py    # 运行期 stage trace 与 milestone matching 诊断序列化
+- matching/
+  - boundary.py     # 当前 step 候选边界、boundary step / snapshot 查询
+  - frontier.py     # ready frontier 初始化与 O(out-degree) 推进
+  - milestone.py    # milestone step 命中分析和 blocked 诊断
+  - minefield.py    # 运行期 boundary 级 minefield 扫描
 ```
 
-`dynsteer/match.py` 已并入 `dynsteer/evaluate/milestone/`，`from dynsteer.match import ...` 不再可用。
+阶段区间与结算逻辑集中在 `dynsteer.stage` 包中：
+
+```text
+dynsteer/stage/
+- __init__.py       # stage_goal_key、stage_start_step_index、stage goal 生成等原有导出
+- settlement.py     # milestone / finish 阶段结算、阶段评估和阶段后终止判断
+```
+
+`dynsteer/match.py` 已并入 `dynsteer/evaluate/matching/`，`from dynsteer.match import ...` 不再可用。
 
 ## 构造函数
 
@@ -72,14 +84,16 @@ result = evaluator.evaluate(harness, config, task_case)
 4. 初始化单个运行期 `Trajectory`，并在后续循环中增量维护 `steps`、`snapshots`、`final_state` 与 `metrics`。
 5. 循环调用 `harness.advance_case(session)` 获取 `HarnessAdvanceResult`。
 6. 将 `advance.snapshots` 按 `snapshot_id` 合并到运行期 `Trajectory`。
-7. 对每个新增 step 调用 `Trajectory.append_step(...)`，立即按当前 boundary / snapshot / step 扫描 minefield；fatal minefield 且 `config.stop_on_minefield=True` 时复用策略终止路径。
-8. 未触发 minefield 停止时，通过 `analyze_milestone_step(...)` 分析 ready milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked milestone 诊断。
-9. ready milestone 的 PASS 候选直接进入阶段结算；当没有 PASS、但存在 `emit_message + semantic_equivalent` 且无 missing/硬约束失败的 WARN 候选时，该候选会进入现有 `_evaluate_checkpoint(...)` 通道，由运行期评估策略指定的 judge 复判。
-10. 没有成功匹配 milestone 的 attempt 会更新 required ready frontier 无进展 watch；同一 frontier 连续达到 `config.ready_frontier_patience` 次评分观察无有效提升时，触发 no-progress 策略终止。
-11. 阶段结算时使用 `state.evaluation_policy.effective_level()` 选择本阶段唯一 judge；阶段完成后同时更新 `state.weights` 与 `state.evaluation_policy`，不再在同一阶段内执行 cheap -> standard -> expensive 升级链路。
-12. 根据阶段结果和策略终止决策执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
-13. 当 `advance.continue_running is False` 时结束主循环。
-14. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
+7. 初始化 case 时通过 `initialize_milestone_frontier(...)` 扫描 milestone graph 一次，构造 ready frontier、直接后继表和 remaining predecessor count。
+8. 对每个新增 step 调用 `Trajectory.append_step(...)`，只计算一次当前 boundary，并按该 boundary 增量扫描 minefield。
+9. 未触发 minefield 停止时，通过 `matching.milestone.analyze_milestone_step(...)` 分析当前 ready frontier 的 milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked candidate 诊断。
+10. ready milestone 的 PASS 候选直接进入阶段结算；WARN 语义候选仍通过当前评估策略指定的 judge 复判。
+11. 没有成功匹配 milestone 的 attempt 会更新 required ready frontier 无进展 watch；watch 只消费当前 frontier 中已过滤好的 required ready id，不再扫描 graph。
+12. milestone 成功结算后通过 `advance_milestone_frontier(...)` 只推进该 milestone 的直接后继，并在写入 `ready_ids` / `blocked_candidate_ids` 时维护 graph 拓扑顺序。
+13. 阶段结算时使用 `state.evaluation_policy.effective_level()` 选择本阶段唯一 judge；阶段完成后同时更新 `state.weights` 与 `state.evaluation_policy`，不再在同一阶段内执行 cheap -> standard -> expensive 升级链路。
+14. 根据阶段结果和策略终止决策执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
+15. 当 `advance.continue_running is False` 时结束主循环。
+16. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
 
 Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 adapter/loader 和 harness 返回契约。
 
@@ -103,7 +117,7 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 
 ### Ready Frontier 无进展终止
 
-Evaluator 会把当前 `attempt_detail["ready_before"]` 中 `required=True` 且尚未 matched 的 milestone 作为一个 ready frontier 整体观察。只要 frontier 中任意成员的结构化候选分数相对历史最好分数提升至少 `config.ready_frontier_min_delta`，就认为 frontier 仍在推进，并清零连续 stale 计数。
+Evaluator 会把 `MilestoneFrontierState.ready_ids` 中 `required=True` 且尚未 matched 的 milestone 作为一个 ready frontier 整体观察。frontier 只在 case 初始化时扫描 graph；之后每个 milestone matched 后仅遍历该 milestone 的直接后继，更新 `remaining_predecessor_count`，并按 graph 拓扑顺序维护 `ready_ids` 与 `blocked_candidate_ids`。只要 frontier 中任意成员的结构化候选分数相对历史最好分数提升至少 `config.ready_frontier_min_delta`，就认为 frontier 仍在推进，并清零连续 stale 计数。
 
 该策略不要求并行 ready milestone 在同一窗口内全部提升。若某个 milestone matched，当前 watch 会被清空；下一次 attempt 会基于新的 ready frontier 重建基准。optional milestone 不进入 no-progress 终止判断。
 
@@ -195,7 +209,7 @@ synthetic pending stage 的 `uncertainty=1.0`，诊断中会标记 required mile
 
 当 `task_case_snapshot.task_description` 与首条用户消息摘要不一致时，Evaluator 仍输出 `evaluator_task_description_mismatch` warning，不修改 `TaskCase` 原始字段；LLM judge prompt 模板会直接声明 `stage_goal` 优先于 `task.task_description`。
 
-milestone graph 的直接前驱和阶段锚点字段来自 adapter/loader 阶段的预分析：`stage_anchor_predecessor_id` 是在原始 milestone DAG 增加 `__start__` 超级源和 `__finish__` 超级汇后计算得到的直接支配节点。运行期 ready 判定、路径断裂诊断和 stage interval 构造只读取 `Milestone.dependency_predecessor_ids` 与 `Milestone.stage_anchor_predecessor_id`，不在 checkpoint 时重新扫描 `graph.edges`。
+milestone graph 的直接前驱和阶段锚点字段来自 adapter/loader 阶段的预分析：`stage_anchor_predecessor_id` 是在原始 milestone DAG 增加 `__start__` 超级源和 `__finish__` 超级汇后计算得到的直接支配节点。运行期 ready 判定、路径断裂诊断和 stage interval 构造只读取 `Milestone.dependency_predecessor_ids` 与 `Milestone.stage_anchor_predecessor_id`；ready frontier 初始化后不在 step 热路径或 match 后推进路径重新扫描 `graph.nodes` / `graph.edges`。
 
 `Trajectory` 会维护 `first_step_index` 与 `successor_by_boundary`，运行期阶段起点通过 `stage_start_step_index(successor_by_boundary, boundary_index, end_step_index)` 查询，不再扫描完整 `trajectory.steps`。`StageInterval` 使用左开右闭语义：`start_boundary_step_index < step.index <= end_step_index`。`start_boundary_step_index` 是 anchor 边界 step，不纳入当前阶段；`start_step_index` 是该区间实际纳入评估的首个 step。
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dynsteer.evaluate.runtime import RuntimeEvaluationDecision
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     JsonObject,
     JsonValue,
     MilestoneGraph,
+    RuntimeEvaluationDecision,
     StageEvaluationResult,
     TaskCase,
 )
@@ -55,9 +55,7 @@ def policy_stop_log_extra(
     return _sanitize_extra(extra)
 
 
-def _pending_required_ids(graph: MilestoneGraph | None, matched_ids: list[str]) -> list[str]:
-    if graph is None:
-        return []
+def _pending_required_ids(graph: MilestoneGraph, matched_ids: list[str]) -> list[str]:
     matched = set(matched_ids)
     return sorted(node.milestone_id for node in graph.nodes if node.required and node.milestone_id not in matched)
 

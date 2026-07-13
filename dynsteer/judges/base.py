@@ -3,21 +3,23 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 from dynsteer.prompt.judge import build_judge_system_prompt
 from dynsteer.evaluate.scoring import stage_score_from_dimensions
 from dynsteer.language import TaskLanguage
-from dynsteer.llm.base import BaseLLM, LLMMessage, LLMResponseError
+from dynsteer.llm.base import BaseLLM, LLMResponseError
 from dynsteer.model import (
     Dimension,
     EvaluationLevel,
     JsonObject,
+    LLMJudgeConfig,
+    LLMMessage,
     StageEvaluationResult,
     StageInterval,
     StageStatus,
     TaskCase,
     Trajectory,
+    _ValidatedJudgePayload,
 )
 
 
@@ -27,25 +29,6 @@ class LLMJudgeConfigurationError(ValueError):
 
 class LLMJudgeResponseError(ValueError):
     """LLMJudge 返回内容无法解析时抛出。"""
-
-
-@dataclass(frozen=True)
-class LLMJudgeConfig:
-    """LLMJudge 评估行为配置。"""
-
-    expensive_passes: int = 3
-
-
-@dataclass(frozen=True)
-class _ValidatedJudgePayload:
-    """已通过 schema 校验的 Judge payload。"""
-
-    status: StageStatus
-    dimension_scores: dict[Dimension, float]
-    judge_confidence: float
-    evidence: list[str]
-    diagnosis: list[str]
-    metadata: JsonObject
 
 
 class BaseJudge(ABC):

@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from dynsteer.boundary import boundary_snapshot
-from dynsteer.config import ThresholdConfig
+from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary
-from dynsteer.evaluate.policy import EvaluationPolicyState, initial_evaluation_policy
 from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
-from dynsteer.evaluate.scoring import ScoringContext
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Actor,
@@ -15,69 +10,19 @@ from dynsteer.model import (
     Dimension,
     EvaluationLevel,
     JsonObject,
-    MilestoneGraph,
+    ReadyFrontierProgressWatch,
+    ReadyMilestoneProgress,
+    RuntimeEvaluationState,
+    ScoringContext,
     StageEvaluationResult,
     StageStatus,
     StateSnapshot,
     TaskCase,
+    ThresholdConfig,
     Trajectory,
-    TrajectoryStep,
 )
 from dynsteer.stage import stage_goal_key
 from dynsteer.utils import compact_text
-
-
-@dataclass
-class ReadyMilestoneProgress:
-    """记录单个 ready milestone 在当前 frontier 中的最好进展。"""
-
-    milestone_id: str
-    best_score: float
-    best_status: str
-    best_boundary_step_index: int | None
-    last_improved_step_index: int
-
-
-@dataclass
-class ReadyFrontierProgressWatch:
-    """记录当前 required ready frontier 的整体无进展观察状态。"""
-
-    frontier_key: tuple[str, ...]
-    ready_since_step_index: int
-    last_observed_step_index: int
-    last_frontier_improved_step_index: int
-    stale_frontier_observation_count: int = 0
-    frontier_observation_count: int = 0
-    milestone_progress: dict[str, ReadyMilestoneProgress] = field(default_factory=dict)
-
-
-@dataclass
-class RuntimeEvaluationState:
-    """保存单个 case 运行期间的评估状态。"""
-
-    weights: dict[Dimension, float]
-    settlements: list[HarnessStageSettlement]
-    matched_settlements: dict[str, HarnessStageSettlement]
-    stage_reports: list[StageEvaluationResult]
-    match_attempts: list[JsonObject]
-    evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
-    minefield_matches: list[JsonObject] = field(default_factory=list)
-    max_minefield_score: float = 0.0
-    fatal_minefield: bool = False
-    ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
-
-
-@dataclass
-class RuntimeEvaluationDecision:
-    """单步运行期阶段评估决策。"""
-
-    checkpoint: HarnessStageSettlement | None
-    stage_result: StageEvaluationResult | None
-    next_state: RuntimeEvaluationState
-    should_stop: bool = False
-    termination_code: str | None = None
-    termination_reason: str | None = None
-    termination_detail: JsonObject | None = None
 
 
 class JudgeConfigurationError(RuntimeError):
@@ -89,8 +34,8 @@ class HarnessTeardownError(RuntimeError):
 
 
 def update_ready_frontier_progress_watch(
-    task_case: TaskCase,
     state: RuntimeEvaluationState,
+    ready_required_ids: tuple[str, ...],
     attempt_detail: JsonObject,
     thresholds: ThresholdConfig,
     stop_enabled: bool,
@@ -100,8 +45,8 @@ def update_ready_frontier_progress_watch(
     """更新 required ready frontier 无进展追踪状态，必要时返回策略终止详情。
 
     入参：
-        task_case: 当前 benchmark case。
         state: 当前运行期评估状态，函数会原地更新 watch。
+        ready_required_ids: 当前 required ready frontier 的 milestone id。
         attempt_detail: `analyze_milestone_step(...)` 生成的候选评分详情。
         thresholds: 阶段阈值配置，用于判断 frontier 是否已有 PASS 水平候选。
         stop_enabled: 是否启用 ready frontier 无进展终止策略。
@@ -110,7 +55,7 @@ def update_ready_frontier_progress_watch(
     输出：
         达到终止条件时返回 JSON 详情，否则返回 None。
     """
-    if task_case is None or state is None or attempt_detail is None or thresholds is None:
+    if state is None or ready_required_ids is None or attempt_detail is None or thresholds is None:
         raise ValueError("ready frontier watch 参数不能为空")
     if patience < 1:
         raise ValueError("ready frontier patience 必须大于 0")
@@ -119,7 +64,7 @@ def update_ready_frontier_progress_watch(
     if not stop_enabled:
         return None
 
-    ready_ids = _required_ready_frontier_ids(task_case, state, attempt_detail)
+    ready_ids = tuple(str(milestone_id) for milestone_id in ready_required_ids if str(milestone_id).strip())
     if not ready_ids:
         state.ready_frontier_progress_watch = None
         return None
@@ -199,7 +144,7 @@ def runtime_diagnostics_summary(
     """构造运行期 raw_summary 的 milestone 与质量诊断信息。"""
     if task_case is None or trajectory is None or state is None:
         raise ValueError("运行期诊断参数不能为空")
-    graph = task_case.milestone_graph or MilestoneGraph()
+    graph = task_case.milestone_graph
     return {
         "milestone_graph_summary": build_milestone_graph_summary(graph),
         "milestone_match_attempts": list(state.match_attempts),
@@ -248,7 +193,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
     """为自然结束时仍未完成的 required milestone 生成失败阶段报告。"""
     if task_case is None or state is None:
         raise ValueError("pending required stage 参数不能为空")
-    graph = task_case.milestone_graph or MilestoneGraph()
+    graph = task_case.milestone_graph
     diagnostics = build_final_milestone_diagnostics(
         graph=graph,
         matched=state.matched_settlements,
@@ -368,26 +313,6 @@ def task_description_mismatched(snapshot: JsonObject) -> bool:
     if not isinstance(description, str) or not isinstance(initial_message, str):
         return False
     return bool(description.strip() and initial_message.strip() and description.strip() != initial_message.strip())
-
-
-def _required_ready_frontier_ids(
-    task_case: TaskCase,
-    state: RuntimeEvaluationState,
-    attempt_detail: JsonObject,
-) -> tuple[str, ...]:
-    graph = task_case.milestone_graph or MilestoneGraph()
-    required_ids = {node.milestone_id for node in graph.nodes if node.required}
-    ready_before = attempt_detail.get("ready_before")
-    if not isinstance(ready_before, list):
-        return ()
-    matched_ids = set(state.matched_settlements)
-    return tuple(
-        sorted(
-            str(milestone_id)
-            for milestone_id in ready_before
-            if str(milestone_id) in required_ids and str(milestone_id) not in matched_ids
-        )
-    )
 
 
 def _candidate_scores_by_milestone(attempt_detail: JsonObject) -> dict[str, JsonObject]:
@@ -515,4 +440,3 @@ def _initial_user_message_excerpt(trajectory: Trajectory) -> str | None:
         if step.actor == Actor.USER and isinstance(step.content, str) and step.content.strip():
             return compact_text(step.content, 240)
     return None
-

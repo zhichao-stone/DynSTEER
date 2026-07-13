@@ -1,29 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryStep
+from dynsteer.model import HarnessEvaluationOutput, JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryStep
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import json_safe
-
-
-@dataclass(frozen=True)
-class HarnessEvaluationOutput:
-    """harness 运行与 DynSTEER 评估输出路径。"""
-
-    run_dir: Path
-    raw_run_dir: Path
-    result_dir: Path
-    report_path: Path
-    summary_path: Path
-    raw_summary_path: Path
-    trajectory_path: Path
-
 
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:

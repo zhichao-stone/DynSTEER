@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from openai import OpenAI
 
-from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError, LLMMessage, LLMResponseError
+from dynsteer.llm.base import BaseLLM, LLMConfigurationError, LLMResponseError
+from dynsteer.model import LLMMessage
 
 
 class OpenaiLLM(BaseLLM):

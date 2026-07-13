@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,28 +20,10 @@ from dynsteer.adapter.toolsandbox.utils.runtime import (
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.adapter.utils import rows_from_dataframe
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
-from dynsteer.model import JsonObject
+from dynsteer.model import JsonObject, ToolSandboxSession
 from dynsteer.utils import enum_name
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ToolSandboxSession:
-    """ToolSandbox 原生执行 session。"""
-
-    scenario: object | None
-    roles: dict[object, object]
-    context: object | None
-    case_id: str
-    run_id: str
-    raw_output_dir: Path
-    initial_max_sandbox_message_index: int
-    last_sandbox_message_index: int
-    max_messages: int
-    system_environment_messages_prepared: bool = False
-    finished: bool = False
-    stop_reason: str | None = None
 
 
 class ToolSandboxHarness(BaseBenchmarkHarness):

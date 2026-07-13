@@ -1,29 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from dynsteer.model import Dimension, TaskType
-
-
-@dataclass(frozen=True)
-class ThresholdConfig:
-    pass_threshold: float = 0.8
-    warn_threshold: float = 0.6
-    fail_threshold: float = 0.4
-    low_uncertainty: float = 0.2
-    high_uncertainty: float = 0.45
-    safe_minefield_threshold: float = 0.2
-    risky_minefield_threshold: float = 0.5
-    fatal_minefield_threshold: float = 0.95
-    threshold_margin: float = 0.1
-
-
-@dataclass(frozen=True)
-class DynamicWeightConfig:
-    alpha: float
-    beta: float
-    targets: dict[Dimension, float]
-    focus: dict[Dimension, float]
+from dynsteer.model import Dimension, DynamicWeightConfig, TaskType
 
 
 DIMENSION_ORDER: tuple[Dimension, ...] = (

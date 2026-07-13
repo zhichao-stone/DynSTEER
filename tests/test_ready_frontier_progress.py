@@ -5,20 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from dynsteer.config import ThresholdConfig
 from dynsteer.evaluate.runtime import RuntimeEvaluationState, update_ready_frontier_progress_watch
 from dynsteer.harness.config import load_harness_run_configs, load_ready_frontier_patience_from_env
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import JsonObject, Milestone, MilestoneGraph, TaskCase
+from dynsteer.model import JsonObject, ThresholdConfig
 
 
 def test_ready_frontier_watch_resets_when_any_member_improves() -> None:
-    task_case = _task_case(required_ids=["m1", "m2"])
     state = _state()
 
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(1, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -26,8 +24,8 @@ def test_ready_frontier_watch_resets_when_any_member_improves() -> None:
         min_delta=0.02,
     )
     detail = update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(2, ["m1", "m2"], {"m1": 0.13, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -42,11 +40,10 @@ def test_ready_frontier_watch_resets_when_any_member_improves() -> None:
 
 
 def test_ready_frontier_watch_does_not_require_all_parallel_milestones_to_improve() -> None:
-    task_case = _task_case(required_ids=["m1", "m2", "m3"])
     state = _state()
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2", "m3"),
         _attempt(1, ["m1", "m2", "m3"], {"m1": 0.10, "m2": 0.10, "m3": 0.10}),
         ThresholdConfig(),
         True,
@@ -56,8 +53,8 @@ def test_ready_frontier_watch_does_not_require_all_parallel_milestones_to_improv
 
     for step_index, score in enumerate([0.13, 0.16, 0.19], start=2):
         detail = update_ready_frontier_progress_watch(
-            task_case,
             state,
+            ("m1", "m2", "m3"),
             _attempt(step_index, ["m1", "m2", "m3"], {"m1": score, "m2": 0.10, "m3": 0.10}),
             ThresholdConfig(),
             True,
@@ -70,11 +67,10 @@ def test_ready_frontier_watch_does_not_require_all_parallel_milestones_to_improv
 
 
 def test_ready_frontier_watch_rebuilds_after_match() -> None:
-    task_case = _task_case(required_ids=["m1", "m2"])
     state = _state()
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(1, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -82,8 +78,8 @@ def test_ready_frontier_watch_rebuilds_after_match() -> None:
         min_delta=0.02,
     )
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(2, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -95,8 +91,8 @@ def test_ready_frontier_watch_rebuilds_after_match() -> None:
 
     state.matched_settlements["m1"] = _settlement("m1")
     detail = update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m2",),
         _attempt(3, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -112,11 +108,10 @@ def test_ready_frontier_watch_rebuilds_after_match() -> None:
 
 
 def test_ready_frontier_watch_stops_when_no_member_improves() -> None:
-    task_case = _task_case(required_ids=["m1", "m2"])
     state = _state()
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(1, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -124,8 +119,8 @@ def test_ready_frontier_watch_stops_when_no_member_improves() -> None:
         min_delta=0.02,
     )
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(2, ["m1", "m2"], {"m1": 0.10, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -133,8 +128,8 @@ def test_ready_frontier_watch_stops_when_no_member_improves() -> None:
         min_delta=0.02,
     )
     detail = update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m1", "m2"),
         _attempt(3, ["m1", "m2"], {"m1": 0.11, "m2": 0.10}),
         ThresholdConfig(),
         True,
@@ -150,11 +145,10 @@ def test_ready_frontier_watch_stops_when_no_member_improves() -> None:
 
 
 def test_single_ready_milestone_no_progress_uses_milestone_code() -> None:
-    task_case = _task_case(required_ids=["m3"])
     state = _state()
     update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m3",),
         _attempt(1, ["m3"], {"m3": 0.20}),
         ThresholdConfig(),
         True,
@@ -162,8 +156,8 @@ def test_single_ready_milestone_no_progress_uses_milestone_code() -> None:
         min_delta=0.02,
     )
     detail = update_ready_frontier_progress_watch(
-        task_case,
         state,
+        ("m3",),
         _attempt(2, ["m3"], {"m3": 0.20}),
         ThresholdConfig(),
         True,
@@ -177,12 +171,11 @@ def test_single_ready_milestone_no_progress_uses_milestone_code() -> None:
 
 
 def test_ready_frontier_watch_ignores_optional_milestones() -> None:
-    task_case = _task_case(required_ids=[], optional_ids=["optional"])
     state = _state()
 
     detail = update_ready_frontier_progress_watch(
-        task_case,
         state,
+        (),
         _attempt(1, ["optional"], {"optional": 0.10}),
         ThresholdConfig(),
         True,
@@ -245,30 +238,6 @@ def _state() -> RuntimeEvaluationState:
         matched_settlements={},
         stage_reports=[],
         match_attempts=[],
-    )
-
-
-def _task_case(required_ids: list[str], optional_ids: list[str] | None = None) -> TaskCase:
-    milestones = [
-        _milestone(milestone_id, required=True)
-        for milestone_id in required_ids
-    ]
-    milestones.extend(_milestone(milestone_id, required=False) for milestone_id in optional_ids or [])
-    return TaskCase(
-        task_id="task",
-        task_description="测试任务",
-        case_id="case",
-        milestone_graph=MilestoneGraph(nodes=milestones),
-    )
-
-
-def _milestone(milestone_id: str, required: bool) -> Milestone:
-    return Milestone(
-        milestone_id=milestone_id,
-        name=milestone_id,
-        description=milestone_id,
-        constraints=[],
-        required=required,
     )
 
 

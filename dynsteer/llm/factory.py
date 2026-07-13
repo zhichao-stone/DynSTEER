@@ -4,8 +4,9 @@ import os
 from typing import Mapping
 
 from dynsteer.llm.anthropic import AnthropicLLM
-from dynsteer.llm.base import BaseLLM, LLMConfig, LLMConfigurationError
+from dynsteer.llm.base import BaseLLM, LLMConfigurationError
 from dynsteer.llm.openai import OpenaiLLM
+from dynsteer.model import LLMConfig
 
 from dynsteer.utils import normalize_str_from_source
 

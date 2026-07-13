@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional, Union
+from pathlib import Path
+import time
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, Union
+
+if TYPE_CHECKING:
+    from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
+
 
 ## JSON 类型
 
 JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
 JsonObject = dict[str, JsonValue]
+ProgressEventKind = Literal["case_started", "case_advanced", "case_finished"]
 
 MISSING = object()
 
@@ -95,6 +103,29 @@ class StageGoalSemanticKind(str, Enum):
     PRESERVE_STATE = "preserve_state"
     EMIT_MESSAGE = "emit_message"
     TOOL_CALL = "tool_call"
+
+
+## 配置模型
+
+@dataclass(frozen=True)
+class ThresholdConfig:
+    pass_threshold: float = 0.8
+    warn_threshold: float = 0.6
+    fail_threshold: float = 0.4
+    low_uncertainty: float = 0.2
+    high_uncertainty: float = 0.45
+    safe_minefield_threshold: float = 0.2
+    risky_minefield_threshold: float = 0.5
+    fatal_minefield_threshold: float = 0.95
+    threshold_margin: float = 0.1
+
+
+@dataclass(frozen=True)
+class DynamicWeightConfig:
+    alpha: float
+    beta: float
+    targets: dict[Dimension, float]
+    focus: dict[Dimension, float]
 
 
 ## 轨迹与状态模型
@@ -201,6 +232,31 @@ class MilestoneGraph:
 
 
 @dataclass
+class MilestoneFrontierState:
+    """保存 milestone ready frontier 的运行期增量状态。
+
+    入参：
+        milestone_by_id: milestone id 到 milestone 对象引用的映射。
+        dependents_by_id: milestone id 到直接后继 milestone id 的映射。
+        remaining_predecessor_count: 未匹配前驱数量。
+        ready_ids: 当前 ready frontier，按 graph 原始拓扑顺序维护。
+        blocked_candidate_ids: 已靠近执行前沿但仍缺少前驱的诊断候选，按 graph 原始拓扑顺序维护。
+        order_by_id: graph.nodes 原始顺序，用于稳定输出。
+    输出：
+        供运行期 step 分析和 match 后推进复用的状态对象。
+    """
+
+    milestone_by_id: dict[str, Milestone]
+    dependents_by_id: dict[str, tuple[str, ...]]
+    remaining_predecessor_count: dict[str, int]
+    ready_ids: list[str]
+    blocked_candidate_ids: list[str]
+    order_by_id: dict[str, int]
+
+
+## 任务 Case 与轨迹模型
+
+@dataclass
 class TaskCase:
     task_id: str
     task_description: str
@@ -245,7 +301,7 @@ class Trajectory:
         previous_index = self.latest_step_index
         if previous_index is not None and step_index <= previous_index:
             raise ValueError("trajectory step index 必须递增")
-        
+
         if previous_index is None:
             self.first_step_index = step_index
             self.successor_by_boundary[step_index - 1] = step_index
@@ -259,7 +315,7 @@ class Trajectory:
         """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
         if step is None:
             raise ValueError("step 不能为空")
-        
+
         self.steps.append(step)
         self._append_step_index(step.index)
 
@@ -289,6 +345,8 @@ class Boundary:
     step_id: Optional[str] = None
 
 
+## 评分与阶段评估模型
+
 @dataclass
 class ConstraintScore:
     constraint_id: str
@@ -310,7 +368,20 @@ class MilestoneScore:
     constraint_scores: list[ConstraintScore] = field(default_factory=list)
 
 
-## 评估决策与结果模型
+@dataclass(frozen=True)
+class MilestoneStepAnalysis:
+    hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    attempt_detail: JsonObject | None = None
+    blocked_detail: JsonObject | None = None
+
+
+@dataclass(frozen=True)
+class ScoringContext:
+    task_case: TaskCase | None = None
+    matched_boundaries: Mapping[str, Boundary] = field(default_factory=dict)
+    matched_snapshots: Mapping[str, StateSnapshot] = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
+
 
 @dataclass
 class StageInterval:
@@ -421,6 +492,282 @@ def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
     if stage.status == StageStatus.MISSING:
         return False
     return True
+
+
+## 评估策略模型
+
+_EVALUATION_LEVEL_ORDER: dict[EvaluationLevel, int] = {
+    EvaluationLevel.CHEAP: 0,
+    EvaluationLevel.STANDARD: 1,
+    EvaluationLevel.EXPENSIVE: 2,
+}
+
+
+@dataclass(frozen=True)
+class EvaluationPolicyState:
+    """保存当前阶段采用的跨阶段评估粒度策略。"""
+
+    base_level: EvaluationLevel
+    dimension_levels: dict[Dimension, EvaluationLevel]
+    reason: str = "initial"
+
+    def effective_level(self) -> EvaluationLevel:
+        """返回基础粒度与逐维粒度中的最高成本粒度。"""
+        if self.base_level is None or self.dimension_levels is None:
+            raise ValueError("评估策略状态不能为空")
+        levels = [self.base_level, *self.dimension_levels.values()]
+        return max(levels, key=lambda level: _EVALUATION_LEVEL_ORDER[level])
+
+    def to_dict(self) -> JsonObject:
+        """转换为可序列化策略字典。"""
+        return {
+            "base_level": self.base_level.value,
+            "dimension_levels": {
+                dimension.value: level.value
+                for dimension, level in self.dimension_levels.items()
+            },
+            "effective_level": self.effective_level().value,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class EvaluationPolicyUpdate:
+    """描述一次阶段评估后产生的下一阶段策略决策。"""
+
+    current_policy: EvaluationPolicyState
+    next_policy: EvaluationPolicyState
+    should_stop: bool
+    termination_code: str | None
+    termination_reason: str | None
+
+
+def initial_evaluation_policy() -> EvaluationPolicyState:
+    """创建默认初始评估策略。"""
+    return EvaluationPolicyState(
+        base_level=EvaluationLevel.CHEAP,
+        dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in Dimension},
+        reason="initial",
+    )
+
+
+## 运行期评估状态模型
+
+@dataclass
+class ReadyMilestoneProgress:
+    """记录单个 ready milestone 在当前 frontier 中的最好进展。"""
+
+    milestone_id: str
+    best_score: float
+    best_status: str
+    best_boundary_step_index: int | None
+    last_improved_step_index: int
+
+
+@dataclass
+class ReadyFrontierProgressWatch:
+    """记录当前 required ready frontier 的整体无进展观察状态。"""
+
+    frontier_key: tuple[str, ...]
+    ready_since_step_index: int
+    last_observed_step_index: int
+    last_frontier_improved_step_index: int
+    stale_frontier_observation_count: int = 0
+    frontier_observation_count: int = 0
+    milestone_progress: dict[str, ReadyMilestoneProgress] = field(default_factory=dict)
+
+
+@dataclass
+class RuntimeEvaluationState:
+    """保存单个 case 运行期间的评估状态。"""
+
+    weights: dict[Dimension, float]
+    settlements: list[HarnessStageSettlement]
+    matched_settlements: dict[str, HarnessStageSettlement]
+    stage_reports: list[StageEvaluationResult]
+    match_attempts: list[JsonObject]
+    evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
+    minefield_matches: list[JsonObject] = field(default_factory=list)
+    max_minefield_score: float = 0.0
+    fatal_minefield: bool = False
+    ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
+    milestone_frontier: MilestoneFrontierState | None = None
+
+
+@dataclass
+class RuntimeEvaluationDecision:
+    """单步运行期阶段评估决策。"""
+
+    checkpoint: HarnessStageSettlement | None
+    stage_result: StageEvaluationResult | None
+    next_state: RuntimeEvaluationState
+    should_stop: bool = False
+    termination_code: str | None = None
+    termination_reason: str | None = None
+    termination_detail: JsonObject | None = None
+
+
+## 运行指标与进度模型
+
+@dataclass(frozen=True)
+class LLMCallMetrics:
+    """单次 LLM provider 调用统计。"""
+
+    provider: str
+    model: str
+    elapsed_seconds: float
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    success: bool = True
+    error: str | None = None
+
+    def to_dict(self) -> JsonObject:
+        """转换为 JSON 可序列化字典。"""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "elapsed_seconds": self.elapsed_seconds,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "success": self.success,
+            "error": self.error,
+        }
+
+
+@dataclass
+class RuntimeMetricsRecorder:
+    """记录单个 case 评估期间的运行统计。"""
+
+    started_monotonic: float = field(default_factory=time.perf_counter)
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    llm_calls: list[LLMCallMetrics] = field(default_factory=list)
+
+    def record_llm_call(self, call: LLMCallMetrics) -> None:
+        """记录一次 LLM provider 调用。"""
+        if call is None:
+            raise ValueError("call 不能为空")
+        self.llm_calls.append(call)
+
+
+@dataclass(frozen=True)
+class CaseProgressEvent:
+    """跨线程传递的 case 进度事件。"""
+
+    kind: ProgressEventKind
+    case_id: str
+    step_count: int = 0
+    message: str | None = None
+
+
+@dataclass
+class CaseProgressState:
+    """单个 case 的进度条状态。"""
+
+    case_id: str
+    started_at: float
+    case_index: int | None = None
+    step_count: int = 0
+    elapsed_seconds: float = 0.0
+    avg_step_seconds: float | None = None
+    finished: bool = False
+
+
+@dataclass
+class CaseProgressBars:
+    """单个 case 在终端中占用的标题行与进度条行。"""
+
+    title_bar: Any
+    progress_bar: Any
+
+
+## LLM 与 Judge 模型
+
+@dataclass(frozen=True)
+class LLMMessage:
+    """单条对话消息。"""
+
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    """LLM provider 运行配置。"""
+
+    provider: str
+    model: str
+    api_key: str | None = None
+    base_url: str | None = None
+    timeout_seconds: float = 60.0
+    temperature: float = 0.0
+    max_tokens: int | None = None
+    max_retries: int = 3
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 8.0
+
+
+@dataclass(frozen=True)
+class LLMJudgeConfig:
+    """LLMJudge 评估行为配置。"""
+
+    expensive_passes: int = 3
+
+
+@dataclass(frozen=True)
+class _ValidatedJudgePayload:
+    """已通过 schema 校验的 Judge payload。"""
+
+    status: StageStatus
+    dimension_scores: dict[Dimension, float]
+    judge_confidence: float
+    evidence: list[str]
+    diagnosis: list[str]
+    metadata: JsonObject
+
+
+## Harness 与适配器模型
+
+@dataclass(frozen=True)
+class HarnessEvaluationOutput:
+    """harness 运行与 DynSTEER 评估输出路径。"""
+
+    run_dir: Path
+    raw_run_dir: Path
+    result_dir: Path
+    report_path: Path
+    summary_path: Path
+    raw_summary_path: Path
+    trajectory_path: Path
+
+
+@dataclass(frozen=True)
+class HarnessCaseTask:
+    """已加载 TaskCase 后的单 case 执行任务。"""
+
+    order: int
+    config: HarnessRunConfig
+    case_id: str
+    task_case: TaskCase
+
+
+@dataclass
+class ToolSandboxSession:
+    """ToolSandbox 原生执行 session。"""
+
+    scenario: object | None
+    roles: dict[object, object]
+    context: object | None
+    case_id: str
+    run_id: str
+    raw_output_dir: Path
+    initial_max_sandbox_message_index: int
+    last_sandbox_message_index: int
+    max_messages: int
+    system_environment_messages_prepared: bool = False
+    finished: bool = False
+    stop_reason: str | None = None
 
 
 ## 通用校验函数
