@@ -75,10 +75,11 @@ result = evaluator.evaluate(harness, config, task_case)
 7. 对每个新增 step 调用 `Trajectory.append_step(...)`，立即按当前 boundary / snapshot / step 扫描 minefield；fatal minefield 且 `config.stop_on_minefield=True` 时复用策略终止路径。
 8. 未触发 minefield 停止时，通过 `analyze_milestone_step(...)` 分析 ready milestone 命中、可 LLM 复判的语义消息 warn 候选或 blocked milestone 诊断。
 9. ready milestone 的 PASS 候选直接进入阶段结算；当没有 PASS、但存在 `emit_message + semantic_equivalent` 且无 missing/硬约束失败的 WARN 候选时，该候选会进入现有 `_evaluate_checkpoint(...)` 通道，由运行期评估策略指定的 judge 复判。
-10. 阶段结算时使用 `state.evaluation_policy.effective_level()` 选择本阶段唯一 judge；阶段完成后同时更新 `state.weights` 与 `state.evaluation_policy`，不再在同一阶段内执行 cheap -> standard -> expensive 升级链路。
-11. 根据阶段结果和策略终止决策执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
-12. 当 `advance.continue_running is False` 时结束主循环。
-13. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
+10. 没有成功匹配 milestone 的 attempt 会更新 required ready frontier 无进展 watch；同一 frontier 连续达到 `config.ready_frontier_patience` 次评分观察无有效提升时，触发 no-progress 策略终止。
+11. 阶段结算时使用 `state.evaluation_policy.effective_level()` 选择本阶段唯一 judge；阶段完成后同时更新 `state.weights` 与 `state.evaluation_policy`，不再在同一阶段内执行 cheap -> standard -> expensive 升级链路。
+12. 根据阶段结果和策略终止决策执行 fail-fast，必要时调用 `harness.stop_case(session, reason)`。
+13. 当 `advance.continue_running is False` 时结束主循环。
+14. `harness.raw_summary_from_session(session)` 与 `harness.teardown_case(session)` 完成收尾。
 
 Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 `case_finished()` 控制循环；这些属于 adapter/loader 和 harness 返回契约。
 
@@ -99,6 +100,23 @@ Evaluator 不再从 session 动态提取 `TaskCase`，也不通过空 steps 或 
 `ScoringContext` 用于在运行期传递当前任务、已命中 milestone 边界和已命中状态快照。ToolSandbox 等 benchmark scorer 可通过该上下文读取 reference snapshot，避免在通用层内硬编码 benchmark 语义。
 
 ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时刻的完整多 namespace 快照；依赖 `reference_milestone_node_index` 的 custom scorer 会从该快照中按 namespace 读取参考数据。
+
+### Ready Frontier 无进展终止
+
+Evaluator 会把当前 `attempt_detail["ready_before"]` 中 `required=True` 且尚未 matched 的 milestone 作为一个 ready frontier 整体观察。只要 frontier 中任意成员的结构化候选分数相对历史最好分数提升至少 `config.ready_frontier_min_delta`，就认为 frontier 仍在推进，并清零连续 stale 计数。
+
+该策略不要求并行 ready milestone 在同一窗口内全部提升。若某个 milestone matched，当前 watch 会被清空；下一次 attempt 会基于新的 ready frontier 重建基准。optional milestone 不进入 no-progress 终止判断。
+
+相关 `HarnessRunConfig` 字段：
+
+- `stop_on_ready_frontier_no_progress`: 是否启用 ready frontier 无进展策略，默认 `true`，可在 `run_configs.json` 中按 run 覆盖。
+- `ready_frontier_patience`: 同一 ready frontier 连续无有效提升的评分观察次数阈值，默认 `8`，只从环境变量 `DYNSTEER_READY_FRONTIER_PATIENCE` 读取。
+- `ready_frontier_min_delta`: 判定有效提升的最小分数增量，默认 `0.02`，可在 `run_configs.json` 中按 run 覆盖。
+
+新增 termination code：
+
+- `ready_frontier_no_progress:{most_promising_milestone_id}`: 多个 required ready milestone 组成的 frontier 长期无有效提升。
+- `milestone_no_progress:{milestone_id}`: 单个 required ready milestone 长期无有效提升。
 
 ## 成员评估函数
 
@@ -148,6 +166,8 @@ ToolSandbox 等 benchmark 应保证 `matched_snapshots` 中保存的是同一时
 - `milestone_match_attempts`: 每次 checkpoint 匹配尝试的候选详情。
 - `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
 - `runtime_quality_diagnostics`: 不参与评分的轨迹质量诊断，包含 `tool_argument_warnings`、`empty_tool_results`、`failed_tool_results`、`grounding_warnings` 和 `efficiency`。该字段用于解释“工具调用发生但参数/结果没有推进任务”“工具返回空值后 agent 仍给出具体事实答案”“最终状态正确但用户额外负担较高”等情况。
+
+当 ready frontier 无进展策略触发提前终止时，`raw_summary["termination_detail"]` 会包含 `ready_milestone_ids`、`most_promising_milestone_id`、`ready_since_step_index`、`last_frontier_improved_step_index`、`stale_frontier_observation_count`、`frontier_observation_count`、`patience`、`min_delta` 和各 milestone 的 `best_score` / `best_status` / `best_boundary_step_index` / `last_improved_step_index`。
 
 `runtime_quality_diagnostics.empty_tool_results[]` 中每条记录包含：
 

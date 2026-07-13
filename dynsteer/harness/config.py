@@ -8,6 +8,8 @@ from typing import Any, Mapping
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject
 
+DEFAULT_READY_FRONTIER_PATIENCE = 8
+
 
 def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObject:
     """从环境变量读取 LLMJudge 配置。"""
@@ -75,6 +77,44 @@ def _optional_str(data: dict[str, Any], key: str) -> str | None:
     return None
 
 
+def _optional_bool(data: dict[str, Any], key: str, default: bool) -> bool:
+    """读取可选布尔字段。"""
+    value = data.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"run_configs.json 字段 {key} 必须是布尔值")
+    return value
+
+
+def _optional_non_negative_float(data: dict[str, Any], key: str, default: float) -> float:
+    """读取可选非负浮点字段。"""
+    value = data.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"run_configs.json 字段 {key} 必须是数字")
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError(f"run_configs.json 字段 {key} 不能为负数")
+    return parsed
+
+
+def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) -> int:
+    """从环境变量读取 ready frontier 无进展 patience。"""
+    source = env if env is not None else os.environ
+    raw_value = source.get("DYNSTEER_READY_FRONTIER_PATIENCE")
+    if raw_value is None or not raw_value.strip():
+        return DEFAULT_READY_FRONTIER_PATIENCE
+    try:
+        patience = int(raw_value.strip())
+    except ValueError as exc:
+        raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须是整数") from exc
+    if patience < 1:
+        raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须大于 0")
+    return patience
+
+
 def _manifest_language(manifest: dict[str, Any]) -> str:
     """读取 benchmark prompt 语言配置。"""
     value = manifest.get("language", "en")
@@ -137,10 +177,15 @@ def load_harness_run_configs(
     configs: list[HarnessRunConfig] = []
     seen_run_ids: set[str] = set()
     judge_config = load_judge_config_from_env()
+    ready_frontier_patience = load_ready_frontier_patience_from_env()
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
             raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
-        metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key != "scenarios"}
+        metadata: JsonObject = {
+            str(key): value
+            for key, value in raw_spec.items()
+            if key not in {"scenarios", "ready_frontier_patience"}
+        }
         metadata["language"] = language
         if manifest_max_workers is not None:
             metadata["benchmark_max_workers"] = manifest_max_workers
@@ -173,6 +218,13 @@ def load_harness_run_configs(
                 case_ids=_case_ids_from_spec(raw_spec, index),
                 runs_dir=runs_dir,
                 results_dir=results_dir,
+                stop_on_ready_frontier_no_progress=_optional_bool(
+                    raw_spec,
+                    "stop_on_ready_frontier_no_progress",
+                    True,
+                ),
+                ready_frontier_patience=ready_frontier_patience,
+                ready_frontier_min_delta=_optional_non_negative_float(raw_spec, "ready_frontier_min_delta", 0.02),
                 metadata=metadata,
             )
         )

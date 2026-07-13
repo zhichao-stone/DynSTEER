@@ -63,10 +63,12 @@ from dynsteer.evaluate.runtime import (
 from dynsteer.evaluate.runtime import (
     blocked_milestone_termination_reason,
     pending_required_stage_results,
+    ready_frontier_no_progress_termination_reason,
     runtime_diagnostics_summary,
     scoring_context,
     task_case_snapshot,
     task_description_mismatched,
+    update_ready_frontier_progress_watch,
 )
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
@@ -281,6 +283,32 @@ class DynSTEEREvaluator:
                     if analysis.hit is None:
                         if analysis.attempt_detail is not None:
                             state.match_attempts.append(analysis.attempt_detail)
+                            no_progress_decision = self._ready_frontier_no_progress_decision(
+                                config,
+                                task_case,
+                                state,
+                                analysis.attempt_detail,
+                            )
+                            if no_progress_decision is not None:
+                                termination_code = no_progress_decision.termination_code
+                                termination_reason = no_progress_decision.termination_reason
+                                termination_detail = no_progress_decision.termination_detail
+                                terminated_by_policy = True
+                                harness.stop_case(session, termination_reason or "ready frontier 无进展，提前终止执行")
+                                logger.warning(
+                                    "evaluator_policy_stop",
+                                    extra={
+                                        "事件": "策略提前终止",
+                                        **policy_stop_log_extra(
+                                            case_id,
+                                            task_case,
+                                            no_progress_decision,
+                                            termination_code,
+                                            termination_reason,
+                                        ),
+                                    },
+                                )
+                                break
                         if analysis.blocked_detail is not None:
                             state.match_attempts.append(analysis.blocked_detail)
                             if config.stop_on_stage_failure:
@@ -324,6 +352,32 @@ class DynSTEEREvaluator:
                             if isinstance(review_detail, dict):
                                 review_detail["status"] = "skipped_no_standard_judge"
                             state.match_attempts.append(analysis.attempt_detail)
+                            no_progress_decision = self._ready_frontier_no_progress_decision(
+                                config,
+                                task_case,
+                                state,
+                                analysis.attempt_detail,
+                            )
+                            if no_progress_decision is not None:
+                                termination_code = no_progress_decision.termination_code
+                                termination_reason = no_progress_decision.termination_reason
+                                termination_detail = no_progress_decision.termination_detail
+                                terminated_by_policy = True
+                                harness.stop_case(session, termination_reason or "ready frontier 无进展，提前终止执行")
+                                logger.warning(
+                                    "evaluator_policy_stop",
+                                    extra={
+                                        "事件": "策略提前终止",
+                                        **policy_stop_log_extra(
+                                            case_id,
+                                            task_case,
+                                            no_progress_decision,
+                                            termination_code,
+                                            termination_reason,
+                                        ),
+                                    },
+                                )
+                                break
                         continue
 
                     decision = self._evaluate_checkpoint(
@@ -345,6 +399,33 @@ class DynSTEEREvaluator:
                     if analysis.attempt_detail is not None:
                         state.match_attempts.append(analysis.attempt_detail)
                     state = decision.next_state
+                    if decision.checkpoint is None and analysis.attempt_detail is not None:
+                        no_progress_decision = self._ready_frontier_no_progress_decision(
+                            config,
+                            task_case,
+                            state,
+                            analysis.attempt_detail,
+                        )
+                        if no_progress_decision is not None:
+                            termination_code = no_progress_decision.termination_code
+                            termination_reason = no_progress_decision.termination_reason
+                            termination_detail = no_progress_decision.termination_detail
+                            terminated_by_policy = True
+                            harness.stop_case(session, termination_reason or "ready frontier 无进展，提前终止执行")
+                            logger.warning(
+                                "evaluator_policy_stop",
+                                extra={
+                                    "事件": "策略提前终止",
+                                    **policy_stop_log_extra(
+                                        case_id,
+                                        task_case,
+                                        no_progress_decision,
+                                        termination_code,
+                                        termination_reason,
+                                    ),
+                                },
+                            )
+                            break
                     if decision.should_stop:
                         termination_code = decision.termination_code
                         termination_reason = decision.termination_reason
@@ -441,6 +522,39 @@ class DynSTEEREvaluator:
             finally:
                 reset_runtime_metrics_recorder(metrics_token)
 
+    def _ready_frontier_no_progress_decision(
+        self,
+        config: HarnessRunConfig,
+        task_case: TaskCase,
+        state: RuntimeEvaluationState,
+        attempt_detail: JsonObject,
+    ) -> RuntimeEvaluationDecision | None:
+        """基于单次 milestone attempt 更新 ready frontier watch 并生成终止决策。"""
+        if config is None or task_case is None or state is None or attempt_detail is None:
+            raise ValueError("ready frontier 无进展决策参数不能为空")
+        termination_detail = update_ready_frontier_progress_watch(
+            task_case=task_case,
+            state=state,
+            attempt_detail=attempt_detail,
+            thresholds=self._thresholds,
+            stop_enabled=config.stop_on_ready_frontier_no_progress,
+            patience=config.ready_frontier_patience,
+            min_delta=config.ready_frontier_min_delta,
+        )
+        if termination_detail is None:
+            return None
+        termination_code = str(termination_detail.get("code") or "ready_frontier_no_progress")
+        termination_reason = ready_frontier_no_progress_termination_reason(termination_detail)
+        return RuntimeEvaluationDecision(
+            None,
+            None,
+            state,
+            should_stop=True,
+            termination_code=termination_code,
+            termination_reason=termination_reason,
+            termination_detail=termination_detail,
+        )
+
     def _evaluate_checkpoint(
         self,
         config: HarnessRunConfig,
@@ -472,6 +586,7 @@ class DynSTEEREvaluator:
         ):
             return RuntimeEvaluationDecision(None, stage_result, state)
         state.matched_settlements[milestone.milestone_id] = settlement
+        state.ready_frontier_progress_watch = None
         state.settlements.append(settlement)
         state.stage_reports.append(stage_result)
         state.weights = next_weights
@@ -543,7 +658,6 @@ class DynSTEEREvaluator:
         }
         return stage_result, next_weights, policy_update
     
-
     def _enrich_stage_result(
         self,
         interval: StageInterval,
