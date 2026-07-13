@@ -127,7 +127,7 @@ def _run_tasks_serial(
     with progress_logging_redirect(logger):
         try:
             for task in tasks:
-                manager.case_started(task.case_id)
+                manager.case_started(task.case_id, case_index=task.order + 1)
                 try:
                     outputs.append(_run_case(task, progress_reporter=_DirectProgressReporter(manager)))
                 finally:
@@ -161,7 +161,7 @@ def _run_tasks_parallel(
                 return
             task = tasks[next_index]
             next_index += 1
-            manager.case_started(task.case_id)
+            manager.case_started(task.case_id, case_index=task.order + 1)
             futures[executor.submit(_run_case, task, QueueProgressReporter(events))] = task
 
         for _ in range(min(max_workers, len(tasks))):

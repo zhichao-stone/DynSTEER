@@ -103,7 +103,7 @@ Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)`
 
 `run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
-Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。实际同时运行的 case 数量仍不超过 `max_workers`；可见窗口大小按 case 计算为 `max(5, 实际 worker 数)`，每个 case 占用两行终端输出：第一行显示完整 `case_id`，第二行显示 desc 为 `执行进度（最多N步）` 的 tqdm 进度条，因此默认可见窗口为 5 个 case、10 个终端行。case 完成前会把进度条 total 收敛到实际 step 数，完成后满进度条会继续保留在可见窗口中，直到被后续 case 挤出；窗口变化时会重建可见进度条位置，让剩余 case 从第一组两行开始连续显示。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
+Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。实际同时运行的 case 数量仍不超过 `max_workers`；可见窗口大小按 case 计算为 `max(5, 实际 worker 数)`，每个 case 占用两行终端输出：第一行显示 `# Test Case {idx}: {case_id}`，其中 `idx` 是当前配置内从 1 开始的原始 case 顺序，第二行显示 desc 为 `Case {idx}执行进度（最多N步）` 的 tqdm 进度条，因此默认可见窗口为 5 个 case、10 个终端行。进度条后缀由 DynSTEER 自行维护 `elapsed`、`steps` 和 `avg_step`，避免 tqdm 重建或关闭时丢失真实耗时。case 完成前会把进度条 total 收敛到实际 step 数，完成后满进度条会继续保留在可见窗口中，直到被后续 case 挤出；窗口变化时会重建可见进度条位置，让剩余 case 从第一组两行开始连续显示。运行结束时 Runner 会先清理动态进度条，再按可见 case 顺序输出稳定的最终静态快照，避免多行 tqdm `leave=True` 留存导致终端内容上移或挤压。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
 
 Harness 模式输出：
 

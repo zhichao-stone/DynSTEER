@@ -48,6 +48,7 @@ class CaseProgressState:
 
     case_id: str
     started_at: float
+    case_index: int | None = None
     step_count: int = 0
     elapsed_seconds: float = 0.0
     avg_step_seconds: float | None = None
@@ -122,17 +123,20 @@ class TqdmCaseProgressManager:
         """返回当前活动进度条数量。"""
         return len(self.active_order)
 
-    def case_started(self, case_id: str) -> None:
+    def case_started(self, case_id: str, case_index: int | None = None) -> None:
         """创建指定 case 的进度条。"""
         self._validate_case_id(case_id)
+        self._validate_case_index(case_index)
         if case_id in self.active_order:
             return
         if self.active_count >= self.max_workers:
             raise ValueError("活动进度条数量不能超过 max_workers")
         state = self.case_states.get(case_id)
         if state is None:
-            state = CaseProgressState(case_id=case_id, started_at=self._time_fn())
+            state = CaseProgressState(case_id=case_id, started_at=self._time_fn(), case_index=case_index)
             self.case_states[case_id] = state
+        elif case_index is not None:
+            state.case_index = case_index
         state.finished = False
         previous_visible_order = list(self.visible_order)
         self.active_order.append(case_id)
@@ -179,18 +183,15 @@ class TqdmCaseProgressManager:
         self._sync_visible_bars(previous_visible_order)
 
     def close_all(self) -> None:
-        """关闭所有可见进度条，并保留最终窗口。"""
+        """关闭所有可见进度条，并用稳定静态文本保留最终窗口。"""
+        final_lines = self._final_snapshot_lines()
         for case_id in list(self.visible_order):
             bars = self.bars.pop(case_id, None)
-            state = self.case_states[case_id]
-            self._refresh_state(state)
             if bars is not None:
-                if state.finished:
-                    self._finish_bar(bars.progress_bar, state)
-                self._close_bars(bars, leave=True)
+                self._close_bars(bars, leave=False)
         self.active_order.clear()
         self.visible_order.clear()
-        self._write_line_after_close()
+        self._write_final_lines(final_lines)
 
     def _rebuild_visible_bars(self) -> None:
         """按当前可见顺序重建进度条位置。"""
@@ -232,11 +233,11 @@ class TqdmCaseProgressManager:
             position=position * 2,
             leave=False,
             initial=0,
-            bar_format=self._title_bar_format(case_id),
+            bar_format=self._title_bar_format(case_id, state.case_index),
             file=sys.__stderr__,
         )
         progress_bar = self._bar_factory(
-            desc=self._progress_description(),
+            desc=self._progress_description(state),
             total=state.step_count if state.finished else max(self.estimated_total, state.step_count),
             unit="step",
             position=position * 2 + 1,
@@ -258,8 +259,12 @@ class TqdmCaseProgressManager:
         state.avg_step_seconds = state.elapsed_seconds / state.step_count if state.step_count else None
 
     def _set_bar_postfix(self, bar: Any, state: CaseProgressState) -> None:
+        elapsed = self._format_elapsed_seconds(state.elapsed_seconds)
         avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
-        bar.set_postfix({"steps": state.step_count, "avg_step": avg_step})
+        bar.set_postfix({"elapsed": elapsed, "steps": state.step_count, "avg_step": avg_step})
+
+    def _format_elapsed_seconds(self, elapsed_seconds: float) -> str:
+        return tqdm.format_interval(max(elapsed_seconds, 0.0))
 
     def _grow_bar_total(self, bar: Any, step_count: int) -> None:
         current_total = getattr(bar, "total", None)
@@ -269,6 +274,7 @@ class TqdmCaseProgressManager:
 
     def _finish_bar(self, bar: Any, state: CaseProgressState) -> None:
         bar.total = state.step_count
+        self._set_bar_postfix(bar, state)
         refresh = getattr(bar, "refresh", None)
         if callable(refresh):
             refresh()
@@ -303,20 +309,58 @@ class TqdmCaseProgressManager:
         self._close_bar(bars.progress_bar, leave)
         self._close_bar(bars.title_bar, leave)
 
-    def _progress_description(self) -> str:
-        return f"执行进度（最多{self.estimated_total}步）"
+    def _progress_description(self, state: CaseProgressState) -> str:
+        if state.case_index is None:
+            return f"执行进度（最多{self.estimated_total}步）"
+        return f"Case {state.case_index}执行进度（最多{self.estimated_total}步）"
 
-    def _title_bar_format(self, case_id: str) -> str:
-        return case_id.replace("{", "{{").replace("}", "}}")
+    def _title_bar_format(self, case_id: str, case_index: int | None = None) -> str:
+        title = f"# Test Case {case_index}: {case_id}" if case_index is not None else case_id
+        return title.replace("{", "{{").replace("}", "}}")
+
+    def _final_snapshot_lines(self) -> list[str]:
+        lines: list[str] = []
+        for case_id in self.visible_order:
+            state = self.case_states[case_id]
+            self._refresh_state(state)
+            lines.append(self._title_text(state))
+            lines.append(self._static_progress_line(state))
+        return lines
+
+    def _title_text(self, state: CaseProgressState) -> str:
+        if state.case_index is None:
+            return state.case_id
+        return f"# Test Case {state.case_index}: {state.case_id}"
+
+    def _static_progress_line(self, state: CaseProgressState) -> str:
+        total = (
+            state.step_count
+            if state.finished and state.step_count > 0
+            else max(self.estimated_total, state.step_count)
+        )
+        percent = 100 if total and state.step_count >= total else int(state.step_count * 100 / total)
+        elapsed = self._format_elapsed_seconds(state.elapsed_seconds)
+        avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
+        return (
+            f"{self._progress_description(state)}: {percent:3d}%| "
+            f"{state.step_count}/{total} [elapsed={elapsed}, steps={state.step_count}, avg_step={avg_step}]"
+        )
 
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
 
-    def _write_line_after_close(self) -> None:
+    def _validate_case_index(self, case_index: int | None) -> None:
+        if case_index is not None and (
+            isinstance(case_index, bool) or not isinstance(case_index, int) or case_index < 1
+        ):
+            raise ValueError("case_index 必须大于 0")
+
+    def _write_final_lines(self, lines: list[str]) -> None:
         if not self._had_active_bars or self._line_after_close_written:
             return
-        self._line_writer("")
+        for line in lines:
+            self._line_writer(line)
         self._line_after_close_written = True
 
 
