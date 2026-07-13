@@ -84,7 +84,7 @@
     .topbar {
       position: sticky;
       top: 0;
-      z-index: 3;
+      z-index: 10;
       flex-shrink: 0;
       background: rgba(246, 248, 251, 0.96);
       border-bottom: 1px solid var(--line);
@@ -98,11 +98,17 @@
       gap: 10px;
       padding: 10px 12px;
       min-height: 62px;
-      overflow-x: auto;
     }
 
     .run-row {
       border-bottom: 1px solid var(--line);
+      position: relative;
+      overflow: visible;
+    }
+
+    .scenario-row {
+      position: relative;
+      overflow: visible;
     }
 
     .workspace {
@@ -190,14 +196,20 @@
     }
 
     .panel-legend {
+      display: grid;
+      justify-items: end;
+      gap: 5px;
+      color: var(--muted);
+      font-size: calc(11px * var(--panel-scale));
+      line-height: 1.2;
+    }
+
+    .legend-row {
       display: flex;
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
       flex-wrap: wrap;
-      color: var(--muted);
-      font-size: calc(11px * var(--panel-scale));
-      line-height: 1.2;
     }
 
     .legend-item {
@@ -232,8 +244,6 @@
       border-style: dashed;
     }
 
-    .run-list,
-    .scenario-list,
     .metric-list {
       display: flex;
       align-items: center;
@@ -246,27 +256,94 @@
       min-width: 0;
     }
 
-    .run-button,
-    .scenario-button {
-      border: 1px solid var(--line-strong);
-      background: #ffffff;
-      color: var(--ink);
-      border-radius: 8px;
-      min-height: 36px;
-      padding: 7px 11px;
-      cursor: pointer;
-      max-width: 280px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .topbar-select {
+      position: relative;
+      z-index: 11;
     }
 
-    .run-button.active,
-    .scenario-button.active {
+    .topbar-select:focus-within {
+      z-index: 30;
+    }
+
+    .run-select {
+      width: min(420px, 100%);
+      flex: 0 1 420px;
+    }
+
+    .case-select {
+      width: min(760px, 100%);
+      flex: 0 1 760px;
+    }
+
+    .select-search-input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 8px 36px 8px 12px;
+      font: inherit;
+      outline: none;
+    }
+
+    .select-search-input:focus {
       border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(20, 99, 255, 0.12);
+    }
+
+    .topbar-select::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      width: 7px;
+      height: 7px;
+      border-right: 1.5px solid var(--muted);
+      border-bottom: 1.5px solid var(--muted);
+      transform: translateY(-65%) rotate(45deg);
+      pointer-events: none;
+    }
+
+    .select-option-list {
+      position: absolute;
+      z-index: 40;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      max-height: calc(34px * 9 + 12px);
+      overflow: auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 12px 28px rgba(23, 32, 51, 0.14);
+      padding: 6px;
+    }
+
+    .select-option {
+      width: 100%;
+      min-height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink);
+      padding: 7px 9px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .select-option:hover,
+    .select-option.active {
       background: var(--accent-soft);
       color: #073fba;
-      font-weight: 700;
+    }
+
+    .select-empty {
+      padding: 10px;
+      color: var(--muted);
     }
 
     .metric-chip,
@@ -419,56 +496,56 @@
       line-height: 1.45;
     }
 
-    .milestone-detail-card {
-      margin-top: 12px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #ffffff;
-      max-height: min(42vh, 420px);
-      overflow: auto;
-    }
-
-    .milestone-detail-card.empty {
-      padding: 14px;
-      color: var(--muted);
-      background: #fbfcff;
-    }
-
-    .milestone-detail-head {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel-soft);
-    }
-
-    .milestone-detail-head h3 {
-      margin: 0;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--text);
-      font-size: calc(14px * var(--panel-scale));
-    }
-
-    .milestone-detail-body {
-      padding: 2px 10px 10px;
+    .graph-panel .panel-body {
+      overflow-x: hidden;
     }
 
     .graph-svg {
       width: 100%;
-      min-width: calc(520px * var(--panel-scale));
-      min-height: calc(520px * var(--panel-scale));
+      min-width: 0;
+      min-height: 0;
+      height: auto;
       display: block;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fbfcff;
+    }
+
+    .milestone-inline-detail {
+      height: 100%;
+      overflow: auto;
+      padding: 6px 8px;
+      color: var(--muted);
+      font-size: calc(11px * var(--panel-scale));
+      line-height: 1.4;
+    }
+
+    .milestone-inline-detail details {
+      margin: 0 0 6px;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+
+    .milestone-inline-detail .constraint-item {
+      margin: 0 8px 6px;
+      background: #f8fbff;
+    }
+
+    .milestone-inline-detail .constraint-item summary {
+      font-weight: 600;
+    }
+
+    .milestone-inline-detail summary {
+      padding: 6px 8px;
+      font-size: calc(11px * var(--panel-scale));
+    }
+
+    .milestone-inline-detail pre {
+      margin: 0;
+      padding: 0 8px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
     }
 
     .milestone-node {
@@ -825,20 +902,22 @@
         return;
       }
 
-      const list = el("div", "run-list");
-      runs.forEach((run, index) => {
-        const button = el("button", "run-button");
-        button.type = "button";
-        button.title = run.run_id || "";
-        button.textContent = run.run_id || "未命名 run";
-        button.classList.toggle("active", index === state.runIndex);
-        button.addEventListener("click", () => {
-          state.runIndex = index;
+      const selector = renderTopbarSelector({
+        items: runs,
+        selectedIndex: state.runIndex,
+        selectClassName: "run-select",
+        inputClassName: "run-search-input",
+        optionListClassName: "run-option-list",
+        optionClassName: "run-option",
+        emptyClassName: "run-empty",
+        emptyText: "无匹配 run",
+        labelForItem: runId,
+        onSelect: (match) => {
+          state.runIndex = match.index;
           state.scenarioIndex = 0;
           resetSelection();
           renderAll();
-        });
-        list.append(button);
+        }
       });
 
       const metrics = el("div", "metric-list");
@@ -852,7 +931,7 @@
         metric("步骤", formatValue(summary.step_count)),
         metric("场景", formatValue(summary.scenario_count))
       );
-      container.append(list, metrics);
+      container.append(selector, metrics);
     }
 
     function renderScenarioRow() {
@@ -865,21 +944,175 @@
         return;
       }
 
-      const list = el("div", "scenario-list");
-      scenarios.forEach((scenario, index) => {
-        const button = el("button", "scenario-button");
-        button.type = "button";
-        button.title = scenario.task_id || scenario.scenario_id || "";
-        button.textContent = scenario.scenario_id || "未命名 scenario";
-        button.classList.toggle("active", index === state.scenarioIndex);
-        button.addEventListener("click", () => {
-          state.scenarioIndex = index;
+      const selector = renderTopbarSelector({
+        items: scenarios,
+        selectedIndex: state.scenarioIndex,
+        selectClassName: "case-select",
+        inputClassName: "case-search-input",
+        optionListClassName: "case-option-list",
+        optionClassName: "case-option",
+        emptyClassName: "case-empty",
+        emptyText: "无匹配 case",
+        labelForItem: scenarioCaseId,
+        onSelect: (match) => {
+          state.scenarioIndex = match.index;
           resetSelection();
           renderAll();
-        });
-        list.append(button);
+        }
       });
-      container.append(list);
+      container.append(selector);
+    }
+
+    function renderTopbarSelector(config) {
+      const items = config.items || [];
+      const selected = items[config.selectedIndex] || items[0];
+      const selector = el("div", `topbar-select ${config.selectClassName || ""}`);
+      const input = el("input", `select-search-input ${config.inputClassName || ""}`);
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.setAttribute("role", "combobox");
+      input.setAttribute("aria-expanded", "false");
+      input.value = config.labelForItem(selected);
+
+      const options = el("div", `select-option-list ${config.optionListClassName || ""}`);
+      options.hidden = true;
+      let activeIndex = 0;
+      let suppressNextClickOpen = false;
+
+      const openOptions = (query, preferredActiveIndex) => {
+        const matches = filterSelectorItemsByPrefix(items, query, config.labelForItem);
+        activeIndex = Number.isInteger(preferredActiveIndex)
+          ? clamp(preferredActiveIndex, 0, Math.max(0, matches.length - 1))
+          : selectedMatchIndex(matches, config.selectedIndex);
+        options.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+        renderTopbarOptions(options, matches, activeIndex, config);
+      };
+      const closeOptions = () => {
+        options.hidden = true;
+        input.setAttribute("aria-expanded", "false");
+      };
+      const selectMatch = (match) => {
+        if (!match) return;
+        closeOptions();
+        config.onSelect(match);
+      };
+
+      input.addEventListener("mousedown", (event) => {
+        if (!options.hidden && document.activeElement === input) {
+          event.preventDefault();
+          suppressNextClickOpen = true;
+          closeOptions();
+        }
+      });
+      input.addEventListener("focus", () => {
+        input.select();
+        openOptions("");
+      });
+      input.addEventListener("click", () => {
+        if (suppressNextClickOpen) {
+          suppressNextClickOpen = false;
+          return;
+        }
+        if (options.hidden && document.activeElement === input) {
+          openOptions(input.value);
+        }
+      });
+      input.addEventListener("input", () => {
+        openOptions(input.value, 0);
+      });
+      input.addEventListener("keydown", (event) => {
+        const matches = filterSelectorItemsByPrefix(items, input.value, config.labelForItem);
+        if (event.key === "Escape") {
+          closeOptions();
+          input.value = config.labelForItem(items[config.selectedIndex] || items[0]);
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          activeIndex = Math.min(activeIndex + 1, Math.max(0, matches.length - 1));
+          renderTopbarOptions(options, matches, activeIndex, config);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          activeIndex = Math.max(0, activeIndex - 1);
+          renderTopbarOptions(options, matches, activeIndex, config);
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          selectMatch(matches[activeIndex] || matches[0]);
+        }
+      });
+
+      selector.addEventListener("focusout", () => {
+        window.setTimeout(() => {
+          if (!selector.contains(document.activeElement)) closeOptions();
+        }, 0);
+      });
+
+      selector.append(input, options);
+      return selector;
+    }
+
+    function renderTopbarOptions(container, matches, activeIndex, config) {
+      clear(container);
+      if (!matches.length) {
+        const empty = el("div", `select-empty ${config.emptyClassName || ""}`);
+        empty.textContent = config.emptyText;
+        container.append(empty);
+        return;
+      }
+
+      matches.forEach((match, index) => {
+        const option = el("button", `select-option ${config.optionClassName || ""}`);
+        option.type = "button";
+        option.textContent = match.label;
+        option.title = match.label;
+        option.classList.toggle("active", index === activeIndex);
+        option.addEventListener("mousedown", (event) => event.preventDefault());
+        option.addEventListener("click", () => config.onSelect(match));
+        container.append(option);
+      });
+      scrollActiveOptionToCenter(container);
+    }
+
+    function filterSelectorItemsByPrefix(items, query, labelForItem) {
+      const normalizedQuery = String(query || "").trim().toLowerCase();
+      return (items || [])
+        .map((item, index) => ({
+          item,
+          index,
+          label: labelForItem(item)
+        }))
+        .filter((match) => {
+          if (!normalizedQuery) return true;
+          return match.label.toLowerCase().startsWith(normalizedQuery);
+        });
+    }
+
+    function selectedMatchIndex(matches, selectedIndex) {
+      const index = matches.findIndex((match) => match.index === selectedIndex);
+      return index >= 0 ? index : 0;
+    }
+
+    function scrollActiveOptionToCenter(container) {
+      const active = container.querySelector(".select-option.active");
+      if (!active) return;
+      window.requestAnimationFrame(() => {
+        const centeredTop = active.offsetTop - (container.clientHeight - active.offsetHeight) / 2;
+        container.scrollTop = Math.max(0, centeredTop);
+      });
+    }
+
+    function runId(run) {
+      return run ? run.run_id || "未命名 run" : "未命名 run";
+    }
+
+    function scenarioCaseId(scenario) {
+      return scenario ? scenario.scenario_id || "未命名 case" : "未命名 case";
     }
 
     function renderTrajectory() {
@@ -929,11 +1162,11 @@
       const svg = document.createElementNS(SVG_NS, "svg");
       svg.classList.add("graph-svg");
       const layout = graphLayout(graph);
-      svg.setAttribute("viewBox", `0 0 520 ${layout.height}`);
+      svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
       const stageNodeIds = stageMilestoneIds(state.selectedStageId, scenario);
       drawEdges(svg, layout, stageNodeIds, scenario);
       drawNodes(svg, layout, scenario, stageNodeIds);
-      body.append(svg, milestoneDetailCard(state.selectedMilestoneId, scenario));
+      body.append(svg);
     }
 
     function renderStages() {
@@ -973,13 +1206,15 @@
 
     function graphLegend() {
       const legend = el("div", "panel-legend");
-      legend.append(
-        legendItem("pass", "通过"),
-        legendItem("fail", "失败或 fatal"),
-        legendItem("selected", "当前选中/阶段路径"),
-        legendItem("virtual", "虚拟节点")
-      );
+      legend.append(legendRow([["pass", "通过"], ["fail", "失败或 fatal"]]));
+      legend.append(legendRow([["selected", "当前选中/阶段路径"], ["virtual", "虚拟节点"]]));
       return legend;
+    }
+
+    function legendRow(items) {
+      const row = el("div", "legend-row");
+      items.forEach(([kind, label]) => row.append(legendItem(kind, label)));
+      return row;
     }
 
     function legendItem(kind, label) {
@@ -989,35 +1224,6 @@
       text.textContent = label;
       item.append(swatch, text);
       return item;
-    }
-
-    function milestoneDetailCard(milestoneId, scenario) {
-      if (!milestoneId || !scenario) {
-        const empty = el("article", "milestone-detail-card empty");
-        empty.textContent = "选择一个 milestone 查看完整详情";
-        return empty;
-      }
-      const node = graphNodeForMilestone(milestoneId, scenario);
-      const card = el("article", "milestone-detail-card");
-      const head = el("div", "milestone-detail-head");
-      const title = el("h3");
-      title.textContent = milestoneId;
-      const status = statusBadge(milestoneStatus(milestoneId, scenario) || "unknown");
-      head.append(title, status);
-      const body = el("div", "milestone-detail-body");
-      const definition = stageDefinitionForMilestone(milestoneId, scenario);
-      const description = node ? node.description || node.name || "" : "";
-      const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
-      const matching = milestoneMatchingFor(milestoneId, scenario);
-
-      body.append(
-        detailBlock("阶段目标", definition ? definition.stage_goal || "无" : "无", true),
-        detailBlock("milestone 描述", description || "无", true),
-        detailBlock("约束定义", constraints.length ? constraints.map(constraintDetailText).join("\n\n") : "无", true),
-        detailBlock("匹配诊断", matching ? matchingDetailText(matching) : "无", true)
-      );
-      card.append(head, body);
-      return card;
     }
 
     function constraintDetailText(constraint) {
@@ -1062,13 +1268,16 @@
     }
 
     function focusMilestone(milestoneId) {
-      state.selectedMilestoneId = milestoneId;
+      const isSelected = state.selectedMilestoneId === milestoneId;
+      state.selectedMilestoneId = isSelected ? null : milestoneId;
       state.selectedStageId = null;
       renderTrajectory();
       renderGraph();
       renderStages();
-      scrollToMatchedStep(milestoneId);
-      requestAnimationFrame(() => scrollToMilestoneNode(milestoneId));
+      if (!isSelected) {
+        scrollToMatchedStep(milestoneId);
+        requestAnimationFrame(() => scrollToMilestoneNode(milestoneId));
+      }
     }
 
     function focusStage(stageId) {
@@ -1265,21 +1474,46 @@
 
       const positioned = new Map();
       const sortedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
-      const layerGap = 132;
-      sortedLayers.forEach((layer) => {
+      const sidePadding = 30;
+      const minLayerGap = 24;
+      const layerGap = 92;
+      const layerSpecs = sortedLayers.map((layer) => {
         const layerNodes = layers.get(layer);
-        const gap = 380 / Math.max(layerNodes.length, 1);
+        const boxes = layerNodes.map((node) => selectedMilestoneBox(node.milestone_id));
+        const totalBoxWidth = boxes.reduce((total, box) => total + box.width, 0);
+        return {
+          layerNodes,
+          boxes,
+          height: Math.max(...boxes.map((box) => box.height)),
+          contentWidth: totalBoxWidth + minLayerGap * Math.max(0, layerNodes.length - 1)
+        };
+      });
+      const widestLayer = Math.max(360, ...layerSpecs.map((spec) => spec.contentWidth));
+      const width = widestLayer + sidePadding * 2;
+      let cursorY = 34;
+
+      layerSpecs.forEach((spec) => {
+        const { layerNodes, boxes } = spec;
+        const usableWidth = width - sidePadding * 2;
+        const totalBoxWidth = boxes.reduce((total, box) => total + box.width, 0);
+        const gap = layerNodes.length > 1
+          ? Math.max(minLayerGap, (usableWidth - totalBoxWidth) / (layerNodes.length - 1))
+          : 0;
+        const contentWidth = totalBoxWidth + gap * Math.max(0, layerNodes.length - 1);
+        let cursorX = sidePadding + (usableWidth - contentWidth) / 2;
         layerNodes.forEach((node, index) => {
           const id = node.milestone_id;
+          const box = boxes[index];
           positioned.set(id, {
             node,
-            x: 70 + gap / 2 + gap * index,
-            y: 68 + layer * layerGap
+            x: cursorX + box.width / 2,
+            y: cursorY + spec.height / 2
           });
+          cursorX += box.width + gap;
         });
+        cursorY += spec.height + layerGap;
       });
-      const maxLayer = sortedLayers.length ? Math.max(...sortedLayers) : 0;
-      return { nodes: positioned, edges, height: Math.max(620, 68 + maxLayer * layerGap + 106) };
+      return { nodes: positioned, edges, width, height: Math.max(220, cursorY - layerGap + 34) };
     }
 
     function drawEdges(svg, layout, stageNodeIds, scenario) {
@@ -1303,11 +1537,13 @@
         const source = layout.nodes.get(edge.source);
         const target = layout.nodes.get(edge.target);
         if (!source || !target) return;
+        const sourceBox = selectedMilestoneBox(edge.source);
+        const targetBox = selectedMilestoneBox(edge.target);
         const line = document.createElementNS(SVG_NS, "line");
         line.setAttribute("x1", String(source.x));
-        line.setAttribute("y1", String(source.y + nodeBox().height / 2 - 4));
+        line.setAttribute("y1", String(source.y + sourceBox.height / 2 - 4));
         line.setAttribute("x2", String(target.x));
-        line.setAttribute("y2", String(target.y - nodeBox().height / 2 + 4));
+        line.setAttribute("y2", String(target.y - targetBox.height / 2 + 4));
         line.classList.add("graph-edge");
         if (stageNodeIds.has(edge.source) && stageNodeIds.has(edge.target)) {
           line.classList.add("selected-stage");
@@ -1327,7 +1563,7 @@
         group.classList.toggle("virtual", Boolean(item.node.virtual));
         const status = milestoneStatus(milestoneId, scenario);
         if (status) group.classList.add(status);
-        const box = nodeBox();
+        const box = selectedMilestoneBox(milestoneId);
         group.setAttribute("transform", `translate(${item.x - box.width / 2}, ${item.y - box.height / 2})`);
         group.addEventListener("click", () => focusMilestone(milestoneId));
 
@@ -1337,20 +1573,93 @@
         rect.setAttribute("rx", "8");
         const name = document.createElementNS(SVG_NS, "text");
         name.setAttribute("x", "12");
-        name.setAttribute("y", "24");
+        name.setAttribute("y", "21");
         name.textContent = truncate(milestoneId, 18);
         const meta = document.createElementNS(SVG_NS, "text");
         meta.setAttribute("x", "12");
-        meta.setAttribute("y", "42");
+        meta.setAttribute("y", "38");
         meta.setAttribute("font-weight", "400");
         meta.textContent = truncate(milestoneSubtitle(item.node), 18);
         group.append(rect, name, meta);
+        if (state.selectedMilestoneId === milestoneId) {
+          group.append(milestoneInlineDetail(milestoneId, scenario, box));
+        }
         svg.append(group);
       });
     }
 
-    function nodeBox() {
-      return { width: 152, height: 56 };
+    function selectedMilestoneBox(milestoneId) {
+      const isSelected = milestoneId && state.selectedMilestoneId === milestoneId;
+      return {
+        width: isSelected ? 320 : 148,
+        height: isSelected ? 218 : 48
+      };
+    }
+
+    function milestoneInlineDetail(milestoneId, scenario, box) {
+      const foreign = document.createElementNS(SVG_NS, "foreignObject");
+      foreign.setAttribute("x", "8");
+      foreign.setAttribute("y", "54");
+      foreign.setAttribute("width", String(box.width - 16));
+      foreign.setAttribute("height", String(box.height - 62));
+
+      const detail = el("div", "milestone-inline-detail");
+      detail.addEventListener("click", (event) => event.stopPropagation());
+      const definition = stageDefinitionForMilestone(milestoneId, scenario);
+      const node = graphNodeForMilestone(milestoneId, scenario);
+      const matching = milestoneMatchingFor(milestoneId, scenario);
+      const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
+
+      appendInlineDetailSection(detail, "阶段目标", definition ? definition.stage_goal || "无" : "无");
+      appendInlineDetailSection(detail, "milestone 描述", node ? node.description || node.name || "无" : "无");
+      appendConstraintDetailSection(detail, constraints);
+      appendInlineDetailSection(detail, "匹配诊断", matching ? matchingDetailText(matching) : "无");
+
+      foreign.append(detail);
+      return foreign;
+    }
+
+    function appendInlineDetailSection(container, title, text) {
+      const section = el("details");
+      const heading = el("summary", "detail-summary");
+      heading.textContent = title;
+      const body = el("pre");
+      body.textContent = text;
+      section.append(heading, body);
+      container.append(section);
+    }
+
+    function appendConstraintDetailSection(container, constraints) {
+      const section = el("details", "constraint-list");
+      const heading = el("summary", "detail-summary");
+      heading.textContent = "约束定义";
+      section.append(heading);
+
+      if (!constraints.length) {
+        const empty = el("pre");
+        empty.textContent = "无";
+        section.append(empty);
+        container.append(section);
+        return;
+      }
+
+      constraints.forEach((constraint, index) => {
+        const item = el("details", "constraint-item");
+        const itemHeading = el("summary");
+        itemHeading.textContent = constraintItemTitle(constraint, index);
+        const body = el("pre");
+        body.textContent = constraintDetailText(constraint);
+        item.append(itemHeading, body);
+        section.append(item);
+      });
+      container.append(section);
+    }
+
+    function constraintItemTitle(constraint, index) {
+      if (!constraint) return `constraint ${index + 1}`;
+      const id = constraint.constraint_id || `constraint ${index + 1}`;
+      const target = constraint.target ? ` · ${constraint.target}` : "";
+      return `${id}${target}`;
     }
 
     function milestoneMatchingFor(milestoneId, scenario) {

@@ -28,7 +28,9 @@
 
 静态面板右列以 `stage_definitions` 为骨架渲染，使用 `stage_reports` 按相同 `stage_id` 回填状态、分数、诊断、证据和策略 metadata。阶段标题固定显示为 `{stage_id}:{status}`，例如 `m3->m4:fail`、`m4->__finish__:pass`。若某个定义阶段尚无报告，面板使用 `status="not_started"` 的空报告展示该固定阶段；但失败后的后续阶段不会进入该骨架。
 
-中列 milestone 节点点击后，会在图下方详情卡展示以该 milestone 结尾的 `stage_goal`、milestone 描述、constraint 定义与匹配诊断。SVG 节点只展示短摘要，避免长文本撑开拓扑图。
+中列 milestone 节点点击后，会在当前 SVG 节点位置原地展开为较宽详情节点；再次点击同一 milestone 会收回详情。详情节点按“阶段目标”“milestone 描述”“约束定义”“匹配诊断”分区，并使用可展开/收起的折叠块展示长文本；其中“约束定义”会继续按 constraint 拆成独立可折叠子项。SVG 初始视图使用紧凑布局并随中列宽度缩放，避免在常见线性 milestone 图中产生横向滚动。
+
+顶部 run 与 case 切换都使用可搜索下拉框。run 输入框显示当前 `run.run_id`，case 输入框默认显示当前 `scenario.scenario_id`；键入内容后，下拉列表实时过滤为 id 以前缀匹配该输入的选项，例如输入 `fi` 时只显示 `fi...` 开头的 case。下拉列表最多显示 9 行，多余选项通过滚动查看；重新打开下拉时会高亮当前选中项，并尽量将其滚动到列表中间。过滤不改变当前选中项，只有点击选项或按 Enter 确认时才切换。
 
 constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`，每项包含：
 
