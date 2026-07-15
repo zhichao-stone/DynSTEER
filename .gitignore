@@ -30,8 +30,8 @@ logs/
 .coverage
 
 # Docs of Vibe Coding
-docs/plans
-docs/constraints
+# docs/plans
+# docs/constraints
 
 # Data
 data/
