@@ -30,6 +30,8 @@
 
 中列 milestone 节点点击后，会在当前 SVG 节点位置原地展开为较宽详情节点；再次点击同一 milestone 会收回详情。详情节点按“阶段目标”“milestone 描述”“约束定义”“匹配诊断”分区，并使用可展开/收起的折叠块展示长文本；其中“约束定义”会继续按 constraint 拆成独立可折叠子项。SVG 初始视图使用紧凑布局并随中列宽度缩放，避免在常见线性 milestone 图中产生横向滚动。
 
+失败阶段的右侧阶段卡片会优先展示 `metadata.failure_summary`、`metadata.failure_reasons` 和 `metadata.failed_constraints`。若历史结果缺少这些字段，前端会基于最佳 `match_attempts[].candidate_scores[]` 生成一条轻量匹配失败摘要，原始最佳候选仍保留在“最佳匹配尝试”折叠块中。
+
 顶部 run 与 case 切换都使用可搜索下拉框。run 输入框显示当前 `run.run_id`，case 输入框默认显示当前 `scenario.scenario_id`；键入内容后，下拉列表实时过滤为 id 以前缀匹配该输入的选项，例如输入 `fi` 时只显示 `fi...` 开头的 case。下拉列表最多显示 9 行，多余选项通过滚动查看；重新打开下拉时会高亮当前选中项，并尽量将其滚动到列表中间。过滤不改变当前选中项，只有点击选项或按 Enter 确认时才切换。
 
 constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`，每项包含：

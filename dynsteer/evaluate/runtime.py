@@ -216,14 +216,16 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         attempt_count = int(item.get("attempt_count") or 0)
         status = StageStatus.FAIL if ready_ever or attempt_count > 0 else StageStatus.MISSING
         failure_kind = status.value
-        evidence = [
-            (
-                f"required milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
-                f"best_score={item.get('best_score')}, "
-                f"best_boundary_step_index={item.get('best_boundary_step_index')}, "
-                f"pending_predecessor_ids={item.get('pending_predecessor_ids')}"
-            )
-        ]
+        fallback_summary = (
+            f"required milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
+            f"best_score={item.get('best_score')}, "
+            f"best_boundary_step_index={item.get('best_boundary_step_index')}, "
+            f"pending_predecessor_ids={item.get('pending_predecessor_ids')}"
+        )
+        failure_summary = str(item.get("failure_summary") or fallback_summary)
+        raw_reasons = item.get("failure_reasons")
+        failure_reasons = [str(reason) for reason in raw_reasons] if isinstance(raw_reasons, list) else []
+        evidence = [failure_summary, *failure_reasons[1:3]]
         results.append(
             StageEvaluationResult(
                 stage_id=stage_goal_key(anchor_id, milestone_id),
@@ -234,7 +236,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
                 uncertainty=1.0,
                 dimension_scores={dimension: 0.0 for dimension in Dimension},
                 evidence=evidence,
-                diagnosis=[f"required milestone {milestone_id} 未完成，结果高风险"],
+                diagnosis=[failure_summary],
                 hard_constraints_all_pass=False,
                 required_fields_missing_ratio=1.0,
                 metadata={

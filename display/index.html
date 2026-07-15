@@ -1440,6 +1440,8 @@
       const evidence = arrayDetailBlock("证据", report.evidence);
       if (diagnosis) body.append(diagnosis);
       if (evidence) body.append(evidence);
+      const failure = failureSummarySection(report);
+      if (failure) body.append(failure);
       const pending = pendingMetadataSection(report);
       if (pending) body.append(pending);
       const attempt = pendingAttemptSection(report);
@@ -1662,12 +1664,17 @@
       const node = graphNodeForMilestone(milestoneId, scenario);
       const matching = milestoneMatchingFor(milestoneId, scenario);
       const bestAttempt = matching ? null : bestMilestoneAttempt(milestoneId, scenario);
+      const finalDiagnostic = matching ? null : milestoneFinalDiagnosticFor(milestoneId, scenario);
       const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
 
       appendInlineDetailSection(detail, "阶段目标", definition ? definition.stage_goal || "无" : "无");
       appendInlineDetailSection(detail, "milestone 描述", node ? node.description || node.name || "无" : "无");
       appendConstraintDetailSection(detail, constraints);
-      appendInlineDetailSection(detail, "匹配诊断", matching ? matchingDetailText(matching) : milestoneAttemptDetailText(bestAttempt));
+      appendInlineDetailSection(
+        detail,
+        "匹配诊断",
+        matching ? matchingDetailText(matching) : milestoneFailureDetailText(finalDiagnostic, bestAttempt)
+      );
 
       foreign.append(detail);
       return foreign;
@@ -1979,6 +1986,81 @@
         }
       });
       return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function failureSummarySection(report) {
+      if (!report || !["fail", "missing", "invalid"].includes(report.status)) return null;
+      const text = milestoneFailureDetailText(
+        report.metadata || null,
+        bestMilestoneAttempt(report.milestone_id, currentScenario()),
+        false
+      );
+      return text ? detailBlock("匹配失败摘要", text, true) : null;
+    }
+
+    function milestoneFinalDiagnosticFor(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const report = (scenario.stage_reports || []).find((item) => item.milestone_id === milestoneId);
+      const metadata = report && report.metadata;
+      return metadata && (metadata.failure_summary || metadata.failed_constraints) ? metadata : null;
+    }
+
+    function milestoneFailureDetailText(metadata, bestAttempt, includeBestAttemptDetail) {
+      const parts = [];
+      if (metadata && metadata.failure_summary) {
+        parts.push(String(metadata.failure_summary));
+      } else if (bestAttempt) {
+        parts.push(attemptFailureSummary(bestAttempt));
+      }
+      const reasons = metadata && Array.isArray(metadata.failure_reasons) ? metadata.failure_reasons : [];
+      if (reasons.length > 1) {
+        parts.push("", "failure_reasons:");
+        reasons.slice(1, 5).forEach((reason) => parts.push(`- ${String(reason)}`));
+      }
+      const failedConstraints = metadata && Array.isArray(metadata.failed_constraints) ? metadata.failed_constraints : [];
+      if (failedConstraints.length) {
+        parts.push("", "failed_constraints:");
+        failedConstraints.forEach((item) => parts.push(failedConstraintLine(item)));
+      }
+      if (bestAttempt && includeBestAttemptDetail !== false) {
+        parts.push("", "best_attempt:", milestoneAttemptDetailText(bestAttempt));
+      }
+      return parts.join("\n").trim() || "无";
+    }
+
+    function attemptFailureSummary(bestAttempt) {
+      const attempt = bestAttempt.attempt || {};
+      const candidate = bestAttempt.candidate || {};
+      const score = candidate.score || {};
+      const boundary = candidate.boundary || score.boundary || {};
+      const failed = Array.isArray(score.constraint_scores)
+        ? score.constraint_scores
+            .filter((item) => item && (item.missing || Number(item.score) < 1))
+            .sort((left, right) => Number(left.score || 0) - Number(right.score || 0))
+        : [];
+      let summary = (
+        `milestone ${candidate.milestone_id || "unknown"} 未匹配；最佳候选位于 step=${formatValue(boundary.step_index || attempt.step_index)}，` +
+        `得分 ${formatScore(score.score)}（status=${formatValue(score.status)}，reject_reason=${formatValue(candidate.reject_reason)}）。`
+      );
+      if (failed.length) {
+        const lead = failed[0];
+        const evidence = Array.isArray(lead.evidence) && lead.evidence.length ? `；证据：${lead.evidence[0]}` : "";
+        summary += ` 主要低分约束：${lead.constraint_id || "constraint"} score=${formatScore(lead.score)}${evidence}。`;
+      }
+      return summary;
+    }
+
+    function failedConstraintLine(item) {
+      if (!item) return "- constraint: 无";
+      const pieces = [
+        item.constraint_id || "constraint",
+        `score=${formatScore(item.score)}`,
+        `threshold=${formatScore(item.threshold)}`
+      ];
+      if (item.goal_hint) pieces.push(String(item.goal_hint));
+      if (item.evidence && item.evidence.length) pieces.push(`evidence=${item.evidence.join(" | ")}`);
+      if (item.actual_excerpt) pieces.push(`actual=${item.actual_excerpt}`);
+      return `- ${pieces.join("; ")}`;
     }
 
     function pendingAttemptSection(report) {

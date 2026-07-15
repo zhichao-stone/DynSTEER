@@ -178,7 +178,7 @@ Evaluator 会把 `MilestoneFrontierState.ready_ids` 中 `required=True` 且尚�
 - `task_case_snapshot`: 当前 case 的轻量任务快照，`case_id` 来自 `task_case.case_id`，同时包含 `task_id`、`task_description`、`task_types`、`scenario_name`、`categories` 和首条用户消息摘要。
 - `milestone_graph_summary`: milestone 图定义摘要。
 - `milestone_match_attempts`: 每次 checkpoint 匹配尝试的候选详情。
-- `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态。
+- `milestone_final_diagnostics`: 运行结束后每个 milestone 的最终匹配状态；pending milestone 会附带 `failure_summary`、`failure_reasons` 和 `failed_constraints`，用于解释最佳候选为什么没有通过匹配。
 - `runtime_quality_diagnostics`: 不参与评分的轨迹质量诊断，包含 `tool_argument_warnings`、`empty_tool_results`、`failed_tool_results`、`grounding_warnings` 和 `efficiency`。该字段用于解释“工具调用发生但参数/结果没有推进任务”“工具返回空值后 agent 仍给出具体事实答案”“最终状态正确但用户额外负担较高”等情况。
 
 当 ready frontier 无进展策略触发提前终止时，`raw_summary["termination_detail"]` 会包含 `ready_milestone_ids`、`most_promising_milestone_id`、`ready_since_step_index`、`last_frontier_improved_step_index`、`stale_frontier_observation_count`、`frontier_observation_count`、`patience`、`min_delta` 和各 milestone 的 `best_score` / `best_status` / `best_boundary_step_index` / `last_improved_step_index`。
