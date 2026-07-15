@@ -1267,6 +1267,57 @@
       return parts.join("\n");
     }
 
+    function bestMilestoneAttempt(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const attempts = Array.isArray(scenario.match_attempts) ? scenario.match_attempts : [];
+      let best = null;
+      attempts.forEach((attempt) => {
+        const candidates = Array.isArray(attempt.candidate_scores) ? attempt.candidate_scores : [];
+        candidates.forEach((candidate) => {
+          if (!candidate || candidate.milestone_id !== milestoneId) return;
+          const score = candidate.score || {};
+          const value = Number(score.score);
+          if (!Number.isFinite(value)) return;
+          if (!best || value > best.value || (value === best.value && Number(attempt.step_index) > Number(best.attempt.step_index))) {
+            best = { attempt, candidate, value };
+          }
+        });
+      });
+      return best;
+    }
+
+    function milestoneAttemptDetailText(best) {
+      if (!best) return "无";
+      const attempt = best.attempt || {};
+      const candidate = best.candidate || {};
+      const score = candidate.score || {};
+      const boundary = candidate.boundary || score.boundary || {};
+      const parts = [
+        `step_index: ${formatValue(attempt.step_index)}`,
+        `step_id: ${formatValue(attempt.step_id)}`,
+        `boundary_id: ${formatValue(boundary.boundary_id)}`,
+        `boundary_step: ${formatValue(boundary.step_index)}`,
+        `score: ${formatScore(score.score)}`,
+        `status: ${formatValue(score.status)}`,
+        `reject_reason: ${formatValue(candidate.reject_reason)}`,
+        `selected: ${formatValue(candidate.selected)}`,
+        `ready_before: ${(attempt.ready_before || []).join(", ") || "无"}`,
+        `matched_before: ${(attempt.matched_before || []).join(", ") || "无"}`
+      ];
+      const constraintScores = Array.isArray(score.constraint_scores) ? score.constraint_scores : [];
+      if (constraintScores.length) {
+        parts.push("constraint_scores:");
+        constraintScores.forEach((item) => {
+          const evidence = Array.isArray(item.evidence) && item.evidence.length
+            ? ` evidence=${item.evidence.join(" | ")}`
+            : "";
+          const actual = item.actual === undefined ? "" : ` actual=${shortJson(item.actual, 900)}`;
+          parts.push(`- ${item.constraint_id || "constraint"} score=${formatScore(item.score)} missing=${formatValue(item.missing)}${evidence}${actual}`);
+        });
+      }
+      return parts.join("\n");
+    }
+
     function focusMilestone(milestoneId) {
       const isSelected = state.selectedMilestoneId === milestoneId;
       state.selectedMilestoneId = isSelected ? null : milestoneId;
@@ -1391,6 +1442,8 @@
       if (evidence) body.append(evidence);
       const pending = pendingMetadataSection(report);
       if (pending) body.append(pending);
+      const attempt = pendingAttemptSection(report);
+      if (attempt) body.append(attempt);
       const policy = policySection(report);
       if (policy) body.append(policy);
       card.append(body);
@@ -1608,12 +1661,13 @@
       const definition = stageDefinitionForMilestone(milestoneId, scenario);
       const node = graphNodeForMilestone(milestoneId, scenario);
       const matching = milestoneMatchingFor(milestoneId, scenario);
+      const bestAttempt = matching ? null : bestMilestoneAttempt(milestoneId, scenario);
       const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
 
       appendInlineDetailSection(detail, "阶段目标", definition ? definition.stage_goal || "无" : "无");
       appendInlineDetailSection(detail, "milestone 描述", node ? node.description || node.name || "无" : "无");
       appendConstraintDetailSection(detail, constraints);
-      appendInlineDetailSection(detail, "匹配诊断", matching ? matchingDetailText(matching) : "无");
+      appendInlineDetailSection(detail, "匹配诊断", matching ? matchingDetailText(matching) : milestoneAttemptDetailText(bestAttempt));
 
       foreign.append(detail);
       return foreign;
@@ -1835,7 +1889,12 @@
         return;
       }
       const settlement = (scenario.stage_settlements || []).find((item) => item.milestone_id === milestoneId);
-      if (settlement) focusStepCard(settlement.start_step_index);
+      if (settlement) {
+        focusStepCard(settlement.start_step_index);
+        return;
+      }
+      const best = bestMilestoneAttempt(milestoneId, scenario);
+      if (best) focusStepCard(best.attempt.step_index);
     }
 
     function scrollToStepRange(settlement) {
@@ -1920,6 +1979,13 @@
         }
       });
       return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function pendingAttemptSection(report) {
+      if (!report || !["fail", "missing"].includes(report.status)) return null;
+      const scenario = currentScenario();
+      const best = bestMilestoneAttempt(report.milestone_id, scenario);
+      return best ? detailBlock("最佳匹配尝试", milestoneAttemptDetailText(best), true) : null;
     }
 
     function arrayDetailBlock(title, values) {
@@ -2061,6 +2127,11 @@
     function truncate(value, limit) {
       const text = String(value || "");
       return text.length > limit ? `${text.slice(0, limit)}...` : text;
+    }
+
+    function shortJson(value, limit) {
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      return truncate(text, limit || 600).replace(/\n/g, " ");
     }
 
     function resetSelection() {
