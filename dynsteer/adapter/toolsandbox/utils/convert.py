@@ -399,9 +399,7 @@ def _matcher_nodes(matcher: object | None, prefix: str, required: bool) -> list[
             ],
             "metadata": {"toolsandbox": {f"{label}_index": index}},
         }
-        if required:
-            item["required"] = True
-        else:
+        if not required:
             item["severity"] = "fatal"
             item["penalty"] = {"mode": "fixed", "value": 1.0}
         result.append(item)

@@ -11,15 +11,12 @@ def select_case_ids(config: HarnessRunConfig, harness: BaseBenchmarkHarness, run
     """根据配置选择要运行的 benchmark case ID。"""
     if config is None or harness is None:
         raise ValueError("config 和 harness 不能为空")
+    if config.case_ids is not None:
+        return list(config.case_ids)
+
     cases = harness.list_cases(config)
     if not cases:
         raise ValueError("benchmark 没有可运行场景")
-    known_case_ids = {case.case_id for case in cases}
-    if config.case_ids is not None:
-        missing = [case_id for case_id in config.case_ids if case_id not in known_case_ids]
-        if missing:
-            raise KeyError(f"benchmark 场景不存在: {missing[0]}")
-        return list(config.case_ids)
     if run_all:
         return [case.case_id for case in cases]
     return [cases[0].case_id]

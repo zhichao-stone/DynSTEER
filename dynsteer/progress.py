@@ -27,6 +27,9 @@ class _SilentStream:
     def flush(self) -> None:
         return None
 
+    def close(self) -> None:
+        return None
+
     def isatty(self) -> bool:
         return False
 

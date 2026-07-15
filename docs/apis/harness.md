@@ -99,6 +99,8 @@ class MyHarness(BaseBenchmarkHarness):
 
 Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
 
+当 `run_configs.json` 已通过 `scenarios` 显式指定 case 时，Runner 直接使用该顺序，不再调用 `list_cases()` 全量枚举 benchmark；未指定 `scenarios` 时才通过 `list_cases()` 展开可运行 case。这样已有 adapted cache 的指定 case 运行不会被 benchmark 原生全量场景构造拖慢。
+
 Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)` 加载本组 `TaskCase` 列表，然后输出日志：`基于配置XXX，开始基于 {benchmark} 展开评估，Cases数量: N`。单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
 
 `run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
@@ -135,5 +137,7 @@ ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER �
 ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
 
 ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息；每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
+
+ToolSandbox harness 会按 `data_root + tool_backend` 在进程内缓存原生 `named_scenarios()` 结果，避免同一次运行中 `list_cases()`、`start_case()` 反复构造全部 ToolSandbox 场景。单 case 启动仍会深拷贝 `starting_context`，不共享运行期 context。
 
 ToolSandbox 的原生工具、role 和 execution environment 通过模块级 `_global_execution_context` 读写当前消息上下文，线程并行执行不同 case 会互相覆盖 context。因此 `data/toolsandbox/benchmark.json` 配置 `max_workers: 1`，确保 ToolSandbox case 串行执行。

@@ -28,6 +28,15 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _adapted_case_files_exist(config: HarnessRunConfig) -> bool:
+    """判断当前配置指定的 adapted case 文件是否都已存在。"""
+    if config is None:
+        raise ValueError("config 不能为空")
+    if config.case_ids is None:
+        return False
+    return all(adapted_case_path(config.data_root, case_id).exists() for case_id in config.case_ids)
+
+
 def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = False) -> list[Path]:
     """仅执行 benchmark TaskCase 适配，并返回 adapted case 文件路径。"""
     if configs is None:
@@ -38,17 +47,20 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
             raise ValueError("configs 不能包含空配置")
         adapter = get_adapter(config.benchmark)
         harness = get_harness(config.benchmark)
-        cases = harness.list_cases(config)
-        if not cases:
-            raise ValueError("benchmark 没有可适配场景")
-        known_case_ids = {case.case_id for case in cases}
-        if config.case_ids is not None:
-            missing = [case_id for case_id in config.case_ids if case_id not in known_case_ids]
-            if missing:
-                raise KeyError(f"benchmark 场景不存在: {missing[0]}")
+        if not force_adapt and _adapted_case_files_exist(config):
             case_ids = list(config.case_ids)
         else:
-            case_ids = [case.case_id for case in cases]
+            cases = harness.list_cases(config)
+            if not cases:
+                raise ValueError("benchmark 没有可适配场景")
+            known_case_ids = {case.case_id for case in cases}
+            if config.case_ids is not None:
+                missing = [case_id for case_id in config.case_ids if case_id not in known_case_ids]
+                if missing:
+                    raise KeyError(f"benchmark 场景不存在: {missing[0]}")
+                case_ids = list(config.case_ids)
+            else:
+                case_ids = [case.case_id for case in cases]
         run_config = replace(config, case_ids=tuple(case_ids))
         harness.prepare_config(run_config)
         task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)

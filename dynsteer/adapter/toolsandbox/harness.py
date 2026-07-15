@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
@@ -24,6 +25,8 @@ from dynsteer.model import JsonObject, ToolSandboxSession
 from dynsteer.utils import enum_name
 
 logger = logging.getLogger(__name__)
+_NAMED_SCENARIOS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_NAMED_SCENARIOS_CACHE_LOCK = Lock()
 
 
 class ToolSandboxHarness(BaseBenchmarkHarness):
@@ -173,12 +176,21 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _named_scenarios(self, config: HarnessRunConfig) -> dict[str, Any]:
         """获取 ToolSandbox 原生场景字典。"""
-        scenarios = load_toolsandbox_module("tool_sandbox.scenarios").named_scenarios(
-            preferred_tool_backend=tool_backend(config, load_toolsandbox_module)
-        )
-        if not isinstance(scenarios, dict):
-            raise ValueError("ToolSandbox named_scenarios 必须返回字典")
-        return scenarios
+        if config is None:
+            raise ValueError("config 不能为空")
+        backend = tool_backend(config, load_toolsandbox_module)
+        cache_key = (str(config.data_root.resolve()), enum_name(backend))
+        with _NAMED_SCENARIOS_CACHE_LOCK:
+            cached = _NAMED_SCENARIOS_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            scenarios = load_toolsandbox_module("tool_sandbox.scenarios").named_scenarios(
+                preferred_tool_backend=backend
+            )
+            if not isinstance(scenarios, dict):
+                raise ValueError("ToolSandbox named_scenarios 必须返回字典")
+            _NAMED_SCENARIOS_CACHE[cache_key] = scenarios
+            return scenarios
 
     def _role_impl_type(self, role_name: object, role_label: str) -> object:
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")

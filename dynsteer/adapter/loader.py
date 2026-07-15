@@ -63,7 +63,7 @@ def load_task_case(
         raise ValueError("config.case_ids 不能为空")
 
     task_cases: list[TaskCase] = []
-    for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="适配 benchmark 数据"):
+    for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
         path = adapted_case_path(config.data_root, case_id)
         if force_adapt or not path.exists():
             task_case = _adapt_task_case(config, adapter, case_id)
@@ -92,8 +92,10 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
     if path is None or task_case is None:
         raise ValueError("path 和 task_case 不能为空")
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = json_safe(task_case)
+    _remove_legacy_required_field(data)
     path.write_text(
-        json.dumps(json_safe(task_case), ensure_ascii=False, indent=4),
+        json.dumps(data, ensure_ascii=False, indent=4),
         encoding="utf-8",
     )
 
@@ -119,6 +121,20 @@ def _adapt_task_case(
             llm_provider=build_llm_from_env,
         )
     return task_case
+
+
+def _remove_legacy_required_field(data: object) -> None:
+    if not isinstance(data, dict):
+        return
+    graph = data.get("milestone_graph")
+    if not isinstance(graph, dict):
+        return
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return
+    for node in nodes:
+        if isinstance(node, dict):
+            node.pop("required", None)
 
 
 ## 解析JSON对象为DynSTEER模型对象
@@ -164,6 +180,8 @@ def parse_constraint(data: JsonObject) -> Constraint:
 
 def parse_milestone(data: JsonObject) -> Milestone:
     milestone_data = ensure_json_object(data)
+    if "required" in milestone_data:
+        raise ValueError("Milestone 已移除 required 字段，请重新生成 adapted case")
     constraints_value = milestone_data.get("constraints", [])
     stage_anchor = milestone_data.get("stage_anchor_predecessor_id")
     return Milestone(
@@ -171,7 +189,6 @@ def parse_milestone(data: JsonObject) -> Milestone:
         name=_required_str(milestone_data, "name"),
         description=_required_str(milestone_data, "description"),
         constraints=[parse_constraint(ensure_json_object(item)) for item in constraints_value],
-        required=bool(milestone_data.get("required", True)),
         pass_threshold=float(milestone_data["pass_threshold"])
         if milestone_data.get("pass_threshold") is not None
         else None,
@@ -265,11 +282,31 @@ def _load_cost(data: JsonObject | None) -> StepCost:
     )
 
 
+def _load_actor(value: object, field_name: str, required: bool = True) -> Actor | None:
+    if value is None:
+        if required:
+            raise ValueError(f"缺少枚举字段: {field_name}")
+        return None
+    role_aliases = {
+        "SYSTEM": Actor.SYSTEM,
+        "USER": Actor.USER,
+        "AGENT": Actor.AGENT,
+        "EXECUTION_ENVIRONMENT": Actor.ENVIRONMENT,
+        "ENVIRONMENT": Actor.ENVIRONMENT,
+        "EVALUATOR": Actor.EVALUATOR,
+    }
+    alias = role_aliases.get(str(value).upper())
+    if alias is not None:
+        return alias
+    return enum_value(Actor, value, field_name)  # type: ignore[return-value]
+
+
 def _load_step(data: JsonObject) -> TrajectoryStep:
     known = {
         "step_id",
         "index",
         "actor",
+        "recipient",
         "event_type",
         "timestamp",
         "content",
@@ -287,8 +324,9 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     return TrajectoryStep(
         step_id=_required_str(data, "step_id"),
         index=index,
-        actor=enum_value(Actor, get_object(data, "actor"), "actor"),  # type: ignore[arg-type]
+        actor=_load_actor(get_object(data, "actor"), "actor") or Actor.EVALUATOR,
         event_type=enum_value(EventType, get_object(data, "event_type"), "event_type"),  # type: ignore[arg-type]
+        recipient=_load_actor(data.get("recipient"), "recipient", required=False),
         timestamp=data.get("timestamp") if isinstance(data.get("timestamp"), str) else None,
         content=data.get("content") if isinstance(data.get("content"), str) else None,
         tool_call=_load_tool_call(ensure_json_object(data["tool_call"])) if data.get("tool_call") is not None else None,
