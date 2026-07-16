@@ -61,7 +61,6 @@ class Operator(str, Enum):
     UPDATED = "updated"
     REMOVED = "removed"
     UNCHANGED_SINCE = "unchanged_since"
-    AST_MATCH = "ast_match"
     CUSTOM = "custom"
 
 
@@ -112,8 +111,8 @@ class ThresholdConfig:
     pass_threshold: float = 0.8
     warn_threshold: float = 0.6
     fail_threshold: float = 0.4
-    low_uncertainty: float = 0.2
-    high_uncertainty: float = 0.45
+    low_dimension_uncertainty: float = 0.2
+    high_dimension_uncertainty: float = 0.45
     safe_minefield_threshold: float = 0.2
     risky_minefield_threshold: float = 0.5
     fatal_minefield_threshold: float = 0.95
@@ -122,10 +121,8 @@ class ThresholdConfig:
 
 @dataclass(frozen=True)
 class DynamicWeightConfig:
-    alpha: float
-    beta: float
-    targets: dict[Dimension, float]
-    focus: dict[Dimension, float]
+    alpha: float = 1.0
+    beta: float = 1.0
 
 
 ## 轨迹与状态模型
@@ -155,6 +152,7 @@ class TrajectoryStep:
     index: int
     actor: Actor
     event_type: EventType
+    recipient: Optional[Actor] = None
     timestamp: Optional[str] = None
     content: Optional[str] = None
     tool_call: Optional[ToolCall] = None
@@ -198,7 +196,6 @@ class Milestone:
     name: str
     description: str
     constraints: list[Constraint]
-    required: bool = True
     pass_threshold: Optional[float] = None
     metadata: JsonObject = field(default_factory=dict)
     dependency_predecessor_ids: list[str] = field(default_factory=list)
@@ -400,11 +397,12 @@ class StageInterval:
 class StageEvaluationResult:
     stage_id: str
     milestone_id: Optional[str]
-    evaluator_level: EvaluationLevel
     status: StageStatus
     stage_score: float
-    uncertainty: float
     dimension_scores: dict[Dimension, float]
+    dimension_levels: dict[Dimension, EvaluationLevel] = field(default_factory=dict)
+    dimension_confidence: dict[Dimension, float] = field(default_factory=dict)
+    dimension_uncertainty: dict[Dimension, float] = field(default_factory=dict)
     evidence: list[str] = field(default_factory=list)
     diagnosis: list[str] = field(default_factory=list)
     next_weights: dict[Dimension, float] = field(default_factory=dict)
@@ -413,7 +411,6 @@ class StageEvaluationResult:
     required_fields_missing_ratio: float = 0.0
     minefield_score: float = 0.0
     fatal_minefield_score: float = 0.0
-    judge_confidence: float = 1.0
     minefield_evidence_is_structural: bool = True
     metadata: JsonObject = field(default_factory=dict)
 
@@ -422,11 +419,12 @@ class StageEvaluationResult:
         return {
             "stage_id": self.stage_id,
             "milestone_id": self.milestone_id,
-            "evaluator_level": self.evaluator_level.value,
             "status": self.status.value,
             "stage_score": self.stage_score,
-            "uncertainty": self.uncertainty,
             "dimension_scores": {key.value: value for key, value in self.dimension_scores.items()},
+            "dimension_levels": {key.value: value.value for key, value in self.dimension_levels.items()},
+            "dimension_confidence": {key.value: value for key, value in self.dimension_confidence.items()},
+            "dimension_uncertainty": {key.value: value for key, value in self.dimension_uncertainty.items()},
             "evidence": list(self.evidence),
             "diagnosis": list(self.diagnosis),
             "next_weights": {key.value: value for key, value in self.next_weights.items()},
@@ -435,7 +433,6 @@ class StageEvaluationResult:
             "required_fields_missing_ratio": self.required_fields_missing_ratio,
             "minefield_score": self.minefield_score,
             "fatal_minefield_score": self.fatal_minefield_score,
-            "judge_confidence": self.judge_confidence,
             "metadata": dict(self.metadata),
         }
 
@@ -487,7 +484,7 @@ def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
     """判断阶段是否来自已匹配 milestone 的动态评估。"""
     if stage is None or stage.milestone_id is None:
         return False
-    if stage.metadata.get("synthetic_pending_required") is True:
+    if stage.metadata.get("synthetic_pending_milestone") is True:
         return False
     if stage.status == StageStatus.MISSING:
         return False
@@ -495,13 +492,6 @@ def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
 
 
 ## 评估策略模型
-
-_EVALUATION_LEVEL_ORDER: dict[EvaluationLevel, int] = {
-    EvaluationLevel.CHEAP: 0,
-    EvaluationLevel.STANDARD: 1,
-    EvaluationLevel.EXPENSIVE: 2,
-}
-
 
 @dataclass(frozen=True)
 class EvaluationPolicyState:
@@ -511,13 +501,6 @@ class EvaluationPolicyState:
     dimension_levels: dict[Dimension, EvaluationLevel]
     reason: str = "initial"
 
-    def effective_level(self) -> EvaluationLevel:
-        """返回基础粒度与逐维粒度中的最高成本粒度。"""
-        if self.base_level is None or self.dimension_levels is None:
-            raise ValueError("评估策略状态不能为空")
-        levels = [self.base_level, *self.dimension_levels.values()]
-        return max(levels, key=lambda level: _EVALUATION_LEVEL_ORDER[level])
-
     def to_dict(self) -> JsonObject:
         """转换为可序列化策略字典。"""
         return {
@@ -526,20 +509,27 @@ class EvaluationPolicyState:
                 dimension.value: level.value
                 for dimension, level in self.dimension_levels.items()
             },
-            "effective_level": self.effective_level().value,
             "reason": self.reason,
         }
 
 
-@dataclass(frozen=True)
-class EvaluationPolicyUpdate:
-    """描述一次阶段评估后产生的下一阶段策略决策。"""
+@dataclass
+class EvaluationTerminationState:
+    """统一描述评估链路中的终止状态。"""
 
-    current_policy: EvaluationPolicyState
-    next_policy: EvaluationPolicyState
-    should_stop: bool
-    termination_code: str | None
-    termination_reason: str | None
+    should_stop: bool = False
+    termination_code: str | None = None
+    termination_reason: str | None = None
+    termination_detail: JsonObject | None = None
+
+    def to_dict(self) -> JsonObject:
+        """转换为 JSON 可序列化终止状态。"""
+        return {
+            "should_stop": self.should_stop,
+            "termination_code": self.termination_code,
+            "termination_reason": self.termination_reason,
+            "termination_detail": self.termination_detail,
+        }
 
 
 def initial_evaluation_policy() -> EvaluationPolicyState:
@@ -566,7 +556,7 @@ class ReadyMilestoneProgress:
 
 @dataclass
 class ReadyFrontierProgressWatch:
-    """记录当前 required ready frontier 的整体无进展观察状态。"""
+    """记录当前 ready frontier 的整体无进展观察状态。"""
 
     frontier_key: tuple[str, ...]
     ready_since_step_index: int
@@ -601,10 +591,7 @@ class RuntimeEvaluationDecision:
     checkpoint: HarnessStageSettlement | None
     stage_result: StageEvaluationResult | None
     next_state: RuntimeEvaluationState
-    should_stop: bool = False
-    termination_code: str | None = None
-    termination_reason: str | None = None
-    termination_detail: JsonObject | None = None
+    termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
 
 
 ## 运行指标与进度模型
@@ -693,6 +680,22 @@ class LLMMessage:
 
 
 @dataclass(frozen=True)
+class LLMTokenLogprob:
+    """单个输出 token 的对数概率。"""
+
+    token: str
+    logprob: float
+
+
+@dataclass(frozen=True)
+class LLMResponse:
+    """LLM 文本响应及可选 token logprob。"""
+
+    text: str
+    token_logprobs: list[LLMTokenLogprob] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     """LLM provider 运行配置。"""
 
@@ -712,6 +715,7 @@ class LLMConfig:
 class LLMJudgeConfig:
     """LLMJudge 评估行为配置。"""
 
+    standard_passes: int = 3
     expensive_passes: int = 3
 
 
@@ -721,7 +725,6 @@ class _ValidatedJudgePayload:
 
     status: StageStatus
     dimension_scores: dict[Dimension, float]
-    judge_confidence: float
     evidence: list[str]
     diagnosis: list[str]
     metadata: JsonObject

@@ -124,7 +124,7 @@ Harness 模式输出：
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 
-- `milestone_graph_summary`: 当前 case 转换后的 milestone DAG 摘要，包含节点、边、required/optional milestone ID 和约束摘要。
+- `milestone_graph_summary`: 当前 case 转换后的 milestone DAG 摘要，包含节点、边、mandatory milestone ID 和约束摘要。
 - `milestone_match_attempts`: 运行期每个存在 ready milestone 的候选 step 匹配尝试，包含命中前 matched/ready 集合、候选边界、候选 milestone 评分、是否被选中和拒绝原因。
 - `milestone_final_diagnostics`: 每个 milestone 的最终状态摘要，包含 `matched`/`pending`、是否曾经 ready、尝试次数、最佳分数、最佳边界、阻塞原因和未满足前驱。
 

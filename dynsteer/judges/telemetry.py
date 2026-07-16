@@ -20,9 +20,9 @@ def judge_input_metadata(
         raise ValueError("judge 输入快照参数不能为空")
     stage_goal = resolve_stage_goal(interval, task_case)
     stage_steps = stage_trajectory_steps(interval, trajectory)
-    structured_evidence_count = 0
+    constraint_check_count = 0
     if interval.milestone_score is not None:
-        structured_evidence_count = len(interval.milestone_score.constraint_scores)
+        constraint_check_count = len(interval.milestone_score.constraint_scores)
     first_step = stage_steps[0] if stage_steps else None
     last_step = stage_steps[-1] if stage_steps else None
     metadata: JsonObject = {
@@ -37,7 +37,7 @@ def judge_input_metadata(
         "prompt_task_description_excerpt": compact_text(task_case.task_description, 240),
         "stage_goal_objective_excerpt": compact_text(stage_goal, 240),
         "stage_step_count": len(stage_steps),
-        "structured_milestone_evidence_count": structured_evidence_count,
+        "constraint_check_count": constraint_check_count,
         "first_stage_step_excerpt": _step_excerpt(first_step),
         "last_stage_step_excerpt": _step_excerpt(last_step),
     }
@@ -53,7 +53,7 @@ def judge_result_output_metadata(result: StageEvaluationResult, input_metadata: 
     return {
         "judge_status": result.status.value,
         "judge_stage_score": result.stage_score,
-        "judge_confidence": result.judge_confidence,
+        "judge_dimension_confidence_avg": _average_confidence(result),
         "judge_first_diagnosis": first_text(result.diagnosis, 240),
         "judge_first_evidence": first_text(result.evidence, 240),
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
@@ -71,11 +71,16 @@ def judge_payload_output_metadata(
     return {
         "judge_status": str(payload.get("status")),
         "judge_stage_score": stage_score,
-        "judge_confidence": payload.get("judge_confidence"),
         "judge_first_diagnosis": first_text(string_list(payload.get("diagnosis")), 240),
         "judge_first_evidence": first_text(string_list(payload.get("evidence")), 240),
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
     }
+
+
+def _average_confidence(result: StageEvaluationResult) -> float | None:
+    if result.dimension_confidence is None or not result.dimension_confidence:
+        return None
+    return sum(result.dimension_confidence.values()) / len(result.dimension_confidence)
 
 
 def _step_excerpt(step: TrajectoryStep | None) -> str | None:

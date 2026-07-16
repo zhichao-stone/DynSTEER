@@ -1420,10 +1420,10 @@
 
       const meta = el("div", "stage-meta");
       meta.append(
-        metric("级别", report.evaluator_level || "unknown"),
+        metric("级别", dimensionLevelSummary(report.dimension_levels)),
         metric("总分", formatScore(report.stage_score)),
-        metric("置信", formatScore(report.judge_confidence)),
-        metric("不确定", formatScore(report.uncertainty)),
+        metric("置信", formatScore(averageScore(report.dimension_confidence))),
+        metric("不确定", formatScore(averageScore(report.dimension_uncertainty))),
         metric("milestone", report.milestone_id || (definition && definition.milestone_id) || "无"),
         metric("范围", settlement ? stepRangeText(settlement) : "未匹配")
       );
@@ -1458,9 +1458,10 @@
         milestone_id: definition.milestone_id,
         status: "not_started",
         stage_score: null,
-        judge_confidence: null,
-        uncertainty: null,
         dimension_scores: {},
+        dimension_levels: {},
+        dimension_confidence: {},
+        dimension_uncertainty: {},
         next_weights: {},
         evidence: [],
         diagnosis: [],
@@ -1840,7 +1841,7 @@
       if (!node) return "";
       if (node.virtual) return node.name || "";
       if (node.stage_anchor_predecessor_id) return `anchor ${node.stage_anchor_predecessor_id}`;
-      return node.required ? "required" : "optional";
+      return "mandatory";
     }
 
     function focusStepCard(stepIndex) {
@@ -1956,23 +1957,41 @@
     }
 
     function dimensionRows(report) {
-      return scoreRows(report.dimension_scores || {}, "");
+      return scoreRows(report.dimension_scores || {}, "", report.dimension_levels || {});
     }
 
     function weightRows(report) {
       return scoreRows(report.next_weights || {}, "weight-fill");
     }
 
+    function averageScore(values) {
+      if (!values || typeof values !== "object") return null;
+      const numbers = Object.values(values)
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+      if (!numbers.length) return null;
+      return numbers.reduce((total, value) => total + value, 0) / numbers.length;
+    }
+
+    function dimensionLevelSummary(levels) {
+      if (!levels || typeof levels !== "object") return "unknown";
+      const counts = Object.values(levels).reduce((acc, level) => {
+        const key = String(level || "unknown");
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      const parts = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right));
+      return parts.length ? parts.map(([level, count]) => `${level}:${count}`).join(" ") : "unknown";
+    }
+
     function policySection(report) {
       const metadata = report.metadata || {};
-      const active = metadata.active_evaluation_policy;
       const next = metadata.next_evaluation_policy;
-      const update = metadata.evaluation_policy_update;
-      if (!active && !next && !update) return null;
+      const termination = metadata.evaluation_termination;
+      if (!next && !termination) return null;
       return detailBlock("评估策略", JSON.stringify({
-        active_evaluation_policy: active || null,
         next_evaluation_policy: next || null,
-        evaluation_policy_update: update || null
+        evaluation_termination: termination || null
       }, null, 2));
     }
 
@@ -2086,11 +2105,16 @@
       });
     }
 
-    function scoreRows(values, fillClassName) {
+    function scoreRows(values, fillClassName, dimensionLevels) {
       return Object.entries(values)
         .filter(([, value]) => Number.isFinite(Number(value)))
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => scoreRow(dimensionLabel(key), Number(value), fillClassName));
+        .map(([key, value]) => scoreRow(scoreLabel(key, dimensionLevels), Number(value), fillClassName));
+    }
+
+    function scoreLabel(key, dimensionLevels) {
+      const level = dimensionLevels && dimensionLevels[key] ? ` · ${dimensionLevels[key]}` : "";
+      return `${dimensionLabel(key)}${level}`;
     }
 
     function scoreRow(label, value, fillClassName) {

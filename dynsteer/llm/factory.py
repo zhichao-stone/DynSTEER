@@ -3,9 +3,7 @@ from __future__ import annotations
 import os
 from typing import Mapping
 
-from dynsteer.llm.anthropic import AnthropicLLM
 from dynsteer.llm.base import BaseLLM, LLMConfigurationError
-from dynsteer.llm.openai import OpenaiLLM
 from dynsteer.model import LLMConfig
 
 from dynsteer.utils import normalize_str_from_source
@@ -20,8 +18,12 @@ def build_llm(config: LLMConfig) -> BaseLLM:
         raise LLMConfigurationError("LLMConfig 不能为空")
     provider = config.provider.strip().lower()
     if provider in _OPENAI_PROVIDERS:
+        from dynsteer.llm.openai import OpenaiLLM
+
         return OpenaiLLM(config)
     if provider in _ANTHROPIC_PROVIDERS:
+        from dynsteer.llm.anthropic import AnthropicLLM
+
         return AnthropicLLM(config)
     raise LLMConfigurationError(f"不支持的 judge provider: {config.provider}")
 

@@ -4,7 +4,7 @@ from collections.abc import Callable
 import json
 
 from dynsteer.graph import FINISH_NODE_ID
-from dynsteer.llm import BaseLLM
+from dynsteer.llm.base import BaseLLM
 from dynsteer.model import (
     Constraint,
     LLMMessage,

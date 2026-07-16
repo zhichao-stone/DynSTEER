@@ -98,9 +98,9 @@ def write_case_outputs(
     }
     raw_summary.update(
         {
-            "terminated_by_policy": harness_result.terminated_by_policy,
-            "termination_code": harness_result.termination_code,
-            "termination_reason": harness_result.termination_reason,
+            "terminated_by_policy": harness_result.termination.should_stop,
+            "termination_code": harness_result.termination.termination_code,
+            "termination_reason": harness_result.termination.termination_reason,
             "stage_settlements": [settlement.to_dict() for settlement in harness_result.stage_settlements],
         }
     )

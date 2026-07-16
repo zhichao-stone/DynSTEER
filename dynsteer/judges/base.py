@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 
 from dynsteer.prompt.judge import build_judge_system_prompt
 from dynsteer.evaluate.scoring import stage_score_from_dimensions
+from dynsteer.judges.confidence import complete_dimension_confidence, uncertainty_from_confidence
 from dynsteer.language import TaskLanguage
 from dynsteer.llm.base import BaseLLM, LLMResponseError
 from dynsteer.model import (
@@ -41,6 +43,7 @@ class BaseJudge(ABC):
         task_case: TaskCase,
         trajectory: Trajectory,
         weights: dict[Dimension, float],
+        dimensions: Iterable[Dimension] | None = None,
     ) -> StageEvaluationResult:
         """评估单个阶段。"""
 
@@ -48,13 +51,15 @@ class BaseJudge(ABC):
 class LLMJudge(BaseJudge):
     """基于 BaseLLM 的 LLM-as-a-Judge 抽象基类。"""
 
-    def __init__(self, llm: BaseLLM, expensive_passes: int = 3) -> None:
+    def __init__(self, llm: BaseLLM, expensive_passes: int = 3, standard_passes: int = 3) -> None:
         if llm is None:
             raise LLMJudgeConfigurationError("LLMJudge 需要提供 BaseLLM 实例")
         if expensive_passes < 1:
             raise LLMJudgeConfigurationError("expensive_passes 必须大于 0")
+        if standard_passes < 1:
+            raise LLMJudgeConfigurationError("standard_passes 必须大于 0")
         self._llm = llm
-        self._config = LLMJudgeConfig(expensive_passes=int(expensive_passes))
+        self._config = LLMJudgeConfig(standard_passes=int(standard_passes), expensive_passes=int(expensive_passes))
 
     def _call_json(self, prompt: str, language: TaskLanguage = TaskLanguage.ENGLISH) -> JsonObject:
         """调用 LLM 并解析为 JSON 对象。"""
@@ -71,7 +76,6 @@ class LLMJudge(BaseJudge):
         data = self._parse_json_text(text)
         if not isinstance(data, dict):
             raise LLMJudgeResponseError("LLMJudge 返回内容必须是 JSON 对象")
-        self._validate_payload(data)
         return data
 
     def _parse_json_text(self, text: str) -> JsonObject:
@@ -97,26 +101,34 @@ class LLMJudge(BaseJudge):
         payload: JsonObject,
         weights: dict[Dimension, float],
         metadata: JsonObject,
+        dimensions: Iterable[Dimension] | None = None,
+        dimension_confidence: dict[Dimension, float] | None = None,
     ) -> StageEvaluationResult:
-        validated = self._validate_payload(payload)
+        target_dimensions = _target_dimensions(dimensions)
+        validated = self._validate_payload(payload, target_dimensions)
         result_metadata = dict(metadata)
         result_metadata.update(validated.metadata)
         stage_score = self._stage_score_from_dimensions(validated.dimension_scores, weights)
+        confidence = complete_dimension_confidence(list(validated.dimension_scores), dimension_confidence)
         return StageEvaluationResult(
             stage_id=interval.stage_id,
             milestone_id=interval.milestone_id,
-            evaluator_level=level,
             status=validated.status,
             stage_score=stage_score,
-            uncertainty=max(0.0, min(1.0, 1.0 - validated.judge_confidence)),
             dimension_scores=validated.dimension_scores,
+            dimension_levels={dimension: level for dimension in validated.dimension_scores},
+            dimension_confidence=confidence,
+            dimension_uncertainty=uncertainty_from_confidence(confidence),
             evidence=validated.evidence,
             diagnosis=validated.diagnosis,
-            judge_confidence=validated.judge_confidence,
             metadata=result_metadata,
         )
 
-    def _validate_payload(self, payload: JsonObject) -> _ValidatedJudgePayload:
+    def _validate_payload(
+        self,
+        payload: JsonObject,
+        dimensions: Iterable[Dimension] | None = None,
+    ) -> _ValidatedJudgePayload:
         """校验 Judge JSON payload 的必需字段和可选元数据。"""
         if not isinstance(payload, dict):
             raise LLMJudgeResponseError("LLMJudge 返回内容必须是 JSON 对象")
@@ -126,8 +138,7 @@ class LLMJudge(BaseJudge):
             raise LLMJudgeResponseError("LLMJudge 返回 status 非法") from exc
         return _ValidatedJudgePayload(
             status=status,
-            dimension_scores=self._dimension_scores(payload.get("dimension_scores")),
-            judge_confidence=self._float_in_unit(payload.get("judge_confidence"), "judge_confidence"),
+            dimension_scores=self._dimension_scores(payload.get("dimension_scores"), _target_dimensions(dimensions)),
             evidence=self._string_list(payload.get("evidence"), "evidence"),
             diagnosis=self._string_list(payload.get("diagnosis"), "diagnosis"),
             metadata=self._metadata_object(payload.get("metadata")),
@@ -146,11 +157,15 @@ class LLMJudge(BaseJudge):
         except ValueError as exc:
             raise LLMJudgeConfigurationError("stage_score 计算参数不合法") from exc
 
-    def _dimension_scores(self, value: object) -> dict[Dimension, float]:
+    def _dimension_scores(
+        self,
+        value: object,
+        dimensions: list[Dimension],
+    ) -> dict[Dimension, float]:
         if not isinstance(value, dict):
             raise LLMJudgeResponseError("dimension_scores 必须是对象")
         scores: dict[Dimension, float] = {}
-        for dimension in Dimension:
+        for dimension in dimensions:
             scores[dimension] = self._float_in_unit(value.get(dimension.value), f"dimension_scores.{dimension.value}")
         return scores
 
@@ -176,3 +191,12 @@ class LLMJudge(BaseJudge):
         if not isinstance(value, dict):
             raise LLMJudgeResponseError("metadata 必须是对象")
         return {str(key): item for key, item in value.items()}
+
+
+def _target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:
+    if dimensions is None:
+        return list(Dimension)
+    result = list(dict.fromkeys(dimensions))
+    if not result:
+        raise LLMJudgeConfigurationError("target dimensions 不能为空")
+    return result

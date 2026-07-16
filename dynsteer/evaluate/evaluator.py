@@ -12,7 +12,10 @@ from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
 from dynsteer.evaluate.scoring import GeneralScorer, get_effective_scorer
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
-from dynsteer.judges import BaseJudge, CheapJudge, ExpensiveJudge, StandardJudge
+from dynsteer.judges.base import BaseJudge
+from dynsteer.judges.cheap import CheapJudge
+from dynsteer.judges.expensive import ExpensiveJudge
+from dynsteer.judges.standard import StandardJudge
 from dynsteer.llm import build_llm_from_env
 from dynsteer.metrics import (
     activate_runtime_metrics_recorder,
@@ -30,6 +33,7 @@ from dynsteer.model import (
     StageEvaluationResult,
     StageStatus,
     TaskCase,
+    EvaluationTerminationState,
     ThresholdConfig,
     Trajectory,
     TrajectoryEvaluationReport,
@@ -42,7 +46,7 @@ from dynsteer.evaluate.runtime import (
     HarnessTeardownError,
 )
 from dynsteer.evaluate.runtime import (
-    pending_required_stage_results,
+    pending_milestone_stage_results,
     runtime_diagnostics_summary,
     task_case_snapshot,
     task_description_mismatched,
@@ -85,10 +89,11 @@ class DynSTEEREvaluator:
         llm = build_llm_from_env(source)
         if llm is None:
             return cls(cheap_judge=CheapJudge())
+        standard_passes = int(source.get("DYNSTEER_STANDARD_JUDGE_PASSES", "3"))
         expensive_passes = int(source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES", "3"))
         return cls(
             cheap_judge=CheapJudge(),
-            standard_judge=StandardJudge(llm=llm),
+            standard_judge=StandardJudge(llm=llm, standard_passes=standard_passes),
             expensive_judge=ExpensiveJudge(llm=llm, expensive_passes=expensive_passes),
         )
 
@@ -144,10 +149,7 @@ class DynSTEEREvaluator:
         raw_output_dir.mkdir(parents=True, exist_ok=True)
 
         session: object | None = None
-        terminated_by_policy = False
-        termination_code: str | None = None
-        termination_reason: str | None = None
-        termination_detail: JsonObject | None = None
+        termination = EvaluationTerminationState()
         metrics_recorder = RuntimeMetricsRecorder()
         metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
 
@@ -218,7 +220,7 @@ class DynSTEEREvaluator:
                             weight_config=self._weight_config,
                         ),
                     )
-                    if decision is not None and decision.should_stop:
+                    if decision is not None and decision.termination.should_stop:
                         decision = self._apply_policy_stop(
                             harness=harness,
                             session=session,
@@ -228,28 +230,24 @@ class DynSTEEREvaluator:
                             default_reason="阶段式动态评估触发提前终止",
                         )
                         state = decision.next_state
-                        terminated_by_policy = True
-                        termination_code = decision.termination_code
-                        termination_reason = decision.termination_reason
-                        termination_detail = decision.termination_detail
+                        termination = decision.termination
                         break
 
-                if terminated_by_policy or not advance.continue_running:
+                if termination.should_stop or not advance.continue_running:
                     break
 
-            if not terminated_by_policy:
-                pending_stage_reports = pending_required_stage_results(task_case, state)
+            if not termination.should_stop:
+                pending_stage_reports = pending_milestone_stage_results(task_case, state)
                 if pending_stage_reports:
                     state.stage_reports.extend(pending_stage_reports)
                 else:
-                    settlement, stage_result, next_weights, policy_update = finish_settlement(
+                    settlement, stage_result, next_weights, next_policy, finish_termination = finish_settlement(
                         state.settlements,
                         task_case,
                         trajectory,
                         state.matched_settlements,
                         state.weights,
                         state.evaluation_policy,
-                        scorer,
                         state,
                         self._cheap_judge,
                         self._standard_judge,
@@ -260,7 +258,9 @@ class DynSTEEREvaluator:
                     state.settlements.append(settlement)
                     state.stage_reports.append(stage_result)
                     state.weights = next_weights
-                    state.evaluation_policy = policy_update.next_policy
+                    state.evaluation_policy = next_policy
+                    if finish_termination.should_stop:
+                        termination = finish_termination
             report = self._runtime_report(
                 task_case,
                 trajectory,
@@ -299,8 +299,8 @@ class DynSTEEREvaluator:
                         "scenario_name": task_snapshot["scenario_name"],
                     },
                 )
-            if termination_detail is not None:
-                raw_summary["termination_detail"] = termination_detail
+            if termination.termination_detail is not None:
+                raw_summary["termination_detail"] = termination.termination_detail
             return HarnessRunResult(
                 benchmark=config.benchmark,
                 case_id=case_id,
@@ -311,9 +311,7 @@ class DynSTEEREvaluator:
                 raw_summary=raw_summary,
                 stage_settlements=state.settlements,
                 evaluation_report=report,
-                terminated_by_policy=terminated_by_policy,
-                termination_code=termination_code,
-                termination_reason=termination_reason,
+                termination=termination,
             )
         finally:
             try:
@@ -344,8 +342,8 @@ class DynSTEEREvaluator:
         """
         if harness is None or session is None or task_case is None or decision is None:
             raise ValueError("策略终止参数不能为空")
-        termination_reason = decision.termination_reason or default_reason
-        decision.termination_reason = termination_reason
+        termination_reason = decision.termination.termination_reason or default_reason
+        decision.termination.termination_reason = termination_reason
         harness.stop_case(session, termination_reason)
         logger.warning(
             "evaluator_policy_stop",
@@ -355,8 +353,6 @@ class DynSTEEREvaluator:
                     case_id,
                     task_case,
                     decision,
-                    decision.termination_code,
-                    termination_reason,
                 ),
             },
         )
@@ -381,15 +377,17 @@ class DynSTEEREvaluator:
                 for stage in stage_reports
                 if stage.milestone_id is not None
                 and stage.status != StageStatus.MISSING
-                and stage.metadata.get("synthetic_pending_required") is not True
+                and stage.metadata.get("synthetic_pending_milestone") is not True
             }
-        required_ids = {node.milestone_id for node in graph.nodes if node.required}
+        milestone_ids = {node.milestone_id for node in graph.nodes}
         if not graph.nodes:
             coverage = "none"
-        elif required_ids.issubset(matched_ids):
+        elif milestone_ids.issubset(matched_ids):
             coverage = "full"
-        else:
+        elif matched_ids:
             coverage = "partial"
+        else:
+            coverage = "none"
         return TrajectoryEvaluationReport(
             run_id=trajectory.run_id,
             task_id=trajectory.task_id,

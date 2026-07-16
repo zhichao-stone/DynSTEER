@@ -61,32 +61,6 @@ TASK_TYPE_WEIGHTS: dict[TaskType, dict[Dimension, float]] = {
     },
 }
 
-DEFAULT_TARGETS: dict[Dimension, float] = {
-    Dimension.PROGRESS: 0.8,
-    Dimension.STATE_CONSISTENCY: 0.8,
-    Dimension.TOOL_QUALITY: 0.8,
-    Dimension.EFFICIENCY: 0.7,
-    Dimension.SAFETY: 0.9,
-    Dimension.INTERACTION_QUALITY: 0.7,
-    Dimension.RECOVERY: 0.7,
-}
-
-DEFAULT_FOCUS: dict[Dimension, float] = {
-    Dimension.PROGRESS: 1.0,
-    Dimension.STATE_CONSISTENCY: 1.0,
-    Dimension.TOOL_QUALITY: 1.0,
-    Dimension.EFFICIENCY: 0.5,
-    Dimension.SAFETY: 1.0,
-    Dimension.INTERACTION_QUALITY: 0.5,
-    Dimension.RECOVERY: 0.7,
-}
-
-
 def default_dynamic_weight_config() -> DynamicWeightConfig:
     """创建默认动态权重配置。"""
-    return DynamicWeightConfig(
-        alpha=0.8,
-        beta=0.4,
-        targets=dict(DEFAULT_TARGETS),
-        focus=dict(DEFAULT_FOCUS),
-    )
+    return DynamicWeightConfig(alpha=1.0, beta=1.0)

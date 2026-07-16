@@ -6,12 +6,8 @@ import math
 from typing import Any, Optional
 
 from dynsteer.evaluate.matching.boundary import boundary_snapshot, boundary_step
-from dynsteer.config import (
-    DEFAULT_FOCUS,
-    DEFAULT_TARGETS,
-    TASK_TYPE_WEIGHTS,
-    default_dynamic_weight_config,
-)
+from dynsteer.config import TASK_TYPE_WEIGHTS, default_dynamic_weight_config
+from dynsteer.judges.confidence import complete_dimension_confidence, uncertainty_from_confidence
 from dynsteer.model import (
     Boundary,
     Constraint,
@@ -31,7 +27,6 @@ from dynsteer.model import (
     StageStatus,
     StateSnapshot,
     TaskCase,
-    ThresholdConfig,
     Trajectory,
     TrajectoryStep,
 )
@@ -130,6 +125,14 @@ class GeneralScorer:
             Operator.REMOVED,
             Operator.UNCHANGED_SINCE,
         }:
+            if constraint.reference_milestone_id is not None and reference_source is None:
+                return ConstraintScore(
+                    constraint_id=constraint.constraint_id,
+                    score=0.0,
+                    missing=True,
+                    evidence=[f"reference milestone 未命中: {constraint.reference_milestone_id}"],
+                    actual=actual,
+                )
             reference_data = self._resolve_source(constraint, reference_source)
             reference_value = self.select_value(reference_data, constraint.selector)
         if constraint.operator == Operator.CUSTOM:
@@ -185,7 +188,13 @@ class GeneralScorer:
         weight_sum = 0.0
         hard_pass = True
         for constraint in milestone.constraints:
-            source, reference = self.constraint_sources(constraint, boundary, trajectory, reference_snapshots)
+            source, reference = self.constraint_sources(
+                constraint,
+                boundary,
+                trajectory,
+                reference_snapshots,
+                context=context,
+            )
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             weight = max(float(constraint.weight), 0.0)
@@ -265,6 +274,7 @@ class GeneralScorer:
         boundary: Boundary,
         trajectory: Trajectory,
         snapshots: list[StateSnapshot],
+        context: ScoringContext | None = None,
     ) -> tuple[object, StateSnapshot | None]:
         """按约束目标解析 boundary 上的评分 source 与 reference。"""
         if constraint is None or boundary is None or trajectory is None or snapshots is None:
@@ -277,6 +287,10 @@ class GeneralScorer:
             source = boundary_step(trajectory, boundary)
         if constraint.reference_milestone_id is None:
             return source, None
+        if context is not None:
+            snapshot = context.matched_snapshots.get(constraint.reference_milestone_id)
+            if snapshot is not None:
+                return source, snapshot
         for snapshot in snapshots:
             if snapshot.snapshot_id == constraint.reference_milestone_id:
                 return source, snapshot
@@ -297,36 +311,6 @@ def get_effective_scorer(scorer: GeneralScorer | None) -> GeneralScorer:
     return scorer if scorer is not None else GeneralScorer()
 
 
-def compute_uncertainty(
-    top1_score: float,
-    top2_score: float,
-    missing_ratio: float,
-    stage_score: float,
-    evidence_conflict: bool,
-    judge_uncertainty: float,
-    thresholds: Optional[ThresholdConfig] = None,
-) -> float:
-    effective_thresholds = thresholds or ThresholdConfig()
-    margin = max(top1_score - top2_score, 0.0)
-    u_margin = 1.0 - clamp(margin / 0.3)
-    u_missing = clamp(missing_ratio)
-    threshold_distance = min(
-        abs(stage_score - effective_thresholds.pass_threshold),
-        abs(stage_score - effective_thresholds.warn_threshold),
-        abs(stage_score - effective_thresholds.fail_threshold),
-    )
-    u_threshold = 1.0 - clamp(threshold_distance / effective_thresholds.threshold_margin)
-    u_conflict = 1.0 if evidence_conflict else 0.0
-    u_judge = clamp(judge_uncertainty)
-    return clamp(
-        0.30 * u_margin
-        + 0.25 * u_missing
-        + 0.20 * u_threshold
-        + 0.15 * u_conflict
-        + 0.10 * u_judge
-    )
-
-
 def stage_score_from_dimensions(
     dimension_scores: dict[Dimension, float],
     weights: dict[Dimension, float],
@@ -334,9 +318,12 @@ def stage_score_from_dimensions(
     """根据维度分数和动态权重计算阶段综合分数。"""
     if dimension_scores is None or weights is None:
         raise ValueError("阶段分数计算参数不能为空")
+    if not dimension_scores:
+        raise ValueError("dimension_scores 不能为空")
     weighted_score = 0.0
     total_weight = 0.0
-    for dimension in Dimension:
+    present_dimensions = [dimension for dimension in Dimension if dimension in dimension_scores]
+    for dimension in present_dimensions:
         raw_score = dimension_scores.get(dimension)
         if isinstance(raw_score, bool) or not isinstance(raw_score, int | float):
             raise ValueError(f"{dimension.value} 维度分数必须是数字")
@@ -349,7 +336,7 @@ def stage_score_from_dimensions(
         weighted_score += clamp(float(raw_score)) * weight
         total_weight += weight
     if total_weight <= 0.0:
-        return sum(clamp(float(dimension_scores[dimension])) for dimension in Dimension) / len(Dimension)
+        return sum(clamp(float(dimension_scores[dimension])) for dimension in present_dimensions) / len(present_dimensions)
     return weighted_score / total_weight
 
 
@@ -385,30 +372,14 @@ def enrich_stage_result(
     result: StageEvaluationResult,
     minefield_score: float,
     fatal_minefield: bool,
-    thresholds: ThresholdConfig,
+    thresholds: object,
 ) -> StageEvaluationResult:
     if interval is None or result is None or thresholds is None:
         raise ValueError("enrich_stage_result 入参不能为空")
-    top1 = interval.milestone_score.score if interval.milestone_score is not None else result.stage_score
-    uncertainty = compute_uncertainty(
-        top1_score=top1,
-        top2_score=0.0,
-        missing_ratio=result.required_fields_missing_ratio,
-        stage_score=result.stage_score,
-        evidence_conflict=False,
-        judge_uncertainty=1.0 - result.judge_confidence,
-        thresholds=thresholds,
-    )
-    result.uncertainty = uncertainty
+    result.dimension_confidence = complete_dimension_confidence(list(Dimension), result.dimension_confidence)
+    result.dimension_uncertainty = uncertainty_from_confidence(result.dimension_confidence)
     result.minefield_score = minefield_score
     result.fatal_minefield_score = minefield_score if fatal_minefield else 0.0
-    result.metadata["uncertainty_inputs"] = {
-        "top1_score": top1,
-        "top2_score": 0.0,
-        "missing_ratio": result.required_fields_missing_ratio,
-        "stage_score": result.stage_score,
-        "judge_uncertainty": 1.0 - result.judge_confidence,
-    }
     return result
 
 
@@ -456,19 +427,45 @@ def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
 def update_weights(
     current: dict[Dimension, float],
     scores: dict[Dimension, float],
-    uncertainty: float,
+    dimension_uncertainty: dict[Dimension, float],
     config: Optional[DynamicWeightConfig] = None,
 ) -> dict[Dimension, float]:
-    if current is None or scores is None:
-        raise ValueError("current 和 scores 不能为空")
+    if current is None or scores is None or dimension_uncertainty is None:
+        raise ValueError("current、scores 和 dimension_uncertainty 不能为空")
     effective_config = config or default_dynamic_weight_config()
     next_weights: dict[Dimension, float] = {}
     for dimension in Dimension:
         base = max(float(current.get(dimension, 0.0)), 1e-9)
         score = float(scores.get(dimension, 0.0))
-        target = effective_config.targets.get(dimension, DEFAULT_TARGETS[dimension])
-        focus = effective_config.focus.get(dimension, DEFAULT_FOCUS[dimension])
+        uncertainty = clamp(float(dimension_uncertainty.get(dimension, 0.0)))
         next_weights[dimension] = base * math.exp(
-            effective_config.alpha * max(0.0, target - score) + effective_config.beta * clamp(uncertainty) * focus
+            effective_config.alpha * (1.0 - clamp(score)) + effective_config.beta * uncertainty
         )
     return normalize_weights(next_weights)
+
+
+def weight_update_diagnostics(
+    current: dict[Dimension, float],
+    scores: dict[Dimension, float],
+    dimension_uncertainty: dict[Dimension, float],
+    next_weights: dict[Dimension, float],
+    config: Optional[DynamicWeightConfig] = None,
+) -> JsonObject:
+    """构造动态权重更新审计信息。"""
+    if current is None or scores is None or dimension_uncertainty is None or next_weights is None:
+        raise ValueError("权重诊断参数不能为空")
+    effective_config = config or default_dynamic_weight_config()
+    return {
+        "formula": "w_next = normalize(w * exp(alpha * (1 - score) + beta * uncertainty))",
+        "alpha": effective_config.alpha,
+        "beta": effective_config.beta,
+        "dimensions": {
+            dimension.value: {
+                "current_weight": current.get(dimension, 0.0),
+                "score": scores.get(dimension, 0.0),
+                "dimension_uncertainty": dimension_uncertainty.get(dimension, 0.0),
+                "next_weight": next_weights.get(dimension, 0.0),
+            }
+            for dimension in Dimension
+        },
+    }

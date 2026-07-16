@@ -119,24 +119,24 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
     )
 
 
-def required_ready_milestone_ids(
+def ready_milestone_ids(
     frontier: MilestoneFrontierState,
     matched: dict[str, HarnessStageSettlement],
 ) -> tuple[str, ...]:
-    """返回当前 required ready frontier 的稳定 milestone id 元组。
+    """返回当前 ready frontier 的稳定 milestone id 元组。
 
     入参：
         frontier: 当前 case 的 frontier 增量状态。
         matched: 当前已匹配 milestone 结算表。
     输出：
-        尚未匹配且 required=True 的 ready milestone id。
+        尚未匹配的 ready milestone id。
     """
     if frontier is None or matched is None:
-        raise ValueError("required ready frontier 参数不能为空")
+        raise ValueError("ready frontier 参数不能为空")
     return tuple(
         milestone.milestone_id
         for milestone in ready_milestones(frontier)
-        if milestone.required and milestone.milestone_id not in matched
+        if milestone.milestone_id not in matched
     )
 
 

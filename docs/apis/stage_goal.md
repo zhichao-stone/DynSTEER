@@ -2,6 +2,8 @@
 
 `dynsteer.stage.generate_stage_goals(task_case, mode="auto", llm_provider=None)` 是 stage_goals 的唯一生成入口。
 
+所有 milestone 都必须生成 stage_goal。DAG 并行只表示依赖关系，不表示 optional milestone；loader 读取到 milestone `required` 字段会报错并要求重新生成 adapted case。
+
 支持模式：
 
 - `auto`: 优先使用通用 `Constraint.stage_goal_semantics` deterministic 生成；无法完整覆盖时回退 LLM。

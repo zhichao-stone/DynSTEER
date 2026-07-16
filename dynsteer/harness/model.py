@@ -3,7 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dynsteer.model import JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryEvaluationReport, TrajectoryStep
+from dynsteer.model import (
+    EvaluationTerminationState,
+    JsonObject,
+    StateSnapshot,
+    TaskCase,
+    Trajectory,
+    TrajectoryEvaluationReport,
+    TrajectoryStep,
+)
 
 
 @dataclass(frozen=True)
@@ -153,9 +161,7 @@ class HarnessRunResult:
     raw_summary: JsonObject = field(default_factory=dict)
     stage_settlements: list[HarnessStageSettlement] = field(default_factory=list)
     evaluation_report: TrajectoryEvaluationReport | None = None
-    terminated_by_policy: bool = False
-    termination_code: str | None = None
-    termination_reason: str | None = None
+    termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
 
     def __post_init__(self) -> None:
         if not self.benchmark or not self.benchmark.strip():

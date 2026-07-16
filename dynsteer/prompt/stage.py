@@ -55,7 +55,6 @@ def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
         "milestone_id": milestone.milestone_id,
         "name": milestone.name,
         "description": milestone.description,
-        "required": milestone.required,
         "anchor": milestone.stage_anchor_predecessor_id,
         "constraints": [_constraint_prompt_json(constraint) for constraint in milestone.constraints],
     }

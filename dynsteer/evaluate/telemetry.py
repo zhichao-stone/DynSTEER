@@ -19,32 +19,30 @@ def policy_stop_log_extra(
     case_id: str,
     task_case: TaskCase,
     decision: RuntimeEvaluationDecision,
-    termination_code: str | None,
-    termination_reason: str | None,
 ) -> JsonObject:
     """构造策略提前终止 warning 摘要。"""
     if case_id is None or task_case is None or decision is None:
         raise ValueError("策略终止日志参数不能为空")
     stage_result = decision.stage_result
     matched_ids = sorted(decision.next_state.matched_settlements)
-    pending_ids = _pending_required_ids(task_case.milestone_graph, matched_ids)
+    pending_ids = _pending_milestone_ids(task_case.milestone_graph, matched_ids)
     milestone_score, milestone_status = _milestone_layer_from_stage(stage_result)
     if milestone_score is None and milestone_status is None:
         milestone_score, milestone_status = _milestone_layer_from_checkpoint(decision.checkpoint)
     last_attempt = _last_match_attempt(decision.next_state.match_attempts)
     extra: JsonObject = {
         "case_id": str(case_id),
-        "termination_code": termination_code,
-        "termination_reason": termination_reason,
+        "termination_code": decision.termination.termination_code,
+        "termination_reason": decision.termination.termination_reason,
         "matched_milestone_ids": matched_ids,
-        "pending_required_milestone_ids": pending_ids,
+        "pending_milestone_ids": pending_ids,
         "stage_id": stage_result.stage_id if stage_result is not None else None,
         "milestone_id": stage_result.milestone_id if stage_result is not None else None,
         "milestone_score": milestone_score,
         "milestone_status": milestone_status,
         "stage_score": stage_result.stage_score if stage_result is not None else None,
         "stage_status": stage_result.status.value if stage_result is not None else None,
-        "evaluator_level": stage_result.evaluator_level.value if stage_result is not None else None,
+        "dimension_levels": _dimension_levels(stage_result),
         "stage_first_evidence": first_text(stage_result.evidence, _TEXT_LIMIT) if stage_result is not None else None,
         "stage_first_diagnosis": first_text(stage_result.diagnosis, _TEXT_LIMIT) if stage_result is not None else None,
         "last_match_step_index": last_attempt.get("step_index") if last_attempt is not None else None,
@@ -55,9 +53,18 @@ def policy_stop_log_extra(
     return _sanitize_extra(extra)
 
 
-def _pending_required_ids(graph: MilestoneGraph, matched_ids: list[str]) -> list[str]:
+def _dimension_levels(stage_result: StageEvaluationResult | None) -> JsonObject | None:
+    if stage_result is None:
+        return None
+    return {
+        dimension.value: level.value
+        for dimension, level in stage_result.dimension_levels.items()
+    }
+
+
+def _pending_milestone_ids(graph: MilestoneGraph, matched_ids: list[str]) -> list[str]:
     matched = set(matched_ids)
-    return sorted(node.milestone_id for node in graph.nodes if node.required and node.milestone_id not in matched)
+    return sorted(node.milestone_id for node in graph.nodes if node.milestone_id not in matched)
 
 
 def _milestone_layer_from_stage(stage_result: StageEvaluationResult | None) -> tuple[float | None, str | None]:

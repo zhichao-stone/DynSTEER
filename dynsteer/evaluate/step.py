@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
-from dynsteer.evaluate.matching.frontier import required_ready_milestone_ids
+from dynsteer.evaluate.matching.frontier import ready_milestone_ids
 from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.matching.milestone import analyze_milestone_step
 from dynsteer.evaluate.runtime import (
@@ -15,6 +15,7 @@ from dynsteer.evaluate.runtime import (
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import (
     JsonObject,
+    EvaluationTerminationState,
     RuntimeEvaluationDecision,
     RuntimeEvaluationState,
     StageStatus,
@@ -87,17 +88,19 @@ def evaluate_runtime_step(
                 None,
                 None,
                 state,
-                should_stop=True,
-                termination_code=termination_code,
-                termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
-                termination_detail={
-                    "code": termination_code,
-                    "minefield_matches": minefield_matches,
-                    "boundary": {
-                        "boundary_id": boundary.boundary_id,
-                        "step_index": boundary.step_index,
+                termination=EvaluationTerminationState(
+                    should_stop=True,
+                    termination_code=termination_code,
+                    termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
+                    termination_detail={
+                        "code": termination_code,
+                        "minefield_matches": minefield_matches,
+                        "boundary": {
+                            "boundary_id": boundary.boundary_id,
+                            "step_index": boundary.step_index,
+                        },
                     },
-                },
+                ),
             )
 
     analysis = analyze_milestone_step(
@@ -125,10 +128,12 @@ def evaluate_runtime_step(
                     None,
                     None,
                     state,
-                    should_stop=True,
-                    termination_code=termination_code,
-                    termination_reason=blocked_milestone_termination_reason(analysis.blocked_detail),
-                    termination_detail=termination_detail,
+                    termination=EvaluationTerminationState(
+                        should_stop=True,
+                        termination_code=termination_code,
+                        termination_reason=blocked_milestone_termination_reason(analysis.blocked_detail),
+                        termination_detail=termination_detail,
+                    ),
                 )
         return None
 
@@ -146,7 +151,6 @@ def evaluate_runtime_step(
         task_case=task_case,
         trajectory=trajectory,
         state=state,
-        scorer=scorer,
         milestone=milestone,
         boundary=boundary,
         milestone_score=milestone_score,
@@ -161,7 +165,7 @@ def evaluate_runtime_step(
         state.match_attempts.append(analysis.attempt_detail)
     if decision.checkpoint is None and analysis.attempt_detail is not None:
         return _ready_frontier_no_progress_decision(config, state, analysis.attempt_detail, thresholds)
-    if decision.should_stop:
+    if decision.termination.should_stop:
         return decision
     return None
 
@@ -211,10 +215,10 @@ def _ready_frontier_no_progress_decision(
 ) -> RuntimeEvaluationDecision | None:
     if config is None or state is None or attempt_detail is None or state.milestone_frontier is None:
         raise ValueError("ready frontier 无进展决策参数不能为空")
-    ready_required_ids = required_ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
+    ready_ids = ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
     termination_detail = update_ready_frontier_progress_watch(
         state=state,
-        ready_required_ids=ready_required_ids,
+        ready_ids=ready_ids,
         attempt_detail=attempt_detail,
         thresholds=thresholds,
         stop_enabled=config.stop_on_ready_frontier_no_progress,
@@ -228,8 +232,10 @@ def _ready_frontier_no_progress_decision(
         None,
         None,
         state,
-        should_stop=True,
-        termination_code=termination_code,
-        termination_reason=ready_frontier_no_progress_termination_reason(termination_detail),
-        termination_detail=termination_detail,
+        termination=EvaluationTerminationState(
+            should_stop=True,
+            termination_code=termination_code,
+            termination_reason=ready_frontier_no_progress_termination_reason(termination_detail),
+            termination_detail=termination_detail,
+        ),
     )

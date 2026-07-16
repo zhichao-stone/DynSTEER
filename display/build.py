@@ -292,8 +292,7 @@ def _milestone_matching_summary(value: Any) -> JsonObject:
         "matched_milestone_ids_before_match": _string_list(value.get("matched_milestone_ids_before_match")),
         "predecessor_milestone_ids": _string_list(value.get("predecessor_milestone_ids")),
         "matched_milestone_ids": _string_list(value.get("matched_milestone_ids")),
-        "pending_required_milestone_ids": _string_list(value.get("pending_required_milestone_ids")),
-        "pending_optional_milestone_ids": _string_list(value.get("pending_optional_milestone_ids")),
+        "pending_milestone_ids": _string_list(value.get("pending_milestone_ids")),
         "total_milestone_count": _number(value.get("total_milestone_count")),
     }
 

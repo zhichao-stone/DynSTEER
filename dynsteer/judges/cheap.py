@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dynsteer.evaluate.quality import build_stage_quality_diagnostics
+from collections.abc import Iterable
+
 from dynsteer.evaluate.scoring import stage_score_from_dimensions
 from dynsteer.judges.base import BaseJudge
+from dynsteer.judges.confidence import cheap_dimension_confidence, uncertainty_from_confidence
 from dynsteer.model import (
     Dimension,
     EvaluationLevel,
@@ -25,6 +28,7 @@ class CheapJudge(BaseJudge):
         task_case: TaskCase,
         trajectory: Trajectory,
         weights: dict[Dimension, float],
+        dimensions: Iterable[Dimension] | None = None,
     ) -> StageEvaluationResult:
         """使用结构化分数生成确定性阶段评估结果。"""
         if interval is None or task_case is None or trajectory is None or weights is None:
@@ -50,20 +54,20 @@ class CheapJudge(BaseJudge):
         diagnostics = build_stage_quality_diagnostics(interval, trajectory)
         dimension_scores = self._dimension_scores(score, interval.status, diagnostics)
         stage_score = stage_score_from_dimensions(dimension_scores, weights)
-        judge_confidence = self._confidence(interval.status, missing_ratio, diagnostics)
+        dimension_confidence = cheap_dimension_confidence(interval.status, missing_ratio, diagnostics)
         return StageEvaluationResult(
             stage_id=interval.stage_id,
             milestone_id=interval.milestone_id,
-            evaluator_level=EvaluationLevel.CHEAP,
             status=interval.status,
             stage_score=stage_score,
-            uncertainty=max(min(missing_ratio, 1.0), 1.0 - judge_confidence),
             dimension_scores=dimension_scores,
+            dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in dimension_scores},
+            dimension_confidence=dimension_confidence,
+            dimension_uncertainty=uncertainty_from_confidence(dimension_confidence),
             evidence=evidence,
             diagnosis=self._diagnosis(interval.status, score, missing_ratio),
             hard_constraints_all_pass=hard_pass,
             required_fields_missing_ratio=missing_ratio,
-            judge_confidence=judge_confidence,
             metadata={
                 "stage_quality_diagnostics": diagnostics,
             },
@@ -107,14 +111,6 @@ class CheapJudge(BaseJudge):
             result[Dimension.PROGRESS] = min(progress, 0.2)
             result[Dimension.RECOVERY] = min(result[Dimension.RECOVERY], 0.3)
         return result
-
-    def _confidence(self, status: StageStatus, missing_ratio: float, diagnostics: JsonObject) -> float:
-        base = 0.75
-        if status in {StageStatus.MISSING, StageStatus.AMBIGUOUS, StageStatus.INVALID}:
-            base -= 0.25
-        base -= min(max(missing_ratio, 0.0), 1.0) * 0.25
-        base -= min(float(diagnostics.get("warning_count") or 0.0), 5.0) * 0.03
-        return max(0.0, min(base, 1.0))
 
     def _diagnosis(self, status: StageStatus, score: float, missing_ratio: float) -> list[str]:
         diagnosis: list[str] = []

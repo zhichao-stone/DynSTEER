@@ -382,11 +382,11 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
     }
 
 
-def _matcher_nodes(matcher: object | None, prefix: str, required: bool) -> list[dict[str, JsonValue]]:
+def _matcher_nodes(matcher: object | None, prefix: str, is_milestone: bool) -> list[dict[str, JsonValue]]:
     if matcher is None:
         return []
-    label = "milestone" if required else "minefield"
-    id_key = "milestone_id" if required else "minefield_id"
+    label = "milestone" if is_milestone else "minefield"
+    id_key = "milestone_id" if is_milestone else "minefield_id"
     result: list[dict[str, JsonValue]] = []
     for index, node in enumerate(getattr(matcher, "milestones", []) or []):
         item: dict[str, JsonValue] = {
@@ -399,7 +399,7 @@ def _matcher_nodes(matcher: object | None, prefix: str, required: bool) -> list[
             ],
             "metadata": {"toolsandbox": {f"{label}_index": index}},
         }
-        if not required:
+        if not is_milestone:
             item["severity"] = "fatal"
             item["penalty"] = {"mode": "fixed", "value": 1.0}
         result.append(item)

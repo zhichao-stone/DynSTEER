@@ -2,114 +2,152 @@
 
 ## 目标
 
-`dynsteer.judges` 包负责轨迹阶段评估器，定义统一接口和 cheap/standard/expensive 三档 Judge。LLM provider 的构建与交互不在本包，见 `docs/apis/llm.md`。
+`dynsteer.judges` 提供 cheap / standard / expensive 三档阶段评估器。Judge 现在支持 partial dimensions：standard 和 expensive 可以只输出本轮目标维度，最终由阶段结算合并回七维报告。
 
 ## 包结构
 
 ```text
 dynsteer/judges/
-- __init__.py    # 导出 BaseJudge、LLMJudge、CheapJudge、StandardJudge、ExpensiveJudge 及相关错误
-- base.py        # BaseJudge、LLMJudge、LLMJudgeConfig、LLMJudgeConfigurationError、LLMJudgeResponseError
-- cheap.py       # CheapJudge
-- standard.py    # StandardJudge
-- expensive.py   # ExpensiveJudge
+- base.py          # BaseJudge、LLMJudge、响应校验与结果转换
+- cheap.py         # CheapJudge，本地结构化 baseline
+- standard.py      # StandardJudge，维度组 LLM judge
+- expensive.py     # ExpensiveJudge，逐维专项 LLM judge
+- confidence.py    # 逐维 confidence / uncertainty 与多 pass agreement
 ```
 
-Prompt 构造与模板文件已统一迁入 `dynsteer.prompt`，其中 `dynsteer.prompt.judge` 提供系统 prompt 与通用 `build_judge_prompt(...)` 构造函数，`dynsteer.prompt.template` 提供 `PromptTemplate` 与模板读取。
+Prompt 相关定义位于：
 
-`dynsteer/judge.py` 与 `dynsteer/judges/llm.py` 已删除，`from dynsteer.judge import ...` 和 `from dynsteer.judges.llm import ...` 不再可用。
+```text
+dynsteer/prompt/
+- judge.py         # prompt context 构造
+- rubrics.py       # 七维详细 rubric
+- templates/judge/standard.{zh,en}.md
+- templates/judge/expensive/{dimension}.{zh,en}.md
+```
 
-## 统一接口
+## BaseJudge
 
 ```python
 class BaseJudge(ABC):
-    @abstractmethod
     def evaluate_stage(
         self,
         interval: StageInterval,
         task_case: TaskCase,
         trajectory: Trajectory,
         weights: dict[Dimension, float],
+        dimensions: Iterable[Dimension] | None = None,
     ) -> StageEvaluationResult:
-        """评估单个阶段。"""
+        ...
 ```
+
+- `dimensions=None` 表示评估全部七维。
+- partial judge 只需要返回 `dimensions` 中出现的分数。
+- `StageEvaluationResult.dimension_levels` 记录每个维度实际使用的评估级别，不再维护单一 `evaluator_level`。
+- `StageEvaluationResult.dimension_confidence` 与 `dimension_uncertainty` 是一等字段。
+- 全局 `judge_confidence` 和全局 `uncertainty` 已移除。
 
 ## CheapJudge
 
-`CheapJudge(BaseJudge)` 是本地结构化评估器，只用于 cheap 层，不访问网络。它会读取 `stage_trajectory_steps(interval, trajectory)` 的当前阶段区间，结合 milestone 分数、工具失败、空查询结果、疑似别名参数、额外用户负担和错误恢复情况生成维度分数。
+`CheapJudge` 不访问网络，使用 milestone score 与阶段质量诊断生成完整七维 baseline。
 
-milestone 分数只作为 `progress` 维度证据，不再复制到所有维度。`stage_score` 由 `dynsteer.evaluate.scoring.stage_score_from_dimensions(...)` 按动态权重计算，阶段质量诊断写入 `StageEvaluationResult.metadata["stage_quality_diagnostics"]`。
+定位：
 
-## LLMJudge
+- deterministic triage
+- 缺 LLM 时的降级报告
+- standard/expensive 覆盖前的 baseline
 
-`LLMJudge(BaseJudge)` 是 LLM-as-a-Judge 抽象基类。它只封装入参检查、prompt 构造、JSON 调用、响应解析、结果转换和通用异常，依赖注入的 `BaseLLM.chat(...)`，不直接导入 `openai.OpenAI`。
-直接调用 standard / expensive judge 时，初始 `uncertainty` 至少反映 `1.0 - judge_confidence`；进入主流程后仍由 `enrich_stage_result(...)` 统一覆盖最终不确定性并记录 `uncertainty_inputs`。
-
-`LLMJudge` 不实现 `evaluate_stage(...)`，也不保留 `_evaluate_standard(...)`、`_evaluate_expensive(...)`，因此不能直接实例化。共用 helper 包括 `_call_json(...)`、`_result_from_payload(...)`、`_dimension_scores(...)`、`_float_in_unit(...)`、`_string_list(...)`。
-
-```python
-judge = StandardJudge(llm=llm)
-judge = ExpensiveJudge(llm=llm, expensive_passes=3)
-```
-
-## PromptTemplate
-
-`dynsteer.language` 提供 `TaskLanguage`、`normalize_task_language(...)`、`language_from_metadata(...)` 和 `language_from_task(...)`。外部配置中的 `en`、`english` 会归一为 `TaskLanguage.ENGLISH`；`zh`、`ch`、`chinese`、`zhongwen`、`中文` 会归一为 `TaskLanguage.CHINESE`。未知语言会抛出 `ValueError`，避免静默使用错误语言。
-
-`dynsteer.prompt` 负责维护多语言 prompt。`PromptTemplate.render(language=TaskLanguage.ENGLISH, **kwargs)` 默认使用英文模板；模板渲染使用 `_safe_format(...)`，只替换 `{key}` 占位符，保留 JSON 示例中的 `{{` / `}}` 字面花括号。`build_judge_system_prompt(...)` 负责生成 LLMJudge 系统 prompt，避免在 `base.py` 中写死中文系统消息。
-
-benchmark 语言由 `data/{benchmark}/benchmark.json` 的 `language` 字段配置，并在 `load_harness_run_configs(...)` 中写入 `HarnessRunConfig.metadata["language"]`；`DynSTEEREvaluator.evaluate(...)` 会合并到 `TaskCase.metadata`，judge 通过 `dynsteer.language.language_from_task(...)` 读取并归一为 `TaskLanguage`。
-
-LLM judge prompt context 会额外包含 `stage_goal` 和 `rubric_dimension_focus`：
-
-- `stage_goal`: 当前阶段的权威成功条件字符串，由 adapter/loader 阶段预生成并写入 `TaskCase.stage_goals`。judge prompt 运行期通过 `(stage_anchor_milestone_id, milestone_id)` 组成的 key 读取缓存目标；缺失时抛出异常，不再回退到规则式临时拼接。
-- `rubric_dimension_focus`: 当前 prompt 的维度焦点列表。`TaskCase.stage_goals` 只保存阶段目标文本，不保存维度配置。
-
-Judge prompt 消费已生成的 `stage_goal`，不生成或改写 stage_goal。
-
-Prompt context 中的 `structured_milestone_evidence` 来自 `StageInterval.milestone_score.constraint_scores`，用于提供 scorer 产生的轻量结构化证据。对于 `state_snapshot` 约束，已通过的结构化 evidence 是状态判定依据；judge 使用 `steps` 审计行为过程，但除非 `stage_goal` 明确要求用户可见沟通，否则不要求 agent 额外自然语言复述数据库状态。
-
-`steps[].raw` 会暴露 adapter 保留的轻量原始字段，例如 sender、recipient、openai_tool_call_id、openai_function_name。Prompt 不嵌入完整数据库 snapshot。
-
-`TaskCase.stage_goals` 类型为 `dict[str, str]`，使用稳定 key：`"{anchor_milestone_id}->{milestone_id}"`，value 是对应阶段目标文本。仅当 adapted case 文件不存在、首次调用 adapter 生成 `TaskCase` 时，loader 会执行 milestone graph enrichment 并补充 stage goals 后保存；读取已有 adapted case 文件时只做 parse，不再次 enrichment、不再次校验或补充 stage goals。
-
-stage goal 生成 prompt 中的 `milestone_graph` 使用精简结构：`nodes` 只包含 `milestone_id`、`name`、`description`、`required`、`anchor`、`constraints`；`edges` 优先使用 `graph_analysis.augmented_edges`，包含 `__start__` 与 `__finish__` 增强边。prompt 不输出 `dependency_predecessor_ids`、`stage_anchor_predecessor_id` 或完整 `graph_analysis`。`TaskCase.stage_goals` 保持 `dict[str, str]`，key 为 `"{anchor_milestone_id}->{milestone_id}"`，value 为对应 `stage_goal`。
+cheap confidence 由结构化规则来源估计。hard fail / missing 是确定性失败信号，不会被解释为高不确定度。
 
 ## StandardJudge
 
-`StandardJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成单轮 prompt 构造、LLM JSON 调用和结果转换，固定返回 `EvaluationLevel.STANDARD` 结果。standard prompt 包含任务上下文、阶段轨迹、维度权重、证据规则、评分 rubric 和严格 JSON 输出 schema。
+`StandardJudge` 对目标维度组进行 standard LLM 评估。
 
-`StandardJudge` 会在 `StageEvaluationResult.metadata` 中记录轻量观测字段，便于排查 LLM judge 任务目标错位：
+- prompt context 中 `rubrics` 只包含目标维度。
+- `required_output.dimension_scores` 只允许目标维度。
+- 不向 LLM 暴露 `requested_dimensions` 字段，目标维度由 rubric keys 和 output schema 共同约束。
+- 当前 BaseLLM 不提供 token logprobs，因此默认使用 `DYNSTEER_STANDARD_JUDGE_PASSES=3` 的多 pass agreement/entropy 估计逐维 confidence。
 
-- `task_description`: 调用 LLM 前的 `TaskCase.task_description`。
-- `stage_id` / `milestone_id` / `stage_anchor_milestone_id` / `start_boundary_step_index` / `start_step_index` / `end_step_index`: 当前阶段标识与左开右闭范围。
-- `prompt_context_digest`: 已渲染 standard prompt 的 SHA-256 digest，用于关联输入快照与输出诊断。
-- `prompt_task_description_excerpt`: 任务描述摘要。
-- `stage_goal_digest` / `stage_goal_objective_excerpt`: 当前阶段目标摘要，用于定位 LLM judge 是否按阶段目标判分。
-- `stage_step_count` / `first_stage_step_excerpt` / `last_stage_step_excerpt`: 阶段轨迹摘要。
-- `structured_milestone_evidence_count`: prompt context 中结构化 milestone evidence 的数量。
-- `judge_status` / `judge_stage_score` / `judge_confidence`: LLM 输出转换后的阶段结果摘要。
-- `judge_first_diagnosis` / `judge_first_evidence`: LLM 输出的首条诊断和证据摘要。
+输出合并规则：
 
-这些字段只用于审计与日志关联，不会向 prompt context 添加 `task_id`、`scenario_name` 等额外任务语义字段；prompt 语义以 `stage_goal` 和轨迹证据为准。
+- 多 pass 分数按维度取均值。
+- 多 pass status 取更严重状态。
+- confidence 使用离散 score anchor 的一致性估计。
 
 ## ExpensiveJudge
 
-`ExpensiveJudge(LLMJudge)` 在 `evaluate_stage(...)` 内完成多轮聚焦评估、一次风险复核和一次汇总裁决，记录 `metadata["judge_passes"]`，固定返回 `EvaluationLevel.EXPENSIVE` 结果。`expensive_passes` 控制聚焦评估轮数，必须大于 0。聚焦模板用于分维度深审，风险模板用于 fatal/minefield/约束风险复核，裁决模板基于前序 pass 形成最终 JSON 结果。
+`ExpensiveJudge` 对每个目标维度独立执行专项 prompt。
 
-`ExpensiveJudge` 与 `StandardJudge` 使用同一套轻量输入/输出快照机制：
+模板位置：
 
-- 最终 `StageEvaluationResult.metadata` 会记录 adjudication prompt 的 `task_description`、`stage_id`、`milestone_id`、`prompt_type="adjudication"`、`prompt_context_digest`、阶段步骤摘要、`judge_status`、`judge_stage_score`、`judge_confidence`、首条诊断和首条证据。
-- `metadata["judge_passes"]` 中每个 focus/risk 中间轮次也会记录各自的 `prompt_context_digest`、`task_description`、`stage_goal_digest`、`stage_goal_objective_excerpt`、阶段步骤摘要、`judge_first_diagnosis` 和 `judge_first_evidence`。
-- 这些字段只用于审计和日志关联，不会写入 expensive adjudication 的 `previous_passes` prompt context。
+```text
+dynsteer/prompt/templates/judge/expensive/
+- progress.{zh,en}.md
+- state_consistency.{zh,en}.md
+- tool_quality.{zh,en}.md
+- efficiency.{zh,en}.md
+- safety.{zh,en}.md
+- interaction_quality.{zh,en}.md
+- recovery.{zh,en}.md
+```
 
-## 分发约定
+每个维度固定执行 `DYNSTEER_EXPENSIVE_JUDGE_PASSES=3` 次，使用 agreement/entropy 估计该维 confidence。某一维 expensive 不会导致其他维度也使用 expensive。
 
-评估等级分发由 `DynSTEEREvaluator` 读取 `RuntimeEvaluationState.evaluation_policy.effective_level()` 完成。当前阶段只调用一个 judge；阶段完成后根据结果生成下一阶段 `EvaluationPolicyState`。旧的“cheap 不足时同阶段调用 StandardJudge，standard 不足时同阶段调用 ExpensiveJudge”链路已删除。
+## Prompt Context
 
-逐维策略会保存在 stage metadata 中，但当前 standard / expensive judge 仍是整阶段全维度评估器；当任一维度要求更高粒度时，实际调用取基础粒度与逐维粒度中的最高成本档。
+`build_judge_prompt(...)` 生成的 context 包含：
 
-## 异常
+- `task.task_description`
+- `stage_goal`
+- `rubrics`
+- `interval`
+- `constraint_checks`
+- `steps`
+- `required_output`
 
-- `LLMJudgeConfigurationError`: judge 配置缺失或不合法。
-- `LLMJudgeResponseError`: LLM 返回内容无法解析为合法 JSON 或字段非法。
+`constraint_checks` 是 scorer 辅助证据，字段包含：
+
+- `constraint_id`
+- `constraint_goal`
+- `satisfied`
+- `score`
+- `missing`
+- `hard`
+- `short_evidence`
+
+默认不暴露 operator、namespace、raw actual 或完整 snapshot，避免 LLM judge 被底层 scorer 字段牵引。`steps` 是主要行为证据。
+
+## Payload Schema
+
+LLM 只返回 JSON 对象：
+
+```json
+{
+  "status": "pass|warn|fail|missing|ambiguous|invalid",
+  "dimension_scores": {
+    "tool_quality": 0.75
+  },
+  "evidence": ["step 3 tool_call=..."],
+  "diagnosis": ["tool_quality: ..."],
+  "metadata": {}
+}
+```
+
+`dimension_scores` 必须且只能覆盖当前目标维度。不要输出 `stage_score`、`judge_confidence` 或全局 `uncertainty`。
+
+## 观测字段
+
+Judge metadata 会记录：
+
+- `prompt_context_digest`
+- `target_dimensions`
+- `constraint_check_count`
+- `stage_step_count`
+- `first_stage_step_excerpt`
+- `last_stage_step_excerpt`
+- `judge_status`
+- `judge_stage_score`
+- `judge_dimension_confidence_avg`
+- `judge_first_diagnosis`
+- `judge_first_evidence`
+
+这些字段仅用于审计和日志关联，不参与评分。

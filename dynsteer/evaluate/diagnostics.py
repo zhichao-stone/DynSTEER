@@ -54,7 +54,6 @@ def milestone_summary_to_dict(milestone: Milestone) -> JsonObject:
         "milestone_id": milestone.milestone_id,
         "name": milestone.name,
         "description": milestone.description,
-        "required": milestone.required,
         "pass_threshold": milestone.pass_threshold,
         "constraint_count": len(milestone.constraints),
         "metadata": dict(milestone.metadata),
@@ -281,8 +280,7 @@ def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
         raise ValueError("graph 不能为空")
     return {
         "total_milestone_count": len(graph.nodes),
-        "required_milestone_ids": [node.milestone_id for node in graph.nodes if node.required],
-        "optional_milestone_ids": [node.milestone_id for node in graph.nodes if not node.required],
+        "mandatory_milestone_ids": [node.milestone_id for node in graph.nodes],
         "edges": [[source, target] for source, target in graph.edges],
         "nodes": [
             {
@@ -374,7 +372,7 @@ def build_final_milestone_diagnostics(
         best_boundary = best_entry.get("boundary") if isinstance(best_entry, dict) else None
         common: JsonObject = {
             "milestone_id": node.milestone_id,
-            "required": node.required,
+            "mandatory": True,
             "dependency_predecessor_ids": list(node.dependency_predecessor_ids),
             "stage_anchor_milestone_id": node.stage_anchor_predecessor_id,
             "ready_ever": node.milestone_id in ready_seen,
@@ -450,13 +448,11 @@ def build_finish_matching_detail(
     if graph is None or matched is None:
         raise ValueError("finish 匹配诊断参数不能为空")
     matched_ids = set(matched)
-    required_ids = {node.milestone_id for node in graph.nodes if node.required}
-    optional_ids = {node.milestone_id for node in graph.nodes if not node.required}
+    milestone_ids = {node.milestone_id for node in graph.nodes}
     return {
         "mode": "runtime_finish",
         "matched": False,
         "matched_milestone_ids": sorted(matched_ids),
-        "pending_required_milestone_ids": sorted(required_ids - matched_ids),
-        "pending_optional_milestone_ids": sorted(optional_ids - matched_ids),
+        "pending_milestone_ids": sorted(milestone_ids - matched_ids),
         "total_milestone_count": len(graph.nodes),
     }

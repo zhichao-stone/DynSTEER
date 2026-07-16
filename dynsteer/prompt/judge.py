@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 
 from dynsteer.language import TaskLanguage
-from dynsteer.model import Constraint, Dimension, JsonObject, JsonValue, Milestone, StageInterval, TaskCase, Trajectory
+from collections.abc import Iterable
+
+from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageInterval, TaskCase, Trajectory
+from dynsteer.prompt.rubrics import rubrics_for_dimensions
 from dynsteer.prompt.template import PromptTemplate, load_prompt_text
 from dynsteer.stage import stage_trajectory_steps
 from dynsteer.utils import json_safe
@@ -24,9 +27,18 @@ def build_judge_prompt(
     language: TaskLanguage = TaskLanguage.ENGLISH,
     extra: JsonObject | None = None,
     render_kwargs: dict[str, object] | None = None,
+    target_dimensions: Iterable[Dimension] | None = None,
 ) -> str:
     """按模板名称构造 judge prompt。"""
-    context_json = _context_json(interval, task_case, trajectory, weights, language=language, extra=extra)
+    context_json = _context_json(
+        interval,
+        task_case,
+        trajectory,
+        weights,
+        language=language,
+        extra=extra,
+        target_dimensions=target_dimensions,
+    )
     return _render_template(template_name, language, context_json=context_json, **dict(render_kwargs or {}))
 
 
@@ -37,24 +49,26 @@ def _context_json(
     weights: dict[Dimension, float],
     language: TaskLanguage = TaskLanguage.ENGLISH,
     extra: JsonObject | None = None,
+    target_dimensions: Iterable[Dimension] | None = None,
 ) -> str:
     """把阶段评估上下文序列化为 JSON 文本。"""
     if interval is None or task_case is None or trajectory is None or weights is None:
         raise ValueError("prompt 上下文参数不能为空")
     from dynsteer.stage import resolve_stage_goal
+    dimensions = _target_dimensions(target_dimensions)
 
     data: JsonObject = {
         "task": {
             "task_description": task_case.task_description,
         },
         "stage_goal": resolve_stage_goal(interval, task_case),
-        "rubric_dimension_focus": [dimension.value for dimension in Dimension],
+        "rubrics": rubrics_for_dimensions(dimensions),
         "interval": {
             "status": interval.status.value,
             "evidence": list(interval.evidence),
             "milestone_score": interval.milestone_score.score if interval.milestone_score is not None else None,
         },
-        "structured_milestone_evidence": _structured_milestone_evidence(interval, task_case),
+        "constraint_checks": _constraint_checks(interval, task_case),
         "steps": [
             {
                 "index": step.index,
@@ -67,8 +81,7 @@ def _context_json(
             }
             for step in stage_trajectory_steps(interval, trajectory)
         ],
-        "rubric_dimensions": [dimension.value for dimension in Dimension],
-        "required_output": _output_schema(language),
+        "required_output": _output_schema(language, dimensions),
     }
     if extra is not None:
         data.update(extra)
@@ -80,8 +93,8 @@ def _render_template(name: str, language: TaskLanguage, **kwargs: object) -> str
     return PromptTemplate(**{language.value: template_text}).render(language=language, **kwargs)
 
 
-def _structured_milestone_evidence(interval: StageInterval, task_case: TaskCase) -> list[JsonObject]:
-    """构造给 LLM judge 使用的轻量结构化 milestone evidence。"""
+def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[JsonObject]:
+    """构造给 LLM judge 使用的轻量 constraint check 摘要。"""
     if interval.milestone_score is None or interval.milestone_id is None:
         return []
     graph = task_case.milestone_graph
@@ -96,65 +109,76 @@ def _structured_milestone_evidence(interval: StageInterval, task_case: TaskCase)
         if milestone is not None
         else {}
     )
-    evidence: list[JsonObject] = []
+    checks: list[JsonObject] = []
     for score in interval.milestone_score.constraint_scores:
         constraint = constraints.get(score.constraint_id)
-        constraint_context: JsonObject = {}
-        if constraint is not None:
-            constraint_context = {
-                "target": constraint.target.value,
-                "operator": constraint.operator.value,
-                "namespace": constraint.namespace,
-                "hard": constraint.hard,
-                "stage_goal_semantics": dict(constraint.stage_goal_semantics)
-                if isinstance(constraint.stage_goal_semantics, dict)
-                else None,
-            }
-        evidence.append(
+        threshold = constraint.threshold if constraint is not None else 1.0
+        checks.append(
             {
                 "constraint_id": score.constraint_id,
+                "constraint_goal": _constraint_goal(constraint),
+                "satisfied": score.score >= threshold and not score.missing,
                 "score": score.score,
                 "missing": score.missing,
-                "evidence": list(score.evidence),
-                "actual_summary": _actual_summary(score.actual),
-                "constraint": constraint_context,
+                "hard": constraint.hard if constraint is not None else None,
+                "short_evidence": [str(item) for item in score.evidence[:2]],
             }
         )
-    return evidence
+    return checks
 
 
-def _actual_summary(actual: JsonValue) -> JsonObject:
-    """把 constraint actual 值压缩成适合放入 judge prompt 的摘要。"""
-    if isinstance(actual, list):
-        sample = actual[0] if actual and isinstance(actual[0], dict) else None
-        return {"type": "list", "row_count": len(actual), "sample": sample}
-    if isinstance(actual, dict):
-        return {"type": "dict", "keys": sorted(str(key) for key in actual)}
-    if isinstance(actual, (str, int, float, bool)) or actual is None:
-        return {"type": type(actual).__name__, "value": actual}
-    return {"type": type(actual).__name__, "value": str(actual)}
-
-
-def _output_schema(language: TaskLanguage) -> JsonObject:
+def _output_schema(language: TaskLanguage, dimensions: list[Dimension]) -> JsonObject:
     """按任务语言返回 required_output 字段说明。"""
     if not isinstance(language, TaskLanguage):
         raise ValueError("language 必须是 TaskLanguage 枚举类")
-    return dict(_OUTPUT_SCHEMA.get(language, _OUTPUT_SCHEMA[TaskLanguage.ENGLISH]))
+    schema = dict(_OUTPUT_SCHEMA.get(language, _OUTPUT_SCHEMA[TaskLanguage.ENGLISH]))
+    dimension_text = ",".join(dimension.value for dimension in dimensions)
+    if language == TaskLanguage.CHINESE:
+        schema["dimension_scores"] = f"dict[str,float]，只包含这些维度：{dimension_text}"
+    else:
+        schema["dimension_scores"] = f"dict[str,float] containing only these dimensions: {dimension_text}"
+    return schema
+
+
+def _target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:
+    if dimensions is None:
+        return list(Dimension)
+    result = list(dict.fromkeys(dimensions))
+    if not result:
+        raise ValueError("target_dimensions 不能为空")
+    return result
+
+
+def _constraint_goal(constraint: Constraint | None) -> str:
+    if constraint is None:
+        return "满足该结构化约束"
+    semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    kind = str(semantics.get("kind") or "")
+    if kind == "emit_message":
+        return "发出符合阶段语义要求的用户可见消息"
+    if kind == "set_state":
+        namespace = constraint.namespace or "state"
+        return f"让 {namespace} 状态达到目标值"
+    if kind == "preserve_state":
+        namespace = constraint.namespace or "state"
+        return f"保持 {namespace} 状态不被破坏"
+    if kind == "tool_call":
+        tool_name = semantics.get("tool_name")
+        return f"调用工具 {tool_name}" if isinstance(tool_name, str) and tool_name else "调用符合要求的工具"
+    return str(constraint.metadata.get("description") or constraint.constraint_id)
 
 
 _OUTPUT_SCHEMA: dict[TaskLanguage, JsonObject] = {
     TaskLanguage.ENGLISH: {
         "dimension_scores": "dict[str,float] covering progress,state_consistency,tool_quality,efficiency,safety,interaction_quality,recovery",
         "status": "pass|warn|fail|missing|ambiguous|invalid",
-        "judge_confidence": "float in [0,1]",
-        "evidence": "list[str] with step index or milestone evidence references",
+        "evidence": "list[str] with step index, interval.evidence, or constraint_checks references",
         "diagnosis": "list[str], each item is one independent diagnostic conclusion; prefix with overall or a rubric dimension when useful",
     },
     TaskLanguage.CHINESE: {
         "dimension_scores": "dict[str,float]，覆盖 progress,state_consistency,tool_quality,efficiency,safety,interaction_quality,recovery",
         "status": "pass|warn|fail|missing|ambiguous|invalid",
-        "judge_confidence": "float, 0 到 1 之间的浮点数",
-        "evidence": "list[str]，包含 step index 或 milestone evidence 引用",
+        "evidence": "list[str]，包含 step index、interval.evidence 或 constraint_checks 引用",
         "diagnosis": "list[str]，每一项是一条独立诊断结论，建议用 overall 或 rubric 维度名前缀标明归属",
     },
 }

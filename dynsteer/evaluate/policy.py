@@ -4,7 +4,7 @@ from dynsteer.model import (
     Dimension,
     EvaluationLevel,
     EvaluationPolicyState,
-    EvaluationPolicyUpdate,
+    EvaluationTerminationState,
     StageEvaluationResult,
     StageStatus,
     ThresholdConfig,
@@ -12,26 +12,27 @@ from dynsteer.model import (
 
 
 def update_evaluation_policy(
-    current_policy: EvaluationPolicyState,
+    policy: EvaluationPolicyState,
     result: StageEvaluationResult,
     thresholds: ThresholdConfig | None = None,
-) -> EvaluationPolicyUpdate:
+) -> tuple[EvaluationPolicyState, EvaluationTerminationState]:
     """根据当前阶段结果生成下一阶段评估策略。"""
-    if current_policy is None or result is None:
+    if policy is None or result is None:
         raise ValueError("策略更新参数不能为空")
     effective_thresholds = thresholds or ThresholdConfig()
     if _should_stop(result, effective_thresholds):
         reason = _termination_reason(result, effective_thresholds)
-        return EvaluationPolicyUpdate(
-            current_policy=current_policy,
-            next_policy=EvaluationPolicyState(
-                base_level=current_policy.base_level,
-                dimension_levels=dict(current_policy.dimension_levels),
+        return (
+            EvaluationPolicyState(
+                base_level=policy.base_level,
+                dimension_levels=dict(policy.dimension_levels),
                 reason=reason,
             ),
-            should_stop=True,
-            termination_code="evaluation_policy_stop",
-            termination_reason=reason,
+            EvaluationTerminationState(
+                should_stop=True,
+                termination_code="evaluation_policy_stop",
+                termination_reason=reason,
+            ),
         )
 
     base_level = (
@@ -43,19 +44,13 @@ def update_evaluation_policy(
         base_level=base_level,
         dimension_levels=_next_dimension_levels(
             base_level,
-            current_policy.base_level,
+            policy.base_level,
             result,
             effective_thresholds,
         ),
         reason=_policy_reason(base_level, result),
     )
-    return EvaluationPolicyUpdate(
-        current_policy=current_policy,
-        next_policy=next_policy,
-        should_stop=False,
-        termination_code=None,
-        termination_reason=None,
-    )
+    return next_policy, EvaluationTerminationState()
 
 
 def _should_stop(result: StageEvaluationResult, thresholds: ThresholdConfig) -> bool:
@@ -71,7 +66,7 @@ def _is_high_confidence_pass(result: StageEvaluationResult, thresholds: Threshol
     """判断阶段是否足以让下一阶段回到 cheap。"""
     return (
         result.stage_score >= thresholds.pass_threshold + thresholds.threshold_margin
-        and result.uncertainty <= thresholds.low_uncertainty
+        and max(result.dimension_uncertainty.values(), default=0.0) <= thresholds.low_dimension_uncertainty
         and result.fatal_minefield_score == 0
     )
 
@@ -86,8 +81,11 @@ def _next_dimension_levels(
     levels: dict[Dimension, EvaluationLevel] = {}
     for dimension in Dimension:
         score = float(result.dimension_scores.get(dimension, 0.0))
+        uncertainty = float(result.dimension_uncertainty.get(dimension, 0.0))
         if score < thresholds.fail_threshold:
             levels[dimension] = EvaluationLevel.EXPENSIVE
+        elif uncertainty >= thresholds.high_dimension_uncertainty:
+            levels[dimension] = _upgrade_level(current_base_level)
         elif score < thresholds.warn_threshold:
             levels[dimension] = _upgrade_level(current_base_level)
         else:
@@ -106,11 +104,13 @@ def _policy_reason(base_level: EvaluationLevel, result: StageEvaluationResult) -
     """生成下一阶段策略原因。"""
     if base_level == EvaluationLevel.CHEAP:
         return (
-            f"stage_score={result.stage_score:.3f}, uncertainty={result.uncertainty:.3f}，"
+            f"stage_score={result.stage_score:.3f}, max_dimension_uncertainty="
+            f"{max(result.dimension_uncertainty.values(), default=0.0):.3f}，"
             "高分低不确定，下一阶段使用 cheap"
         )
     return (
-        f"stage_score={result.stage_score:.3f}, uncertainty={result.uncertainty:.3f}，"
+        f"stage_score={result.stage_score:.3f}, max_dimension_uncertainty="
+        f"{max(result.dimension_uncertainty.values(), default=0.0):.3f}，"
         "阶段结果处于合理区间，下一阶段使用 standard"
     )
 

@@ -35,18 +35,18 @@ class HarnessTeardownError(RuntimeError):
 
 def update_ready_frontier_progress_watch(
     state: RuntimeEvaluationState,
-    ready_required_ids: tuple[str, ...],
+    ready_ids: tuple[str, ...],
     attempt_detail: JsonObject,
     thresholds: ThresholdConfig,
     stop_enabled: bool,
     patience: int,
     min_delta: float,
 ) -> JsonObject | None:
-    """更新 required ready frontier 无进展追踪状态，必要时返回策略终止详情。
+    """更新 ready frontier 无进展追踪状态，必要时返回策略终止详情。
 
     入参：
         state: 当前运行期评估状态，函数会原地更新 watch。
-        ready_required_ids: 当前 required ready frontier 的 milestone id。
+        ready_ids: 当前 ready frontier 的 milestone id。
         attempt_detail: `analyze_milestone_step(...)` 生成的候选评分详情。
         thresholds: 阶段阈值配置，用于判断 frontier 是否已有 PASS 水平候选。
         stop_enabled: 是否启用 ready frontier 无进展终止策略。
@@ -55,7 +55,7 @@ def update_ready_frontier_progress_watch(
     输出：
         达到终止条件时返回 JSON 详情，否则返回 None。
     """
-    if state is None or ready_required_ids is None or attempt_detail is None or thresholds is None:
+    if state is None or ready_ids is None or attempt_detail is None or thresholds is None:
         raise ValueError("ready frontier watch 参数不能为空")
     if patience < 1:
         raise ValueError("ready frontier patience 必须大于 0")
@@ -64,15 +64,15 @@ def update_ready_frontier_progress_watch(
     if not stop_enabled:
         return None
 
-    ready_ids = tuple(str(milestone_id) for milestone_id in ready_required_ids if str(milestone_id).strip())
-    if not ready_ids:
+    normalized_ready_ids = tuple(str(milestone_id) for milestone_id in ready_ids if str(milestone_id).strip())
+    if not normalized_ready_ids:
         state.ready_frontier_progress_watch = None
         return None
 
     candidate_by_id = _candidate_scores_by_milestone(attempt_detail)
     observed_candidates = {
         milestone_id: candidate_by_id[milestone_id]
-        for milestone_id in ready_ids
+        for milestone_id in normalized_ready_ids
         if milestone_id in candidate_by_id and isinstance(candidate_by_id[milestone_id].get("score"), dict)
     }
     if not observed_candidates:
@@ -80,9 +80,9 @@ def update_ready_frontier_progress_watch(
 
     step_index = _attempt_step_index(attempt_detail)
     watch = state.ready_frontier_progress_watch
-    if watch is None or watch.frontier_key != ready_ids:
+    if watch is None or watch.frontier_key != normalized_ready_ids:
         state.ready_frontier_progress_watch = _build_ready_frontier_progress_watch(
-            ready_ids=ready_ids,
+            ready_ids=normalized_ready_ids,
             observed_candidates=observed_candidates,
             step_index=step_index,
         )
@@ -131,7 +131,7 @@ def ready_frontier_no_progress_termination_reason(detail: JsonObject) -> str:
     ready_ids = detail.get("ready_milestone_ids")
     ready_text = ",".join(str(item) for item in ready_ids) if isinstance(ready_ids, list) else "unknown"
     return (
-        f"required ready frontier 连续 {stale_count}/{patience} 次评分观察无有效提升，"
+        f"ready frontier 连续 {stale_count}/{patience} 次评分观察无有效提升，"
         f"提前终止执行：code={code}, most_promising_milestone={milestone_id}, ready={ready_text}"
     )
 
@@ -189,10 +189,10 @@ def blocked_milestone_termination_reason(detail: JsonObject) -> str:
     )
 
 
-def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
-    """为自然结束时仍未完成的 required milestone 生成失败阶段报告。"""
+def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
+    """为自然结束时仍未完成的 milestone 生成失败阶段报告。"""
     if task_case is None or state is None:
-        raise ValueError("pending required stage 参数不能为空")
+        raise ValueError("pending milestone stage 参数不能为空")
     graph = task_case.milestone_graph
     diagnostics = build_final_milestone_diagnostics(
         graph=graph,
@@ -202,12 +202,12 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
     milestones_by_id = {node.milestone_id: node for node in graph.nodes}
     results: list[StageEvaluationResult] = []
     for item in diagnostics:
-        if item.get("required") is not True or item.get("final_state") == "matched":
+        if item.get("final_state") == "matched":
             continue
         milestone_id = str(item.get("milestone_id") or "unknown")
         milestone = milestones_by_id.get(milestone_id)
         if milestone is None:
-            raise ValueError(f"pending required milestone 不存在: {milestone_id}")
+            raise ValueError(f"pending milestone 不存在: {milestone_id}")
         anchor_id = milestone.stage_anchor_predecessor_id
         if not isinstance(anchor_id, str) or not anchor_id:
             raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone_id}")
@@ -217,7 +217,7 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
         status = StageStatus.FAIL if ready_ever or attempt_count > 0 else StageStatus.MISSING
         failure_kind = status.value
         fallback_summary = (
-            f"required milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
+            f"milestone 未完成: milestone={milestone_id}, blocker={blocker}, "
             f"best_score={item.get('best_score')}, "
             f"best_boundary_step_index={item.get('best_boundary_step_index')}, "
             f"pending_predecessor_ids={item.get('pending_predecessor_ids')}"
@@ -230,18 +230,19 @@ def pending_required_stage_results(task_case: TaskCase, state: RuntimeEvaluation
             StageEvaluationResult(
                 stage_id=stage_goal_key(anchor_id, milestone_id),
                 milestone_id=milestone_id,
-                evaluator_level=EvaluationLevel.CHEAP,
                 status=status,
                 stage_score=0.0,
-                uncertainty=1.0,
                 dimension_scores={dimension: 0.0 for dimension in Dimension},
+                dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in Dimension},
+                dimension_confidence={dimension: 0.9 for dimension in Dimension},
+                dimension_uncertainty={dimension: 0.1 for dimension in Dimension},
                 evidence=evidence,
                 diagnosis=[failure_summary],
                 hard_constraints_all_pass=False,
                 required_fields_missing_ratio=1.0,
                 metadata={
                     **dict(item),
-                    "synthetic_pending_required": True,
+                    "synthetic_pending_milestone": True,
                     "failure_kind": failure_kind,
                     "stage_anchor_milestone_id": anchor_id,
                 },
