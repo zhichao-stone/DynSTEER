@@ -21,6 +21,8 @@ from dynsteer.model import (
     Minefield,
     MinefieldPenalty,
     Operator,
+    Dimension,
+    StageEvaluationSpec,
     StateSnapshot,
     StepCost,
     TaskCase,
@@ -31,7 +33,11 @@ from dynsteer.model import (
     TrajectoryStep,
     ensure_json_object,
 )
-from dynsteer.stage import generate_stage_goals
+from dynsteer.stage import (
+    generate_stage_evaluation_specs,
+    generate_stage_goals,
+    validate_stage_evaluation_specs,
+)
 from dynsteer.utils import enum_value, get_object, json_safe, unknown_fields
 
 
@@ -81,7 +87,7 @@ def load_task_case(
                 raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
 
             ### adapt task case if milestone_graph is None
-            if task_case.milestone_graph is None:
+            if task_case.milestone_graph is None or not task_case.stage_evaluation_specs:
                 task_case = _adapt_task_case(config, adapter, case_id)
                 save_task_case(path, task_case)
         task_cases.append(task_case)
@@ -120,6 +126,13 @@ def _adapt_task_case(
             mode=str(config.metadata.get("stage_goal_generation", "auto")),
             llm_provider=build_llm_from_env,
         )
+    if not task_case.stage_evaluation_specs:
+        task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
+    validate_stage_evaluation_specs(
+        task_case.milestone_graph,
+        task_case.stage_goals,
+        task_case.stage_evaluation_specs,
+    )
     return task_case
 
 
@@ -232,15 +245,33 @@ def parse_milestone_graph(data: JsonObject) -> MilestoneGraph:
     return graph
 
 
+def parse_stage_evaluation_spec(data: JsonObject) -> StageEvaluationSpec:
+    spec_data = ensure_json_object(data)
+    raw_dimensions = spec_data.get("focus_dimensions", [])
+    raw_rationale = spec_data.get("dimension_rationale", {})
+    if not isinstance(raw_dimensions, list):
+        raise ValueError("stage_evaluation_specs.focus_dimensions 必须是数组")
+    if not isinstance(raw_rationale, dict):
+        raise ValueError("stage_evaluation_specs.dimension_rationale 必须是对象")
+    return StageEvaluationSpec(
+        focus_dimensions=[enum_value(Dimension, item, "focus_dimensions") for item in raw_dimensions],  # type: ignore[list-item]
+        dimension_rationale={
+            enum_value(Dimension, key, "dimension_rationale"): str(value)  # type: ignore[misc]
+            for key, value in raw_rationale.items()
+        },
+    )
+
+
 def parse_task_case(data: JsonObject) -> TaskCase:
     task_data = ensure_json_object(data)
     raw_task_types = task_data.get("task_types", [])
     policy_constraints = task_data.get("policy_constraints", [])
     stage_goal_values = task_data.get("stage_goals", {})
+    raw_stage_specs = task_data.get("stage_evaluation_specs", {})
     milestone_graph = None
     if task_data.get("milestone_graph") is not None:
         milestone_graph = parse_milestone_graph(ensure_json_object(task_data["milestone_graph"]))
-    return TaskCase(
+    task_case = TaskCase(
         task_id=_required_str(task_data, "task_id"),
         task_description=_required_str(task_data, "task_description"),
         case_id=_required_str(task_data, "case_id"),
@@ -250,9 +281,20 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         initial_state=ensure_json_object(task_data["initial_state"]) if task_data.get("initial_state") is not None else None,
         milestone_graph=milestone_graph,
         stage_goals={str(key): str(value) for key, value in stage_goal_values.items()},
+        stage_evaluation_specs={
+            str(key): parse_stage_evaluation_spec(ensure_json_object(value))
+            for key, value in raw_stage_specs.items()
+        } if isinstance(raw_stage_specs, dict) else {},
         task_types=[enum_value(TaskType, item, "task_types") for item in raw_task_types],  # type: ignore[list-item]
         metadata=_optional_object(task_data, "metadata"),
     )
+    if task_case.milestone_graph is not None and task_case.stage_evaluation_specs:
+        validate_stage_evaluation_specs(
+            task_case.milestone_graph,
+            task_case.stage_goals,
+            task_case.stage_evaluation_specs,
+        )
+    return task_case
 
 
 def _load_tool_call(data: JsonObject | None) -> ToolCall | None:

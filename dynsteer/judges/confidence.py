@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Iterable
 
 from dynsteer.model import Dimension, JsonObject, StageStatus
-from dynsteer.utils import clamp
+from dynsteer.utils import clamp, clean_evidence_items
 
 
 def complete_dimension_confidence(
@@ -147,8 +147,8 @@ def merge_text_items(payloads: list[JsonObject], key: str, limit: int = 6) -> li
             if text and text not in items:
                 items.append(text)
             if len(items) >= limit:
-                return items
-    return items
+                return clean_evidence_items(items, limit) if key == "evidence" else items
+    return clean_evidence_items(items, limit) if key == "evidence" else items
 
 
 def _dimension_score(payload: JsonObject, dimension: Dimension) -> float | None:

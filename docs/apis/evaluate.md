@@ -17,9 +17,9 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 3. 每个 raw step 先写入 `trajectory.steps`，并立刻扫描 minefield；fatal minefield 可在下一次 harness 推进前触发策略终止。
 4. `AgentStepTracker` 根据规范化 `actor/recipient` 组装完整 agent step 闭包；未闭合 outbound 不触发 milestone matching、checkpoint 或 ready frontier no-progress。
 5. 完整 agent step 闭合后才分析当前 ready milestone 是否命中；未命中时更新 ready frontier 无进展 watch。
-6. milestone 命中后进入阶段结算，先运行 cheap baseline，再按 `EvaluationPolicyState.dimension_levels` 对指定维度调用 standard 或 expensive judge。
-7. 阶段完成后更新逐维权重和下一阶段评估策略。
-8. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` 阶段。
+6. milestone 命中后进入阶段结算，先读取 `TaskCase.stage_evaluation_specs[stage_id].focus_dimensions`，cheap/standard/expensive judge 都只评估本阶段聚焦维度。
+7. 阶段完成后仅根据本阶段实际评估维度更新权重和下一阶段评估策略；未评估维度不会被当成 0 分。
+8. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` final verification 阶段。
 
 ## Milestone 语义
 
@@ -65,7 +65,9 @@ selector/operator 详细规范见 [constraints.md](constraints.md)。
 
 全局 `uncertainty` 和 `judge_confidence` 已移除。旧的 `top2_score=0.0`、`evidence_conflict=False`、阈值距离不确定性和 missing-ratio composite 公式不再输出。
 
-`stage_score` 由 `stage_score_from_dimensions(dimension_scores, weights)` 计算。partial judge 结果可只包含目标维度；最终阶段报告会合并回完整七维。
+`stage_score` 由 `stage_score_from_dimensions(dimension_scores, weights)` 计算。阶段报告只包含本阶段实际聚焦维度；未聚焦维度不参与当前阶段综合分、权重更新或策略升级。
+
+`TaskCase.stage_evaluation_specs` 使用与真实 `stage_goals` 相同的 stage key。每个 `StageEvaluationSpec` 至少包含 `progress` 与 `efficiency`，并基于公共 `Constraint.stage_goal_semantics`、`ConstraintTarget` 与 benchmark-neutral metadata 增补 `tool_quality`、`state_consistency`、`interaction_quality`、`safety`、`recovery` 等维度。
 
 ## 动态权重
 
@@ -81,7 +83,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 
 `EvaluationPolicyState.dimension_levels` 是逐维调度依据。当前阶段不再通过单个 `effective_level=max(...)` 选择唯一 judge。
 
-- cheap 总是先给完整七维 baseline。
+- cheap 总是先给本阶段聚焦维度 baseline。
 - `STANDARD` 维度只调用 standard judge 并覆盖这些维度。
 - `EXPENSIVE` 维度只调用 expensive judge 并覆盖这些维度。
 - 某一维 expensive 不会导致其他维度一起 expensive。
@@ -89,24 +91,36 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 下一阶段策略：
 
 - 高分且最大逐维不确定度低于 `low_dimension_uncertainty` 时回到 cheap。
-- 低于 fail 阈值的维度升到 expensive。
-- 低于 warn 阈值或高于 `high_dimension_uncertainty` 的维度升一档。
+- 低于 fail 阈值的已评估维度升到 expensive。
+- 低于 warn 阈值或高于 `high_dimension_uncertainty` 的已评估维度升一档。
+- 未评估维度保持上一阶段粒度，不会因缺失分数被升级。
+
+策略提前终止只由结构性失败、`stage_score < fail_threshold`、fatal minefield 或显式 `missing_required_milestone` 触发。单个 higher-cost judge 返回某个质量维度 `fail`，但阶段综合分达标且没有结构性失败时，不会直接阻断 case 继续执行。
 
 ## 输出
 
 `HarnessRunResult.evaluation_report.stage_reports[]` 中每个 stage report 包含：
 
 - 阶段身份：`stage_id`、`milestone_id`
-- 阶段结果：`status`、`stage_score`、七维 scores/levels/confidence/uncertainty
+- 阶段结果：`status`、`stage_score`、聚焦维度的 scores/levels/confidence/uncertainty
 - evidence/diagnosis
 - `metadata.next_evaluation_policy`
 - `metadata.evaluation_termination`
 - `metadata.dimension_judge_results`
+- `metadata.focus_dimensions`
+- `metadata.dimension_rationale`
+- `metadata.low_score_dimensions`
 - `metadata.weight_update_diagnostics`
 - `metadata.stage_quality_diagnostics`（cheap baseline）
 
-`StageEvaluationResult.metadata` 只用于报告、展示和诊断附加信息，不参与阶段分数、状态聚合、权重更新或策略更新。高阶 judge 的逐维结果应进入 `dimension_scores`、`dimension_levels`、`dimension_confidence` 和 `dimension_uncertainty`；不再把 standard/expensive judge 的整包 metadata 合并进 stage metadata。
+`StageEvaluationResult.metadata` 主要用于报告、展示和诊断附加信息；其中 `structural_failure`、`missing_required_milestone` 等结构化标记会参与早停判断，但不参与阶段分数或权重更新。高阶 judge 的逐维结果应进入 `dimension_scores`、`dimension_levels`、`dimension_confidence` 和 `dimension_uncertainty`；不再把 standard/expensive judge 的整包 metadata 合并进 stage metadata。
 
 自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。
+
+`__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。
+
+finish payload 中的 `terminal_state_checks` 只包含 `set_state`、`preserve_state`、`STATE_DELTA` 和真实持久状态快照约束的最终边界重检。`emit_message`、`user_visible_required=true` 以及 ToolSandbox `SANDBOX` 用户可见消息约束不会在 `end_conversation` 后用最后的 `None` 重评；这些约束会进入 `terminal_message_checks`，表示它们已由原 terminal milestone 匹配结果确认。
+
+evidence 会通过 `dynsteer.utils.clean_evidence_items(...)` 清洗：当存在 `step N: ...` 具体证据时，裸 `step N` 或覆盖该 step 的裸区间引用会被移除。
 
 `overall_score([])` 固定为 `0.0`。空 `stage_reports` 表示没有任何 milestone 证据被结算，不能作为满分兜底。

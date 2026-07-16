@@ -231,8 +231,19 @@
       border-color: rgba(16, 138, 66, 0.72);
     }
 
+    .legend-swatch.warn {
+      border-color: rgba(199, 122, 0, 0.72);
+      background: rgba(199, 122, 0, 0.08);
+    }
+
     .legend-swatch.fail {
       border-color: rgba(201, 54, 54, 0.76);
+    }
+
+    .legend-swatch.pending {
+      border-color: rgba(98, 112, 134, 0.7);
+      border-style: dashed;
+      background: #f5f7fa;
     }
 
     .legend-swatch.selected {
@@ -386,6 +397,12 @@
       background: rgba(201, 54, 54, 0.08);
     }
 
+    .badge.pending {
+      color: var(--muted);
+      border-color: rgba(98, 112, 134, 0.28);
+      background: #f4f7fb;
+    }
+
     .empty {
       display: grid;
       place-items: center;
@@ -446,6 +463,12 @@
       padding: 3px 7px;
       background: #eef2f8;
       color: #344258;
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+    }
+
+    .flow-arrow {
+      color: var(--muted);
       font-size: calc(12px * var(--panel-scale));
       font-weight: 700;
     }
@@ -516,7 +539,7 @@
       overflow: auto;
       padding: 6px 8px;
       color: var(--muted);
-      font-size: calc(11px * var(--panel-scale));
+      font-size: calc(11px * var(--panel-scale) * var(--milestone-content-scale, 1));
       line-height: 1.4;
     }
 
@@ -537,7 +560,7 @@
 
     .milestone-inline-detail summary {
       padding: 6px 8px;
-      font-size: calc(11px * var(--panel-scale));
+      font-size: calc(11px * var(--panel-scale) * var(--milestone-content-scale, 1));
     }
 
     .milestone-inline-detail pre {
@@ -560,20 +583,15 @@
     }
 
     .milestone-node.selected rect {
-      fill: var(--accent-soft);
-      stroke: var(--accent);
       stroke-width: 2;
       filter: drop-shadow(0 2px 5px rgba(20, 99, 255, 0.25));
     }
 
     .milestone-node.selected-stage rect {
-      fill: #f1f7ff;
-      stroke: var(--accent);
       stroke-width: 2;
     }
 
     .milestone-node.selected.selected-stage rect {
-      fill: var(--accent-soft);
       filter: drop-shadow(0 2px 5px rgba(20, 99, 255, 0.25));
     }
 
@@ -585,14 +603,45 @@
       stroke: rgba(16, 138, 66, 0.65);
     }
 
+    .milestone-node.warn rect {
+      fill: rgba(199, 122, 0, 0.07);
+      stroke: rgba(199, 122, 0, 0.72);
+    }
+
+    .milestone-node.pending rect {
+      fill: #f6f8fb;
+      stroke: rgba(98, 112, 134, 0.72);
+      stroke-dasharray: 5 4;
+    }
+
     .milestone-node.fail rect {
       stroke: rgba(201, 54, 54, 0.72);
     }
 
     .milestone-node text {
       fill: var(--text);
-      font-size: calc(12px * var(--panel-scale));
+      font-size: calc(12px * var(--panel-scale) * var(--milestone-content-scale, 1));
       font-weight: 700;
+      pointer-events: none;
+    }
+
+    .milestone-resize-handle {
+      cursor: nwse-resize;
+      pointer-events: all;
+    }
+
+    .milestone-node .milestone-resize-handle rect {
+      fill: #ffffff;
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      filter: drop-shadow(0 1px 3px rgba(20, 99, 255, 0.18));
+      stroke-dasharray: none;
+    }
+
+    .milestone-node .milestone-resize-handle line {
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      stroke-linecap: round;
       pointer-events: none;
     }
 
@@ -665,12 +714,16 @@
 
     .score-row {
       display: grid;
-      grid-template-columns: minmax(96px, 1fr) minmax(80px, 42%);
+      grid-template-columns: minmax(92px, 1fr) minmax(74px, 0.45fr) minmax(54px, auto);
       align-items: center;
       gap: 8px;
       min-height: 24px;
       color: var(--ink);
       font-size: calc(12px * var(--panel-scale));
+    }
+
+    .score-row.weight-row {
+      grid-template-columns: minmax(96px, 1fr) minmax(54px, auto);
     }
 
     .score-label {
@@ -679,30 +732,18 @@
       white-space: nowrap;
     }
 
-    .score-value {
-      display: grid;
-      grid-template-columns: 44px 1fr;
-      align-items: center;
-      gap: 6px;
+    .score-level {
       color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-variant-numeric: tabular-nums;
     }
 
-    .score-bar {
-      height: 7px;
-      border-radius: 999px;
-      background: #e8edf5;
-      overflow: hidden;
-    }
-
-    .score-fill {
-      height: 100%;
-      border-radius: inherit;
-      background: var(--accent);
-    }
-
-    .weight-fill {
-      background: var(--warn);
+    .score-value {
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
     @media (max-width: 1100px) {
@@ -756,13 +797,21 @@
   </main>
   <script>
     const SVG_NS = "http" + "://www.w3.org/2000/svg";
+    const MILESTONE_BOX_WIDTH = 148;
+    const MILESTONE_BOX_HEIGHT = 48;
+    const SELECTED_MILESTONE_WIDTH = 320;
+    const SELECTED_MILESTONE_HEIGHT = 218;
+    const SELECTED_MILESTONE_HEADER_HEIGHT = 54;
+    const MILESTONE_DETAIL_BOTTOM_GAP = 8;
     const state = {
       data: null,
       runIndex: 0,
       scenarioIndex: 0,
       selectedMilestoneId: null,
+      selectedMilestoneSize: null,
       selectedStageId: null,
       openStageIds: new Set(),
+      closedStageIds: new Set(),
       panelFractions: { trajectory: 34, graph: 30, stage: 36 },
       resizeObserver: null
     };
@@ -1140,7 +1189,8 @@
       body.append(fragment);
     }
 
-    function renderGraph() {
+    function renderGraph(options) {
+      const graphScroll = options && options.preserveScroll ? graphPanelScroll() : null;
       const scenario = currentScenario();
       const container = document.querySelector(".graph-panel");
       clear(container);
@@ -1167,6 +1217,7 @@
       drawEdges(svg, layout, stageNodeIds, scenario);
       drawNodes(svg, layout, scenario, stageNodeIds);
       body.append(svg);
+      restoreGraphPanelScroll(graphScroll);
     }
 
     function renderStages() {
@@ -1206,8 +1257,8 @@
 
     function graphLegend() {
       const legend = el("div", "panel-legend");
-      legend.append(legendRow([["pass", "通过"], ["fail", "失败或 fatal"]]));
-      legend.append(legendRow([["selected", "当前选中/阶段路径"], ["virtual", "虚拟节点"]]));
+      legend.append(legendRow([["pass", "通过"], ["warn", "警告"], ["fail", "失败或 fatal"]]));
+      legend.append(legendRow([["pending", "未开始/缺失"], ["selected", "当前选中/阶段路径"], ["virtual", "虚拟节点"]]));
       return legend;
     }
 
@@ -1321,6 +1372,7 @@
     function focusMilestone(milestoneId) {
       const isSelected = state.selectedMilestoneId === milestoneId;
       state.selectedMilestoneId = isSelected ? null : milestoneId;
+      state.selectedMilestoneSize = null;
       state.selectedStageId = null;
       renderTrajectory();
       renderGraph();
@@ -1337,11 +1389,13 @@
       const settlement = settlementForStage(stageId);
       const definition = stageDefinitionForStage(stageId, scenario);
       const metadata = ((scenario || {}).milestone_graph || {}).metadata || {};
-      state.selectedMilestoneId = settlement && settlement.milestone_id
+      const nextMilestoneId = settlement && settlement.milestone_id
         ? settlement.milestone_id
         : definition && definition.milestone_id
           ? definition.milestone_id
           : (settlement && settlement.kind === "finish" ? metadata.finish_node_id || "__finish__" : null);
+      if (state.selectedMilestoneId !== nextMilestoneId) state.selectedMilestoneSize = null;
+      state.selectedMilestoneId = nextMilestoneId;
       renderTrajectory();
       renderGraph();
       renderStages();
@@ -1374,9 +1428,13 @@
       index.textContent = step.index === null || step.index === undefined ? "#-" : `#${step.index}`;
       const actor = el("span", "actor");
       actor.textContent = step.actor || "unknown";
+      const arrow = el("span", "flow-arrow");
+      arrow.textContent = "->";
+      const recipient = el("span", "actor");
+      recipient.textContent = step.recipient || "unknown";
       const type = el("span", "event-type");
       type.textContent = step.event_type || "event";
-      meta.append(index, actor, type);
+      meta.append(index, actor, arrow, recipient, type);
 
       const badges = el("div", "badge-row");
       matchedMilestones.forEach((milestoneId) => {
@@ -1405,7 +1463,8 @@
       const card = el("details", "stage-card stage-detail-card");
       card.dataset.stageId = stageId;
       card.classList.toggle("selected", state.selectedStageId === stageId);
-      card.open = state.openStageIds.has(stageId);
+      const isWarnStage = normalizeStageStatus(report.status) === "warn";
+      card.open = state.openStageIds.has(stageId) || (isWarnStage && !state.closedStageIds.has(stageId));
 
       const summary = el("summary", "stage-summary");
       summary.addEventListener("click", () => {
@@ -1436,6 +1495,8 @@
       if (stageGoal) body.append(detailBlock("阶段目标", stageGoal));
       if (dimensions) body.append(stageScoreSection("维度分数", dimensions));
       if (weights) body.append(stageScoreSection("动态权重", weights));
+      const warning = warningSummarySection(report);
+      if (warning) body.append(warning);
       const diagnosis = arrayDetailBlock("诊断", report.diagnosis);
       const evidence = arrayDetailBlock("证据", report.evidence);
       if (diagnosis) body.append(diagnosis);
@@ -1620,6 +1681,8 @@
         const status = milestoneStatus(milestoneId, scenario);
         if (status) group.classList.add(status);
         const box = selectedMilestoneBox(milestoneId);
+        const contentScale = state.selectedMilestoneId === milestoneId ? milestoneContentScale(box) : 1;
+        group.style.setProperty("--milestone-content-scale", String(contentScale));
         group.setAttribute("transform", `translate(${item.x - box.width / 2}, ${item.y - box.height / 2})`);
         group.addEventListener("click", () => focusMilestone(milestoneId));
 
@@ -1628,17 +1691,18 @@
         rect.setAttribute("height", String(box.height));
         rect.setAttribute("rx", "8");
         const name = document.createElementNS(SVG_NS, "text");
-        name.setAttribute("x", "12");
-        name.setAttribute("y", "21");
+        name.setAttribute("x", String(Math.round(12 * contentScale)));
+        name.setAttribute("y", String(Math.round(21 * contentScale)));
         name.textContent = truncate(milestoneId, 18);
         const meta = document.createElementNS(SVG_NS, "text");
-        meta.setAttribute("x", "12");
-        meta.setAttribute("y", "38");
+        meta.setAttribute("x", String(Math.round(12 * contentScale)));
+        meta.setAttribute("y", String(Math.round(38 * contentScale)));
         meta.setAttribute("font-weight", "400");
         meta.textContent = truncate(milestoneSubtitle(item.node), 18);
         group.append(rect, name, meta);
         if (state.selectedMilestoneId === milestoneId) {
-          group.append(milestoneInlineDetail(milestoneId, scenario, box));
+          group.append(milestoneInlineDetail(milestoneId, scenario, box, contentScale));
+          group.append(milestoneResizeHandle(milestoneId, box));
         }
         svg.append(group);
       });
@@ -1646,20 +1710,103 @@
 
     function selectedMilestoneBox(milestoneId) {
       const isSelected = milestoneId && state.selectedMilestoneId === milestoneId;
+      if (isSelected && state.selectedMilestoneSize && state.selectedMilestoneSize.milestoneId === milestoneId) {
+        return {
+          width: state.selectedMilestoneSize.width,
+          height: state.selectedMilestoneSize.height
+        };
+      }
       return {
-        width: isSelected ? 320 : 148,
-        height: isSelected ? 218 : 48
+        width: isSelected ? SELECTED_MILESTONE_WIDTH : MILESTONE_BOX_WIDTH,
+        height: isSelected ? SELECTED_MILESTONE_HEIGHT : MILESTONE_BOX_HEIGHT
       };
     }
 
-    function milestoneInlineDetail(milestoneId, scenario, box) {
+    function milestoneContentScale(box) {
+      if (!box) return 1;
+      const widthRatio = Number(box.width) / SELECTED_MILESTONE_WIDTH;
+      const heightRatio = Number(box.height) / SELECTED_MILESTONE_HEIGHT;
+      const scale = Math.min(widthRatio, heightRatio);
+      return Number(clamp(scale, 0.75, 2.4).toFixed(3));
+    }
+
+    function milestoneDetailTop(contentScale) {
+      return Math.round(SELECTED_MILESTONE_HEADER_HEIGHT * (contentScale || 1));
+    }
+
+    function milestoneResizeHandle(milestoneId, box) {
+      const handle = document.createElementNS(SVG_NS, "g");
+      handle.classList.add("milestone-resize-handle");
+      handle.setAttribute("transform", `translate(${box.width - 25}, ${box.height - 25})`);
+      handle.addEventListener("click", (event) => event.stopPropagation());
+      handle.addEventListener("pointerdown", (event) => startMilestoneResize(event, milestoneId, box));
+
+      const hit = document.createElementNS(SVG_NS, "rect");
+      hit.setAttribute("width", "17");
+      hit.setAttribute("height", "17");
+      hit.setAttribute("rx", "5");
+      const first = document.createElementNS(SVG_NS, "line");
+      first.setAttribute("x1", "5");
+      first.setAttribute("y1", "13");
+      first.setAttribute("x2", "13");
+      first.setAttribute("y2", "5");
+      const second = document.createElementNS(SVG_NS, "line");
+      second.setAttribute("x1", "9");
+      second.setAttribute("y1", "13");
+      second.setAttribute("x2", "13");
+      second.setAttribute("y2", "9");
+      handle.append(hit, first, second);
+      return handle;
+    }
+
+    function startMilestoneResize(event, milestoneId, box) {
+      event.preventDefault();
+      event.stopPropagation();
+      const limits = milestoneResizeLimits();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = box.width;
+      const startHeight = box.height;
+
+      const handleMove = (moveEvent) => {
+        const width = clamp(startWidth + moveEvent.clientX - startX, 240, limits.maxWidth);
+        const height = clamp(startHeight + moveEvent.clientY - startY, 160, limits.maxHeight);
+        state.selectedMilestoneSize = { milestoneId, width, height };
+        renderGraph({ preserveScroll: true });
+      };
+      const stopMove = () => {
+        document.removeEventListener("pointermove", handleMove);
+        document.removeEventListener("pointerup", stopMove);
+        document.removeEventListener("pointercancel", stopMove);
+      };
+
+      state.selectedMilestoneSize = { milestoneId, width: startWidth, height: startHeight };
+      document.addEventListener("pointermove", handleMove);
+      document.addEventListener("pointerup", stopMove);
+      document.addEventListener("pointercancel", stopMove);
+    }
+
+    function milestoneResizeLimits() {
+      const panel = document.querySelector(".graph-panel .panel-body");
+      const width = panel ? panel.clientWidth : 520;
+      const height = panel ? panel.clientHeight : 360;
+      return {
+        maxWidth: Math.max(SELECTED_MILESTONE_WIDTH, Math.min(760, width * 1.8)),
+        maxHeight: Math.max(SELECTED_MILESTONE_HEIGHT, Math.min(620, height * 1.4))
+      };
+    }
+
+    function milestoneInlineDetail(milestoneId, scenario, box, contentScale) {
+      const detailTop = milestoneDetailTop(contentScale);
       const foreign = document.createElementNS(SVG_NS, "foreignObject");
       foreign.setAttribute("x", "8");
-      foreign.setAttribute("y", "54");
+      foreign.setAttribute("y", String(detailTop));
       foreign.setAttribute("width", String(box.width - 16));
-      foreign.setAttribute("height", String(box.height - 62));
+      foreign.setAttribute("height", String(Math.max(48, box.height - detailTop - MILESTONE_DETAIL_BOTTOM_GAP)));
+      foreign.style.setProperty("--milestone-content-scale", String(contentScale || 1));
 
       const detail = el("div", "milestone-inline-detail");
+      detail.style.setProperty("--milestone-content-scale", String(contentScale || 1));
       detail.addEventListener("click", (event) => event.stopPropagation());
       const definition = stageDefinitionForMilestone(milestoneId, scenario);
       const node = graphNodeForMilestone(milestoneId, scenario);
@@ -1844,6 +1991,20 @@
       return "mandatory";
     }
 
+    function graphPanelScroll() {
+      const panel = document.querySelector(".graph-panel .panel-body");
+      if (!panel) return null;
+      return { top: panel.scrollTop, left: panel.scrollLeft };
+    }
+
+    function restoreGraphPanelScroll(scroll) {
+      if (!scroll) return;
+      const panel = document.querySelector(".graph-panel .panel-body");
+      if (!panel) return;
+      panel.scrollTop = Math.max(0, scroll.top);
+      panel.scrollLeft = Math.max(0, scroll.left);
+    }
+
     function focusStepCard(stepIndex) {
       if (stepIndex === null || stepIndex === undefined) return;
       const panel = document.querySelector(".trajectory-panel .panel-body");
@@ -1931,20 +2092,29 @@
 
     function milestoneStatus(milestoneId, scenario) {
       const report = (scenario.stage_reports || []).find((item) => item.milestone_id === milestoneId);
-      if (!report || !report.status) return "";
-      if (report.status === "pass") return "pass";
-      if (report.status === "fail" || report.status === "fatal") return "fail";
-      return "";
+      if (report && report.status) return normalizeStageStatus(report.status);
+      return stageDefinitionForMilestone(milestoneId, scenario) ? "pending" : "";
     }
 
     function statusBadge(status) {
       const badge = el("span", "badge");
       const value = status || "unknown";
       badge.textContent = value;
-      if (value === "pass") badge.classList.add("ok");
-      else if (value === "fail" || value === "fatal") badge.classList.add("bad");
+      const normalized = normalizeStageStatus(value);
+      if (normalized === "pass") badge.classList.add("ok");
+      else if (normalized === "fail") badge.classList.add("bad");
+      else if (normalized === "pending") badge.classList.add("pending");
       else badge.classList.add("warn");
       return badge;
+    }
+
+    function normalizeStageStatus(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "pass") return "pass";
+      if (value === "warn") return "warn";
+      if (["not_started", "missing", "pending"].includes(value)) return "pending";
+      if (["fail", "fatal", "invalid"].includes(value)) return "fail";
+      return "";
     }
 
     function stageScoreSection(title, rows) {
@@ -1957,11 +2127,18 @@
     }
 
     function dimensionRows(report) {
-      return scoreRows(report.dimension_scores || {}, "", report.dimension_levels || {});
+      const levels = report.dimension_levels || {};
+      return Object.entries(report.dimension_scores || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => dimensionScoreRow(key, levels[key] || "cheap", Number(value)));
     }
 
     function weightRows(report) {
-      return scoreRows(report.next_weights || {}, "weight-fill");
+      return Object.entries(report.next_weights || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => weightScoreRow(key, Number(value)));
     }
 
     function averageScore(values) {
@@ -2005,6 +2182,65 @@
         }
       });
       return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function warningSummarySection(report) {
+      const text = warningSummaryText(report);
+      return text ? detailBlock("警告原因", text, normalizeStageStatus(report.status) === "warn") : null;
+    }
+
+    function warningSummaryText(report) {
+      if (!report || !report.metadata) return "";
+      const metadata = report.metadata;
+      const lines = [];
+      if (Array.isArray(metadata.low_score_dimensions) && metadata.low_score_dimensions.length) {
+        lines.push("低分维度:");
+        metadata.low_score_dimensions.forEach((item) => {
+          const dimension = dimensionLabel(item.dimension || "unknown");
+          lines.push(`- ${dimension}=${formatScore(item.score)} severity=${formatValue(item.severity)}`);
+        });
+      }
+      const diagnostics = metadata.stage_quality_diagnostics || {};
+      if (Number(diagnostics.warning_count) > 0) {
+        lines.push(`质量诊断 warning_count=${diagnostics.warning_count}`);
+      }
+      appendDiagnosticLines(lines, "工具参数", diagnostics.tool_argument_warnings, toolArgumentWarningLine);
+      appendDiagnosticLines(lines, "工具失败", diagnostics.failed_tool_results, failedToolResultLine);
+      appendDiagnosticLines(
+        lines,
+        "空工具结果",
+        (diagnostics.empty_tool_results || []).filter((item) => item && item.severity !== "info"),
+        emptyToolResultLine
+      );
+      appendDiagnosticLines(lines, "证据风险", diagnostics.grounding_warnings, groundingWarningLine);
+      const efficiency = diagnostics.efficiency || {};
+      if (Number(efficiency.extra_user_turns_before_first_tool_call) > 0) {
+        lines.push(`- 效率：首次工具调用前额外用户轮次 ${efficiency.extra_user_turns_before_first_tool_call}`);
+      }
+      return lines.join("\n").trim();
+    }
+
+    function appendDiagnosticLines(lines, title, items, formatter) {
+      if (!Array.isArray(items) || !items.length) return;
+      lines.push(`${title}:`);
+      items.slice(0, 4).forEach((item) => lines.push(`- ${formatter(item)}`));
+      if (items.length > 4) lines.push(`- 另有 ${items.length - 4} 条`);
+    }
+
+    function toolArgumentWarningLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)}.${formatValue(item.argument_name)}=${shortJson(item.argument_value, 160)} (${formatValue(item.warning)})`;
+    }
+
+    function failedToolResultLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)} ${shortJson(item.exception, 240)}`;
+    }
+
+    function emptyToolResultLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)} ${formatValue(item.result_category)} severity=${formatValue(item.severity)}`;
+    }
+
+    function groundingWarningLine(item) {
+      return `step ${formatValue(item.answer_step_index || item.tool_result_step_index)} ${formatValue(item.warning)} ${shortJson(item.answer_excerpt, 180)}`;
     }
 
     function failureSummarySection(report) {
@@ -2105,30 +2341,24 @@
       });
     }
 
-    function scoreRows(values, fillClassName, dimensionLevels) {
-      return Object.entries(values)
-        .filter(([, value]) => Number.isFinite(Number(value)))
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => scoreRow(scoreLabel(key, dimensionLevels), Number(value), fillClassName));
-    }
-
-    function scoreLabel(key, dimensionLevels) {
-      const level = dimensionLevels && dimensionLevels[key] ? ` · ${dimensionLevels[key]}` : "";
-      return `${dimensionLabel(key)}${level}`;
-    }
-
-    function scoreRow(label, value, fillClassName) {
+    function dimensionScoreRow(key, level, value) {
       const row = el("div", "score-row");
       const name = el("span", "score-label");
-      name.textContent = label;
+      name.textContent = dimensionLabel(key);
+      const levelBox = el("span", "score-level");
+      levelBox.textContent = level || "unknown";
       const valueBox = el("span", "score-value");
-      const number = el("span");
-      number.textContent = formatScore(value);
-      const bar = el("span", "score-bar");
-      const fill = el("span", `score-fill ${fillClassName || ""}`);
-      fill.style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
-      bar.append(fill);
-      valueBox.append(number, bar);
+      valueBox.textContent = formatScore(value);
+      row.append(name, levelBox, valueBox);
+      return row;
+    }
+
+    function weightScoreRow(key, value) {
+      const row = el("div", "score-row weight-row");
+      const name = el("span", "score-label");
+      name.textContent = dimensionLabel(key);
+      const valueBox = el("span", "score-value");
+      valueBox.textContent = formatScore(value);
       row.append(name, valueBox);
       return row;
     }
@@ -2242,14 +2472,21 @@
 
     function resetSelection() {
       state.selectedMilestoneId = null;
+      state.selectedMilestoneSize = null;
       state.selectedStageId = null;
       state.openStageIds.clear();
+      state.closedStageIds.clear();
     }
 
     function setStageOpen(stageId, open) {
       if (!stageId) return;
-      if (open) state.openStageIds.add(stageId);
-      else state.openStageIds.delete(stageId);
+      if (open) {
+        state.openStageIds.add(stageId);
+        state.closedStageIds.delete(stageId);
+      } else {
+        state.openStageIds.delete(stageId);
+        state.closedStageIds.add(stageId);
+      }
     }
 
     function clear(node) {

@@ -321,8 +321,24 @@ class TaskCase:
     initial_state: Optional[JsonObject] = None
     milestone_graph: Optional[MilestoneGraph] = None
     stage_goals: dict[str, str] = field(default_factory=dict)
+    stage_evaluation_specs: dict[str, "StageEvaluationSpec"] = field(default_factory=dict)
     task_types: list[TaskType] = field(default_factory=list)
     metadata: JsonObject = field(default_factory=dict)
+
+
+@dataclass
+class StageEvaluationSpec:
+    """描述单个阶段实际需要评估的维度。
+
+    入参：
+        focus_dimensions: 本阶段参与 judge 与综合分计算的维度。
+        dimension_rationale: 每个维度被纳入评估的原因。
+    输出：
+        供阶段评估、策略更新和展示层复用的聚焦维度配置。
+    """
+
+    focus_dimensions: list[Dimension]
+    dimension_rationale: dict[Dimension, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -635,6 +651,7 @@ class RuntimeEvaluationState:
     ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
     milestone_frontier: MilestoneFrontierState | None = None
     agent_step_tracker: AgentStepTracker = field(default_factory=AgentStepTracker)
+    evaluation_termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
 
 
 @dataclass

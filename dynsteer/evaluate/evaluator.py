@@ -295,14 +295,10 @@ class DynSTEEREvaluator:
                     task_case,
                     trajectory,
                     state.matched_settlements,
+                    scorer,
                     state.weights,
                     state.evaluation_policy,
                     state,
-                    self._cheap_judge,
-                    self._standard_judge,
-                    self._expensive_judge,
-                    self._thresholds,
-                    self._weight_config,
                 )
                 state.settlements.append(settlement)
                 state.stage_reports.append(stage_result)
@@ -310,6 +306,7 @@ class DynSTEEREvaluator:
                 state.evaluation_policy = next_policy
                 if finish_termination.should_stop:
                     termination = finish_termination
+                    state.evaluation_termination = termination
             report = self._runtime_report(
                 task_case,
                 trajectory,
@@ -403,6 +400,7 @@ class DynSTEEREvaluator:
         """
         termination_reason = decision.termination.termination_reason or default_reason
         decision.termination.termination_reason = termination_reason
+        decision.next_state.evaluation_termination = decision.termination
         harness.stop_case(session, termination_reason)
         logger.warning(
             "evaluator_policy_stop",

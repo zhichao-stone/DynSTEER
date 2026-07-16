@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from dynsteer.model import JsonObject, JsonValue, MISSING
@@ -102,6 +103,38 @@ def string_list(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
+def clean_evidence_items(values: list[str], limit: int | None = None) -> list[str]:
+    """清洗 evidence 文本，去除重复裸 step 引用。
+
+    入参：
+        values: 原始 evidence 字符串列表。
+        limit: 可选最大返回条数。
+    输出：
+        保序去重后的 evidence；当存在 `step N: ...` 具体证据时，删除裸 `step N`。
+    """
+    if values is None:
+        raise ValueError("evidence values 不能为空")
+    if limit is not None and limit < 0:
+        raise ValueError("evidence limit 不能为负数")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+
+    detailed_steps = _detailed_step_indexes(deduped)
+    cleaned = [
+        item
+        for item in deduped
+        if not _is_redundant_bare_step_reference(item, detailed_steps)
+    ]
+    return cleaned[:limit] if limit is not None else cleaned
+
+
 def get_object(
     data: JsonObject,
     key: str,
@@ -168,7 +201,41 @@ def json_safe(value: object) -> JsonValue:
     ):
         return enum_raw_value
     if isinstance(value, dict):
-        return {str(key): json_safe(item) for key, item in value.items()}
+        return {_json_safe_key(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     return str(value)
+
+
+def _json_safe_key(key: object) -> str:
+    """把 JSON dict key 转成稳定字符串。"""
+    raw_value = getattr(key, "value", None)
+    if isinstance(raw_value, str):
+        return raw_value
+    return str(key)
+
+
+def _detailed_step_indexes(values: list[str]) -> set[int]:
+    """提取形如 `step N: ...` 的具体 step 证据编号。"""
+    indexes: set[int] = set()
+    for value in values:
+        match = re.match(r"^\s*step\s+(\d+)\s*:", value, flags=re.IGNORECASE)
+        if match is not None:
+            indexes.add(int(match.group(1)))
+    return indexes
+
+
+def _is_redundant_bare_step_reference(value: str, detailed_steps: set[int]) -> bool:
+    """判断裸 step 或 step 区间是否已被具体证据覆盖。"""
+    single = re.match(r"^\s*step\s+(\d+)\s*$", value, flags=re.IGNORECASE)
+    if single is not None:
+        return int(single.group(1)) in detailed_steps
+
+    step_range = re.match(r"^\s*step\s+(\d+)\s*[-~]\s*(\d+)\s*$", value, flags=re.IGNORECASE)
+    if step_range is None:
+        return False
+    start = int(step_range.group(1))
+    end = int(step_range.group(2))
+    if start > end:
+        start, end = end, start
+    return any(index in detailed_steps for index in range(start, end + 1))

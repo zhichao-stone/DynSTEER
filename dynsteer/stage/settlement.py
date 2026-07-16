@@ -5,11 +5,13 @@ from dynsteer.evaluate.diagnostics import (
     build_milestone_matching_detail,
     build_stage_trace,
 )
+from dynsteer.evaluate.final import build_finish_verification
 from dynsteer.evaluate.matching.frontier import advance_milestone_frontier, ready_milestones
 from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
 from dynsteer.evaluate.runtime import JudgeConfigurationError
 from dynsteer.evaluate.scoring import (
+    GeneralScorer,
     enrich_stage_result,
     stage_score_from_dimensions,
     update_weights,
@@ -37,7 +39,8 @@ from dynsteer.model import (
     ThresholdConfig,
     Trajectory,
 )
-from dynsteer.stage import stage_goal_key, stage_start_step_index
+from dynsteer.stage import resolve_stage_evaluation_spec, stage_goal_key, stage_start_step_index
+from dynsteer.utils import clean_evidence_items
 
 
 def evaluate_checkpoint(
@@ -137,14 +140,10 @@ def finish_settlement(
     task_case: TaskCase,
     trajectory: Trajectory,
     matched: dict[str, HarnessStageSettlement],
+    scorer: GeneralScorer,
     weights: dict[Dimension, float],
     evaluation_policy: EvaluationPolicyState,
     state: RuntimeEvaluationState,
-    cheap_judge: BaseJudge,
-    standard_judge: BaseJudge | None,
-    expensive_judge: BaseJudge | None,
-    thresholds: ThresholdConfig,
-    weight_config: DynamicWeightConfig | None,
 ) -> tuple[
     HarnessStageSettlement,
     StageEvaluationResult,
@@ -159,18 +158,22 @@ def finish_settlement(
         task_case: 当前 benchmark case。
         trajectory: 当前运行期轨迹。
         matched: 已匹配 milestone 结算表。
+        scorer: 当前 benchmark 约束评分器。
         weights: 当前维度权重。
         evaluation_policy: 当前评估粒度策略。
         state: 当前运行期评估状态。
-        cheap_judge: cheap 层评估器。
-        standard_judge: standard 层评估器。
-        expensive_judge: expensive 层评估器。
-        thresholds: 阶段阈值配置。
-        weight_config: 动态权重配置。
     输出：
         finish 结算、阶段报告、新权重和策略更新。
     """
-    if settlements is None or task_case is None or trajectory is None or matched is None or weights is None or state is None:
+    if (
+        settlements is None
+        or task_case is None
+        or trajectory is None
+        or matched is None
+        or scorer is None
+        or weights is None
+        or state is None
+    ):
         raise ValueError("finish 结算参数不能为空")
     graph = task_case.milestone_graph
     last_step_index = trajectory.steps[-1].index if trajectory.steps else 0
@@ -200,25 +203,79 @@ def finish_settlement(
         status=StageStatus.PASS,
         evidence=["finish 结算节点"],
     )
-    return append_stage_settlement(
-        settlements=settlements,
-        kind="finish",
-        interval=interval,
-        matching_detail=build_finish_matching_detail(graph=graph, matched=matched),
+    verification = build_finish_verification(
         task_case=task_case,
         trajectory=trajectory,
+        matched=matched,
         state=state,
-        weights=weights,
-        evaluation_policy=evaluation_policy,
-        cheap_judge=cheap_judge,
-        standard_judge=standard_judge,
-        expensive_judge=expensive_judge,
-        thresholds=thresholds,
-        weight_config=weight_config,
+        scorer=scorer,
+    )
+    status = StageStatus(str(verification.get("status") or StageStatus.FAIL.value))
+    score = _json_number(verification.get("score"), 0.0)
+    terminal_checks = verification.get("terminal_state_checks")
+    has_terminal_checks = isinstance(terminal_checks, list) and len(terminal_checks) > 0
+    dimension_scores = {Dimension.PROGRESS: score}
+    if has_terminal_checks:
+        dimension_scores[Dimension.STATE_CONSISTENCY] = min(
+            (
+                _json_number(item.get("score"), score)
+                for item in terminal_checks
+                if isinstance(item, dict)
+            ),
+            default=score,
+        )
+    dimension_confidence = {dimension: 0.95 for dimension in dimension_scores}
+    stage_result = StageEvaluationResult(
+        stage_id=interval.stage_id,
+        milestone_id=interval.milestone_id,
+        status=status,
+        stage_score=score,
+        dimension_scores=dimension_scores,
+        dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in dimension_scores},
+        dimension_confidence=dimension_confidence,
+        dimension_uncertainty={dimension: 1.0 - value for dimension, value in dimension_confidence.items()},
+        evidence=clean_evidence_items([str(item) for item in verification.get("evidence", [])])
+        if isinstance(verification.get("evidence"), list)
+        else ["finish 结算节点"],
+        diagnosis=[str(item) for item in verification.get("diagnosis", [])]
+        if isinstance(verification.get("diagnosis"), list)
+        else [],
+        next_weights=dict(weights),
+        fatal=bool(verification.get("fatal_minefield")),
+        hard_constraints_all_pass=status != StageStatus.FAIL,
+        required_fields_missing_ratio=0.0 if bool(verification.get("all_milestones_matched")) else 1.0,
+        minefield_score=state.max_minefield_score,
+        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
         metadata={
-            "predecessor_milestone_ids": sorted(matched),
+            "finish_stage_evaluation": verification,
+            "next_evaluation_policy": evaluation_policy.to_dict(),
+            "evaluation_termination": EvaluationTerminationState().to_dict(),
         },
     )
+    matching_detail = build_finish_matching_detail(graph=graph, matched=matched)
+    merged_metadata: JsonObject = {
+        "stage_report": stage_result.to_dict(),
+        "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
+        "stage_start_boundary_step_index": interval.start_boundary_step_index,
+        "stage_start_step_index": interval.start_step_index,
+        "stage_end_step_index": interval.end_step_index,
+        "predecessor_milestone_ids": sorted(matched),
+        "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
+        "milestone_matching": matching_detail,
+        "finish_stage_evaluation": verification,
+    }
+    settlement = HarnessStageSettlement(
+        settlement_id=f"st{len(settlements)}",
+        kind="finish",
+        milestone_id=interval.milestone_id,
+        start_step_index=interval.start_step_index,
+        end_step_index=interval.end_step_index,
+        score=stage_result.stage_score,
+        status=stage_result.status.value,
+        evidence=list(stage_result.evidence),
+        metadata=merged_metadata,
+    )
+    return settlement, stage_result, dict(weights), evaluation_policy, EvaluationTerminationState()
 
 
 def append_milestone_settlement(
@@ -433,12 +490,14 @@ def evaluate_stage(
     """
     if state is None or evaluation_policy is None:
         raise ValueError("evaluation_policy 不能为空")
+    spec = resolve_stage_evaluation_spec(interval, task_case)
+    focus_dimensions = list(dict.fromkeys(spec.focus_dimensions))
     dimension_levels = {
         dimension: evaluation_policy.dimension_levels.get(dimension, evaluation_policy.base_level)
-        for dimension in Dimension
+        for dimension in focus_dimensions
     }
-    stage_result = cheap_judge.evaluate_stage(interval, task_case, trajectory, weights, dimensions=list(Dimension))
-    judge_results = [_judge_result_metadata(stage_result, list(Dimension))]
+    stage_result = cheap_judge.evaluate_stage(interval, task_case, trajectory, weights, dimensions=focus_dimensions)
+    judge_results = [_judge_result_metadata(stage_result, focus_dimensions)]
 
     standard_dimensions = [
         dimension
@@ -477,11 +536,13 @@ def evaluate_stage(
         judge_results.append(_judge_result_metadata(expensive_result, expensive_dimensions))
 
     stage_result.stage_score = stage_score_from_dimensions(stage_result.dimension_scores, weights)
+    structural_failure = _is_structural_stage_failure(interval, stage_result)
     stage_result.status = _aggregate_stage_status(
         judge_results,
         stage_result.stage_score,
         thresholds,
-        keep_baseline_failure=not stage_result.hard_constraints_all_pass,
+        baseline_status=stage_result.status,
+        structural_failure=structural_failure,
     )
     stage_result = enrich_stage_result(
         interval,
@@ -492,7 +553,17 @@ def evaluate_stage(
     )
     next_weights = update_weights(weights, stage_result.dimension_scores, stage_result.dimension_uncertainty, weight_config)
     stage_result.next_weights = next_weights
+    low_score_dimensions = _low_score_dimensions(stage_result, thresholds)
     stage_result.metadata["dimension_judge_results"] = judge_results
+    stage_result.metadata["focus_dimensions"] = [dimension.value for dimension in focus_dimensions]
+    stage_result.metadata["dimension_rationale"] = {
+        dimension.value: reason
+        for dimension, reason in spec.dimension_rationale.items()
+        if dimension in focus_dimensions
+    }
+    stage_result.metadata["structural_failure"] = structural_failure
+    if low_score_dimensions:
+        stage_result.metadata["low_score_dimensions"] = low_score_dimensions
     stage_result.metadata["weight_update_diagnostics"] = weight_update_diagnostics(
         weights,
         stage_result.dimension_scores,
@@ -522,48 +593,69 @@ def _merge_dimension_result(
             base.dimension_uncertainty[dimension] = update.dimension_uncertainty[dimension]
         if dimension in update.dimension_levels:
             base.dimension_levels[dimension] = update.dimension_levels[dimension]
-    base.evidence.extend(item for item in update.evidence if item not in base.evidence)
+    base.evidence = clean_evidence_items([*base.evidence, *update.evidence])
     base.diagnosis.extend(item for item in update.diagnosis if item not in base.diagnosis)
+
+
+def _is_structural_stage_failure(interval: StageInterval, result: StageEvaluationResult) -> bool:
+    """判断阶段是否存在必须阻断的结构性失败。"""
+    if interval is None or result is None:
+        raise ValueError("结构性失败判断参数不能为空")
+    if interval.status in {StageStatus.MISSING, StageStatus.INVALID}:
+        return True
+    if result.hard_constraints_all_pass is False:
+        return True
+    return False
+
+
+def _low_score_dimensions(
+    result: StageEvaluationResult,
+    thresholds: ThresholdConfig,
+) -> list[JsonObject]:
+    """提取当前已评估维度中的低分维度诊断。"""
+    if result is None or thresholds is None:
+        raise ValueError("低分维度诊断参数不能为空")
+    diagnostics: list[JsonObject] = []
+    for dimension, score in sorted(result.dimension_scores.items(), key=lambda item: item[0].value):
+        if score >= thresholds.warn_threshold:
+            continue
+        diagnostics.append(
+            {
+                "dimension": dimension.value,
+                "score": score,
+                "severity": "fail" if score < thresholds.fail_threshold else "warn",
+            }
+        )
+    return diagnostics
+
+
+def _json_number(value: object, default: float) -> float:
+    """读取 JSON 数字字段。"""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
+    return float(value)
 
 
 def _aggregate_stage_status(
     judge_results: list[JsonObject],
     stage_score: float,
     thresholds: ThresholdConfig,
-    keep_baseline_failure: bool = False,
+    baseline_status: StageStatus,
+    structural_failure: bool = False,
 ) -> StageStatus:
     if judge_results is None or thresholds is None:
         raise ValueError("状态聚合参数不能为空")
-    severity = {
-        StageStatus.INVALID: 5,
-        StageStatus.MISSING: 4,
-        StageStatus.FAIL: 3,
-        StageStatus.AMBIGUOUS: 2,
-        StageStatus.WARN: 1,
-        StageStatus.PASS: 0,
-    }
-    status_source = judge_results
-    higher_cost = [
-        item
-        for item in judge_results
-        if any(level != EvaluationLevel.CHEAP.value for level in _metadata_dimension_levels(item).values())
-    ]
-    if higher_cost and not keep_baseline_failure:
-        status_source = higher_cost
-    parsed: list[StageStatus] = []
-    for item in status_source:
-        try:
-            parsed.append(StageStatus(str(item.get("status"))))
-        except ValueError:
-            parsed.append(StageStatus.INVALID)
-    status = max(parsed, key=lambda item: severity[item]) if parsed else StageStatus.INVALID
-    if status in {StageStatus.INVALID, StageStatus.MISSING, StageStatus.FAIL}:
-        return status
+    if structural_failure:
+        if baseline_status in {StageStatus.INVALID, StageStatus.MISSING, StageStatus.FAIL}:
+            return baseline_status
+        return StageStatus.FAIL
     if stage_score < thresholds.fail_threshold:
         return StageStatus.FAIL
     if stage_score < thresholds.warn_threshold:
         return StageStatus.WARN
-    return status
+    if stage_score < thresholds.pass_threshold:
+        return StageStatus.WARN
+    return StageStatus.PASS
 
 
 def _judge_result_metadata(result: StageEvaluationResult, dimensions: list[Dimension]) -> JsonObject:
@@ -582,13 +674,6 @@ def _judge_result_metadata(result: StageEvaluationResult, dimensions: list[Dimen
             for dimension in dimensions
         },
     }
-
-
-def _metadata_dimension_levels(item: JsonObject) -> dict[str, str]:
-    value = item.get("dimension_levels") if isinstance(item, dict) else None
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): str(level) for key, level in value.items()}
 
 
 def should_stop_after_stage(
@@ -625,16 +710,25 @@ def should_stop_after_stage(
             )
     if config.stop_on_stage_failure:
         milestone_id = stage_result.milestone_id or "unknown"
-        if stage_result.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}:
+        if stage_result.metadata.get("structural_failure") is True:
             return EvaluationTerminationState(
                 should_stop=True,
                 termination_code=f"stage_failure:{milestone_id}",
-                termination_reason=f"阶段评估状态为 {stage_result.status.value}，提前终止执行：{milestone_id}",
+                termination_reason=f"阶段存在结构性失败，提前终止执行：{milestone_id}",
+                termination_detail={
+                    "stage_score": stage_result.stage_score,
+                    "stage_status": stage_result.status.value,
+                    "structural_failure": True,
+                },
             )
         if stage_result.stage_score < thresholds.fail_threshold:
             return EvaluationTerminationState(
                 should_stop=True,
                 termination_code=f"stage_score:{milestone_id}",
                 termination_reason=f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
+                termination_detail={
+                    "stage_score": stage_result.stage_score,
+                    "stage_status": stage_result.status.value,
+                },
             )
     return EvaluationTerminationState()

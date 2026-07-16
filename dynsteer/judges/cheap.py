@@ -52,9 +52,18 @@ class CheapJudge(BaseJudge):
             score = 0.0
 
         diagnostics = build_stage_quality_diagnostics(interval, trajectory)
-        dimension_scores = self._dimension_scores(score, interval.status, diagnostics)
+        target_dimensions = list(dict.fromkeys(dimensions or list(Dimension)))
+        dimension_scores = {
+            dimension: value
+            for dimension, value in self._dimension_scores(score, interval.status, diagnostics).items()
+            if dimension in target_dimensions
+        }
         stage_score = stage_score_from_dimensions(dimension_scores, weights)
-        dimension_confidence = cheap_dimension_confidence(interval.status, missing_ratio, diagnostics)
+        dimension_confidence = {
+            dimension: value
+            for dimension, value in cheap_dimension_confidence(interval.status, missing_ratio, diagnostics).items()
+            if dimension in target_dimensions
+        }
         return StageEvaluationResult(
             stage_id=interval.stage_id,
             milestone_id=interval.milestone_id,

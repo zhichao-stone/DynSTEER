@@ -144,6 +144,7 @@ def runtime_diagnostics_summary(
             graph=graph,
             matched=state.matched_settlements,
             match_attempts=state.match_attempts,
+            termination=state.evaluation_termination,
         ),
         "runtime_quality_diagnostics": build_runtime_quality_diagnostics(task_case, trajectory),
     }
@@ -186,6 +187,7 @@ def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluatio
         graph=graph,
         matched=state.matched_settlements,
         match_attempts=state.match_attempts,
+        termination=state.evaluation_termination,
     )
     milestones_by_id = {node.milestone_id: node for node in graph.nodes}
     results: list[StageEvaluationResult] = []

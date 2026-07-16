@@ -6,7 +6,6 @@ from dynsteer.model import (
     EvaluationPolicyState,
     EvaluationTerminationState,
     StageEvaluationResult,
-    StageStatus,
     ThresholdConfig,
 )
 
@@ -43,6 +42,7 @@ def update_evaluation_policy(
         dimension_levels=_next_dimension_levels(
             base_level,
             policy.base_level,
+            policy.dimension_levels,
             result,
             effective_thresholds,
         ),
@@ -54,8 +54,9 @@ def update_evaluation_policy(
 def _should_stop(result: StageEvaluationResult, thresholds: ThresholdConfig) -> bool:
     """判断阶段结果是否触发策略终止。"""
     return (
-        result.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}
-        or result.stage_score < thresholds.warn_threshold
+        result.metadata.get("structural_failure") is True
+        or result.metadata.get("missing_required_milestone") is True
+        or result.stage_score < thresholds.fail_threshold
         or result.fatal_minefield_score >= thresholds.fatal_minefield_threshold
     )
 
@@ -72,20 +73,25 @@ def _is_high_confidence_pass(result: StageEvaluationResult, thresholds: Threshol
 def _next_dimension_levels(
     next_base_level: EvaluationLevel,
     current_base_level: EvaluationLevel,
+    current_levels: dict[Dimension, EvaluationLevel],
     result: StageEvaluationResult,
     thresholds: ThresholdConfig,
 ) -> dict[Dimension, EvaluationLevel]:
     """根据逐维分数计算下一阶段的逐维粒度。"""
     levels: dict[Dimension, EvaluationLevel] = {}
     for dimension in Dimension:
+        if dimension not in result.dimension_scores:
+            levels[dimension] = current_levels.get(dimension, current_base_level)
+            continue
         score = float(result.dimension_scores.get(dimension, 0.0))
         uncertainty = float(result.dimension_uncertainty.get(dimension, 0.0))
+        current_level = current_levels.get(dimension, current_base_level)
         if score < thresholds.fail_threshold:
             levels[dimension] = EvaluationLevel.EXPENSIVE
         elif uncertainty >= thresholds.high_dimension_uncertainty:
-            levels[dimension] = _upgrade_level(current_base_level)
+            levels[dimension] = _upgrade_level(current_level)
         elif score < thresholds.warn_threshold:
-            levels[dimension] = _upgrade_level(current_base_level)
+            levels[dimension] = _upgrade_level(current_level)
         else:
             levels[dimension] = next_base_level
     return levels
@@ -115,8 +121,10 @@ def _policy_reason(base_level: EvaluationLevel, result: StageEvaluationResult) -
 
 def _termination_reason(result: StageEvaluationResult, thresholds: ThresholdConfig) -> str:
     """生成策略终止原因。"""
-    if result.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}:
-        return f"阶段状态为 {result.status.value}，触发策略终止"
+    if result.metadata.get("structural_failure") is True:
+        return "阶段存在结构性失败，触发策略终止"
+    if result.metadata.get("missing_required_milestone") is True:
+        return "阶段缺少必要 milestone，触发策略终止"
     if result.fatal_minefield_score >= thresholds.fatal_minefield_threshold:
         return f"fatal minefield score={result.fatal_minefield_score:.3f}，触发策略终止"
-    return f"阶段分数 {result.stage_score:.3f} 低于警戒阈值 {thresholds.warn_threshold:.3f}，触发策略终止"
+    return f"阶段分数 {result.stage_score:.3f} 低于失败阈值 {thresholds.fail_threshold:.3f}，触发策略终止"

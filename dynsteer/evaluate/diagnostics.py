@@ -6,6 +6,7 @@ from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Boundary,
     Constraint,
+    EvaluationTerminationState,
     JsonObject,
     Milestone,
     MilestoneGraph,
@@ -328,6 +329,7 @@ def build_final_milestone_diagnostics(
     graph: MilestoneGraph,
     matched: dict[str, HarnessStageSettlement],
     match_attempts: list[JsonObject],
+    termination: EvaluationTerminationState | None = None,
 ) -> list[JsonObject]:
     milestone_ids = {node.milestone_id for node in graph.nodes}
     attempts_by_milestone: dict[str, list[JsonObject]] = {milestone_id: [] for milestone_id in milestone_ids}
@@ -349,6 +351,7 @@ def build_final_milestone_diagnostics(
         best_entry = max(scored_entries, key=lambda item: float(item["score"].get("score", 0.0)), default=None)
         last_entry = candidate_entries[-1] if candidate_entries else None
         pending_predecessors = [item for item in node.dependency_predecessor_ids if item not in matched]
+        finally_ready = len(pending_predecessors) == 0
         best_score = best_entry.get("score") if isinstance(best_entry, dict) else None
         best_boundary = best_entry.get("boundary") if isinstance(best_entry, dict) else None
         common: JsonObject = {
@@ -356,7 +359,8 @@ def build_final_milestone_diagnostics(
             "mandatory": True,
             "dependency_predecessor_ids": list(node.dependency_predecessor_ids),
             "stage_anchor_milestone_id": node.stage_anchor_predecessor_id,
-            "ready_ever": node.milestone_id in ready_seen,
+            "ready_ever": node.milestone_id in ready_seen or finally_ready,
+            "finally_ready": finally_ready,
             "attempt_count": len(candidate_entries),
             "best_score": best_score.get("score") if isinstance(best_score, dict) else None,
             "best_status": best_score.get("status") if isinstance(best_score, dict) else None,
@@ -388,11 +392,11 @@ def build_final_milestone_diagnostics(
             )
             continue
 
-        if candidate_entries:
+        if scored_entries:
             blocker = "attempted_but_not_pass"
         elif pending_predecessors:
             blocker = "predecessor_not_matched"
-        elif common["ready_ever"]:
+        elif finally_ready:
             blocker = "ready_without_candidate"
         else:
             blocker = "not_ready"
@@ -404,21 +408,23 @@ def build_final_milestone_diagnostics(
             last_entry=last_entry,
             pending_predecessors=pending_predecessors,
         )
-        diagnostics.append(
-            {
-                **common,
-                "final_state": "pending",
-                "blocker": blocker,
-                "settlement_id": None,
-                "boundary_step_index": None,
-                "stage_start_boundary_step_index": None,
-                "stage_start_step_index": None,
-                "stage_end_step_index": None,
-                "last_reject_reason": last_entry.get("reject_reason") if isinstance(last_entry, dict) else None,
-                "pending_predecessor_ids": pending_predecessors,
-                **failure_diagnostics,
-            }
-        )
+        pending_detail: JsonObject = {
+            **common,
+            "final_state": "pending",
+            "blocker": blocker,
+            "settlement_id": None,
+            "boundary_step_index": None,
+            "stage_start_boundary_step_index": None,
+            "stage_start_step_index": None,
+            "stage_end_step_index": None,
+            "last_reject_reason": last_entry.get("reject_reason") if isinstance(last_entry, dict) else None,
+            "pending_predecessor_ids": pending_predecessors,
+            **failure_diagnostics,
+        }
+        if termination is not None and termination.should_stop:
+            pending_detail["blocked_by_policy_stop"] = True
+            pending_detail["policy_stop_detail"] = termination.to_dict()
+        diagnostics.append(pending_detail)
     return diagnostics
 
 
@@ -428,10 +434,11 @@ def build_finish_matching_detail(
 ) -> JsonObject:
     matched_ids = set(matched)
     milestone_ids = {node.milestone_id for node in graph.nodes}
+    pending_ids = milestone_ids - matched_ids
     return {
         "mode": "runtime_finish",
-        "matched": False,
+        "matched": not pending_ids,
         "matched_milestone_ids": sorted(matched_ids),
-        "pending_milestone_ids": sorted(milestone_ids - matched_ids),
+        "pending_milestone_ids": sorted(pending_ids),
         "total_milestone_count": len(graph.nodes),
     }

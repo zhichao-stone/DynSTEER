@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from dynsteer.utils import clean_evidence_items
 
 JsonObject = dict[str, Any]
 CaseKey = tuple[str, str, str]
@@ -202,6 +209,8 @@ def _stage_reports(reports: Any, definitions: list[JsonObject]) -> tuple[list[Js
                 metadata["stage_anchor_milestone_id"] = definition.get("anchor_milestone_id")
             if old_stage_id and old_stage_id != new_stage_id:
                 stage_id_map[old_stage_id] = new_stage_id
+        if isinstance(item.get("evidence"), list):
+            item["evidence"] = clean_evidence_items([_text(value, 1200) for value in item["evidence"]])
         normalized.append(item)
         if item.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(item.get("status")):
             terminal_before_finish = True
@@ -234,7 +243,13 @@ def _active_stage_definitions(definitions: list[JsonObject], reports: list[JsonO
     ):
         return definitions
     reported_ids = {str(report.get("stage_id") or "") for report in reports}
-    return [definition for definition in definitions if str(definition.get("stage_id") or "") in reported_ids]
+    finish_definition = _finish_definition(definitions)
+    return [
+        definition
+        for definition in definitions
+        if str(definition.get("stage_id") or "") in reported_ids
+        or _should_keep_unreported_finish_definition(definition, finish_definition, reports)
+    ]
 
 
 def _active_stage_settlements(settlements: list[JsonObject], reports: list[JsonObject]) -> list[JsonObject]:
@@ -276,7 +291,7 @@ def _settlement_summary(settlement: JsonObject, definitions: list[JsonObject] | 
         "status": str(settlement.get("status") or ""),
         "score": _number(settlement.get("score")),
         "checkpointed": settlement.get("checkpointed"),
-        "evidence": [_text(value, 1200) for value in settlement.get("evidence", [])[:8]],
+        "evidence": clean_evidence_items([_text(value, 1200) for value in settlement.get("evidence", [])], 8),
     }
 
 
@@ -319,7 +334,12 @@ def _matching_score_summary(value: Any) -> JsonObject:
 
 
 def _constraint_score_summary(score: JsonObject) -> JsonObject:
-    return {"constraint_id": str(score.get("constraint_id") or ""), "score": _number(score.get("score")), "missing": score.get("missing"), "evidence": [_text(item, 500) for item in score.get("evidence", [])[:2]]}
+    return {
+        "constraint_id": str(score.get("constraint_id") or ""),
+        "score": _number(score.get("score")),
+        "missing": score.get("missing"),
+        "evidence": clean_evidence_items([_text(item, 500) for item in score.get("evidence", [])], 2),
+    }
 
 
 def _node_summary(node: JsonObject, adapted_node: JsonObject | None = None) -> JsonObject:
@@ -430,6 +450,19 @@ def _definition_for_milestone(milestone_id: str, definitions: list[JsonObject]) 
 
 def _finish_definition(definitions: list[JsonObject]) -> JsonObject | None:
     return _definition_for_milestone(FINISH_NODE_ID, definitions)
+
+
+def _should_keep_unreported_finish_definition(
+    definition: JsonObject,
+    finish_definition: JsonObject | None,
+    reports: list[JsonObject],
+) -> bool:
+    if finish_definition is None or definition is not finish_definition:
+        return False
+    anchor_id = str(finish_definition.get("anchor_milestone_id") or "")
+    if not anchor_id:
+        return False
+    return any(str(report.get("milestone_id") or "") == anchor_id for report in reports)
 
 
 def _legacy_pending_milestone_id(stage_id: str) -> str:

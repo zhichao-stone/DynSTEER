@@ -403,7 +403,7 @@ def enrich_stage_result(
     fatal_minefield: bool,
     thresholds: object,
 ) -> StageEvaluationResult:
-    result.dimension_confidence = complete_dimension_confidence(list(Dimension), result.dimension_confidence)
+    result.dimension_confidence = complete_dimension_confidence(list(result.dimension_scores), result.dimension_confidence)
     result.dimension_uncertainty = uncertainty_from_confidence(result.dimension_confidence)
     result.minefield_score = minefield_score
     result.fatal_minefield_score = minefield_score if fatal_minefield else 0.0
@@ -457,6 +457,9 @@ def update_weights(
     next_weights: dict[Dimension, float] = {}
     for dimension in Dimension:
         base = max(float(current.get(dimension, 0.0)), 1e-9)
+        if dimension not in scores:
+            next_weights[dimension] = base
+            continue
         score = float(scores.get(dimension, 0.0))
         uncertainty = clamp(float(dimension_uncertainty.get(dimension, 0.0)))
         next_weights[dimension] = base * math.exp(
