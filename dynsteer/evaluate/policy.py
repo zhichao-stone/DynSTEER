@@ -17,8 +17,6 @@ def update_evaluation_policy(
     thresholds: ThresholdConfig | None = None,
 ) -> tuple[EvaluationPolicyState, EvaluationTerminationState]:
     """根据当前阶段结果生成下一阶段评估策略。"""
-    if policy is None or result is None:
-        raise ValueError("策略更新参数不能为空")
     effective_thresholds = thresholds or ThresholdConfig()
     if _should_stop(result, effective_thresholds):
         reason = _termination_reason(result, effective_thresholds)

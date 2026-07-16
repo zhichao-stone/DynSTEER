@@ -35,6 +35,7 @@ logs/
 
 # Data
 data/
+display/data.js
 
 # Runtime
 runs/

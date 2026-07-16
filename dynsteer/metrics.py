@@ -26,15 +26,11 @@ def record_runtime_metrics() -> Iterator[RuntimeMetricsRecorder]:
 
 def activate_runtime_metrics_recorder(recorder: RuntimeMetricsRecorder) -> Token[RuntimeMetricsRecorder | None]:
     """激活指定 recorder，并返回用于恢复上下文的 token。"""
-    if recorder is None:
-        raise ValueError("recorder 不能为空")
     return _CURRENT_RECORDER.set(recorder)
 
 
 def reset_runtime_metrics_recorder(token: Token[RuntimeMetricsRecorder | None]) -> None:
     """恢复 metrics recorder 上下文。"""
-    if token is None:
-        raise ValueError("token 不能为空")
     _CURRENT_RECORDER.reset(token)
 
 
@@ -51,12 +47,13 @@ def build_runtime_metrics(
     finished_at: str,
     trajectory: Trajectory,
     llm_calls: list[LLMCallMetrics],
+    agent_step_count: int,
 ) -> JsonObject:
     """聚合 trajectory 与 LLM 调用，生成运行统计 JSON。"""
-    if trajectory is None or llm_calls is None:
-        raise ValueError("trajectory 和 llm_calls 不能为空")
+    if agent_step_count < 0:
+        raise ValueError("agent_step_count 不能为负数")
     elapsed_seconds = max(float(finished_monotonic) - float(started_monotonic), 0.0)
-    step_count = len(trajectory.steps)
+    raw_step_count = len(trajectory.steps)
     snapshot_count = len(trajectory.snapshots)
     tool_call_count = sum(
         1
@@ -72,7 +69,8 @@ def build_runtime_metrics(
         "started_at": started_at,
         "finished_at": finished_at,
         "elapsed_seconds": elapsed_seconds,
-        "step_count": step_count,
+        "step_count": agent_step_count,
+        "raw_step_count": raw_step_count,
         "snapshot_count": snapshot_count,
         "tool_call_count": tool_call_count,
         "trajectory_total_tokens": _sum_optional_int(trajectory_tokens) or 0,

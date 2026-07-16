@@ -15,8 +15,6 @@ def evaluate_minefields_at_boundary(
     context: ScoringContext | None,
 ) -> tuple[list[JsonObject], float, bool]:
     """在单个运行期 boundary 上扫描 minefield 命中情况。"""
-    if graph is None or trajectory is None or boundary is None:
-        raise ValueError("minefield boundary 扫描参数不能为空")
     effective_scorer = get_effective_scorer(scorer)
     matches: list[JsonObject] = []
     max_score = 0.0

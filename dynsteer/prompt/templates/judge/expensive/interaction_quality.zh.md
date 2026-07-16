@@ -11,9 +11,9 @@
 2. 判断这些消息是否支持当前阶段目标。
 3. 检查是否遗漏关键限制、错误、确认请求或结果说明。
 4. 将底层状态正确性和沟通质量分开评估。
-5. 只输出 dimension_scores.interaction_quality。
+5. dimension_scores 字段只允许包含 interaction_quality。
 
-评分锚点以 Context.rubrics.interaction_quality 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.interaction_quality 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}

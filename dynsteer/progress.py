@@ -130,6 +130,7 @@ class TqdmCaseProgressManager:
         self._refresh_state(state)
         bars = self.bars.get(case_id)
         if bars is not None:
+            self._restore_bar_elapsed(bars.progress_bar, state)
             self._grow_bar_total(bars.progress_bar, state.step_count)
             bars.progress_bar.update(step_count)
             self._set_bar_postfix(bars.progress_bar, state)
@@ -223,6 +224,7 @@ class TqdmCaseProgressManager:
         self._refresh_state(state)
         bars = self.bars.get(case_id)
         if bars is not None:
+            self._restore_bar_elapsed(bars.progress_bar, state)
             self._set_bar_postfix(bars.progress_bar, state)
 
     def _refresh_state(self, state: CaseProgressState) -> None:
@@ -245,11 +247,23 @@ class TqdmCaseProgressManager:
 
     def _finish_bar(self, bar: Any, state: CaseProgressState) -> None:
         bar.total = state.step_count
+        self._restore_bar_elapsed(bar, state)
         self._set_bar_postfix(bar, state)
         refresh = getattr(bar, "refresh", None)
         if callable(refresh):
             refresh()
         bar.update(0)
+
+    def _restore_bar_elapsed(self, bar: Any, state: CaseProgressState) -> None:
+        """恢复 tqdm 内部累计耗时，避免重建后显示 00:00<?, ?step/s。"""
+        if bar is None or state is None:
+            raise ValueError("bar 和 state 不能为空")
+        bar_time = getattr(bar, "_time", None)
+        if not callable(bar_time):
+            return
+        bar_now = float(bar_time())
+        bar.start_t = bar_now - max(state.elapsed_seconds, 0.0)
+        bar.initial = 0
 
     def _trim_visible_order(self) -> None:
         """保留固定数量的可见进度条，优先移除最早完成的 case。"""

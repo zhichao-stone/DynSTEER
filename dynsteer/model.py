@@ -162,6 +162,63 @@ class TrajectoryStep:
     raw: JsonObject = field(default_factory=dict)
 
 
+class AgentStepProtocolError(RuntimeError):
+    """agent step 闭包协议不合法时抛出。"""
+
+
+@dataclass
+class AgentStepTracker:
+    """跟踪单个串行 agent outbound 的闭包状态。
+
+    入参：
+        pending_outbound: 尚未收到反馈的 Agent -> X 原始 step。
+        completed_count: 已闭合的 agent step 数量。
+    输出：
+        `ingest()` 在闭包完成时返回闭包终点 step，否则返回 None。
+    """
+
+    pending_outbound: TrajectoryStep | None = None
+    completed_count: int = 0
+
+    def ingest(self, raw_step: TrajectoryStep) -> TrajectoryStep | None:
+        """摄入一条 raw step，并在闭合 agent step 时返回闭包终点。"""
+        if self._is_agent_outbound(raw_step):
+            if self.pending_outbound is not None:
+                raise AgentStepProtocolError(
+                    "上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound: "
+                    f"pending_step_id={self.pending_outbound.step_id}, current_step_id={raw_step.step_id}"
+                )
+            self.pending_outbound = raw_step
+            return None
+
+        pending = self.pending_outbound
+        if pending is None:
+            return None
+        if raw_step.actor == pending.recipient and raw_step.recipient == Actor.AGENT:
+            self.pending_outbound = None
+            self.completed_count += 1
+            return raw_step
+        return None
+
+    def finalize(self) -> TrajectoryStep | None:
+        """自然结束时闭合允许自闭合的终局 agent message。"""
+        pending = self.pending_outbound
+        if pending is None:
+            return None
+        if pending.actor == Actor.AGENT and pending.recipient == Actor.USER and pending.event_type in {
+            EventType.MESSAGE,
+            EventType.FINAL,
+        }:
+            self.pending_outbound = None
+            self.completed_count += 1
+            return pending
+        return None
+
+    def _is_agent_outbound(self, raw_step: TrajectoryStep) -> bool:
+        """判断 raw step 是否为 Agent -> X 的行为起点。"""
+        return raw_step.actor == Actor.AGENT and raw_step.recipient in {Actor.USER, Actor.ENVIRONMENT}
+
+
 @dataclass
 class StateSnapshot:
     snapshot_id: str
@@ -283,8 +340,6 @@ class Trajectory:
 
     def __post_init__(self) -> None:
         """根据已有 step 序列维护阶段边界 O(1) 查询上下文。"""
-        if self.steps is None:
-            raise ValueError("trajectory.steps 不能为空")
         self.first_step_index = 0
         self.successor_by_boundary = {}
         self.latest_step_index: int | None = None
@@ -310,9 +365,6 @@ class Trajectory:
     ## 可用接口
     def append_step(self, step: TrajectoryStep) -> None:
         """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
-        if step is None:
-            raise ValueError("step 不能为空")
-
         self.steps.append(step)
         self._append_step_index(step.index)
 
@@ -582,6 +634,7 @@ class RuntimeEvaluationState:
     fatal_minefield: bool = False
     ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
     milestone_frontier: MilestoneFrontierState | None = None
+    agent_step_tracker: AgentStepTracker = field(default_factory=AgentStepTracker)
 
 
 @dataclass
@@ -633,8 +686,6 @@ class RuntimeMetricsRecorder:
 
     def record_llm_call(self, call: LLMCallMetrics) -> None:
         """记录一次 LLM provider 调用。"""
-        if call is None:
-            raise ValueError("call 不能为空")
         self.llm_calls.append(call)
 
 

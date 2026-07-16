@@ -11,9 +11,9 @@ Evaluation steps:
 2. Decide whether those messages support the current stage goal.
 3. Check for missing constraints, errors, confirmation requests, or result explanations.
 4. Keep underlying state correctness separate from communication quality.
-5. Output only dimension_scores.interaction_quality.
+5. The dimension_scores field may contain only interaction_quality.
 
-Use Context.rubrics.interaction_quality as the score anchor. Return exactly one JSON object matching required_output. Do not include stage_score.
+Use Context.rubrics.interaction_quality as the score anchor. Return exactly one JSON object matching required_output.
 
 Context:
 {context_json}

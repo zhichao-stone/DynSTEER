@@ -19,7 +19,7 @@ Context 字段说明：
 - 对 state_snapshot 类证据，constraint_checks 可作为状态依据；但用户可见沟通质量仍必须从 steps 审计。
 - 不得使用 Context 之外的外部事实或假设。
 
-只返回一个匹配 required_output 的 JSON 对象，不要输出额外解释。不要包含 stage_score。
+只返回一个匹配 required_output 的 JSON 对象，不要输出额外解释。
 
 Context:
 {context_json}

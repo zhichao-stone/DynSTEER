@@ -11,9 +11,9 @@ Evaluation steps:
 2. Compare them against tool_result, state update, and constraint_checks evidence.
 3. Mark conflicts, evidence gaps, or unexplained state jumps.
 4. Decide whether conflicts overturn the stage conclusion.
-5. Output only dimension_scores.state_consistency.
+5. The dimension_scores field may contain only state_consistency.
 
-Use Context.rubrics.state_consistency as the score anchor. Return exactly one JSON object matching required_output. Do not include stage_score.
+Use Context.rubrics.state_consistency as the score anchor. Return exactly one JSON object matching required_output.
 
 Context:
 {context_json}

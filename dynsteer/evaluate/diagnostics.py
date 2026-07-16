@@ -26,8 +26,6 @@ def build_stage_trace(
     trajectory: Trajectory,
     interval: StageInterval,
 ) -> JsonObject:
-    if trajectory is None or interval is None:
-        raise ValueError("trajectory 和 interval 不能为空")
     steps = [
         trajectory_step_to_dict(step)
         for step in stage_trajectory_steps(interval, trajectory)
@@ -48,8 +46,6 @@ def milestone_score_to_dict(score: MilestoneScore) -> JsonObject:
 
 
 def milestone_summary_to_dict(milestone: Milestone) -> JsonObject:
-    if milestone is None:
-        raise ValueError("milestone 不能为空")
     return {
         "milestone_id": milestone.milestone_id,
         "name": milestone.name,
@@ -61,8 +57,6 @@ def milestone_summary_to_dict(milestone: Milestone) -> JsonObject:
 
 
 def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
-    if constraint is None:
-        raise ValueError("constraint 不能为空")
     expected = constraint.expected
     expected_summary: JsonObject = {"type": type(expected).__name__}
     if isinstance(expected, dict):
@@ -276,8 +270,6 @@ def _pending_failure_diagnostics(
 
 
 def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
-    if graph is None:
-        raise ValueError("graph 不能为空")
     return {
         "total_milestone_count": len(graph.nodes),
         "mandatory_milestone_ids": [node.milestone_id for node in graph.nodes],
@@ -303,8 +295,6 @@ def build_milestone_candidate_detail(
     selected: bool,
     reject_reason: str | None,
 ) -> JsonObject:
-    if milestone is None:
-        raise ValueError("milestone 不能为空")
     return {
         "milestone_id": milestone.milestone_id,
         "boundary": boundary_to_dict(boundary) if boundary is not None else None,
@@ -322,15 +312,6 @@ def build_milestone_matching_detail(
     milestone_score: MilestoneScore,
     ready_milestone_ids_before_match: list[str],
 ) -> JsonObject:
-    if (
-        graph is None
-        or matched is None
-        or milestone is None
-        or boundary is None
-        or milestone_score is None
-        or ready_milestone_ids_before_match is None
-    ):
-        raise ValueError("milestone 匹配诊断参数不能为空")
     return {
         "mode": "runtime_checkpoint",
         "matched": True,
@@ -445,8 +426,6 @@ def build_finish_matching_detail(
     graph: MilestoneGraph,
     matched: dict[str, HarnessStageSettlement],
 ) -> JsonObject:
-    if graph is None or matched is None:
-        raise ValueError("finish 匹配诊断参数不能为空")
     matched_ids = set(matched)
     milestone_ids = {node.milestone_id for node in graph.nodes}
     return {

@@ -11,22 +11,16 @@ QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
 
 def build_runtime_quality_diagnostics(task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
     """构造不参与评分的运行期轨迹质量诊断。"""
-    if task_case is None or trajectory is None:
-        raise ValueError("质量诊断参数不能为空")
     return _build_quality_diagnostics(task_case.case_id, list(trajectory.steps))
 
 
 def build_stage_quality_diagnostics(interval: StageInterval, trajectory: Trajectory) -> JsonObject:
     """构造当前阶段区间内的低成本轨迹质量诊断。"""
-    if interval is None or trajectory is None:
-        raise ValueError("阶段质量诊断参数不能为空")
     return _build_quality_diagnostics(None, stage_trajectory_steps(interval, trajectory))
 
 
 def _build_quality_diagnostics(case_id: str | None, steps: list[TrajectoryStep]) -> JsonObject:
     """基于给定轨迹步骤构造质量诊断。"""
-    if steps is None:
-        raise ValueError("质量诊断 steps 不能为空")
     tool_argument_warnings: list[JsonObject] = []
     empty_tool_results: list[JsonObject] = []
     failed_tool_results: list[JsonObject] = []
@@ -111,8 +105,6 @@ def _classify_empty_tool_result(tool_name: str | None) -> JsonObject:
 
 def _tool_argument_warnings(step: TrajectoryStep) -> list[JsonObject]:
     """检查工具调用参数中明显非 canonical id 的别名。"""
-    if step is None:
-        raise ValueError("step 不能为空")
     tool_call = step.tool_call
     if tool_call is None:
         return []
@@ -136,8 +128,6 @@ def _tool_argument_warnings(step: TrajectoryStep) -> list[JsonObject]:
 
 def _efficiency_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
     """统计首个工具调用前的额外用户轮次与工具调用数量。"""
-    if steps is None:
-        raise ValueError("steps 不能为空")
     first_user_index = _first_step_index(steps, Actor.USER, None)
     first_tool_index = _first_tool_call_index(steps)
     if first_user_index is None:
@@ -212,8 +202,6 @@ def _next_agent_message(steps: list[TrajectoryStep], after_index: int) -> Trajec
 
 
 def _looks_like_identifier_key(key: str) -> bool:
-    if key is None:
-        raise ValueError("参数名不能为空")
     return key.endswith("_id") or key.endswith("_person_id")
 
 
@@ -226,4 +214,3 @@ def _is_empty_tool_content(value: JsonValue) -> bool:
     if isinstance(value, list | dict):
         return len(value) == 0
     return False
-

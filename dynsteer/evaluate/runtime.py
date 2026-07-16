@@ -5,7 +5,6 @@ from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, bui
 from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
-    Actor,
     Boundary,
     Dimension,
     EvaluationLevel,
@@ -22,7 +21,6 @@ from dynsteer.model import (
     Trajectory,
 )
 from dynsteer.stage import stage_goal_key
-from dynsteer.utils import compact_text
 
 
 class JudgeConfigurationError(RuntimeError):
@@ -55,8 +53,6 @@ def update_ready_frontier_progress_watch(
     输出：
         达到终止条件时返回 JSON 详情，否则返回 None。
     """
-    if state is None or ready_ids is None or attempt_detail is None or thresholds is None:
-        raise ValueError("ready frontier watch 参数不能为空")
     if patience < 1:
         raise ValueError("ready frontier patience 必须大于 0")
     if min_delta < 0:
@@ -122,8 +118,6 @@ def update_ready_frontier_progress_watch(
 
 def ready_frontier_no_progress_termination_reason(detail: JsonObject) -> str:
     """根据 ready frontier 无进展详情生成中文终止原因。"""
-    if detail is None:
-        raise ValueError("ready frontier 无进展详情不能为空")
     code = str(detail.get("code") or "ready_frontier_no_progress")
     milestone_id = str(detail.get("most_promising_milestone_id") or "unknown")
     stale_count = int(detail.get("stale_frontier_observation_count") or 0)
@@ -142,8 +136,6 @@ def runtime_diagnostics_summary(
     state: RuntimeEvaluationState,
 ) -> JsonObject:
     """构造运行期 raw_summary 的 milestone 与质量诊断信息。"""
-    if task_case is None or trajectory is None or state is None:
-        raise ValueError("运行期诊断参数不能为空")
     graph = task_case.milestone_graph
     return {
         "milestone_graph_summary": build_milestone_graph_summary(graph),
@@ -159,8 +151,6 @@ def runtime_diagnostics_summary(
 
 def blocked_milestone_termination_reason(detail: JsonObject) -> str:
     """根据前驱断裂诊断生成中文终止原因。"""
-    if detail is None:
-        raise ValueError("路径断裂诊断不能为空")
     current_step = detail.get("current_step")
     step_id = None
     if isinstance(current_step, dict):
@@ -191,8 +181,6 @@ def blocked_milestone_termination_reason(detail: JsonObject) -> str:
 
 def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
     """为自然结束时仍未完成的 milestone 生成失败阶段报告。"""
-    if task_case is None or state is None:
-        raise ValueError("pending milestone stage 参数不能为空")
     graph = task_case.milestone_graph
     diagnostics = build_final_milestone_diagnostics(
         graph=graph,
@@ -257,8 +245,6 @@ def scoring_context(
     matched: dict[str, HarnessStageSettlement],
 ) -> ScoringContext:
     """构造运行期评分上下文。"""
-    if task_case is None or trajectory is None or matched is None:
-        raise ValueError("评分上下文参数不能为空")
     matched_boundaries: dict[str, Boundary] = {}
     matched_snapshots: dict[str, StateSnapshot] = {}
     initial_state = task_case.initial_state
@@ -293,8 +279,6 @@ def scoring_context(
 
 def task_case_snapshot(case_id: str, task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
     """构造可审计的任务快照摘要。"""
-    if case_id is None or not str(case_id).strip() or task_case is None or trajectory is None:
-        raise ValueError("task_case 快照参数不能为空")
     metadata = dict(task_case.metadata)
     return {
         "case_id": str(case_id),
@@ -303,19 +287,7 @@ def task_case_snapshot(case_id: str, task_case: TaskCase, trajectory: Trajectory
         "task_types": [item.value for item in task_case.task_types],
         "scenario_name": metadata.get("scenario_name"),
         "categories": list(metadata.get("categories", [])) if isinstance(metadata.get("categories"), list) else [],
-        "initial_user_message_excerpt": _initial_user_message_excerpt(trajectory),
     }
-
-
-def task_description_mismatched(snapshot: JsonObject) -> bool:
-    """判断任务描述与首条用户消息摘要是否明显不一致。"""
-    if snapshot is None:
-        raise ValueError("task_case 快照不能为空")
-    description = snapshot.get("task_description")
-    initial_message = snapshot.get("initial_user_message_excerpt")
-    if not isinstance(description, str) or not isinstance(initial_message, str):
-        return False
-    return bool(description.strip() and initial_message.strip() and description.strip() != initial_message.strip())
 
 
 def _candidate_scores_by_milestone(attempt_detail: JsonObject) -> dict[str, JsonObject]:
@@ -371,8 +343,6 @@ def _ready_frontier_no_progress_detail(
     patience: int,
     min_delta: float,
 ) -> JsonObject:
-    if not watch.milestone_progress:
-        raise ValueError("ready frontier progress 不能为空")
     progress_items = sorted(
         watch.milestone_progress.values(),
         key=lambda item: (-item.best_score, item.milestone_id),
@@ -434,12 +404,3 @@ def _clamped_score(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return max(0.0, min(float(value), 1.0))
-
-
-def _initial_user_message_excerpt(trajectory: Trajectory) -> str | None:
-    if trajectory is None:
-        raise ValueError("trajectory 不能为空")
-    for step in trajectory.steps:
-        if step.actor == Actor.USER and isinstance(step.content, str) and step.content.strip():
-            return compact_text(step.content, 240)
-    return None

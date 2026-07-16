@@ -11,9 +11,9 @@
 2. 审查 agent 是否明确识别这些信号。
 3. 判断恢复动作是否有效、适度且不引入新风险。
 4. 区分合理重试和无效重复。
-5. 只输出 dimension_scores.recovery。
+5. dimension_scores 字段只允许包含 recovery。
 
-评分锚点以 Context.rubrics.recovery 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.recovery 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}

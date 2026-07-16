@@ -11,9 +11,9 @@ Evaluation steps:
 2. Mark ineffective, repeated, or delaying steps.
 3. Decide whether extra steps are justified by safety, clarification, or recovery.
 4. Estimate how much inefficiency affected stage completion.
-5. Output only dimension_scores.efficiency.
+5. The dimension_scores field may contain only efficiency.
 
-Use Context.rubrics.efficiency as the score anchor. Return exactly one JSON object matching required_output. Do not include stage_score.
+Use Context.rubrics.efficiency as the score anchor. Return exactly one JSON object matching required_output.
 
 Context:
 {context_json}

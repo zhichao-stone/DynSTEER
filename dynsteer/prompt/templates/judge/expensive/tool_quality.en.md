@@ -12,9 +12,9 @@ Evaluation steps:
 2. Decide whether each call serves stage_goal.
 3. Check arguments, returned result, and downstream use.
 4. Penalize irrelevant calls, wrong parameters, ignored results, and fabricated results.
-5. Output only dimension_scores.tool_quality.
+5. The dimension_scores field may contain only tool_quality.
 
-Use Context.rubrics.tool_quality as the score anchor. Return exactly one JSON object matching required_output. Do not include stage_score.
+Use Context.rubrics.tool_quality as the score anchor. Return exactly one JSON object matching required_output.
 
 Context:
 {context_json}

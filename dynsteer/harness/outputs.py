@@ -13,8 +13,6 @@ from dynsteer.utils import json_safe
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """将 Trajectory 转换为 JSON 对象。"""
-    if trajectory is None:
-        raise ValueError("trajectory 不能为空")
     return {
         "run_id": trajectory.run_id,
         "task_id": trajectory.task_id,
@@ -37,19 +35,23 @@ def trajectory_step_to_json(step: TrajectoryStep) -> JsonObject:
             "content": json_safe(step.tool_result.content),
             "exception": step.tool_result.exception,
         }
-    return {
-        "step_id": step.step_id,
-        "index": step.index,
-        "actor": step.actor.value,
-        "event_type": step.event_type.value,
-        "timestamp": step.timestamp,
-        "content": step.content,
-        "tool_call": tool_call,
-        "tool_result": tool_result,
-        "state_delta_refs": list(step.state_delta_refs),
-        "cost": {"tokens": step.cost.tokens, "latency_ms": step.cost.latency_ms},
-        **{str(key): json_safe(value) for key, value in step.raw.items()},
-    }
+    raw_fields = {str(key): json_safe(value) for key, value in step.raw.items()}
+    raw_fields.update(
+        {
+            "step_id": step.step_id,
+            "index": step.index,
+            "actor": step.actor.value,
+            "recipient": step.recipient.value if step.recipient is not None else None,
+            "event_type": step.event_type.value,
+            "timestamp": step.timestamp,
+            "content": step.content,
+            "tool_call": tool_call,
+            "tool_result": tool_result,
+            "state_delta_refs": list(step.state_delta_refs),
+            "cost": {"tokens": step.cost.tokens, "latency_ms": step.cost.latency_ms},
+        }
+    )
+    return raw_fields
 
 
 def snapshot_to_json(snapshot: StateSnapshot) -> JsonObject:
@@ -71,8 +73,6 @@ def write_case_outputs(
     progress_reporter: CaseProgressReporter | None = None,
 ) -> HarnessEvaluationOutput:
     """执行单个 case 并分别写入中间产物和最终结果。"""
-    if config is None or harness is None or evaluator is None or task_case is None or not task_case.case_id:
-        raise ValueError("config、harness、evaluator 和 task_case 不能为空")
     harness_result = evaluator.evaluate(harness, config, task_case, progress_reporter=progress_reporter)
     case_id = task_case.case_id
     report = harness_result.evaluation_report
@@ -92,7 +92,8 @@ def write_case_outputs(
     trajectory = harness_result.trajectory
     raw_summary["trajectory_output"] = {
         "path": "trajectory.json",
-        "step_count": len(trajectory.steps),
+        "step_count": runtime_metrics.get("step_count"),
+        "raw_step_count": len(trajectory.steps),
         "snapshot_count": len(trajectory.snapshots),
         "final_state_present": trajectory.final_state is not None,
     }
@@ -123,8 +124,6 @@ def write_case_outputs(
 
 def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
     """按 run 目录写出所有场景的汇总摘要。"""
-    if outputs is None:
-        raise ValueError("outputs 不能为空")
     outputs_by_run_dir: dict[Path, list[HarnessEvaluationOutput]] = {}
     for output in outputs:
         if output is None:
@@ -140,8 +139,6 @@ def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
 
 def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutput]) -> dict[str, object]:
     """构造单个 run_id 下所有场景的汇总摘要。"""
-    if run_dir is None or outputs is None:
-        raise ValueError("run_dir 和 outputs 不能为空")
     cases: list[dict[str, object]] = []
     coverage_counts: dict[str, int] = {}
     score_sum = 0.0

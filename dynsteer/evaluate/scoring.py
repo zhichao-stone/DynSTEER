@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from dynsteer.evaluate.matching.boundary import boundary_snapshot, boundary_step
 from dynsteer.config import TASK_TYPE_WEIGHTS, default_dynamic_weight_config
+from dynsteer.graph import START_NODE_ID
 from dynsteer.judges.confidence import complete_dimension_confidence, uncertainty_from_confidence
 from dynsteer.model import (
     Boundary,
@@ -15,6 +16,7 @@ from dynsteer.model import (
     ConstraintTarget,
     Dimension,
     DynamicWeightConfig,
+    EventType,
     JsonObject,
     JsonValue,
     MISSING,
@@ -113,8 +115,6 @@ class GeneralScorer:
         reference_source: object | None = None,
         context: ScoringContext | None = None,
     ) -> ConstraintScore:
-        if constraint is None:
-            raise ValueError("constraint 不能为空")
         current_source = self._resolve_source(constraint, source)
         actual = self.select_value(current_source, constraint.selector)
         missing = actual is None
@@ -170,8 +170,6 @@ class GeneralScorer:
         reference_snapshots: list[StateSnapshot],
         context: ScoringContext | None = None,
     ) -> MilestoneScore:
-        if milestone is None or boundary is None or trajectory is None:
-            raise ValueError("milestone、boundary、trajectory 均不能为空")
         if len(milestone.constraints) == 0:
             return MilestoneScore(
                 milestone_id=milestone.milestone_id,
@@ -238,6 +236,7 @@ class GeneralScorer:
             "step_id": step.step_id,
             "index": step.index,
             "actor": step.actor.value,
+            "recipient": step.recipient.value if step.recipient is not None else None,
             "event_type": step.event_type.value,
             "timestamp": step.timestamp,
             "content": step.content,
@@ -277,12 +276,12 @@ class GeneralScorer:
         context: ScoringContext | None = None,
     ) -> tuple[object, StateSnapshot | None]:
         """按约束目标解析 boundary 上的评分 source 与 reference。"""
-        if constraint is None or boundary is None or trajectory is None or snapshots is None:
-            raise ValueError("constraint source 参数不能为空")
         if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
             source: object = boundary_snapshot(boundary, snapshots)
         elif constraint.target == ConstraintTarget.METRIC:
             source = trajectory.metrics
+        elif constraint.target in {ConstraintTarget.TOOL_CALL, ConstraintTarget.TOOL_RESULT}:
+            source = self._interval_step_source(constraint, boundary, trajectory, context)
         else:
             source = boundary_step(trajectory, boundary)
         if constraint.reference_milestone_id is None:
@@ -296,15 +295,49 @@ class GeneralScorer:
                 return source, snapshot
         return source, None
 
-    def _constraint_sources(
+    def _interval_step_source(
         self,
         constraint: Constraint,
         boundary: Boundary,
         trajectory: Trajectory,
-        snapshots: list[StateSnapshot],
-    ) -> tuple[object, StateSnapshot | None]:
-        """兼容内部旧调用，统一转发到公共 source 解析方法。"""
-        return self.constraint_sources(constraint, boundary, trajectory, snapshots)
+        context: ScoringContext | None,
+    ) -> TrajectoryStep | None:
+        """在当前 milestone 阶段区间中寻找最近的目标 step。"""
+        start_index = self._stage_start_step_index(constraint, trajectory, context)
+        if boundary.step_index <= start_index:
+            return boundary_step(trajectory, boundary)
+        for step in reversed(trajectory.get_interval(start_index, boundary.step_index)):
+            if constraint.target == ConstraintTarget.TOOL_CALL and (
+                step.tool_call is not None or step.event_type == EventType.TOOL_CALL
+            ):
+                return step
+            if constraint.target == ConstraintTarget.TOOL_RESULT and (
+                step.tool_result is not None or step.event_type == EventType.TOOL_RESULT
+            ):
+                return step
+        return boundary_step(trajectory, boundary)
+
+    def _stage_start_step_index(
+        self,
+        constraint: Constraint,
+        trajectory: Trajectory,
+        context: ScoringContext | None,
+    ) -> int:
+        """根据 constraint 所属 milestone 找到当前阶段左边界。"""
+        if trajectory.latest_step_index is None:
+            return -1
+        if context is None or context.task_case is None or context.task_case.milestone_graph is None:
+            return trajectory.first_step_index - 1
+        for milestone in context.task_case.milestone_graph.nodes:
+            if not any(item.constraint_id == constraint.constraint_id for item in milestone.constraints):
+                continue
+            anchor_id = milestone.stage_anchor_predecessor_id
+            if anchor_id == START_NODE_ID:
+                return trajectory.first_step_index - 1
+            if isinstance(anchor_id, str) and anchor_id in context.matched_boundaries:
+                return context.matched_boundaries[anchor_id].step_index
+            return trajectory.first_step_index - 1
+        return trajectory.first_step_index - 1
 
 
 def get_effective_scorer(scorer: GeneralScorer | None) -> GeneralScorer:
@@ -316,10 +349,8 @@ def stage_score_from_dimensions(
     weights: dict[Dimension, float],
 ) -> float:
     """根据维度分数和动态权重计算阶段综合分数。"""
-    if dimension_scores is None or weights is None:
-        raise ValueError("阶段分数计算参数不能为空")
     if not dimension_scores:
-        raise ValueError("dimension_scores 不能为空")
+        return 0.0
     weighted_score = 0.0
     total_weight = 0.0
     present_dimensions = [dimension for dimension in Dimension if dimension in dimension_scores]
@@ -342,15 +373,13 @@ def stage_score_from_dimensions(
 
 def overall_score(stage_reports: list[StageEvaluationResult], minefield_score: float) -> float:
     if not stage_reports:
-        return 1.0 if minefield_score == 0 else 0.0
+        return 0.0
     raw = sum(stage.stage_score for stage in stage_reports) / len(stage_reports)
     return clamp(raw * (1.0 - clamp(minefield_score)))
 
 
 def minefield_penalty_score(matches: list[JsonObject]) -> float:
     """根据 minefield 命中记录计算最终总分扣罚比例。"""
-    if matches is None:
-        raise ValueError("minefield matches 不能为空")
     max_penalty = 0.0
     for match in matches:
         if not isinstance(match, dict):
@@ -374,8 +403,6 @@ def enrich_stage_result(
     fatal_minefield: bool,
     thresholds: object,
 ) -> StageEvaluationResult:
-    if interval is None or result is None or thresholds is None:
-        raise ValueError("enrich_stage_result 入参不能为空")
     result.dimension_confidence = complete_dimension_confidence(list(Dimension), result.dimension_confidence)
     result.dimension_uncertainty = uncertainty_from_confidence(result.dimension_confidence)
     result.minefield_score = minefield_score
@@ -384,8 +411,6 @@ def enrich_stage_result(
 
 
 def first_failure_stage_id(stage_reports: list[StageEvaluationResult]) -> str | None:
-    if stage_reports is None:
-        raise ValueError("stage_reports 不能为空")
     return next(
         (
             stage.stage_id
@@ -405,8 +430,6 @@ def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]
 
 
 def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
-    if task_case is None:
-        raise ValueError("task_case 不能为空")
     task_types = task_case.task_types or []
     if not task_types:
         task_types = [next(iter(TASK_TYPE_WEIGHTS))]
@@ -430,8 +453,6 @@ def update_weights(
     dimension_uncertainty: dict[Dimension, float],
     config: Optional[DynamicWeightConfig] = None,
 ) -> dict[Dimension, float]:
-    if current is None or scores is None or dimension_uncertainty is None:
-        raise ValueError("current、scores 和 dimension_uncertainty 不能为空")
     effective_config = config or default_dynamic_weight_config()
     next_weights: dict[Dimension, float] = {}
     for dimension in Dimension:
@@ -452,8 +473,6 @@ def weight_update_diagnostics(
     config: Optional[DynamicWeightConfig] = None,
 ) -> JsonObject:
     """构造动态权重更新审计信息。"""
-    if current is None or scores is None or dimension_uncertainty is None or next_weights is None:
-        raise ValueError("权重诊断参数不能为空")
     effective_config = config or default_dynamic_weight_config()
     return {
         "formula": "w_next = normalize(w * exp(alpha * (1 - score) + beta * uncertainty))",

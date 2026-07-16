@@ -45,8 +45,6 @@ def stage_start_for_ready_milestone(
     输出：
         阶段 anchor id 与 anchor boundary step index。
     """
-    if milestone is None or matched is None or trajectory is None:
-        raise ValueError("阶段起点参数不能为空")
     anchor_id = milestone.stage_anchor_predecessor_id
     if not isinstance(anchor_id, str) or not anchor_id:
         raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
@@ -83,8 +81,6 @@ def analyze_milestone_step(
     输出：
         milestone 命中、attempt 详情或 blocked 诊断详情。
     """
-    if task_case is None or trajectory is None or step is None or boundary is None or matched is None or frontier is None:
-        raise ValueError("milestone step 分析参数不能为空")
     if not frontier.milestone_by_id:
         return MilestoneStepAnalysis()
 
@@ -355,8 +351,6 @@ def _mark_selected_candidate_details(
 
 
 def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScore) -> bool:
-    if milestone is None or score is None:
-        raise ValueError("milestone 和 score 不能为空")
     if score.status != StageStatus.WARN:
         return False
     if score.missing_ratio > 0.0 or not score.hard_constraints_all_pass:
@@ -377,8 +371,6 @@ def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScor
 
 
 def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:
-    if constraint is None:
-        raise ValueError("constraint 不能为空")
     semantics = constraint.stage_goal_semantics
     if not isinstance(semantics, dict):
         return False

@@ -11,9 +11,9 @@
 2. 对照 steps 中的 tool_result、state update 和 constraint_checks。
 3. 标记所有冲突、缺口或未解释的状态跳变。
 4. 判断冲突是否足以推翻阶段结论。
-5. 只输出 dimension_scores.state_consistency。
+5. dimension_scores 字段只允许包含 state_consistency。
 
-评分锚点以 Context.rubrics.state_consistency 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.state_consistency 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}

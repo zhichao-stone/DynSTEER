@@ -11,9 +11,9 @@ Evaluation steps:
 2. Find behavioral evidence for each subgoal in steps.
 3. Use constraint_checks to verify structured outcomes.
 4. Decide whether the stage is complete, partial, attempted, or not completed.
-5. Output only dimension_scores.progress.
+5. The dimension_scores field may contain only progress.
 
-Use Context.rubrics.progress as the score anchor. Return exactly one JSON object matching required_output. Do not include stage_score.
+Use Context.rubrics.progress as the score anchor. Return exactly one JSON object matching required_output.
 
 Context:
 {context_json}

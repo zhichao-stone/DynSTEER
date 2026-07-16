@@ -26,17 +26,17 @@ from dynsteer.utils import enum_name, json_safe
 def role_to_actor(sender: object, recipient: object) -> str:
     sender_name = enum_name(sender)
     recipient_name = enum_name(recipient)
-    if sender_name == "SYSTEM":
-        return Actor.SYSTEM.value
-    if sender_name == "USER":
-        return Actor.USER.value
-    if sender_name == "AGENT":
-        return Actor.AGENT.value
-    if sender_name == "EXECUTION_ENVIRONMENT":
-        return Actor.ENVIRONMENT.value
+    actor = _actor_value_from_role_name(sender_name)
+    if actor is not None:
+        return actor
     if recipient_name == "AGENT":
         return Actor.ENVIRONMENT.value
     return Actor.AGENT.value
+
+
+def role_to_recipient(recipient: object) -> str | None:
+    """将 benchmark 原生 recipient 映射为 DynSTEER 统一 Actor 值。"""
+    return _actor_value_from_role_name(enum_name(recipient))
 
 
 def tool_trace_from_row(row: dict[str, object]) -> dict[str, JsonValue] | None:
@@ -111,8 +111,6 @@ def sandbox_message_index(row: dict[str, object]) -> int:
 
 
 def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, JsonValue]]:
-    if rows is None:
-        raise ValueError("rows 不能为空")
     steps: list[dict[str, JsonValue]] = []
     for row in rows:
         raw_index = sandbox_message_index(row)
@@ -121,6 +119,7 @@ def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, 
         recipient = row.get("recipient")
         trace = tool_trace_from_row(row)
         actor = role_to_actor(sender, recipient)
+        recipient_actor = role_to_recipient(recipient)
         event_type = EventType.MESSAGE.value
         tool_call: JsonObject | None = None
         tool_result: JsonObject | None = None
@@ -139,13 +138,14 @@ def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, 
                 "step_id": f"s{step_index}",
                 "index": step_index,
                 "actor": actor,
+                "recipient": recipient_actor,
                 "event_type": event_type,
                 "content": row.get("content") if isinstance(row.get("content"), str) else None,
                 "tool_call": tool_call,
                 "tool_result": tool_result,
                 "raw_sandbox_message_index": json_safe(row.get("sandbox_message_index")),
-                "sender": enum_name(sender),
-                "recipient": enum_name(recipient),
+                "raw_sender": enum_name(sender),
+                "raw_recipient": enum_name(recipient),
                 "openai_tool_call_id": json_safe(row.get("openai_tool_call_id")),
                 "openai_function_name": json_safe(row.get("openai_function_name")),
                 "visible_to": json_safe(row.get("visible_to")),
@@ -203,8 +203,6 @@ def task_description_from_steps(
     fallback: str,
     first_user_sandbox_message_index: int | None = None,
 ) -> str:
-    if steps is None or fallback is None:
-        raise ValueError("steps 和 fallback 不能为空")
     if first_user_sandbox_message_index is not None:
         for step in steps:
             if (
@@ -241,8 +239,6 @@ def task_types_from_categories(categories: list[object]) -> list[TaskType]:
 
 
 def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
-    if row is None:
-        raise ValueError("SANDBOX row 不能为空")
     raw_trace = row.get("tool_trace")
     if raw_trace is None:
         return None
@@ -442,8 +438,6 @@ def database_namespaces(module_loader: object, include_sandbox: bool = False) ->
 
 
 def initial_state_from_context(context: object, module_loader: object) -> dict[str, JsonValue]:
-    if context is None:
-        raise ValueError("context 不能为空")
     namespaces: dict[str, JsonValue] = {}
     first_user_index = getattr(context, "first_user_sandbox_message_index", None)
     for namespace in database_namespaces(module_loader):
@@ -457,8 +451,6 @@ def snapshots_from_context(
     steps: list[dict[str, JsonValue]],
     module_loader: object,
 ) -> list[dict[str, JsonValue]]:
-    if context is None:
-        raise ValueError("context 不能为空")
     if not steps:
         return []
     sandbox_indexes = [
@@ -502,8 +494,6 @@ def trajectory_from_sandbox_rows(
     steps: list[dict[str, JsonValue]],
     snapshots: list[dict[str, JsonValue]] | None = None,
 ) -> Trajectory:
-    if not run_id or not task_id or steps is None:
-        raise ValueError("run_id、task_id 和 steps 不能为空")
     return Trajectory(
         run_id=run_id,
         task_id=task_id,
@@ -518,8 +508,9 @@ def _trajectory_step_from_dict(step: dict[str, JsonValue]) -> TrajectoryStep:
     return TrajectoryStep(
         step_id=str(step["step_id"]),
         index=int(step["index"]),
-        actor=Actor(str(step["actor"])),
+        actor=_actor_from_step_value(step.get("actor"), "actor"),
         event_type=EventType(str(step["event_type"])),
+        recipient=_optional_actor_from_step_value(step.get("recipient"), "recipient"),
         content=step.get("content") if isinstance(step.get("content"), str) else None,
         tool_call=ToolCall(str(tool_call["name"]), dict(tool_call.get("arguments", {}))) if isinstance(tool_call, dict) else None,
         tool_result=ToolResult(
@@ -527,8 +518,43 @@ def _trajectory_step_from_dict(step: dict[str, JsonValue]) -> TrajectoryStep:
             tool_result.get("content"),
             tool_result.get("exception") if isinstance(tool_result.get("exception"), str) else None,
         ) if isinstance(tool_result, dict) else None,
-        raw={key: value for key, value in step.items() if key not in {"step_id", "index", "actor", "event_type", "content", "tool_call", "tool_result"}},
+        raw={
+            key: value
+            for key, value in step.items()
+            if key not in {"step_id", "index", "actor", "recipient", "event_type", "content", "tool_call", "tool_result"}
+        },
     )
+
+
+def _actor_value_from_role_name(role_name: str) -> str | None:
+    mapping = {
+        "SYSTEM": Actor.SYSTEM.value,
+        "USER": Actor.USER.value,
+        "AGENT": Actor.AGENT.value,
+        "EXECUTION_ENVIRONMENT": Actor.ENVIRONMENT.value,
+        "ENVIRONMENT": Actor.ENVIRONMENT.value,
+        "EVALUATOR": Actor.EVALUATOR.value,
+    }
+    return mapping.get(role_name)
+
+
+def _actor_from_step_value(value: JsonValue, field_name: str) -> Actor:
+    actor = _optional_actor_from_step_value(value, field_name)
+    if actor is None:
+        raise ValueError(f"缺少 step.{field_name}")
+    return actor
+
+
+def _optional_actor_from_step_value(value: JsonValue, field_name: str) -> Actor | None:
+    if value is None:
+        return None
+    actor_value = _actor_value_from_role_name(str(value).upper())
+    if actor_value is not None:
+        return Actor(actor_value)
+    try:
+        return Actor(str(value))
+    except ValueError as exc:
+        raise ValueError(f"step.{field_name} 角色非法: {value}") from exc
 
 
 def _snapshot_from_dict(snapshot: dict[str, JsonValue]) -> StateSnapshot:

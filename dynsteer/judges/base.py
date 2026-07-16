@@ -130,12 +130,15 @@ class LLMJudge(BaseJudge):
         dimensions: Iterable[Dimension] | None = None,
     ) -> _ValidatedJudgePayload:
         """校验 Judge JSON payload 的必需字段和可选元数据。"""
-        if not isinstance(payload, dict):
-            raise LLMJudgeResponseError("LLMJudge 返回内容必须是 JSON 对象")
         try:
             status = StageStatus(str(payload["status"]))
         except (KeyError, ValueError) as exc:
-            raise LLMJudgeResponseError("LLMJudge 返回 status 非法") from exc
+            raw_status = payload.get("status", "<missing>")
+            allowed = ", ".join(status.value for status in StageStatus)
+            raise LLMJudgeResponseError(
+                f"LLMJudge 返回 status 非法: actual={raw_status!r}, allowed=[{allowed}], "
+                f"payload={self._payload_excerpt(payload)}"
+            ) from exc
         return _ValidatedJudgePayload(
             status=status,
             dimension_scores=self._dimension_scores(payload.get("dimension_scores"), _target_dimensions(dimensions)),
@@ -191,6 +194,16 @@ class LLMJudge(BaseJudge):
         if not isinstance(value, dict):
             raise LLMJudgeResponseError("metadata 必须是对象")
         return {str(key): item for key, item in value.items()}
+
+    def _payload_excerpt(self, payload: object, max_length: int = 1200) -> str:
+        """生成用于异常信息的 payload 摘要，避免超长输出刷屏。"""
+        try:
+            text = json.dumps(payload, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = repr(payload)
+        if len(text) <= max_length:
+            return text
+        return f"{text[:max_length]}...(truncated, total={len(text)})"
 
 
 def _target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:

@@ -19,7 +19,7 @@ Evidence rules:
 - For state_snapshot evidence, constraint_checks may serve as state evidence; user-facing communication quality must still be audited from steps.
 - Do not use external facts or assumptions outside Context.
 
-Return exactly one JSON object matching required_output. Do not wrap it in prose. Do not include stage_score.
+Return exactly one JSON object matching required_output. Do not wrap it in prose.
 
 Context:
 {context_json}

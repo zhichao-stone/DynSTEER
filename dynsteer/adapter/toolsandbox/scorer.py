@@ -91,8 +91,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_snapshots: list[StateSnapshot],
         context: ScoringContext | None = None,
     ) -> MilestoneScore:
-        if milestone is None or boundary is None or trajectory is None or reference_snapshots is None:
-            raise ValueError("ToolSandbox milestone 评分参数不能为空")
         if not any(self._is_toolsandbox_constraint(constraint) for constraint in milestone.constraints):
             return super().score_milestone(
                 milestone,
@@ -115,7 +113,13 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         non_guardrail_count = 0
         hard_pass = True
         for constraint in milestone.constraints:
-            source, reference = self._constraint_sources(constraint, boundary, trajectory, reference_snapshots)
+            source, reference = self.constraint_sources(
+                constraint,
+                boundary,
+                trajectory,
+                reference_snapshots,
+                context=context,
+            )
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             constraint_score = clamp(float(result.score))
@@ -279,8 +283,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return self._restore_namespace_schema(pl.DataFrame(rows), namespace, target=target)
 
     def _normalize_sandbox_target_rows(self, rows: list[JsonValue]) -> list[JsonValue]:
-        if rows is None:
-            raise ValueError("SANDBOX target rows 不能为空")
         normalized: list[JsonValue] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -348,8 +350,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         schema: dict[str, Any],
         target: bool = False,
     ) -> pl.DataFrame:
-        if dataframe is None or schema is None:
-            raise ValueError("SANDBOX schema 恢复参数不能为空")
         result = dataframe
         for column_name, dtype in schema.items():
             if column_name not in result.columns:

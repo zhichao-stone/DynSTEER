@@ -11,9 +11,9 @@
 2. 标记无效、重复或拖延的步骤。
 3. 判断额外步骤是否由安全、澄清或恢复需要正当化。
 4. 估计低效行为对阶段完成的影响。
-5. 只输出 dimension_scores.efficiency。
+5. dimension_scores 字段只允许包含 efficiency。
 
-评分锚点以 Context.rubrics.efficiency 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.efficiency 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}

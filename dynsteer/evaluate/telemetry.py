@@ -21,8 +21,6 @@ def policy_stop_log_extra(
     decision: RuntimeEvaluationDecision,
 ) -> JsonObject:
     """构造策略提前终止 warning 摘要。"""
-    if case_id is None or task_case is None or decision is None:
-        raise ValueError("策略终止日志参数不能为空")
     stage_result = decision.stage_result
     matched_ids = sorted(decision.next_state.matched_settlements)
     pending_ids = _pending_milestone_ids(task_case.milestone_graph, matched_ids)

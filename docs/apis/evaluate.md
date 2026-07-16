@@ -14,11 +14,12 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 
 1. `harness.start_case(...)` 启动 benchmark session。
 2. 初始化 `Trajectory`、动态权重、`EvaluationPolicyState` 和 milestone ready frontier。
-3. 每个新增 step 先扫描 minefield，再分析当前 ready milestone 是否命中。
-4. milestone 命中后进入阶段结算；未命中时更新 ready frontier 无进展 watch。
-5. 阶段结算先运行 cheap baseline，再按 `EvaluationPolicyState.dimension_levels` 对指定维度调用 standard 或 expensive judge。
-6. 阶段完成后更新逐维权重和下一阶段评估策略。
-7. 自然结束时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成时才追加 `__finish__` 阶段。
+3. 每个 raw step 先写入 `trajectory.steps`，并立刻扫描 minefield；fatal minefield 可在下一次 harness 推进前触发策略终止。
+4. `AgentStepTracker` 根据规范化 `actor/recipient` 组装完整 agent step 闭包；未闭合 outbound 不触发 milestone matching、checkpoint 或 ready frontier no-progress。
+5. 完整 agent step 闭合后才分析当前 ready milestone 是否命中；未命中时更新 ready frontier 无进展 watch。
+6. milestone 命中后进入阶段结算，先运行 cheap baseline，再按 `EvaluationPolicyState.dimension_levels` 对指定维度调用 standard 或 expensive judge。
+7. 阶段完成后更新逐维权重和下一阶段评估策略。
+8. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` 阶段。
 
 ## Milestone 语义
 
@@ -27,7 +28,7 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 - `Milestone.required` 已移除。
 - adapted case 中出现 `required` 字段会在 loader 解析时直接报错，要求重新生成。
 - coverage 规则：全部 milestone matched 为 `full`；至少一个真实 milestone matched 但不是全部为 `partial`；没有 milestone 或没有 matched 为 `none`。
-- pending 规则：运行自然结束后，所有未 matched milestone 都生成 `synthetic_pending_milestone` stage。
+- pending 规则：运行自然结束或策略提前终止后，所有未 matched milestone 都生成 `synthetic_pending_milestone` stage。
 
 ## Ready Frontier
 
@@ -38,6 +39,8 @@ ready frontier 无进展终止会观察当前 ready frontier 内每个 milestone
 - `ready_frontier_no_progress:{most_promising_milestone_id}`
 - `milestone_no_progress:{milestone_id}`
 
+ready frontier 的观察单位是完整闭合的 agent step，不是 raw step。agent 发出 tool call 后、tool result 尚未返回前，不会因为该 outbound 立即触发 no-progress。
+
 ## Scoring
 
 `GeneralScorer` 支持三类 operator：
@@ -47,6 +50,8 @@ ready frontier 无进展终止会观察当前 ready frontier 内每个 milestone
 - benchmark 专用：`custom`
 
 `ast_match` 已移除。delta operator 的 `reference_milestone_id` 优先从 `ScoringContext.matched_snapshots` 读取对应 milestone 命中时的 snapshot；找不到 reference snapshot 时返回 missing，而不是把 milestone id 当 snapshot id。
+
+`TOOL_CALL` / `TOOL_RESULT` 约束会在当前 milestone 阶段区间中寻找最近的对应 step。这样 milestone 评估延后到 tool result 闭合点后，仍能使用闭包内的 agent tool call 作为证据。
 
 selector/operator 详细规范见 [constraints.md](constraints.md)。
 
@@ -103,3 +108,5 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 `StageEvaluationResult.metadata` 只用于报告、展示和诊断附加信息，不参与阶段分数、状态聚合、权重更新或策略更新。高阶 judge 的逐维结果应进入 `dimension_scores`、`dimension_levels`、`dimension_confidence` 和 `dimension_uncertainty`；不再把 standard/expensive judge 的整包 metadata 合并进 stage metadata。
 
 自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。
+
+`overall_score([])` 固定为 `0.0`。空 `stage_reports` 表示没有任何 milestone 证据被结算，不能作为满分兜底。

@@ -11,9 +11,9 @@
 2. 用 steps 找到每个子目标的行为证据。
 3. 用 constraint_checks 校验结构化结果是否支持这些行为。
 4. 判断是完整完成、部分完成、只尝试、还是未完成。
-5. 只输出 dimension_scores.progress。
+5. dimension_scores 字段只允许包含 progress。
 
-评分锚点以 Context.rubrics.progress 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.progress 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}

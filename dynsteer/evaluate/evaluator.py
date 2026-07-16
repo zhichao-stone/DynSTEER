@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 import time
 from typing import Mapping, TYPE_CHECKING
@@ -41,7 +42,7 @@ from dynsteer.model import (
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.stage.settlement import evaluate_checkpoint, finish_settlement
-from dynsteer.evaluate.step import evaluate_runtime_step
+from dynsteer.evaluate.step import evaluate_agent_step, evaluate_raw_step_minefields
 from dynsteer.evaluate.runtime import (
     HarnessTeardownError,
 )
@@ -49,7 +50,6 @@ from dynsteer.evaluate.runtime import (
     pending_milestone_stage_results,
     runtime_diagnostics_summary,
     task_case_snapshot,
-    task_description_mismatched,
 )
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
@@ -105,8 +105,6 @@ class DynSTEEREvaluator:
         context: ScoringContext | None = None,
     ) -> tuple[list[JsonObject], float, bool]:
         """评估轨迹是否触发 minefield。"""
-        if graph is None or trajectory is None:
-            raise ValueError("graph 和 trajectory 不能为空")
         matches: list[JsonObject] = []
         seen: set[tuple[str, str]] = set()
         max_score = 0.0
@@ -138,11 +136,7 @@ class DynSTEEREvaluator:
         progress_reporter: CaseProgressReporter | None = None,
     ) -> HarnessRunResult:
         """执行 benchmark case，并进行阶段式动态评估。"""
-        if harness is None or config is None or task_case is None:
-            raise ValueError("harness、config 和 task_case 不能为空")
         case_id = task_case.case_id
-        if case_id is None or not str(case_id).strip():
-            raise ValueError("task_case.case_id 不能为空")
         harness.prepare_config(config)
         run_id = harness.build_run_id(config, case_id)
         raw_output_dir = config.runs_dir / config.benchmark / run_id / case_id / "raw"
@@ -186,10 +180,19 @@ class DynSTEEREvaluator:
                 milestone_frontier=initialize_milestone_frontier(task_case.milestone_graph),
             )
 
+            def checkpoint_evaluator(**kwargs: object) -> RuntimeEvaluationDecision:
+                return evaluate_checkpoint(
+                    **kwargs,
+                    cheap_judge=self._cheap_judge,
+                    standard_judge=self._standard_judge,
+                    expensive_judge=self._expensive_judge,
+                    thresholds=self._thresholds,
+                    weight_config=self._weight_config,
+                )
+
+            policy_stop_reason = "阶段式动态评估触发提前终止"
             while True:
                 advance = harness.advance_case(session)
-                if progress_reporter is not None and advance.steps:
-                    progress_reporter.case_advanced(case_id, len(advance.steps))
                 if advance.snapshots:
                     snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in trajectory.snapshots}
                     for snapshot in advance.snapshots:
@@ -201,66 +204,112 @@ class DynSTEEREvaluator:
                 trajectory.final_state = harness.final_state_from_session(session)
                 trajectory.metrics = harness.metrics_from_session(session)
 
+                completed_agent_steps = 0
                 for step in advance.steps:
-                    decision = evaluate_runtime_step(
-                        config=config,
+                    trajectory.append_step(step)
+                    decision = self._evaluate_step(
+                        harness=harness,
+                        session=session,
+                        case_id=case_id,
                         task_case=task_case,
-                        trajectory=trajectory,
-                        state=state,
-                        step=step,
-                        scorer=scorer,
-                        standard_judge=self._standard_judge,
-                        thresholds=self._thresholds,
-                        evaluate_checkpoint=lambda **kwargs: evaluate_checkpoint(
-                            **kwargs,
-                            cheap_judge=self._cheap_judge,
-                            standard_judge=self._standard_judge,
-                            expensive_judge=self._expensive_judge,
-                            thresholds=self._thresholds,
-                            weight_config=self._weight_config,
-                        ),
-                    )
-                    if decision is not None and decision.termination.should_stop:
-                        decision = self._apply_policy_stop(
-                            harness=harness,
-                            session=session,
-                            case_id=case_id,
+                        eval_function=lambda: evaluate_raw_step_minefields(
+                            config=config,
                             task_case=task_case,
-                            decision=decision,
-                            default_reason="阶段式动态评估触发提前终止",
-                        )
+                            trajectory=trajectory,
+                            state=state,
+                            step=step,
+                            scorer=scorer,
+                        ),
+                        default_reason=policy_stop_reason,
+                    )
+                    if decision is not None:
                         state = decision.next_state
                         termination = decision.termination
                         break
 
+                    closed_step = state.agent_step_tracker.ingest(step)
+                    if closed_step is None:
+                        continue
+                    completed_agent_steps += 1
+                    decision = self._evaluate_step(
+                        harness=harness,
+                        session=session,
+                        case_id=case_id,
+                        task_case=task_case,
+                        eval_function=lambda: evaluate_agent_step(
+                            config=config,
+                            task_case=task_case,
+                            trajectory=trajectory,
+                            state=state,
+                            step=closed_step,
+                            scorer=scorer,
+                            standard_judge=self._standard_judge,
+                            thresholds=self._thresholds,
+                            evaluate_checkpoint=checkpoint_evaluator,
+                        ),
+                        default_reason=policy_stop_reason,
+                    )
+                    if decision is not None:
+                        state = decision.next_state
+                        termination = decision.termination
+                        break
+
+                if not termination.should_stop and not advance.continue_running:
+                    closed_step = state.agent_step_tracker.finalize()
+                    if closed_step is not None:
+                        completed_agent_steps += 1
+                        decision = self._evaluate_step(
+                            harness=harness,
+                            session=session,
+                            case_id=case_id,
+                            task_case=task_case,
+                            eval_function=lambda: evaluate_agent_step(
+                                config=config,
+                                task_case=task_case,
+                                trajectory=trajectory,
+                                state=state,
+                                step=closed_step,
+                                scorer=scorer,
+                                standard_judge=self._standard_judge,
+                                thresholds=self._thresholds,
+                                evaluate_checkpoint=checkpoint_evaluator,
+                            ),
+                            default_reason=policy_stop_reason,
+                        )
+                        if decision is not None:
+                            state = decision.next_state
+                            termination = decision.termination
+
+                if progress_reporter is not None and completed_agent_steps > 0:
+                    progress_reporter.case_advanced(case_id, completed_agent_steps)
+
                 if termination.should_stop or not advance.continue_running:
                     break
 
-            if not termination.should_stop:
-                pending_stage_reports = pending_milestone_stage_results(task_case, state)
-                if pending_stage_reports:
-                    state.stage_reports.extend(pending_stage_reports)
-                else:
-                    settlement, stage_result, next_weights, next_policy, finish_termination = finish_settlement(
-                        state.settlements,
-                        task_case,
-                        trajectory,
-                        state.matched_settlements,
-                        state.weights,
-                        state.evaluation_policy,
-                        state,
-                        self._cheap_judge,
-                        self._standard_judge,
-                        self._expensive_judge,
-                        self._thresholds,
-                        self._weight_config,
-                    )
-                    state.settlements.append(settlement)
-                    state.stage_reports.append(stage_result)
-                    state.weights = next_weights
-                    state.evaluation_policy = next_policy
-                    if finish_termination.should_stop:
-                        termination = finish_termination
+            pending_stage_reports = self._new_pending_stage_reports(task_case, state)
+            if pending_stage_reports:
+                state.stage_reports.extend(pending_stage_reports)
+            elif not termination.should_stop:
+                settlement, stage_result, next_weights, next_policy, finish_termination = finish_settlement(
+                    state.settlements,
+                    task_case,
+                    trajectory,
+                    state.matched_settlements,
+                    state.weights,
+                    state.evaluation_policy,
+                    state,
+                    self._cheap_judge,
+                    self._standard_judge,
+                    self._expensive_judge,
+                    self._thresholds,
+                    self._weight_config,
+                )
+                state.settlements.append(settlement)
+                state.stage_reports.append(stage_result)
+                state.weights = next_weights
+                state.evaluation_policy = next_policy
+                if finish_termination.should_stop:
+                    termination = finish_termination
             report = self._runtime_report(
                 task_case,
                 trajectory,
@@ -275,6 +324,7 @@ class DynSTEEREvaluator:
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 trajectory=trajectory,
                 llm_calls=metrics_recorder.llm_calls,
+                agent_step_count=state.agent_step_tracker.completed_count,
             )
             report.runtime_metrics = runtime_metrics
             raw_summary = harness.raw_summary_from_session(session)
@@ -288,17 +338,6 @@ class DynSTEEREvaluator:
             )
             raw_summary["runtime_metrics"] = runtime_metrics
             raw_summary["task_case_snapshot"] = task_snapshot
-            if task_description_mismatched(task_snapshot):
-                logger.warning(
-                    "evaluator_task_description_mismatch",
-                    extra={
-                        "事件": "task_description与首条用户消息不一致",
-                        "case_id": case_id,
-                        "task_description": task_snapshot["task_description"],
-                        "initial_user_message_excerpt": task_snapshot["initial_user_message_excerpt"],
-                        "scenario_name": task_snapshot["scenario_name"],
-                    },
-                )
             if termination.termination_detail is not None:
                 raw_summary["termination_detail"] = termination.termination_detail
             return HarnessRunResult(
@@ -318,6 +357,28 @@ class DynSTEEREvaluator:
                 self._teardown_session_safely(harness, session, config.benchmark, run_id, case_id)
             finally:
                 reset_runtime_metrics_recorder(metrics_token)
+
+    def _evaluate_step(
+        self,
+        harness: BaseBenchmarkHarness,
+        session: object,
+        case_id: str,
+        task_case: TaskCase,
+        eval_function: Callable[[], RuntimeEvaluationDecision | None],
+        default_reason: str,
+    ) -> RuntimeEvaluationDecision | None:
+        """执行单步评估函数，并统一处理策略提前终止副作用。"""
+        decision = eval_function()
+        if decision is None or not decision.termination.should_stop:
+            return None
+        return self._apply_policy_stop(
+            harness=harness,
+            session=session,
+            case_id=case_id,
+            task_case=task_case,
+            decision=decision,
+            default_reason=default_reason,
+        )
 
     def _apply_policy_stop(
         self,
@@ -340,8 +401,6 @@ class DynSTEEREvaluator:
         输出：
             补齐终止原因后的原决策对象。
         """
-        if harness is None or session is None or task_case is None or decision is None:
-            raise ValueError("策略终止参数不能为空")
         termination_reason = decision.termination.termination_reason or default_reason
         decision.termination.termination_reason = termination_reason
         harness.stop_case(session, termination_reason)
@@ -358,6 +417,23 @@ class DynSTEEREvaluator:
         )
         return decision
 
+    def _new_pending_stage_reports(
+        self,
+        task_case: TaskCase,
+        state: RuntimeEvaluationState,
+    ) -> list[StageEvaluationResult]:
+        """生成尚未写入过的 pending milestone synthetic stage。"""
+        existing_pending_ids = {
+            stage.milestone_id
+            for stage in state.stage_reports
+            if stage.metadata.get("synthetic_pending_milestone") is True and stage.milestone_id is not None
+        }
+        return [
+            stage
+            for stage in pending_milestone_stage_results(task_case, state)
+            if stage.milestone_id not in existing_pending_ids
+        ]
+
     def _runtime_report(
         self,
         task_case: TaskCase,
@@ -366,8 +442,6 @@ class DynSTEEREvaluator:
         matched_settlements: dict[str, HarnessStageSettlement] | None,
         state: RuntimeEvaluationState,
     ) -> TrajectoryEvaluationReport:
-        if task_case is None or trajectory is None or stage_reports is None or state is None:
-            raise ValueError("runtime report 参数不能为空")
         graph = task_case.milestone_graph
         minefield_matches = list(state.minefield_matches)
         matched_ids = set(matched_settlements or {})

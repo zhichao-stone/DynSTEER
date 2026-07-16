@@ -29,7 +29,63 @@ from dynsteer.evaluate.scoring import GeneralScorer
 CheckpointEvaluator = Callable[..., RuntimeEvaluationDecision]
 
 
-def evaluate_runtime_step(
+def evaluate_raw_step_minefields(
+    config: HarnessRunConfig,
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    state: RuntimeEvaluationState,
+    step: TrajectoryStep,
+    scorer: GeneralScorer,
+) -> RuntimeEvaluationDecision | None:
+    """对单条 raw step 执行 minefield 即时安全检查。
+
+    入参：
+        config: 当前 run 配置。
+        task_case: 当前 benchmark case。
+        trajectory: 已追加当前 raw step 的完整轨迹。
+        state: 当前运行期评估状态。
+        step: 当前 raw step。
+        scorer: 当前 harness 提供的约束评分器。
+    输出：
+        命中 fatal minefield 且启用提前终止时返回决策，否则返回 None。
+    """
+    context = scoring_context(task_case, trajectory, state.matched_settlements)
+    boundary = candidate_boundary_for_current_step(trajectory, step)
+    minefield_matches, minefield_score, fatal_minefield = evaluate_minefields_at_boundary(
+        task_case.milestone_graph,
+        trajectory,
+        boundary,
+        scorer,
+        context,
+    )
+    if not minefield_matches:
+        return None
+    _record_runtime_minefields(state, minefield_matches, minefield_score, fatal_minefield)
+    if not fatal_minefield or not config.stop_on_minefield:
+        return None
+    minefield_id = str(minefield_matches[0].get("minefield_id", "minefield"))
+    termination_code = f"minefield:{minefield_id}"
+    return RuntimeEvaluationDecision(
+        None,
+        None,
+        state,
+        termination=EvaluationTerminationState(
+            should_stop=True,
+            termination_code=termination_code,
+            termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
+            termination_detail={
+                "code": termination_code,
+                "minefield_matches": minefield_matches,
+                "boundary": {
+                    "boundary_id": boundary.boundary_id,
+                    "step_index": boundary.step_index,
+                },
+            },
+        ),
+    )
+
+
+def evaluate_agent_step(
     config: HarnessRunConfig,
     task_case: TaskCase,
     trajectory: Trajectory,
@@ -40,14 +96,14 @@ def evaluate_runtime_step(
     thresholds: ThresholdConfig,
     evaluate_checkpoint: CheckpointEvaluator,
 ) -> RuntimeEvaluationDecision | None:
-    """处理单个新增 step，返回可能的策略终止决策。
+    """处理一个已闭合 agent step，返回可能的策略终止决策。
 
     入参：
         config: 当前 run 配置。
         task_case: 当前 benchmark case。
-        trajectory: 运行期轨迹，函数会追加当前 step。
+        trajectory: 已追加闭包内 raw steps 的运行期轨迹。
         state: 当前运行期评估状态。
-        step: harness 新增返回的轨迹 step。
+        step: tracker 返回的闭包终点 raw step。
         scorer: 当前 harness 提供的约束评分器。
         standard_judge: standard judge；未配置时 WARN 语义候选会跳过复判。
         thresholds: 阶段阈值配置。
@@ -55,54 +111,11 @@ def evaluate_runtime_step(
     输出：
         需要提前终止时返回决策，否则返回 None。
     """
-    if (
-        config is None
-        or task_case is None
-        or trajectory is None
-        or state is None
-        or step is None
-        or scorer is None
-        or thresholds is None
-        or evaluate_checkpoint is None
-    ):
-        raise ValueError("单 step 评估参数不能为空")
     if state.milestone_frontier is None:
         raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
 
-    trajectory.append_step(step)
     context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
-    minefield_matches, minefield_score, fatal_minefield = evaluate_minefields_at_boundary(
-        task_case.milestone_graph,
-        trajectory,
-        boundary,
-        scorer,
-        context,
-    )
-    if minefield_matches:
-        _record_runtime_minefields(state, minefield_matches, minefield_score, fatal_minefield)
-        if fatal_minefield and config.stop_on_minefield:
-            minefield_id = str(minefield_matches[0].get("minefield_id", "minefield"))
-            termination_code = f"minefield:{minefield_id}"
-            return RuntimeEvaluationDecision(
-                None,
-                None,
-                state,
-                termination=EvaluationTerminationState(
-                    should_stop=True,
-                    termination_code=termination_code,
-                    termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
-                    termination_detail={
-                        "code": termination_code,
-                        "minefield_matches": minefield_matches,
-                        "boundary": {
-                            "boundary_id": boundary.boundary_id,
-                            "step_index": boundary.step_index,
-                        },
-                    },
-                ),
-            )
-
     analysis = analyze_milestone_step(
         task_case,
         trajectory,
@@ -176,8 +189,6 @@ def _record_runtime_minefields(
     max_score: float,
     fatal: bool,
 ) -> None:
-    if state is None or matches is None:
-        raise ValueError("运行期 minefield 记录参数不能为空")
     seen = {
         (str(match.get("minefield_id")), str(match.get("boundary_id")))
         for match in state.minefield_matches
@@ -199,8 +210,6 @@ def _record_attempt_and_check_no_progress(
     attempt_detail: JsonObject | None,
     thresholds: ThresholdConfig,
 ) -> RuntimeEvaluationDecision | None:
-    if config is None or state is None or thresholds is None:
-        raise ValueError("attempt 记录参数不能为空")
     if attempt_detail is None:
         return None
     state.match_attempts.append(attempt_detail)
@@ -213,8 +222,8 @@ def _ready_frontier_no_progress_decision(
     attempt_detail: JsonObject,
     thresholds: ThresholdConfig,
 ) -> RuntimeEvaluationDecision | None:
-    if config is None or state is None or attempt_detail is None or state.milestone_frontier is None:
-        raise ValueError("ready frontier 无进展决策参数不能为空")
+    if state.milestone_frontier is None:
+        raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
     ready_ids = ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
     termination_detail = update_ready_frontier_progress_watch(
         state=state,

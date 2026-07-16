@@ -14,7 +14,7 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 
 - `HarnessRunConfig`: 单次 harness 运行配置，包含 benchmark、data root、case_ids、runs_dir、results_dir、fail-fast 策略和 metadata。
 - `BenchmarkCase`: benchmark 内单个可运行测试任务。
-- `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 `steps`、`snapshots`、`continue_running` 和可选 `reason`。`snapshots` 是必填字段，表示本批推进后可见的状态快照，必须与 `steps` 使用同一时间坐标。
+- `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 raw `steps`、`snapshots`、`continue_running` 和可选 `reason`。`snapshots` 是必填字段，表示本批推进后可见的状态快照，必须与 `steps` 使用同一时间坐标。
 - `HarnessStageSettlement`: evaluator 在运行期生成的 start/milestone/finish 阶段结算节点。
 - `HarnessRunResult`: evaluator 返回的 benchmark 运行结果，包含 `TaskCase`、`Trajectory`、阶段结算、策略终止字段和 `evaluation_report`。
 
@@ -80,6 +80,7 @@ class MyHarness(BaseBenchmarkHarness):
 - 所有 harness 必须通过 `HarnessAdvanceResult.snapshots` 返回本批推进后可见快照；没有状态快照的 benchmark 必须显式返回空数组。
 - `snapshots_from_session()` 不再属于 `BaseBenchmarkHarness` 公开运行期接口。
 - 对带原生全局消息索引的 benchmark，`steps[].index` 与 `snapshots[].after_step_index` 必须使用同一坐标系。
+- `steps[]` 必须提供规范化 `actor` 与 `recipient`。DynSTEER 用它们组装串行 agent step 闭包：`Agent -> X` 后必须由对应 `X -> Agent` feedback 闭合；未闭合 outbound 不会触发 milestone matching 或 no-progress 观察。
 - `metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空字典。
 - `case_finished()` 只作为查询接口或子类内部辅助能力；`DynSTEEREvaluator.evaluate()` 不用它控制主循环。
 
@@ -105,7 +106,7 @@ Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)`
 
 `run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
-Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。实际同时运行的 case 数量仍不超过 `max_workers`；可见窗口大小按 case 计算为 `max(5, 实际 worker 数)`，每个 case 占用两行终端输出：第一行显示 `# Test Case {idx}: {case_id}`，其中 `idx` 是当前配置内从 1 开始的原始 case 顺序，第二行显示 desc 为 `Case {idx}执行进度（最多N步）` 的 tqdm 进度条，因此默认可见窗口为 5 个 case、10 个终端行。进度条后缀由 DynSTEER 自行维护 `elapsed`、`steps` 和 `avg_step`，避免 tqdm 重建或关闭时丢失真实耗时。case 完成前会把进度条 total 收敛到实际 step 数，完成后满进度条会继续保留在可见窗口中，直到被后续 case 挤出；窗口变化时会重建可见进度条位置，让剩余 case 从第一组两行开始连续显示。运行结束时 Runner 会先清理动态进度条，再按可见 case 顺序输出稳定的最终静态快照，避免多行 tqdm `leave=True` 留存导致终端内容上移或挤压。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
+Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。进度条的 `steps` 单位是完整闭合的 agent step，不是 raw step。实际同时运行的 case 数量仍不超过 `max_workers`；可见窗口大小按 case 计算为 `max(5, 实际 worker 数)`，每个 case 占用两行终端输出：第一行显示 `# Test Case {idx}: {case_id}`，其中 `idx` 是当前配置内从 1 开始的原始 case 顺序，第二行显示 desc 为 `Case {idx}执行进度（最多N步）` 的 tqdm 进度条，因此默认可见窗口为 5 个 case、10 个终端行。进度条后缀由 DynSTEER 自行维护 `elapsed`、`steps` 和 `avg_step`，避免 tqdm 重建或关闭时丢失真实耗时。case 完成前会把进度条 total 收敛到实际 step 数，完成后满进度条会继续保留在可见窗口中，直到被后续 case 挤出；窗口变化时会重建可见进度条位置，让剩余 case 从第一组两行开始连续显示。运行结束时 Runner 会先清理动态进度条，再按可见 case 顺序输出稳定的最终静态快照，避免多行 tqdm `leave=True` 留存导致终端内容上移或挤压。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
 
 Harness 模式输出：
 
@@ -118,9 +119,9 @@ Harness 模式输出：
 
 `results/<benchmark>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
-`trajectory.json` 包含完整 `Trajectory` 序列化结果。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 `step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
+`trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
 
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics` 记录 case 评估耗时、轨迹 step 数、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 

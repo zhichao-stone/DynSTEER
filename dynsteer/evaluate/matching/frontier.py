@@ -12,16 +12,11 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
     输出：
         仅在 case 初始化阶段扫描 graph 后得到的 frontier 状态。
     """
-    if graph is None:
-        raise ValueError("frontier 初始化参数不能为空")
-
     # 建立最小对象引用表和稳定顺序表。
     milestone_by_id: dict[str, Milestone] = {}
     order_by_id: dict[str, int] = {}
     dependents: dict[str, list[str]] = {}
     for index, milestone in enumerate(graph.nodes):
-        if milestone is None or not milestone.milestone_id:
-            raise ValueError("milestone 节点不能为空")
         milestone_by_id[milestone.milestone_id] = milestone
         order_by_id[milestone.milestone_id] = index
         dependents.setdefault(milestone.milestone_id, [])
@@ -65,9 +60,6 @@ def advance_milestone_frontier(
     输出：
         无返回值，函数会原地更新 frontier。
     """
-    if frontier is None or matched is None or not matched_milestone_id:
-        raise ValueError("frontier 推进参数不能为空")
-
     # 已匹配节点不再属于 ready 或 blocked 诊断候选。
     _remove_id(frontier.ready_ids, matched_milestone_id)
     _remove_id(frontier.blocked_candidate_ids, matched_milestone_id)
@@ -93,8 +85,6 @@ def ready_milestones(frontier: MilestoneFrontierState) -> tuple[Milestone, ...]:
     输出：
         当前可评估 milestone 元组。
     """
-    if frontier is None:
-        raise ValueError("frontier 不能为空")
     return tuple(
         frontier.milestone_by_id[milestone_id]
         for milestone_id in frontier.ready_ids
@@ -110,8 +100,6 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
     输出：
         当前低成本 predecessor gap 诊断候选元组。
     """
-    if frontier is None:
-        raise ValueError("frontier 不能为空")
     return tuple(
         frontier.milestone_by_id[milestone_id]
         for milestone_id in frontier.blocked_candidate_ids
@@ -131,8 +119,6 @@ def ready_milestone_ids(
     输出：
         尚未匹配的 ready milestone id。
     """
-    if frontier is None or matched is None:
-        raise ValueError("ready frontier 参数不能为空")
     return tuple(
         milestone.milestone_id
         for milestone in ready_milestones(frontier)

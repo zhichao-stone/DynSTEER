@@ -54,8 +54,6 @@ def candidate_boundary_for_current_step(
     step: TrajectoryStep,
 ) -> Boundary:
     """基于当前新增 step 构造运行期唯一候选边界。"""
-    if trajectory is None or step is None:
-        raise ValueError("trajectory 和 step 不能为空")
     return Boundary(
         boundary_id=f"runtime:b{step.index}",
         step_index=step.index,
@@ -63,4 +61,3 @@ def candidate_boundary_for_current_step(
         reason=_step_reason(step) or "last_step",
         step_id=step.step_id,
     )
-

@@ -12,9 +12,9 @@
 2. 判断每次工具调用是否服务 stage_goal。
 3. 核对参数、返回结果和后续使用之间的关系。
 4. 将无关调用、错误参数、忽略结果、编造结果分别作为扣分证据。
-5. 只输出 dimension_scores.tool_quality。
+5. dimension_scores 字段只允许包含 tool_quality。
 
-评分锚点以 Context.rubrics.tool_quality 为准。只返回匹配 required_output 的 JSON 对象，不要输出 stage_score。
+评分锚点以 Context.rubrics.tool_quality 为准。只返回匹配 required_output 的 JSON 对象。
 
 Context:
 {context_json}
