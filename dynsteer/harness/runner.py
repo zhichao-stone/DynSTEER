@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 
@@ -7,19 +5,13 @@ from dynsteer.adapter.loader import load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.outputs import write_run_level_summaries
-from dynsteer.harness.scheduler import (
-    HarnessCaseExecutionError,
-    run_case_tasks,
-)
+from dynsteer.harness.scheduler import run_case_tasks
 from dynsteer.harness.selection import config_with_case_ids, select_case_ids, validate_loaded_task_cases
 from dynsteer.log import configure_logger
 from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput
 
 
-def run_harness_configs(
-    configs: list[HarnessRunConfig],
-    max_workers: int = 1,
-) -> list[HarnessEvaluationOutput]:
+def run_harness_configs(configs: list[HarnessRunConfig], max_workers: int = 1) -> list[HarnessEvaluationOutput]:
     """运行多组 harness 配置，并按 config 顺序执行其中的 case。"""
     if configs is None:
         raise ValueError("configs 不能为空")
@@ -35,12 +27,7 @@ def run_harness_configs(
     return outputs
 
 
-def _run_config(
-    config: HarnessRunConfig,
-    *,
-    max_workers: int,
-    logger: logging.Logger,
-) -> list[HarnessEvaluationOutput]:
+def _run_config(config: HarnessRunConfig, *, max_workers: int, logger: logging.Logger) -> list[HarnessEvaluationOutput]:
     """按单个 config 加载 TaskCase 列表并执行。"""
     if config is None or logger is None:
         raise ValueError("config 和 logger 不能为空")
@@ -119,8 +106,4 @@ def _get_or_configure_harness_logger(log_dir: Path) -> logging.Logger:
     return configure_logger(log_dir)
 
 
-__all__ = [
-    "HarnessCaseExecutionError",
-    "HarnessEvaluationOutput",
-    "run_harness_configs",
-]
+__all__ = ["HarnessEvaluationOutput", "run_harness_configs"]

@@ -14,7 +14,7 @@
 - `dynsteer/evaluate/scoring.py`：`ScoringContext`。
 - `dynsteer/evaluate/matching/milestone.py`：`MilestoneStepAnalysis`。
 - `dynsteer/llm/base.py`：`LLMMessage`、`LLMConfig`。
-- `dynsteer/judges/base.py`：`LLMJudgeConfig`、`_ValidatedJudgePayload`。
+- `dynsteer/judges/base.py`：`ValidatedJudgePayload`。
 - `dynsteer/harness/outputs.py`：`HarnessEvaluationOutput`。
 - `dynsteer/harness/scheduler.py`：`HarnessCaseTask`。
 - `dynsteer/adapter/toolsandbox/harness.py`：`ToolSandboxSession`。

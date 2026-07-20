@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
 
@@ -31,28 +29,12 @@ class HarnessCaseExecutionError(RuntimeError):
         self.case_id = case_id
         self.cause = cause
         super().__init__(
-            f"benchmark case 执行失败: benchmark={benchmark}, run_id={run_id}, "
-            f"case_id={case_id}, error={cause}"
+            f"benchmark case 执行失败: benchmark={benchmark}, run_id={run_id}, " f"case_id={case_id}, error={cause}"
         )
 
 
-class _DirectProgressReporter:
-    """串行执行时直接更新主线程 progress manager。"""
-
-    def __init__(self, manager: TqdmCaseProgressManager) -> None:
-        if manager is None:
-            raise ValueError("manager 不能为空")
-        self._manager = manager
-
-    def case_advanced(self, case_id: str, step_count: int) -> None:
-        self._manager.case_advanced(case_id, step_count)
-
-
 def run_case_tasks(
-    tasks: list[HarnessCaseTask],
-    *,
-    max_workers: int,
-    logger: logging.Logger,
+    tasks: list[HarnessCaseTask], *, max_workers: int, logger: logging.Logger
 ) -> list[HarnessEvaluationOutput]:
     """按最大并发数执行已加载的 case 任务，并维护进度条。"""
     if tasks is None or logger is None:
@@ -71,10 +53,7 @@ def _progress_visible_bars(max_workers: int) -> int:
     return max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers)
 
 
-def _run_case(
-    task: HarnessCaseTask,
-    progress_reporter: CaseProgressReporter | None = None,
-) -> HarnessEvaluationOutput:
+def _run_case(task: HarnessCaseTask, progress_reporter: CaseProgressReporter | None = None) -> HarnessEvaluationOutput:
     """构造独立 harness/evaluator 并执行单个 case。"""
     if task is None:
         raise ValueError("task 不能为空")
@@ -101,16 +80,10 @@ def _progress_total_from_tasks(tasks: list[HarnessCaseTask]) -> int:
     return max(value, 1)
 
 
-def _run_tasks_serial(
-    tasks: list[HarnessCaseTask],
-    *,
-    logger: logging.Logger,
-) -> list[HarnessEvaluationOutput]:
+def _run_tasks_serial(tasks: list[HarnessCaseTask], *, logger: logging.Logger) -> list[HarnessEvaluationOutput]:
     """串行执行 case，并复用同一套进度管理器。"""
     manager = TqdmCaseProgressManager(
-        max_workers=1,
-        estimated_total=_progress_total_from_tasks(tasks),
-        max_visible_bars=_progress_visible_bars(1),
+        max_workers=1, estimated_total=_progress_total_from_tasks(tasks), max_visible_bars=_progress_visible_bars(1)
     )
     outputs: list[HarnessEvaluationOutput] = []
     with progress_logging_redirect(logger):
@@ -118,7 +91,7 @@ def _run_tasks_serial(
             for task in tasks:
                 manager.case_started(task.case_id, case_index=task.order + 1)
                 try:
-                    outputs.append(_run_case(task, progress_reporter=_DirectProgressReporter(manager)))
+                    outputs.append(_run_case(task, progress_reporter=manager))
                 finally:
                     manager.case_finished(task.case_id)
         finally:
@@ -127,10 +100,7 @@ def _run_tasks_serial(
 
 
 def _run_tasks_parallel(
-    tasks: list[HarnessCaseTask],
-    *,
-    max_workers: int,
-    logger: logging.Logger,
+    tasks: list[HarnessCaseTask], *, max_workers: int, logger: logging.Logger
 ) -> list[HarnessEvaluationOutput]:
     """并行执行 case，主线程通过 queue 维护进度条。"""
     manager = TqdmCaseProgressManager(
@@ -181,10 +151,7 @@ def _run_tasks_parallel(
     return [outputs_by_order[task.order] for task in tasks]
 
 
-def _drain_progress_events(
-    events: Queue[CaseProgressEvent],
-    manager: TqdmCaseProgressManager,
-) -> None:
+def _drain_progress_events(events: Queue[CaseProgressEvent], manager: TqdmCaseProgressManager) -> None:
     """处理 worker 已上报的进度事件。"""
     if events is None or manager is None:
         raise ValueError("events 和 manager 不能为空")
@@ -196,10 +163,7 @@ def _drain_progress_events(
         _apply_progress_event(event, manager)
 
 
-def _apply_progress_event(
-    event: CaseProgressEvent,
-    manager: TqdmCaseProgressManager,
-) -> None:
+def _apply_progress_event(event: CaseProgressEvent, manager: TqdmCaseProgressManager) -> None:
     """把单个进度事件应用到 progress manager。"""
     if event is None or manager is None:
         raise ValueError("event 和 manager 不能为空")

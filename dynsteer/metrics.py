@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator
@@ -7,10 +5,7 @@ from typing import Iterator
 from dynsteer.model import EventType, JsonObject, LLMCallMetrics, RuntimeMetricsRecorder, Trajectory
 
 
-_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar(
-    "dynsteer_runtime_metrics",
-    default=None,
-)
+_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar("dynsteer_runtime_metrics", default=None)
 
 
 @contextmanager
@@ -56,9 +51,7 @@ def build_runtime_metrics(
     raw_step_count = len(trajectory.steps)
     snapshot_count = len(trajectory.snapshots)
     tool_call_count = sum(
-        1
-        for step in trajectory.steps
-        if step.tool_call is not None or step.event_type == EventType.TOOL_CALL
+        1 for step in trajectory.steps if step.tool_call is not None or step.event_type == EventType.TOOL_CALL
     )
     trajectory_tokens = [step.cost.tokens for step in trajectory.steps]
     trajectory_latency = [step.cost.latency_ms for step in trajectory.steps]

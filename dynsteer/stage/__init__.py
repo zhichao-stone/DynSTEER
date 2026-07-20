@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.stage.goal import (
     DEFAULT_FINISH_STAGE_GOAL,
     generate_stage_goals,

@@ -43,7 +43,7 @@ dynsteer/judges/
 - `base.py`
   - `BaseJudge`：所有轨迹评估器的抽象基类，对外统一接口为 `evaluate_stage(...)`。
   - `LLMJudge`：继承 `BaseJudge` 的 LLM-as-a-Judge 抽象基类，只封装入参检查、prompt 构造、JSON 调用、响应解析、结果转换和通用异常；不实现 `_evaluate_standard(...)`、`_evaluate_expensive(...)`，不直接决定评估等级。
-  - `LLMJudgeConfig`、`LLMJudgeConfigurationError`、`LLMJudgeResponseError`。
+  - `LLMJudgeConfigurationError`、`LLMJudgeResponseError`。
 - `cheap.py`
   - `CheapJudge(BaseJudge)`：迁移当前 `LocalJudge` 的本地结构化评估逻辑。
 - `standard.py`

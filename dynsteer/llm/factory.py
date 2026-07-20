@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 from typing import Mapping
 
@@ -48,29 +46,16 @@ def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
         base_url=_read_base_url(source, provider),
         timeout_seconds=float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
         temperature=float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
-        max_tokens=_read_max_tokens(source.get("DYNSTEER_JUDGE_MAX_TOKENS")),
+        max_tokens=_read_positive_int(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS", 0) or None,
         max_retries=_read_positive_int(source.get("DYNSTEER_JUDGE_MAX_RETRIES"), "DYNSTEER_JUDGE_MAX_RETRIES", 3),
         retry_base_seconds=_read_non_negative_float(
-            source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"),
-            "DYNSTEER_JUDGE_RETRY_BASE_SECONDS",
-            1.0,
+            source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"), "DYNSTEER_JUDGE_RETRY_BASE_SECONDS", 1.0
         ),
         retry_max_seconds=_read_non_negative_float(
-            source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS"),
-            "DYNSTEER_JUDGE_RETRY_MAX_SECONDS",
-            8.0,
+            source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS"), "DYNSTEER_JUDGE_RETRY_MAX_SECONDS", 8.0
         ),
     )
     return build_llm(config)
-
-
-def _read_max_tokens(value: str | None) -> int | None:
-    if value is None or not value.strip():
-        return None
-    parsed = int(value)
-    if parsed <= 0:
-        raise LLMConfigurationError("DYNSTEER_JUDGE_MAX_TOKENS 必须是正整数")
-    return parsed
 
 
 def _read_positive_int(value: str | None, label: str, default: int) -> int:
@@ -100,7 +85,8 @@ def _read_api_key(source: Mapping[str, str], provider: str) -> str | None:
         api_key = normalize_str_from_source(source, fallback_key)
     return api_key
 
-def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:    
+
+def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:
     base_url = normalize_str_from_source(source, "DYNSTEER_JUDGE_BASE_URL")
     if base_url is None:
         fallback_key = "ANTHROPIC_BASE_URL" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_BASE_URL"

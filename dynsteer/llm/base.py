@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 import logging
 import time
@@ -137,6 +135,14 @@ class BaseLLM(ABC):
             return {}
         return {key: value for key, value in infer_params.items() if value is not None}
 
+    def _client_kwargs(self) -> dict[str, object]:
+        kwargs: dict[str, object] = {"timeout": self._config.timeout_seconds}
+        if self._config.api_key is not None:
+            kwargs["api_key"] = self._config.api_key
+        if self._config.base_url is not None:
+            kwargs["base_url"] = self._config.base_url
+        return kwargs
+
     def _response_usage(self, response: object) -> dict[str, int | None]:
         """从 provider 响应中提取 token usage；默认 provider 不提供。"""
         return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
@@ -155,10 +161,7 @@ class BaseLLM(ABC):
 
     @abstractmethod
     def _get_response_from_client(
-        self,
-        client: object,
-        messages: list[LLMMessage],
-        request_params: dict[str, object],
+        self, client: object, messages: list[LLMMessage], request_params: dict[str, object]
     ) -> object:
         """使用 provider SDK client 获取响应。"""
 

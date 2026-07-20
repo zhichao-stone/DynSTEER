@@ -1,8 +1,9 @@
-from __future__ import annotations
-
 from dynsteer.evaluate.matching.boundary import boundary_snapshot
-from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary
-from dynsteer.evaluate.quality import build_runtime_quality_diagnostics
+from dynsteer.evaluate.diagnostics import (
+    build_final_milestone_diagnostics,
+    build_milestone_graph_summary,
+    build_quality_diagnostics,
+)
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Boundary,
@@ -21,6 +22,7 @@ from dynsteer.model import (
     Trajectory,
 )
 from dynsteer.stage import stage_goal_key
+from dynsteer.utils import clamped_number
 
 
 class JudgeConfigurationError(RuntimeError):
@@ -36,7 +38,6 @@ def update_ready_frontier_progress_watch(
     ready_ids: tuple[str, ...],
     attempt_detail: JsonObject,
     thresholds: ThresholdConfig,
-    stop_enabled: bool,
     patience: int,
     min_delta: float,
 ) -> JsonObject | None:
@@ -53,19 +54,23 @@ def update_ready_frontier_progress_watch(
     输出：
         达到终止条件时返回 JSON 详情，否则返回 None。
     """
-    if patience < 1:
-        raise ValueError("ready frontier patience 必须大于 0")
-    if min_delta < 0:
-        raise ValueError("ready frontier min_delta 不能为负数")
-    if not stop_enabled:
-        return None
-
     normalized_ready_ids = tuple(str(milestone_id) for milestone_id in ready_ids if str(milestone_id).strip())
     if not normalized_ready_ids:
         state.ready_frontier_progress_watch = None
         return None
 
-    candidate_by_id = _candidate_scores_by_milestone(attempt_detail)
+    raw_candidates = attempt_detail.get("candidate_scores")
+    candidate_by_id = (
+        {
+            str(candidate["milestone_id"]): candidate
+            for candidate in raw_candidates
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("milestone_id"), str)
+            and candidate.get("milestone_id").strip()
+        }
+        if isinstance(raw_candidates, list)
+        else {}
+    )
     observed_candidates = {
         milestone_id: candidate_by_id[milestone_id]
         for milestone_id in normalized_ready_ids
@@ -74,13 +79,21 @@ def update_ready_frontier_progress_watch(
     if not observed_candidates:
         return None
 
-    step_index = _attempt_step_index(attempt_detail)
+    step_index = attempt_detail.get("step_index")
+    if not isinstance(step_index, int):
+        raise ValueError("attempt_detail.step_index 必须是整数")
     watch = state.ready_frontier_progress_watch
     if watch is None or watch.frontier_key != normalized_ready_ids:
-        state.ready_frontier_progress_watch = _build_ready_frontier_progress_watch(
-            ready_ids=normalized_ready_ids,
-            observed_candidates=observed_candidates,
-            step_index=step_index,
+        state.ready_frontier_progress_watch = ReadyFrontierProgressWatch(
+            frontier_key=normalized_ready_ids,
+            ready_since_step_index=step_index,
+            last_observed_step_index=step_index,
+            last_frontier_improved_step_index=step_index,
+            frontier_observation_count=1,
+            milestone_progress={
+                milestone_id: _ready_milestone_progress_from_candidate(milestone_id, candidate, step_index)
+                for milestone_id, candidate in observed_candidates.items()
+            },
         )
         return None
 
@@ -113,11 +126,35 @@ def update_ready_frontier_progress_watch(
         return None
     if any(progress.best_score >= thresholds.pass_threshold for progress in watch.milestone_progress.values()):
         return None
-    return _ready_frontier_no_progress_detail(watch, patience, min_delta)
+    progress_items = sorted(watch.milestone_progress.values(), key=lambda item: (-item.best_score, item.milestone_id))
+    most_promising = progress_items[0]
+    code_prefix = "milestone_no_progress" if len(watch.frontier_key) == 1 else "ready_frontier_no_progress"
+    progress_payload = {
+        milestone_id: {
+            "best_score": progress.best_score,
+            "best_status": progress.best_status,
+            "best_boundary_step_index": progress.best_boundary_step_index,
+            "last_improved_step_index": progress.last_improved_step_index,
+        }
+        for milestone_id, progress in sorted(watch.milestone_progress.items())
+    }
+    return {
+        "code": f"{code_prefix}:{most_promising.milestone_id}",
+        "ready_milestone_ids": list(watch.frontier_key),
+        "most_promising_milestone_id": most_promising.milestone_id,
+        "ready_since_step_index": watch.ready_since_step_index,
+        "last_observed_step_index": watch.last_observed_step_index,
+        "last_frontier_improved_step_index": watch.last_frontier_improved_step_index,
+        "stale_frontier_observation_count": watch.stale_frontier_observation_count,
+        "frontier_observation_count": watch.frontier_observation_count,
+        "patience": patience,
+        "min_delta": min_delta,
+        "milestone_progress": progress_payload,
+    }
 
 
 def ready_frontier_no_progress_termination_reason(detail: JsonObject) -> str:
-    """根据 ready frontier 无进展详情生成中文终止原因。"""
+    """根据 ready frontier 无进展详情生成终止原因。"""
     code = str(detail.get("code") or "ready_frontier_no_progress")
     milestone_id = str(detail.get("most_promising_milestone_id") or "unknown")
     stale_count = int(detail.get("stale_frontier_observation_count") or 0)
@@ -131,9 +168,7 @@ def ready_frontier_no_progress_termination_reason(detail: JsonObject) -> str:
 
 
 def runtime_diagnostics_summary(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    state: RuntimeEvaluationState,
+    task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState
 ) -> JsonObject:
     """构造运行期 raw_summary 的 milestone 与质量诊断信息。"""
     graph = task_case.milestone_graph
@@ -146,22 +181,33 @@ def runtime_diagnostics_summary(
             match_attempts=state.match_attempts,
             termination=state.evaluation_termination,
         ),
-        "runtime_quality_diagnostics": build_runtime_quality_diagnostics(task_case, trajectory),
+        "runtime_quality_diagnostics": build_quality_diagnostics(list(trajectory.steps)),
     }
 
 
+def selected_candidate_from_attempt(attempt: JsonObject) -> JsonObject | None:
+    """从运行期匹配记录中读取被选中的候选项。"""
+    raw_candidates = attempt.get("candidate_scores")
+    if not isinstance(raw_candidates, list):
+        return None
+    return next(
+        (
+            candidate
+            for candidate in raw_candidates
+            if isinstance(candidate, dict) and candidate.get("selected") is True
+        ),
+        None,
+    )
+
+
 def blocked_milestone_termination_reason(detail: JsonObject) -> str:
-    """根据前驱断裂诊断生成中文终止原因。"""
-    current_step = detail.get("current_step")
-    step_id = None
-    if isinstance(current_step, dict):
-        step_id = current_step.get("step_id")
-    if step_id is None:
-        step_id = detail.get("step_id")
-    milestone_id = str(detail.get("milestone_id") or "unknown")
+    """根据前驱断裂诊断生成终止原因。"""
+    selected_candidate = selected_candidate_from_attempt(detail)
+    step_id = detail.get("step_id")
+    milestone_id = str(selected_candidate.get("milestone_id") if selected_candidate is not None else "unknown")
     missing = detail.get("missing_predecessors")
     missing_text = ",".join(str(item) for item in missing) if isinstance(missing, list) else "unknown"
-    score = detail.get("score")
+    score = selected_candidate.get("score") if selected_candidate is not None else None
     evidence_text = ""
     if isinstance(score, dict):
         evidence = score.get("evidence")
@@ -242,9 +288,7 @@ def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluatio
 
 
 def scoring_context(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    matched: dict[str, HarnessStageSettlement],
+    task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement]
 ) -> ScoringContext:
     """构造运行期评分上下文。"""
     matched_boundaries: dict[str, Boundary] = {}
@@ -272,137 +316,37 @@ def scoring_context(
         snapshot = boundary_snapshot(boundary, trajectory.snapshots)
         if snapshot is not None:
             matched_snapshots[milestone_id] = snapshot
-    return ScoringContext(
-        task_case=task_case,
-        matched_boundaries=matched_boundaries,
-        matched_snapshots=matched_snapshots,
-    )
+    return ScoringContext(task_case=task_case, matched_boundaries=matched_boundaries, matched_snapshots=matched_snapshots)
 
 
-def task_case_snapshot(case_id: str, task_case: TaskCase, trajectory: Trajectory) -> JsonObject:
+def task_case_snapshot(task_case: TaskCase) -> JsonObject:
     """构造可审计的任务快照摘要。"""
-    metadata = dict(task_case.metadata)
     return {
-        "case_id": str(case_id),
+        "case_id": str(task_case.case_id),
         "task_id": task_case.task_id,
         "task_description": task_case.task_description,
         "task_types": [item.value for item in task_case.task_types],
-        "scenario_name": metadata.get("scenario_name"),
-        "categories": list(metadata.get("categories", [])) if isinstance(metadata.get("categories"), list) else [],
+        "scenario_name": task_case.metadata.get("scenario_name"),
+        "categories": list(task_case.metadata.get("categories", [])),
     }
-
-
-def _candidate_scores_by_milestone(attempt_detail: JsonObject) -> dict[str, JsonObject]:
-    raw_candidates = attempt_detail.get("candidate_scores")
-    if not isinstance(raw_candidates, list):
-        return {}
-    candidates: dict[str, JsonObject] = {}
-    for candidate in raw_candidates:
-        if not isinstance(candidate, dict):
-            continue
-        milestone_id = candidate.get("milestone_id")
-        if isinstance(milestone_id, str) and milestone_id.strip():
-            candidates[milestone_id] = candidate
-    return candidates
-
-
-def _build_ready_frontier_progress_watch(
-    ready_ids: tuple[str, ...],
-    observed_candidates: dict[str, JsonObject],
-    step_index: int,
-) -> ReadyFrontierProgressWatch:
-    milestone_progress = {
-        milestone_id: _ready_milestone_progress_from_candidate(milestone_id, candidate, step_index)
-        for milestone_id, candidate in observed_candidates.items()
-    }
-    return ReadyFrontierProgressWatch(
-        frontier_key=ready_ids,
-        ready_since_step_index=step_index,
-        last_observed_step_index=step_index,
-        last_frontier_improved_step_index=step_index,
-        frontier_observation_count=1,
-        milestone_progress=milestone_progress,
-    )
 
 
 def _ready_milestone_progress_from_candidate(
-    milestone_id: str,
-    candidate: JsonObject,
-    step_index: int,
+    milestone_id: str, candidate: JsonObject, step_index: int
 ) -> ReadyMilestoneProgress:
-    score_payload = _candidate_score_payload(candidate)
+    score_payload = candidate.get("score")
+    if not isinstance(score_payload, dict):
+        raise ValueError("candidate score 必须是 JSON 对象")
+    boundary = candidate.get("boundary")
+    boundary_step_index = None
+    if isinstance(boundary, dict):
+        raw_boundary_step_index = boundary.get("step_index")
+        if isinstance(raw_boundary_step_index, int):
+            boundary_step_index = raw_boundary_step_index
     return ReadyMilestoneProgress(
         milestone_id=milestone_id,
-        best_score=_clamped_score(score_payload.get("score")),
+        best_score=clamped_number(score_payload.get("score")),
         best_status=str(score_payload.get("status") or "unknown"),
-        best_boundary_step_index=_candidate_boundary_step_index(candidate),
+        best_boundary_step_index=boundary_step_index,
         last_improved_step_index=step_index,
     )
-
-
-def _ready_frontier_no_progress_detail(
-    watch: ReadyFrontierProgressWatch,
-    patience: int,
-    min_delta: float,
-) -> JsonObject:
-    progress_items = sorted(
-        watch.milestone_progress.values(),
-        key=lambda item: (-item.best_score, item.milestone_id),
-    )
-    most_promising = progress_items[0]
-    code = (
-        f"milestone_no_progress:{most_promising.milestone_id}"
-        if len(watch.frontier_key) == 1
-        else f"ready_frontier_no_progress:{most_promising.milestone_id}"
-    )
-    return {
-        "code": code,
-        "ready_milestone_ids": list(watch.frontier_key),
-        "most_promising_milestone_id": most_promising.milestone_id,
-        "ready_since_step_index": watch.ready_since_step_index,
-        "last_observed_step_index": watch.last_observed_step_index,
-        "last_frontier_improved_step_index": watch.last_frontier_improved_step_index,
-        "stale_frontier_observation_count": watch.stale_frontier_observation_count,
-        "frontier_observation_count": watch.frontier_observation_count,
-        "patience": patience,
-        "min_delta": min_delta,
-        "milestone_progress": {
-            milestone_id: {
-                "best_score": progress.best_score,
-                "best_status": progress.best_status,
-                "best_boundary_step_index": progress.best_boundary_step_index,
-                "last_improved_step_index": progress.last_improved_step_index,
-            }
-            for milestone_id, progress in sorted(watch.milestone_progress.items())
-        },
-    }
-
-
-def _candidate_score_payload(candidate: JsonObject) -> JsonObject:
-    score = candidate.get("score")
-    if not isinstance(score, dict):
-        raise ValueError("candidate score 必须是 JSON 对象")
-    return score
-
-
-def _candidate_boundary_step_index(candidate: JsonObject) -> int | None:
-    boundary = candidate.get("boundary")
-    if not isinstance(boundary, dict):
-        return None
-    step_index = boundary.get("step_index")
-    if isinstance(step_index, bool) or not isinstance(step_index, int):
-        return None
-    return step_index
-
-
-def _attempt_step_index(attempt_detail: JsonObject) -> int:
-    step_index = attempt_detail.get("step_index")
-    if isinstance(step_index, bool) or not isinstance(step_index, int):
-        raise ValueError("attempt_detail.step_index 必须是整数")
-    return step_index
-
-
-def _clamped_score(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return max(0.0, min(float(value), 1.0))

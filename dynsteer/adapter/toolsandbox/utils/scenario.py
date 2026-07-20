@@ -1,0 +1,225 @@
+import json
+
+from dynsteer.adapter.loader import parse_milestone_graph
+from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
+from dynsteer.model import Actor, JsonObject, JsonValue, MilestoneGraph, StageGoalSemanticKind, TaskType
+from dynsteer.utils import enum_name, json_safe
+
+
+def task_description_from_steps(
+    steps: list[dict[str, JsonValue]], fallback: str, first_user_sandbox_message_index: int | None = None
+) -> str:
+    if first_user_sandbox_message_index is not None:
+        for step in steps:
+            if (
+                step.get("actor") == Actor.USER.value
+                and step.get("raw_sandbox_message_index") == first_user_sandbox_message_index
+                and isinstance(step.get("content"), str)
+            ):
+                return str(step["content"])
+    for step in steps:
+        if (
+            step.get("actor") == Actor.USER.value
+            and isinstance(step.get("content"), str)
+            and not _visible_only_to_user_simulator(step.get("visible_to"))
+        ):
+            return str(step["content"])
+    for step in steps:
+        if step.get("actor") == Actor.USER.value and isinstance(step.get("content"), str):
+            return str(step["content"])
+    return fallback
+
+
+def task_types_from_categories(categories: list[object]) -> list[TaskType]:
+    names = {enum_name(item) for item in categories}
+    result: list[TaskType] = []
+    if "STATE_DEPENDENCY" in names or "SINGLE_TOOL_CALL" in names or "MULTIPLE_TOOL_CALL" in names:
+        result.append(TaskType.STATEFUL_TOOL)
+    if "MULTIPLE_USER_TURN" in names:
+        result.append(TaskType.DIALOGUE_INTERACTION)
+    if "INSUFFICIENT_INFORMATION" in names:
+        result.append(TaskType.SAFETY_SENSITIVE)
+    if not result:
+        result.append(TaskType.STATEFUL_TOOL)
+    return result
+
+
+def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) -> dict[str, JsonValue]:
+    namespace = enum_name(getattr(constraint, "database_namespace", None))
+    target_dataframe = getattr(constraint, "target_dataframe", None)
+    rows = [json_safe(row) for row in rows_from_dataframe(target_dataframe)]
+    snapshot_constraint = getattr(constraint, "snapshot_constraint", None)
+    base_snapshot_constraint = getattr(snapshot_constraint, "func", snapshot_constraint)
+    snapshot_constraint_name = getattr(base_snapshot_constraint, "__name__", str(base_snapshot_constraint))
+    snapshot_constraint_module = getattr(base_snapshot_constraint, "__module__", None)
+    partial_keywords = getattr(snapshot_constraint, "keywords", None) or {}
+    snapshot_constraint_kwargs = {
+        str(key): callable_name(value) if callable(value) else json_safe(value)
+        for key, value in dict(partial_keywords).items()
+    }
+    column_measures = getattr(constraint, "column_similarity_measure", None) or {}
+    reference_index = json_safe(getattr(constraint, "reference_milestone_node_index", None))
+    # guardrail 表达相对参考 milestone 的状态保持，不表达目标数据库为空。
+    if "guardrail" in snapshot_constraint_name:
+        reference = {"type": "milestone_index", "value": reference_index} if isinstance(reference_index, int) else {"type": "initial_state"}
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.PRESERVE_STATE.value,
+            "namespace": namespace,
+            "reference": reference,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
+    # SANDBOX namespace 表达可见消息目标，文本匹配采用语义等价策略。
+    elif namespace == "SANDBOX":
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        tool_trace_semantics = _tool_trace_stage_goal_semantics(first) if isinstance(first, dict) else None
+        if tool_trace_semantics is not None:
+            stage_goal_semantics = tool_trace_semantics
+        else:
+            sender = first.get("sender") if isinstance(first, dict) else None
+            recipient = first.get("recipient") if isinstance(first, dict) else None
+            content = first.get("content") if isinstance(first, dict) else None
+            stage_goal_semantics = {
+                "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
+                "sender": str(sender or "AGENT"),
+                "recipient": str(recipient or "USER"),
+                "content": str(content or ""),
+                "match_policy": "semantic_equivalent",
+                "evidence_source": "trajectory_or_structured_scorer",
+                "user_visible_required": True,
+            }
+    # 其他 snapshot constraint 表达目标 state namespace 的设置或校验。
+    else:
+        expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
+        stage_goal_semantics = {
+            "kind": StageGoalSemanticKind.SET_STATE.value,
+            "namespace": namespace,
+            "expected": expected,
+            "evidence_source": "structured_scorer",
+            "user_visible_required": False,
+        }
+    toolsandbox_metadata = {
+        "database_namespace": namespace,
+        "snapshot_constraint": snapshot_constraint_name,
+        "snapshot_constraint_module": snapshot_constraint_module,
+        "snapshot_constraint_kwargs": snapshot_constraint_kwargs,
+        "reference_milestone_node_index": reference_index,
+        "column_similarity_measure": {str(key): callable_spec(value) for key, value in dict(column_measures).items()},
+        "guardrail": "guardrail" in snapshot_constraint_name,
+    }
+    return {
+        "constraint_id": constraint_id,
+        "target": "state_snapshot",
+        "namespace": namespace,
+        "selector": "$",
+        "operator": "custom",
+        "expected": {"rows": rows, "columns": list(rows[0].keys()) if rows else []},
+        "weight": 1.0,
+        "threshold": 1.0,
+        "hard": True,
+        "evaluator_hint": "toolsandbox",
+        "stage_goal_semantics": stage_goal_semantics,
+        "metadata": {"toolsandbox": toolsandbox_metadata},
+    }
+
+
+def edge_list(matcher: object | None, prefix: str) -> list[list[str]]:
+    if matcher is None:
+        return []
+    milestones = list(getattr(matcher, "milestones", []) or [])
+    raw_edges = getattr(matcher, "edge_list", None)
+    edges = raw_edges if raw_edges is not None else [(index, index + 1) for index in range(len(milestones) - 1)]
+    return [[f"{prefix}{source}", f"{prefix}{target}"] for source, target in list(edges or [])]
+
+
+def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
+    evaluation = getattr(scenario, "evaluation", None)
+    if evaluation is None:
+        return parse_milestone_graph({"nodes": [], "edges": [], "minefields": [], "metadata": {"benchmark": "toolsandbox"}})
+    milestone_matcher = getattr(evaluation, "milestone_matcher", None)
+    minefield_matcher = getattr(evaluation, "minefield_matcher", None)
+    return parse_milestone_graph(
+        {
+            "nodes": _matcher_nodes(milestone_matcher, "m", True),
+            "edges": edge_list(milestone_matcher, "m"),
+            "minefields": _matcher_nodes(minefield_matcher, "mf", False),
+            "metadata": {"benchmark": "toolsandbox", "constraint_semantics": "toolsandbox_custom_metadata"},
+        }
+    )
+
+
+def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
+    raw_trace = row.get("tool_trace")
+    if raw_trace is None:
+        return None
+    trace_items = _tool_trace_items(raw_trace)
+    if not trace_items:
+        return None
+    trace_value = trace_items[0]
+    tool_name = trace_value.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+    arguments = trace_value.get("arguments")
+    return {
+        "kind": StageGoalSemanticKind.TOOL_CALL.value,
+        "tool_name": tool_name.strip(),
+        "arguments": arguments if isinstance(arguments, dict) else {},
+        "evidence_source": "trajectory_or_structured_scorer",
+        "user_visible_required": False,
+    }
+
+
+def _matcher_nodes(matcher: object | None, prefix: str, is_milestone: bool) -> list[dict[str, JsonValue]]:
+    if matcher is None:
+        return []
+    label = "milestone" if is_milestone else "minefield"
+    id_key = "milestone_id" if is_milestone else "minefield_id"
+    result: list[dict[str, JsonValue]] = []
+    for index, node in enumerate(getattr(matcher, "milestones", []) or []):
+        item: dict[str, JsonValue] = {
+            id_key: f"{prefix}{index}",
+            "name": f"ToolSandbox {label} {index}",
+            "description": f"ToolSandbox {label} {index}",
+            "constraints": [
+                constraint_from_snapshot_constraint(f"{prefix}{index}_c{constraint_index}", constraint)
+                for constraint_index, constraint in enumerate(getattr(node, "snapshot_constraints", []) or [])
+            ],
+            "metadata": {"toolsandbox": {f"{label}_index": index}},
+        }
+        if not is_milestone:
+            item["severity"] = "fatal"
+            item["penalty"] = {"mode": "fixed", "value": 1.0}
+        result.append(item)
+    return result
+
+
+def _visible_only_to_user_simulator(value: JsonValue) -> bool:
+    if not isinstance(value, list) or len(value) != 1:
+        return False
+    return str(value[0]) == "USER"
+
+
+def _tool_trace_items(raw_trace: JsonValue) -> list[JsonObject]:
+    trace_value = _parse_tool_trace_value(raw_trace)
+    if isinstance(trace_value, dict):
+        return [trace_value]
+    if not isinstance(trace_value, list):
+        return []
+    items: list[JsonObject] = []
+    for item in trace_value:
+        parsed_item = _parse_tool_trace_value(item)
+        if isinstance(parsed_item, dict):
+            items.append(parsed_item)
+        elif isinstance(parsed_item, list):
+            items.extend(dict(nested) for nested in parsed_item if isinstance(nested, dict))
+    return items
+
+
+def _parse_tool_trace_value(value: JsonValue) -> JsonValue:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return json_safe(parsed)
+    return json_safe(value)

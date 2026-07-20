@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 
 from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
@@ -9,6 +7,7 @@ from dynsteer.evaluate.matching.milestone import analyze_milestone_step
 from dynsteer.evaluate.runtime import (
     blocked_milestone_termination_reason,
     ready_frontier_no_progress_termination_reason,
+    selected_candidate_from_attempt,
     scoring_context,
     update_ready_frontier_progress_watch,
 )
@@ -26,10 +25,8 @@ from dynsteer.model import (
 )
 from dynsteer.evaluate.scoring import GeneralScorer
 
-CheckpointEvaluator = Callable[..., RuntimeEvaluationDecision]
 
-
-def evaluate_raw_step_minefields(
+def evaluate_step_minefields(
     config: HarnessRunConfig,
     task_case: TaskCase,
     trajectory: Trajectory,
@@ -37,14 +34,14 @@ def evaluate_raw_step_minefields(
     step: TrajectoryStep,
     scorer: GeneralScorer,
 ) -> RuntimeEvaluationDecision | None:
-    """对单条 raw step 执行 minefield 即时安全检查。
+    """对单条 step 执行 minefield 即时安全检查。
 
     入参：
         config: 当前 run 配置。
         task_case: 当前 benchmark case。
-        trajectory: 已追加当前 raw step 的完整轨迹。
+        trajectory: 已追加当前 step 的完整轨迹。
         state: 当前运行期评估状态。
-        step: 当前 raw step。
+        step: 当前 step。
         scorer: 当前 harness 提供的约束评分器。
     输出：
         命中 fatal minefield 且启用提前终止时返回决策，否则返回 None。
@@ -52,22 +49,28 @@ def evaluate_raw_step_minefields(
     context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
     minefield_matches, minefield_score, fatal_minefield = evaluate_minefields_at_boundary(
-        task_case.milestone_graph,
-        trajectory,
-        boundary,
-        scorer,
-        context,
+        task_case.milestone_graph, trajectory, boundary, scorer, context
     )
     if not minefield_matches:
         return None
-    _record_runtime_minefields(state, minefield_matches, minefield_score, fatal_minefield)
+
+    seen = {
+        (str(match.get("minefield_id")), str(match.get("boundary_id")))
+        for match in state.minefield_matches
+        if isinstance(match, dict)
+    }
+    for match in minefield_matches:
+        key = (str(match.get("minefield_id")), str(match.get("boundary_id")))
+        if key not in seen:
+            seen.add(key)
+            state.minefield_matches.append(match)
+    state.max_minefield_score = max(state.max_minefield_score, minefield_score)
+    state.fatal_minefield = state.fatal_minefield or fatal_minefield
     if not fatal_minefield or not config.stop_on_minefield:
         return None
     minefield_id = str(minefield_matches[0].get("minefield_id", "minefield"))
     termination_code = f"minefield:{minefield_id}"
     return RuntimeEvaluationDecision(
-        None,
-        None,
         state,
         termination=EvaluationTerminationState(
             should_stop=True,
@@ -76,10 +79,7 @@ def evaluate_raw_step_minefields(
             termination_detail={
                 "code": termination_code,
                 "minefield_matches": minefield_matches,
-                "boundary": {
-                    "boundary_id": boundary.boundary_id,
-                    "step_index": boundary.step_index,
-                },
+                "boundary": {"boundary_id": boundary.boundary_id, "step_index": boundary.step_index},
             },
         ),
     )
@@ -94,7 +94,7 @@ def evaluate_agent_step(
     scorer: GeneralScorer,
     standard_judge: object | None,
     thresholds: ThresholdConfig,
-    evaluate_checkpoint: CheckpointEvaluator,
+    evaluate_checkpoint: Callable[..., RuntimeEvaluationDecision],
 ) -> RuntimeEvaluationDecision | None:
     """处理一个已闭合 agent step，返回可能的策略终止决策。
 
@@ -117,14 +117,7 @@ def evaluate_agent_step(
     context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
     analysis = analyze_milestone_step(
-        task_case,
-        trajectory,
-        step,
-        boundary,
-        state.matched_settlements,
-        state.milestone_frontier,
-        scorer=scorer,
-        context=context,
+        trajectory, step, boundary, state.matched_settlements, state.milestone_frontier, scorer=scorer, context=context
     )
     if analysis.hit is None:
         no_progress_decision = _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)
@@ -133,13 +126,12 @@ def evaluate_agent_step(
         if analysis.blocked_detail is not None:
             state.match_attempts.append(analysis.blocked_detail)
             if config.stop_on_stage_failure:
-                milestone_id = str(analysis.blocked_detail.get("milestone_id") or "unknown")
+                selected_candidate = selected_candidate_from_attempt(analysis.blocked_detail)
+                milestone_id = str(selected_candidate.get("milestone_id") if selected_candidate is not None else "unknown")
                 termination_code = f"milestone_predecessor_gap:{milestone_id}"
                 termination_detail = dict(analysis.blocked_detail)
                 termination_detail["code"] = termination_code
                 return RuntimeEvaluationDecision(
-                    None,
-                    None,
                     state,
                     termination=EvaluationTerminationState(
                         should_stop=True,
@@ -173,7 +165,7 @@ def evaluate_agent_step(
         if isinstance(review_detail, dict) and decision.stage_result is not None:
             review_detail["status"] = "accepted" if decision.checkpoint is not None else "rejected"
             review_detail["judge_status"] = decision.stage_result.status.value
-            review_detail["judge_stage_score"] = decision.stage_result.stage_score
+            review_detail["settlement_stage_score"] = decision.stage_result.stage_score
     if analysis.attempt_detail is not None:
         state.match_attempts.append(analysis.attempt_detail)
     if decision.checkpoint is None and analysis.attempt_detail is not None:
@@ -181,27 +173,6 @@ def evaluate_agent_step(
     if decision.termination.should_stop:
         return decision
     return None
-
-
-def _record_runtime_minefields(
-    state: RuntimeEvaluationState,
-    matches: list[JsonObject],
-    max_score: float,
-    fatal: bool,
-) -> None:
-    seen = {
-        (str(match.get("minefield_id")), str(match.get("boundary_id")))
-        for match in state.minefield_matches
-        if isinstance(match, dict)
-    }
-    for match in matches:
-        key = (str(match.get("minefield_id")), str(match.get("boundary_id")))
-        if key in seen:
-            continue
-        seen.add(key)
-        state.minefield_matches.append(match)
-    state.max_minefield_score = max(state.max_minefield_score, max_score)
-    state.fatal_minefield = state.fatal_minefield or fatal
 
 
 def _record_attempt_and_check_no_progress(
@@ -217,29 +188,28 @@ def _record_attempt_and_check_no_progress(
 
 
 def _ready_frontier_no_progress_decision(
-    config: HarnessRunConfig,
-    state: RuntimeEvaluationState,
-    attempt_detail: JsonObject,
-    thresholds: ThresholdConfig,
+    config: HarnessRunConfig, state: RuntimeEvaluationState, attempt_detail: JsonObject, thresholds: ThresholdConfig
 ) -> RuntimeEvaluationDecision | None:
     if state.milestone_frontier is None:
         raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
     ready_ids = ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
-    termination_detail = update_ready_frontier_progress_watch(
-        state=state,
-        ready_ids=ready_ids,
-        attempt_detail=attempt_detail,
-        thresholds=thresholds,
-        stop_enabled=config.stop_on_ready_frontier_no_progress,
-        patience=config.ready_frontier_patience,
-        min_delta=config.ready_frontier_min_delta,
-    )
+
+    if config.stop_on_ready_frontier_no_progress:
+        termination_detail = update_ready_frontier_progress_watch(
+            state=state,
+            ready_ids=ready_ids,
+            attempt_detail=attempt_detail,
+            thresholds=thresholds,
+            patience=config.ready_frontier_patience,
+            min_delta=config.ready_frontier_min_delta,
+        )
+    else:
+        termination_detail = None
+
     if termination_detail is None:
         return None
     termination_code = str(termination_detail.get("code") or "ready_frontier_no_progress")
     return RuntimeEvaluationDecision(
-        None,
-        None,
         state,
         termination=EvaluationTerminationState(
             should_stop=True,

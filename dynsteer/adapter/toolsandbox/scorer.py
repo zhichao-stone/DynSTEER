@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 from functools import partial
 import json
@@ -79,7 +77,6 @@ _FALLBACK_TOOLSANDBOX_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
-
     def __init__(self, module_loader: Callable[[str], Any] | None = None) -> None:
         self._module_loader = module_loader or load_toolsandbox_module
 
@@ -91,22 +88,8 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_snapshots: list[StateSnapshot],
         context: ScoringContext | None = None,
     ) -> MilestoneScore:
-        if not any(self._is_toolsandbox_constraint(constraint) for constraint in milestone.constraints):
-            return super().score_milestone(
-                milestone,
-                boundary,
-                trajectory,
-                reference_snapshots,
-                context=context,
-            )
-        if len(milestone.constraints) == 0:
-            return super().score_milestone(
-                milestone,
-                boundary,
-                trajectory,
-                reference_snapshots,
-                context=context,
-            )
+        if not any(isinstance(constraint.metadata.get("toolsandbox"), dict) for constraint in milestone.constraints):
+            return super().score_milestone(milestone, boundary, trajectory, reference_snapshots, context=context)
 
         constraint_scores: list[ConstraintScore] = []
         score_product = 1.0
@@ -114,17 +97,14 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         hard_pass = True
         for constraint in milestone.constraints:
             source, reference = self.constraint_sources(
-                constraint,
-                boundary,
-                trajectory,
-                reference_snapshots,
-                context=context,
+                constraint, boundary, trajectory, reference_snapshots, context=context
             )
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             constraint_score = clamp(float(result.score))
             score_product *= constraint_score
-            if self._is_toolsandbox_guardrail(constraint):
+            metadata = constraint.metadata.get("toolsandbox")
+            if isinstance(metadata, dict) and bool(metadata.get("guardrail")):
                 if constraint_score <= 0.0:
                     hard_pass = False
             else:
@@ -166,12 +146,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return super().score_custom_constraint(
-                constraint,
-                source,
-                reference_source,
-                actual,
-                reference_value,
-                context=context,
+                constraint, source, reference_source, actual, reference_value, context=context
             )
         if constraint.operator != Operator.CUSTOM:
             return super().score_constraint(constraint, source, reference_source, context=context)
@@ -179,15 +154,16 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         measure_name = str(metadata.get("snapshot_constraint") or "")
         try:
             score = self._score_toolsandbox_snapshot_constraint(
-                measure_name=measure_name,
-                constraint=constraint,
-                actual=actual,
-                context=context,
+                measure_name=measure_name, constraint=constraint, actual=actual, context=context
             )
         except Exception as exc:
             return self._custom_constraint_failure_score(constraint, actual, exc)
         except BaseException as exc:
-            if not self._is_pyo3_panic_exception(exc):
+            exc_type = exc.__class__
+            if (
+                str(getattr(exc_type, "__module__", "")) != "pyo3_runtime"
+                and str(getattr(exc_type, "__name__", "")) != "PanicException"
+            ):
                 raise
             return self._custom_constraint_failure_score(constraint, actual, exc)
         return ConstraintScore(
@@ -198,20 +174,8 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             actual=actual,
         )
 
-    def _is_toolsandbox_constraint(self, constraint: Constraint) -> bool:
-        if constraint is None:
-            return False
-        return isinstance(constraint.metadata.get("toolsandbox"), dict)
-
-    def _is_toolsandbox_guardrail(self, constraint: Constraint) -> bool:
-        metadata = constraint.metadata.get("toolsandbox") if constraint is not None else None
-        return isinstance(metadata, dict) and bool(metadata.get("guardrail"))
-
     def _custom_constraint_failure_score(
-        self,
-        constraint: Constraint,
-        actual: JsonValue,
-        exc: BaseException,
+        self, constraint: Constraint, actual: JsonValue, exc: BaseException
     ) -> ConstraintScore:
         exc_type = f"{exc.__class__.__module__}.{exc.__class__.__name__}"
         return ConstraintScore(
@@ -222,26 +186,19 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             actual=actual,
         )
 
-    def _is_pyo3_panic_exception(self, exc: BaseException) -> bool:
-        exc_type = exc.__class__
-        module_name = str(getattr(exc_type, "__module__", ""))
-        class_name = str(getattr(exc_type, "__name__", ""))
-        return module_name == "pyo3_runtime" or class_name == "PanicException"
-
     def _score_toolsandbox_snapshot_constraint(
-        self,
-        measure_name: str,
-        constraint: Constraint,
-        actual: JsonValue,
-        context: ScoringContext | None,
+        self, measure_name: str, constraint: Constraint, actual: JsonValue, context: ScoringContext | None
     ) -> float:
         if not measure_name:
             raise ValueError("缺少 snapshot_constraint")
-        evaluation = self._load_toolsandbox_evaluation_module()
+        evaluation = self._module_loader("tool_sandbox.common.evaluation")
         measure = getattr(evaluation, measure_name, None)
         if not callable(measure):
             raise ValueError(f"不支持的 ToolSandbox snapshot_constraint: {measure_name}")
-        namespace = constraint.namespace or self._toolsandbox_namespace(constraint)
+        metadata = constraint.metadata.get("toolsandbox")
+        namespace = constraint.namespace or (
+            str(metadata.get("database_namespace") or "") if isinstance(metadata, dict) else ""
+        )
         snapshot = self._rows_to_dataframe(actual, namespace=namespace)
         target = self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True)
         column_similarities = self._column_similarities(evaluation, constraint)
@@ -257,18 +214,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             )
         )
 
-    def _load_toolsandbox_evaluation_module(self) -> Any:
-        return self._module_loader("tool_sandbox.common.evaluation")
-
-    def _load_tool_trace_extractors_module(self) -> Any:
-        return self._module_loader("tool_sandbox.common.tool_trace_extractors")
-
-    def _rows_to_dataframe(
-        self,
-        value: JsonValue,
-        namespace: str | None = None,
-        target: bool = False,
-    ) -> pl.DataFrame:
+    def _rows_to_dataframe(self, value: JsonValue, namespace: str | None = None, target: bool = False) -> pl.DataFrame:
         rows: JsonValue
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
             rows = value["rows"]
@@ -279,20 +225,13 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         if not isinstance(rows, list):
             raise ValueError("ToolSandbox snapshot rows 必须是 list")
         if target and str(namespace or "").upper() == "SANDBOX":
-            rows = self._normalize_sandbox_target_rows(rows)
+            rows = [
+                {**row, "tool_trace": self._serialize_target_tool_trace(row["tool_trace"])}
+                if isinstance(row, dict) and "tool_trace" in row
+                else row
+                for row in rows
+            ]
         return self._restore_namespace_schema(pl.DataFrame(rows), namespace, target=target)
-
-    def _normalize_sandbox_target_rows(self, rows: list[JsonValue]) -> list[JsonValue]:
-        normalized: list[JsonValue] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                normalized.append(row)
-                continue
-            row_data: dict[str, JsonValue] = dict(row)
-            if "tool_trace" in row_data:
-                row_data["tool_trace"] = self._serialize_target_tool_trace(row_data["tool_trace"])
-            normalized.append(row_data)
-        return normalized
 
     def _serialize_target_tool_trace(self, value: JsonValue) -> JsonValue:
         if value is None or isinstance(value, str):
@@ -315,41 +254,14 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             return json.dumps(traces, ensure_ascii=False)
         return json.dumps(value, ensure_ascii=False)
 
-    def _toolsandbox_namespace(self, constraint: Constraint) -> str:
-        metadata = constraint.metadata.get("toolsandbox")
-        if isinstance(metadata, dict):
-            namespace = metadata.get("database_namespace")
-            if isinstance(namespace, str):
-                return namespace
-        return constraint.namespace or ""
-
     def _restore_namespace_schema(
-        self,
-        dataframe: pl.DataFrame,
-        namespace: str | None,
-        target: bool = False,
+        self, dataframe: pl.DataFrame, namespace: str | None, target: bool = False
     ) -> pl.DataFrame:
         if dataframe is None or not namespace:
             return dataframe
         schema = self._namespace_schema(namespace)
         if not schema:
             return dataframe
-        if namespace.upper() == "SANDBOX":
-            return self._restore_sandbox_schema(dataframe, schema, target=target)
-        result = dataframe
-        for column_name, dtype in schema.items():
-            if column_name not in result.columns:
-                continue
-            if result.schema.get(column_name) == pl.Null:
-                result = result.with_columns(pl.col(column_name).cast(dtype))
-        return result
-
-    def _restore_sandbox_schema(
-        self,
-        dataframe: pl.DataFrame,
-        schema: dict[str, Any],
-        target: bool = False,
-    ) -> pl.DataFrame:
         result = dataframe
         for column_name, dtype in schema.items():
             if column_name not in result.columns:
@@ -357,6 +269,8 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             if target and column_name == "tool_trace":
                 continue
             if result.schema.get(column_name) == dtype:
+                continue
+            if namespace.upper() != "SANDBOX" and result.schema.get(column_name) != pl.Null:
                 continue
             try:
                 result = result.with_columns(pl.col(column_name).cast(dtype))
@@ -367,7 +281,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
     def _namespace_schema(self, namespace: str) -> dict[str, Any]:
         normalized = namespace.upper()
         try:
-            execution_context = self._load_toolsandbox_execution_context_module()
+            execution_context = self._module_loader("tool_sandbox.common.execution_context")
             schemas = getattr(getattr(execution_context, "ExecutionContext"), "dbs_schemas", {})
             for key, value in dict(schemas).items():
                 if str(key).upper().endswith(normalized):
@@ -375,9 +289,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
             return _FALLBACK_TOOLSANDBOX_SCHEMAS.get(normalized, {})
         return _FALLBACK_TOOLSANDBOX_SCHEMAS.get(normalized, {})
-
-    def _load_toolsandbox_execution_context_module(self) -> Any:
-        return self._module_loader("tool_sandbox.common.execution_context")
 
     def _snapshot_constraint_kwargs(self, constraint: Constraint) -> dict[str, Any]:
         metadata = constraint.metadata.get("toolsandbox")
@@ -389,7 +300,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         kwargs: dict[str, Any] = {}
         for key, value in raw_kwargs.items():
             if key == "extractor" and isinstance(value, str):
-                extractors = self._load_tool_trace_extractors_module()
+                extractors = self._module_loader("tool_sandbox.common.tool_trace_extractors")
                 extractor = getattr(extractors, value, None)
                 if not callable(extractor):
                     raise ValueError(f"不支持的 ToolSandbox extractor: {value}")
@@ -443,17 +354,15 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         reference_index = metadata.get("reference_milestone_node_index")
         if reference_index is None:
             return None
+        error = (
+            "ToolSandbox reference snapshot 缺失: "
+            f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
+        )
         if context is None:
-            raise ValueError(
-                "ToolSandbox reference snapshot 缺失: "
-                f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
-            )
+            raise ValueError(error)
         reference_milestone_id = "initial" if reference_index == -1 else f"m{reference_index}"
         reference_snapshot = context.matched_snapshots.get(reference_milestone_id)
         if reference_snapshot is None:
-            raise ValueError(
-                "ToolSandbox reference snapshot 缺失: "
-                f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
-            )
+            raise ValueError(error)
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
         return self._rows_to_dataframe(reference_snapshot.namespaces.get(namespace), namespace=namespace)

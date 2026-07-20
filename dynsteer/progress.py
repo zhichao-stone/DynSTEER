@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from contextlib import contextmanager
 import logging
 import sys
@@ -97,7 +95,10 @@ class TqdmCaseProgressManager:
     def case_started(self, case_id: str, case_index: int | None = None) -> None:
         """创建指定 case 的进度条。"""
         self._validate_case_id(case_id)
-        self._validate_case_index(case_index)
+        if case_index is not None and (
+            isinstance(case_index, bool) or not isinstance(case_index, int) or case_index < 1
+        ):
+            raise ValueError("case_index 蹇呴』澶т簬 0")
         if case_id in self.active_order:
             return
         if self.active_count >= self.max_workers:
@@ -131,7 +132,9 @@ class TqdmCaseProgressManager:
         bars = self.bars.get(case_id)
         if bars is not None:
             self._restore_bar_elapsed(bars.progress_bar, state)
-            self._grow_bar_total(bars.progress_bar, state.step_count)
+            current_total = getattr(bars.progress_bar, "total", None)
+            if isinstance(current_total, int | float) and state.step_count > current_total:
+                bars.progress_bar.total = max(state.step_count, int(current_total) * 2, self.estimated_total)
             bars.progress_bar.update(step_count)
             self._set_bar_postfix(bars.progress_bar, state)
 
@@ -150,7 +153,13 @@ class TqdmCaseProgressManager:
             self.visible_order.append(case_id)
         bars = self.bars.get(case_id)
         if bars is not None:
-            self._finish_bar(bars.progress_bar, state)
+            bars.progress_bar.total = state.step_count
+            self._restore_bar_elapsed(bars.progress_bar, state)
+            self._set_bar_postfix(bars.progress_bar, state)
+            refresh = getattr(bars.progress_bar, "refresh", None)
+            if callable(refresh):
+                refresh()
+            bars.progress_bar.update(0)
         self._trim_visible_order()
         self._sync_visible_bars(previous_visible_order)
 
@@ -163,7 +172,10 @@ class TqdmCaseProgressManager:
                 self._close_bars(bars, leave=False)
         self.active_order.clear()
         self.visible_order.clear()
-        self._write_final_lines(final_lines)
+        if self._had_active_bars and not self._line_after_close_written:
+            for line in final_lines:
+                self._line_writer(line)
+            self._line_after_close_written = True
 
     def _rebuild_visible_bars(self) -> None:
         """按当前可见顺序重建进度条位置。"""
@@ -205,7 +217,7 @@ class TqdmCaseProgressManager:
             position=position * 2,
             leave=False,
             initial=0,
-            bar_format=self._title_bar_format(case_id, state.case_index),
+            bar_format=self._title_text(state).replace("{", "{{").replace("}", "}}"),
             file=sys.__stderr__,
         )
         progress_bar = self._bar_factory(
@@ -232,27 +244,9 @@ class TqdmCaseProgressManager:
         state.avg_step_seconds = state.elapsed_seconds / state.step_count if state.step_count else None
 
     def _set_bar_postfix(self, bar: Any, state: CaseProgressState) -> None:
-        elapsed = self._format_elapsed_seconds(state.elapsed_seconds)
+        elapsed = tqdm.format_interval(max(state.elapsed_seconds, 0.0))
         avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
         bar.set_postfix({"elapsed": elapsed, "steps": state.step_count, "avg_step": avg_step})
-
-    def _format_elapsed_seconds(self, elapsed_seconds: float) -> str:
-        return tqdm.format_interval(max(elapsed_seconds, 0.0))
-
-    def _grow_bar_total(self, bar: Any, step_count: int) -> None:
-        current_total = getattr(bar, "total", None)
-        if not isinstance(current_total, int | float) or step_count <= current_total:
-            return
-        bar.total = max(step_count, int(current_total) * 2, self.estimated_total)
-
-    def _finish_bar(self, bar: Any, state: CaseProgressState) -> None:
-        bar.total = state.step_count
-        self._restore_bar_elapsed(bar, state)
-        self._set_bar_postfix(bar, state)
-        refresh = getattr(bar, "refresh", None)
-        if callable(refresh):
-            refresh()
-        bar.update(0)
 
     def _restore_bar_elapsed(self, bar: Any, state: CaseProgressState) -> None:
         """恢复 tqdm 内部累计耗时，避免重建后显示 00:00<?, ?step/s。"""
@@ -268,7 +262,16 @@ class TqdmCaseProgressManager:
     def _trim_visible_order(self) -> None:
         """保留固定数量的可见进度条，优先移除最早完成的 case。"""
         while len(self.visible_order) > self.max_visible_bars:
-            evicted = self._oldest_finished_visible_case()
+            evicted = next(
+                (
+                    case_id
+                    for case_id in self.visible_order
+                    if self.case_states.get(case_id) is not None
+                    and self.case_states[case_id].finished
+                    and case_id not in self.active_order
+                ),
+                None,
+            )
             if evicted is None:
                 return
             self.visible_order.remove(evicted)
@@ -276,32 +279,16 @@ class TqdmCaseProgressManager:
             if bars is not None:
                 self._close_bars(bars, leave=False)
 
-    def _oldest_finished_visible_case(self) -> str | None:
-        """返回最早进入窗口且已经完成的 case。"""
-        for case_id in self.visible_order:
-            state = self.case_states.get(case_id)
-            if state is not None and state.finished and case_id not in self.active_order:
-                return case_id
-        return None
-
-    def _close_bar(self, bar: Any, leave: bool) -> None:
-        """关闭 tqdm bar，并按需保留终端行。"""
-        setattr(bar, "leave", leave)
-        bar.close()
-
     def _close_bars(self, bars: CaseProgressBars, leave: bool) -> None:
         """关闭单个 case 占用的两行 tqdm bar。"""
-        self._close_bar(bars.progress_bar, leave)
-        self._close_bar(bars.title_bar, leave)
+        for bar in (bars.progress_bar, bars.title_bar):
+            setattr(bar, "leave", leave)
+            bar.close()
 
     def _progress_description(self, state: CaseProgressState) -> str:
         if state.case_index is None:
             return f"执行进度（最多{self.estimated_total}步）"
         return f"Case {state.case_index}执行进度（最多{self.estimated_total}步）"
-
-    def _title_bar_format(self, case_id: str, case_index: int | None = None) -> str:
-        title = f"# Test Case {case_index}: {case_id}" if case_index is not None else case_id
-        return title.replace("{", "{{").replace("}", "}}")
 
     def _final_snapshot_lines(self) -> list[str]:
         lines: list[str] = []
@@ -319,12 +306,10 @@ class TqdmCaseProgressManager:
 
     def _static_progress_line(self, state: CaseProgressState) -> str:
         total = (
-            state.step_count
-            if state.finished and state.step_count > 0
-            else max(self.estimated_total, state.step_count)
+            state.step_count if state.finished and state.step_count > 0 else max(self.estimated_total, state.step_count)
         )
         percent = 100 if total and state.step_count >= total else int(state.step_count * 100 / total)
-        elapsed = self._format_elapsed_seconds(state.elapsed_seconds)
+        elapsed = tqdm.format_interval(max(state.elapsed_seconds, 0.0))
         avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
         return (
             f"{self._progress_description(state)}: {percent:3d}%| "
@@ -334,19 +319,6 @@ class TqdmCaseProgressManager:
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
-
-    def _validate_case_index(self, case_index: int | None) -> None:
-        if case_index is not None and (
-            isinstance(case_index, bool) or not isinstance(case_index, int) or case_index < 1
-        ):
-            raise ValueError("case_index 必须大于 0")
-
-    def _write_final_lines(self, lines: list[str]) -> None:
-        if not self._had_active_bars or self._line_after_close_written:
-            return
-        for line in lines:
-            self._line_writer(line)
-        self._line_after_close_written = True
 
 
 @contextmanager

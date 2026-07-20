@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import replace
 
 from dynsteer.adapter.base import BaseBenchmarkHarness

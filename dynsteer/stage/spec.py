@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.model import (
     Constraint,
@@ -23,12 +21,7 @@ def generate_stage_evaluation_specs(task_case: TaskCase) -> dict[str, StageEvalu
     输出：
         key 与真实 milestone stage key 对齐的 StageEvaluationSpec 字典。
     """
-    if task_case is None:
-        raise ValueError("task_case 不能为空")
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
-
     specs: dict[str, StageEvaluationSpec] = {}
     for milestone in graph.nodes:
         anchor_id = milestone.stage_anchor_predecessor_id
@@ -41,15 +34,9 @@ def generate_stage_evaluation_specs(task_case: TaskCase) -> dict[str, StageEvalu
 
 
 def validate_stage_evaluation_specs(
-    graph: MilestoneGraph | None,
-    stage_goals: dict[str, str],
-    specs: dict[str, StageEvaluationSpec],
+    graph: MilestoneGraph | None, stage_goals: dict[str, str], specs: dict[str, StageEvaluationSpec]
 ) -> None:
     """校验阶段聚焦维度配置是否完整、合法。"""
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
-    if specs is None:
-        raise ValueError("stage_evaluation_specs 不能为空")
     expected = set(required_stage_goal_keys(graph))
     actual = {key for key in specs if not key.endswith(f"->{FINISH_NODE_ID}")}
     if actual != expected:
@@ -70,8 +57,6 @@ def validate_stage_evaluation_specs(
 
 def resolve_stage_evaluation_spec(interval: StageInterval, task_case: TaskCase) -> StageEvaluationSpec:
     """读取当前阶段的聚焦评估维度；内存 case 缺失时按公共语义即时生成。"""
-    if interval is None or task_case is None:
-        raise ValueError("阶段评估规格参数不能为空")
     if interval.milestone_id == FINISH_NODE_ID:
         return StageEvaluationSpec(
             focus_dimensions=[Dimension.PROGRESS, Dimension.STATE_CONSISTENCY],
@@ -95,21 +80,18 @@ def resolve_stage_evaluation_spec(interval: StageInterval, task_case: TaskCase) 
 
 def _spec_for_milestone(milestone: Milestone, stage_goal: str) -> StageEvaluationSpec:
     dimensions: list[Dimension] = [Dimension.PROGRESS, Dimension.EFFICIENCY]
-    rationale: dict[Dimension, str] = {
-        Dimension.PROGRESS: "阶段目标完成度必须评估",
-        Dimension.EFFICIENCY: "所有阶段都需要评估步骤成本、冗余与拖延",
-    }
+    rationale: dict[Dimension, str] = {Dimension.PROGRESS: "阶段目标完成度必须评估", Dimension.EFFICIENCY: "所有阶段都需要评估步骤成本、冗余与拖延"}
     for constraint in milestone.constraints:
         _extend_by_constraint(dimensions, rationale, constraint)
-    _extend_by_stage_goal_text(dimensions, rationale, stage_goal)
+    if any(
+        term in str(stage_goal or "").lower()
+        for term in ("resolve", "recover", "retry", "fix issue", "failure", "exception", "修复", "恢复", "重试", "失败", "异常")
+    ):
+        _add_dimension(dimensions, rationale, Dimension.RECOVERY, "阶段目标包含恢复、重试或问题处理语义")
     return StageEvaluationSpec(focus_dimensions=dimensions, dimension_rationale=rationale)
 
 
-def _extend_by_constraint(
-    dimensions: list[Dimension],
-    rationale: dict[Dimension, str],
-    constraint: Constraint,
-) -> None:
+def _extend_by_constraint(dimensions: list[Dimension], rationale: dict[Dimension, str], constraint: Constraint) -> None:
     semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
     semantic_kind = str(semantics.get("kind") or "")
     metadata = constraint.metadata if isinstance(constraint.metadata, dict) else {}
@@ -132,42 +114,7 @@ def _extend_by_constraint(
     if semantic_kind == StageGoalSemanticKind.EMIT_MESSAGE.value or bool(semantics.get("user_visible_required")):
         _add_dimension(dimensions, rationale, Dimension.INTERACTION_QUALITY, "阶段要求向用户解释、确认或汇报")
 
-    if _is_safety_related(constraint, semantic_kind, metadata, toolsandbox):
-        _add_dimension(dimensions, rationale, Dimension.SAFETY, "阶段涉及安全、权限、guardrail 或敏感状态")
-
-
-def _extend_by_stage_goal_text(
-    dimensions: list[Dimension],
-    rationale: dict[Dimension, str],
-    stage_goal: str,
-) -> None:
-    text = str(stage_goal or "").lower()
-    recovery_terms = (
-        "resolve",
-        "recover",
-        "retry",
-        "fix issue",
-        "failure",
-        "exception",
-        "修复",
-        "恢复",
-        "重试",
-        "失败",
-        "异常",
-    )
-    if any(term in text for term in recovery_terms):
-        _add_dimension(dimensions, rationale, Dimension.RECOVERY, "阶段目标包含恢复、重试或问题处理语义")
-
-
-def _is_safety_related(
-    constraint: Constraint,
-    semantic_kind: str,
-    metadata: dict[str, object],
-    toolsandbox: dict[str, object],
-) -> bool:
-    if bool(toolsandbox.get("guardrail")):
-        return True
-    text = " ".join(
+    safety_text = " ".join(
         str(value).lower()
         for value in [
             constraint.constraint_id,
@@ -179,14 +126,14 @@ def _is_safety_related(
         ]
         if value is not None
     )
-    return any(term in text for term in ("safety", "permission", "guardrail", "sensitive", "安全", "权限", "敏感"))
+    if bool(toolsandbox.get("guardrail")) or any(
+        term in safety_text for term in ("safety", "permission", "guardrail", "sensitive", "安全", "权限", "敏感")
+    ):
+        _add_dimension(dimensions, rationale, Dimension.SAFETY, "阶段涉及安全、权限、guardrail 或敏感状态")
 
 
 def _add_dimension(
-    dimensions: list[Dimension],
-    rationale: dict[Dimension, str],
-    dimension: Dimension,
-    reason: str,
+    dimensions: list[Dimension], rationale: dict[Dimension, str], dimension: Dimension, reason: str
 ) -> None:
     if dimension not in dimensions:
         dimensions.append(dimension)

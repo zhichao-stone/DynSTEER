@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import copy
 import logging
 from pathlib import Path
@@ -7,12 +5,9 @@ from threading import Lock
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.adapter.toolsandbox.utils.convert import (
-    sandbox_message_index,
-    sandbox_rows_to_step_dicts,
-    snapshots_from_context,
-    trajectory_from_sandbox_rows,
-)
+from dynsteer.adapter.toolsandbox.utils.state import snapshots_from_context
+from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
+from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
 from dynsteer.adapter.toolsandbox.utils.runtime import (
     TOOL_SANDBOX_DEPENDENCY_ERROR,
     load_toolsandbox_module,
@@ -102,10 +97,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         steps = sandbox_rows_to_step_dicts(rows)
         snapshot_data = snapshots_from_context(session.context, steps, load_toolsandbox_module) if session.context is not None else []
         trajectory = trajectory_from_sandbox_rows(
-            run_id=session.run_id,
-            task_id=f"toolsandbox::{session.case_id}",
-            steps=steps,
-            snapshots=snapshot_data,
+            run_id=session.run_id, task_id=f"toolsandbox::{session.case_id}", steps=steps, snapshots=snapshot_data
         )
         if not trajectory.steps and not session.finished:
             raise RuntimeError("benchmark session 未完成但没有新增轨迹步骤")
@@ -244,13 +236,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if session.context is None:
             raise RuntimeError("ToolSandbox session 已释放")
         self._set_current_context(session.context)
-        rows = rows_from_dataframe(
-            self._sandbox_database(
-                session.context,
-                get_all_history_snapshots=True,
-            )
-        )
-        execution_environment_role = self._role_by_name(session.roles, "EXECUTION_ENVIRONMENT")
+        rows = rows_from_dataframe(self._sandbox_database(session.context, get_all_history_snapshots=True))
+        execution_environment_role = self._role_for_recipient(session.roles, "EXECUTION_ENVIRONMENT")
         for row in rows:
             message_index = sandbox_message_index(row)
             if message_index < 0 or message_index > session.initial_max_sandbox_message_index:
@@ -298,13 +285,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         respond()
         session.context = self._get_current_context()
 
-    def _sandbox_database(
-        self,
-        context: object,
-        *,
-        drop_sandbox_message_index: bool = False,
-        get_all_history_snapshots: bool = False,
-    ) -> object:
+    def _sandbox_database(self, context: object, *, drop_sandbox_message_index: bool = False, get_all_history_snapshots: bool = False) -> object:
         """读取 ToolSandbox SANDBOX 数据库。"""
         if context is None:
             raise ValueError("context 不能为空")
@@ -334,12 +315,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             if enum_name(role_name) == target_name:
                 return role
         raise KeyError(f"ToolSandbox role 不存在: {recipient}")
-
-    def _role_by_name(self, roles: dict[object, object], name: str) -> object:
-        for role_name, role in roles.items():
-            if enum_name(role_name) == name:
-                return role
-        raise KeyError(f"ToolSandbox role 不存在: {name}")
 
     def _last_column_value(self, dataframe: object, column: str) -> object:
         if dataframe is None:

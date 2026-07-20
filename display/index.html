@@ -1337,6 +1337,12 @@
       return best;
     }
 
+    function selectedAttemptMilestoneId(attempt) {
+      const candidates = Array.isArray(attempt && attempt.candidate_scores) ? attempt.candidate_scores : [];
+      const selected = candidates.find((candidate) => candidate && candidate.selected === true);
+      return selected ? selected.milestone_id : "";
+    }
+
     function milestoneAttemptDetailText(best) {
       if (!best) return "无";
       const attempt = best.attempt || {};
@@ -2052,7 +2058,7 @@
       const scenario = currentScenario();
       if (!scenario) return;
       const attempts = scenario.match_attempts || [];
-      const match = attempts.find((item) => item.selected_milestone_id === milestoneId);
+      const match = attempts.find((item) => selectedAttemptMilestoneId(item) === milestoneId);
       if (match) {
         focusStepCard(match.step_index);
         return;
@@ -2086,7 +2092,7 @@
       const stepId = step.step_id;
       return (scenario.match_attempts || [])
         .filter((item) => item.step_index === stepIndex || item.step_id === stepId)
-        .map((item) => item.selected_milestone_id)
+        .map(selectedAttemptMilestoneId)
         .filter(Boolean);
     }
 

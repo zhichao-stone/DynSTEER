@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import re
 from pathlib import Path
@@ -33,11 +31,7 @@ from dynsteer.model import (
     TrajectoryStep,
     ensure_json_object,
 )
-from dynsteer.stage import (
-    generate_stage_evaluation_specs,
-    generate_stage_goals,
-    validate_stage_evaluation_specs,
-)
+from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goals, validate_stage_evaluation_specs
 from dynsteer.utils import enum_value, get_object, json_safe, unknown_fields
 
 
@@ -57,16 +51,8 @@ def adapted_case_path(data_root: Path, case_id: str) -> Path:
     return data_root / "adapted_cases" / safe_case_file_name(case_id)
 
 
-def load_task_case(
-    config: HarnessRunConfig,
-    adapter: BaseBenchmarkAdapter,
-    force_adapt: bool = False,
-) -> list[TaskCase]:
-    if config is None or adapter is None:
-        raise ValueError("config 和 adapter 不能为空")
+def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, force_adapt: bool = False) -> list[TaskCase]:
     case_ids = list(config.case_ids or ())
-    if not case_ids:
-        raise ValueError("config.case_ids 不能为空")
 
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
@@ -99,18 +85,10 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
         raise ValueError("path 和 task_case 不能为空")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json_safe(task_case)
-    _remove_legacy_required_field(data)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=4),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
 
 
-def _adapt_task_case(
-    config: HarnessRunConfig,
-    adapter: BaseBenchmarkAdapter,
-    case_id: str,
-) -> TaskCase:
+def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, case_id: str) -> TaskCase:
     task_case = adapter.adapt_task_case(config, case_id)
     if not isinstance(task_case, TaskCase):
         raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
@@ -122,32 +100,12 @@ def _adapt_task_case(
     task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
     if not task_case.stage_goals:
         task_case.stage_goals = generate_stage_goals(
-            task_case,
-            mode=str(config.metadata.get("stage_goal_generation", "auto")),
-            llm_provider=build_llm_from_env,
+            task_case, mode=str(config.metadata.get("stage_goal_generation", "auto")), llm_provider=build_llm_from_env
         )
     if not task_case.stage_evaluation_specs:
         task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
-    validate_stage_evaluation_specs(
-        task_case.milestone_graph,
-        task_case.stage_goals,
-        task_case.stage_evaluation_specs,
-    )
+    validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
     return task_case
-
-
-def _remove_legacy_required_field(data: object) -> None:
-    if not isinstance(data, dict):
-        return
-    graph = data.get("milestone_graph")
-    if not isinstance(graph, dict):
-        return
-    nodes = graph.get("nodes")
-    if not isinstance(nodes, list):
-        return
-    for node in nodes:
-        if isinstance(node, dict):
-            node.pop("required", None)
 
 
 ## 解析JSON对象为DynSTEER模型对象
@@ -168,25 +126,17 @@ def parse_constraint(data: JsonObject) -> Constraint:
     constraint_data = ensure_json_object(data)
     return Constraint(
         constraint_id=_required_str(constraint_data, "constraint_id"),
-        target=enum_value(ConstraintTarget, constraint_data.get("target"), "target"),  # type: ignore[arg-type]
+        target=enum_value(ConstraintTarget, constraint_data.get("target"), "target"),
         selector=_required_str(constraint_data, "selector"),
-        operator=enum_value(Operator, constraint_data.get("operator"), "operator"),  # type: ignore[arg-type]
+        operator=enum_value(Operator, constraint_data.get("operator"), "operator"),
         expected=constraint_data.get("expected"),
-        namespace=constraint_data.get("namespace") if isinstance(constraint_data.get("namespace"), str) else None,
-        reference_milestone_id=(
-            constraint_data.get("reference_milestone_id")
-            if isinstance(constraint_data.get("reference_milestone_id"), str)
-            else None
-        ),
+        namespace=constraint_data.get("namespace"),
+        reference_milestone_id=constraint_data.get("reference_milestone_id"),
         weight=float(constraint_data.get("weight", 1.0)),
         threshold=float(constraint_data.get("threshold", 1.0)),
         hard=bool(constraint_data.get("hard", False)),
         evaluator_hint=str(constraint_data.get("evaluator_hint", "rule")),
-        stage_goal_semantics=(
-            ensure_json_object(constraint_data["stage_goal_semantics"])
-            if constraint_data.get("stage_goal_semantics") is not None
-            else None
-        ),
+        stage_goal_semantics=constraint_data.get("stage_goal_semantics"),
         metadata=_optional_object(constraint_data, "metadata"),
     )
 
@@ -202,9 +152,7 @@ def parse_milestone(data: JsonObject) -> Milestone:
         name=_required_str(milestone_data, "name"),
         description=_required_str(milestone_data, "description"),
         constraints=[parse_constraint(ensure_json_object(item)) for item in constraints_value],
-        pass_threshold=float(milestone_data["pass_threshold"])
-        if milestone_data.get("pass_threshold") is not None
-        else None,
+        pass_threshold=float(milestone_data["pass_threshold"]) if milestone_data.get("pass_threshold") is not None else None,
         metadata=_optional_object(milestone_data, "metadata"),
         dependency_predecessor_ids=[str(item) for item in milestone_data.get("dependency_predecessor_ids", [])],
         stage_anchor_predecessor_id=stage_anchor if isinstance(stage_anchor, str) else None,
@@ -222,8 +170,7 @@ def parse_minefield(data: JsonObject) -> Minefield:
         severity=str(minefield_data.get("severity", "warning")),
         constraints=[parse_constraint(ensure_json_object(item)) for item in constraints_value],
         penalty=MinefieldPenalty(
-            mode=str(penalty_data.get("mode", "fixed")),
-            value=float(penalty_data.get("value", 0.0)),
+            mode=str(penalty_data.get("mode", "fixed")), value=float(penalty_data.get("value", 0.0))
         ),
         metadata=_optional_object(minefield_data, "metadata"),
     )
@@ -278,50 +225,18 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         environment_schema=_optional_object(task_data, "environment_schema"),
         tool_schema=_optional_object(task_data, "tool_schema"),
         policy_constraints=[ensure_json_object(item) for item in policy_constraints],
-        initial_state=ensure_json_object(task_data["initial_state"]) if task_data.get("initial_state") is not None else None,
+        initial_state=task_data.get("initial_state"),
         milestone_graph=milestone_graph,
         stage_goals={str(key): str(value) for key, value in stage_goal_values.items()},
         stage_evaluation_specs={
-            str(key): parse_stage_evaluation_spec(ensure_json_object(value))
-            for key, value in raw_stage_specs.items()
-        } if isinstance(raw_stage_specs, dict) else {},
+            str(key): parse_stage_evaluation_spec(ensure_json_object(value)) for key, value in raw_stage_specs.items()
+        },
         task_types=[enum_value(TaskType, item, "task_types") for item in raw_task_types],  # type: ignore[list-item]
         metadata=_optional_object(task_data, "metadata"),
     )
     if task_case.milestone_graph is not None and task_case.stage_evaluation_specs:
-        validate_stage_evaluation_specs(
-            task_case.milestone_graph,
-            task_case.stage_goals,
-            task_case.stage_evaluation_specs,
-        )
+        validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
     return task_case
-
-
-def _load_tool_call(data: JsonObject | None) -> ToolCall | None:
-    if data is None:
-        return None
-    return ToolCall(name=_required_str(data, "name"), arguments=_optional_object(data, "arguments"))
-
-
-def _load_tool_result(data: JsonObject | None) -> ToolResult | None:
-    if data is None:
-        return None
-    return ToolResult(
-        success=bool(data.get("success", False)),
-        content=data.get("content"),
-        exception=data.get("exception") if isinstance(data.get("exception"), str) else None,
-    )
-
-
-def _load_cost(data: JsonObject | None) -> StepCost:
-    if data is None:
-        return StepCost()
-    tokens = data.get("tokens")
-    latency_ms = data.get("latency_ms")
-    return StepCost(
-        tokens=int(tokens) if tokens is not None else None,
-        latency_ms=int(latency_ms) if latency_ms is not None else None,
-    )
 
 
 def _load_actor(value: object, field_name: str, required: bool = True) -> Actor | None:
@@ -363,20 +278,40 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     index = get_object(data, "index", int)
     if not isinstance(index, int):
         raise ValueError("step.index 必须是整数")
+    tool_call_data = data.get("tool_call")
+    tool_result_data = data.get("tool_result")
+    cost_data = data.get("cost")
+    tool_call = (
+        ToolCall(name=_required_str(tool_call_data, "name"), arguments=_optional_object(tool_call_data, "arguments"))
+        if tool_call_data is not None else None
+    )
+    tool_result = (
+        ToolResult(
+            success=bool(tool_result_data.get("success", False)),
+            content=tool_result_data.get("content"),
+            exception=tool_result_data.get("exception") if isinstance(tool_result_data.get("exception"), str) else None,
+        )
+        if tool_result_data is not None else None
+    )
+    cost = (
+        StepCost(
+            tokens=int(cost_data["tokens"]) if cost_data is not None and cost_data.get("tokens") is not None else None,
+            latency_ms=int(cost_data["latency_ms"]) if cost_data is not None and cost_data.get("latency_ms") is not None else None,
+        )
+        if cost_data is not None else StepCost()
+    )
     return TrajectoryStep(
         step_id=_required_str(data, "step_id"),
         index=index,
         actor=_load_actor(get_object(data, "actor"), "actor") or Actor.EVALUATOR,
-        event_type=enum_value(EventType, get_object(data, "event_type"), "event_type"),  # type: ignore[arg-type]
+        event_type=enum_value(EventType, get_object(data, "event_type"), "event_type"),
         recipient=_load_actor(data.get("recipient"), "recipient", required=False),
         timestamp=data.get("timestamp") if isinstance(data.get("timestamp"), str) else None,
         content=data.get("content") if isinstance(data.get("content"), str) else None,
-        tool_call=_load_tool_call(ensure_json_object(data["tool_call"])) if data.get("tool_call") is not None else None,
-        tool_result=_load_tool_result(ensure_json_object(data["tool_result"]))
-        if data.get("tool_result") is not None
-        else None,
+        tool_call=tool_call,
+        tool_result=tool_result,
         state_delta_refs=[str(item) for item in refs],
-        cost=_load_cost(ensure_json_object(data["cost"])) if data.get("cost") is not None else StepCost(),
+        cost=cost,
         raw=unknown_fields(data, known),
     )
 

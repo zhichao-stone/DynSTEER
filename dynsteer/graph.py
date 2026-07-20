@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections import deque
 
 from dynsteer.model import MilestoneGraph
@@ -26,8 +24,7 @@ def _augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
 
 
 def build_adjacency(
-    node_ids: set[str],
-    edges: list[tuple[str, str]],
+    node_ids: set[str], edges: list[tuple[str, str]]
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     predecessors: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
     successors: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
@@ -41,8 +38,7 @@ def build_adjacency(
 
 
 def topological_order(
-    predecessors: dict[str, list[str]],
-    successors: dict[str, list[str]],
+    predecessors: dict[str, list[str]], successors: dict[str, list[str]]
 ) -> tuple[list[str], dict[str, int]]:
     indegree: dict[str, int] = {node_id: len(values) for node_id, values in predecessors.items()}
     root_node: list[str] = sorted(node_id for node_id, degree in indegree.items() if degree == 0)
@@ -65,8 +61,7 @@ def topological_order(
 
 def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) -> str:
     """基于直接支配关系和深度信息，获取两个节点的最近公共祖先（LCA）。"""
-    u = left
-    v = right
+    u, v = left, right
     while u != v:
         if depths[u] < depths[v]:
             v = idom[v]
@@ -86,9 +81,7 @@ def _lca_all(nodes: list[str], idom: dict[str, str], depths: dict[str, int]) -> 
 
 
 def _immediate_dominators(
-    order: list[str],
-    predecessors: dict[str, list[str]],
-    depths: dict[str, int],
+    order: list[str], predecessors: dict[str, list[str]], depths: dict[str, int]
 ) -> dict[str, str]:
     """基于拓扑顺序、前驱关系和深度信息，计算每个节点的直接支配节点。"""
     idom: dict[str, str] = {START_NODE_ID: START_NODE_ID}
@@ -104,7 +97,7 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
     actualnode_ids = {node.milestone_id for node in graph.nodes}
     augmented = _augmented_edges(graph)
     node_ids = actualnode_ids | {START_NODE_ID, FINISH_NODE_ID}
-    
+
     predecessors, successors = build_adjacency(node_ids, augmented)
     order, depths = topological_order(predecessors, successors)
     idom = _immediate_dominators(order, predecessors, depths)

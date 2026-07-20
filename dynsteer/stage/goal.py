@@ -1,18 +1,9 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 import json
 
 from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.llm.base import BaseLLM
-from dynsteer.model import (
-    Constraint,
-    LLMMessage,
-    MilestoneGraph,
-    StageGoalSemanticKind,
-    StageInterval,
-    TaskCase,
-)
+from dynsteer.model import Constraint, LLMMessage, MilestoneGraph, StageGoalSemanticKind, StageInterval, TaskCase
 from dynsteer.utils import enum_value
 
 
@@ -28,8 +19,6 @@ def stage_goal_key(anchor_milestone_id: str, milestone_id: str) -> str:
 
 def required_stage_goal_keys(graph: MilestoneGraph) -> list[str]:
     """返回当前 graph 需要生成 stage_goal 的稳定 key 列表。"""
-    if graph is None:
-        raise ValueError("graph 不能为空")
     keys: list[str] = []
     for milestone in graph.nodes:
         if milestone is None or not milestone.milestone_id:
@@ -41,11 +30,7 @@ def required_stage_goal_keys(graph: MilestoneGraph) -> list[str]:
     return keys
 
 
-def generate_stage_goals(
-    task_case: TaskCase,
-    mode: str = "auto",
-    llm_provider: Callable[[], BaseLLM | None] | None = None,
-) -> dict[str, str]:
+def generate_stage_goals(task_case: TaskCase, mode: str = "auto", llm_provider: Callable[[], BaseLLM | None] | None = None) -> dict[str, str]:
     """集中生成 TaskCase 的 stage_goals。"""
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode == "stored":
@@ -84,9 +69,7 @@ def generate_stage_goals_with_llm(task_case: TaskCase, llm: BaseLLM) -> dict[str
             LLMMessage(
                 role="user",
                 content=build_stage_goal_generation_prompt(
-                    task_case,
-                    required_keys=required_stage_goal_keys(graph),
-                    graph=graph,
+                    task_case, required_keys=required_stage_goal_keys(graph), graph=graph
                 ),
             ),
         ],
@@ -120,8 +103,6 @@ def validate_stage_goals(graph: MilestoneGraph | None, stage_goals: dict[str, st
 
 def resolve_stage_goal(interval: StageInterval, task_case: TaskCase) -> str:
     """从 TaskCase.stage_goals 读取当前阶段目标。"""
-    if interval is None or task_case is None:
-        raise ValueError("阶段目标参数不能为空")
     if interval.milestone_id is None:
         return DEFAULT_FINISH_STAGE_GOAL
     if interval.milestone_id == FINISH_NODE_ID:
@@ -141,11 +122,7 @@ def resolve_stage_goal(interval: StageInterval, task_case: TaskCase) -> str:
 
 
 def _generate_semantic_stage_goals(task_case: TaskCase) -> dict[str, str] | None:
-    if task_case is None:
-        raise ValueError("task_case 不能为空")
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
     semantic_goals: dict[str, str] = {}
     for milestone in graph.nodes:
         anchor_id = milestone.stage_anchor_predecessor_id
@@ -196,7 +173,9 @@ def _constraint_goal_text_from_semantics(constraint: Constraint) -> str | None:
         expected = json.dumps(semantics.get("expected"), ensure_ascii=False, sort_keys=True)
         return (
             f"Make or verify {namespace} state satisfies {expected}. "
-            "Use structured scorer evidence for this state requirement; no separate user-facing restatement is required unless another message requirement says so."
+            "Use structured scorer evidence for this state requirement; "
+            "no separate user-facing restatement is required unless another "
+            "message requirement says so."
         )
     if kind == StageGoalSemanticKind.PRESERVE_STATE:
         namespace = _semantic_text(semantics.get("namespace"), "state")
@@ -208,7 +187,8 @@ def _constraint_goal_text_from_semantics(constraint: Constraint) -> str | None:
             reference_text = "initial state"
         return (
             f"Preserve {namespace} state relative to {reference_text}. "
-            "This means the relevant state should remain unchanged or equivalent, not that the namespace must be empty."
+            "This means the relevant state should remain unchanged or "
+            "equivalent, not that the namespace must be empty."
         )
     if kind == StageGoalSemanticKind.EMIT_MESSAGE:
         sender = _semantic_text(semantics.get("sender"), "sender")

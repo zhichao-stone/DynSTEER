@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 
 from dynsteer.language import TaskLanguage
@@ -24,11 +22,7 @@ def build_stage_goal_generation_prompt(
         "task_description": task_case.task_description,
         "milestone_graph": _graph_prompt_json(effective_graph),
         "required_stage_goal_keys": list(required_keys),
-        "output_schema": {
-            "stage_goals": {
-                "milestone_id_1->milestone_id_2": "当前阶段自然语言目标",
-            }
-        },
+        "output_schema": {"stage_goals": {"milestone_id_1->milestone_id_2": "当前阶段自然语言目标"}},
     }
     template = PromptTemplate(**{language.value: load_prompt_text("stage", "goal_generation", language)})
     return template.render(language=language, context_json=json.dumps(payload, ensure_ascii=False, indent=2))
@@ -40,11 +34,10 @@ def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
         raise ValueError("graph 不能为空")
     analysis = graph.metadata.get("graph_analysis") if isinstance(graph.metadata, dict) else None
     augmented_edges = analysis.get("augmented_edges") if isinstance(analysis, dict) else None
-    edges = augmented_edges if isinstance(augmented_edges, list) else [[source, target] for source, target in graph.edges]
-    return {
-        "nodes": [_milestone_prompt_json(node) for node in graph.nodes],
-        "edges": edges,
-    }
+    edges = (
+        augmented_edges if isinstance(augmented_edges, list) else [[source, target] for source, target in graph.edges]
+    )
+    return {"nodes": [_milestone_prompt_json(node) for node in graph.nodes], "edges": edges}
 
 
 def _milestone_prompt_json(milestone: Milestone) -> JsonObject:

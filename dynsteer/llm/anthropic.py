@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from anthropic import Anthropic
 
 from dynsteer.llm.base import BaseLLM, LLMConfigurationError, LLMResponseError
@@ -10,19 +8,14 @@ class AnthropicLLM(BaseLLM):
     """基于官方 Anthropic SDK 的 LLM 实现。"""
 
     def _get_response_from_client(
-        self,
-        client: Anthropic,
-        messages: list[LLMMessage],
-        request_params: dict[str, object],
+        self, client: Anthropic, messages: list[LLMMessage], request_params: dict[str, object]
     ) -> object:
         """使用 Anthropic client 调用 Messages API。"""
         system_text = "\n".join(message.content for message in messages if message.role == "system")
         request: dict[str, object] = {
             "model": self._config.model,
             "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-                if message.role != "system"
+                {"role": message.role, "content": message.content} for message in messages if message.role != "system"
             ],
         }
         if system_text.strip():
@@ -32,12 +25,7 @@ class AnthropicLLM(BaseLLM):
 
     def _create_client(self) -> Anthropic:
         """根据 LLMConfig 构造官方 Anthropic client。"""
-        kwargs: dict[str, object] = {"timeout": self._config.timeout_seconds}
-        if self._config.api_key is not None:
-            kwargs["api_key"] = self._config.api_key
-        if self._config.base_url is not None:
-            kwargs["base_url"] = self._config.base_url
-        return Anthropic(**kwargs)
+        return Anthropic(**self._client_kwargs())
 
     def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
         """转换 Anthropic Messages API 推理参数。"""
@@ -84,23 +72,13 @@ class AnthropicLLM(BaseLLM):
         content = getattr(response, "content", None)
         if isinstance(content, list):
             for block in content:
-                text = self._text_from_block(block)
+                if isinstance(block, dict):
+                    text = block.get("text") if block.get("type") == "text" else None
+                else:
+                    text = getattr(block, "text", None) if getattr(block, "type", None) == "text" else None
                 if isinstance(text, str) and text.strip():
                     return text.strip()
         raise LLMResponseError("Anthropic 返回内容缺少 text block")
-
-    def _text_from_block(self, block: object) -> str | None:
-        """读取 Anthropic text block 的文本内容。"""
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                text = block.get("text")
-                return text if isinstance(text, str) else None
-            return None
-        block_type = getattr(block, "type", None)
-        text = getattr(block, "text", None)
-        if block_type == "text" and isinstance(text, str):
-            return text
-        return None
 
     def _response_usage(self, response: object) -> dict[str, int | None]:
         """从 Anthropic Messages 响应中提取 token usage。"""
@@ -108,12 +86,6 @@ class AnthropicLLM(BaseLLM):
         prompt_tokens = self._optional_usage_int(getattr(usage, "input_tokens", None))
         completion_tokens = self._optional_usage_int(getattr(usage, "output_tokens", None))
         total_tokens = (
-            prompt_tokens + completion_tokens
-            if prompt_tokens is not None and completion_tokens is not None
-            else None
+            prompt_tokens + completion_tokens if prompt_tokens is not None and completion_tokens is not None else None
         )
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens}

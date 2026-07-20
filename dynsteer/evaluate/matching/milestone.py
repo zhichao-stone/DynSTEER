@@ -1,16 +1,5 @@
-from __future__ import annotations
-
-from dynsteer.evaluate.diagnostics import (
-    build_milestone_candidate_detail,
-    boundary_to_dict,
-    milestone_score_to_dict,
-    milestone_summary_to_dict,
-    trajectory_step_to_dict,
-)
-from dynsteer.evaluate.matching.frontier import (
-    blocked_candidate_milestones,
-    ready_milestones,
-)
+from dynsteer.evaluate.diagnostics import build_milestone_candidate_detail
+from dynsteer.evaluate.matching.frontier import blocked_candidate_milestones, ready_milestones
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.scoring import GeneralScorer, get_effective_scorer
 from dynsteer.model import (
@@ -24,7 +13,6 @@ from dynsteer.model import (
     ScoringContext,
     StageGoalSemanticKind,
     StageStatus,
-    TaskCase,
     Trajectory,
     TrajectoryStep,
 )
@@ -32,9 +20,7 @@ from dynsteer.graph import START_NODE_ID
 
 
 def stage_start_for_ready_milestone(
-    milestone: Milestone,
-    matched: dict[str, HarnessStageSettlement],
-    trajectory: Trajectory,
+    milestone: Milestone, matched: dict[str, HarnessStageSettlement], trajectory: Trajectory
 ) -> tuple[str, int]:
     """基于已持有的 milestone 对象计算阶段起点。
 
@@ -58,7 +44,6 @@ def stage_start_for_ready_milestone(
 
 
 def analyze_milestone_step(
-    task_case: TaskCase,
     trajectory: Trajectory,
     step: TrajectoryStep,
     boundary: Boundary,
@@ -70,7 +55,6 @@ def analyze_milestone_step(
     """分析单个新增 step 是否命中 ready milestone 或 blocked 诊断候选。
 
     入参：
-        task_case: 当前 benchmark case。
         trajectory: 已追加当前 step 的运行期轨迹。
         step: 当前新增 step。
         boundary: 当前 step 对应的唯一候选边界。
@@ -87,7 +71,7 @@ def analyze_milestone_step(
     matched_ids = set(matched)
     effective_scorer = get_effective_scorer(scorer)
     ready = list(ready_milestones(frontier))
-    ready_candidate_details, candidate_by_milestone, ready_hit, ready_llm_review_hit = _analyze_ready_candidates(
+    (ready_candidate_details, candidate_by_milestone, ready_hit, ready_llm_review_hit) = _analyze_ready_candidates(
         ready=ready,
         boundary=boundary,
         trajectory=trajectory,
@@ -107,41 +91,40 @@ def analyze_milestone_step(
     )
 
     _mark_selected_candidate_details(ready_candidate_details, ready_hit)
-    attempt_detail = _build_step_attempt_detail(
-        step=step,
-        boundary=boundary,
-        matched_ids=matched_ids,
-        ready=ready,
-        candidate_details=ready_candidate_details,
-        selected=ready_hit,
-    )
+    attempt_detail = {
+        "step_index": step.index,
+        "step_id": step.step_id,
+        "matched_before": sorted(matched_ids),
+        "ready_before": [milestone.milestone_id for milestone in ready],
+        "candidate_scores": ready_candidate_details,
+    }
     if ready_hit is not None:
         return MilestoneStepAnalysis(hit=ready_hit, attempt_detail=attempt_detail)
     if ready_llm_review_hit is not None:
         _mark_selected_candidate_details(ready_candidate_details, ready_llm_review_hit)
-        attempt_detail["selected_milestone_id"] = ready_llm_review_hit[0].milestone_id
-        attempt_detail["llm_semantic_review"] = {
-            "status": "candidate",
-            "milestone_id": ready_llm_review_hit[0].milestone_id,
-            "boundary_id": ready_llm_review_hit[1].boundary_id,
-            "structural_score": ready_llm_review_hit[2].score,
-            "structural_status": ready_llm_review_hit[2].status.value,
-        }
+        attempt_detail["llm_semantic_review"] = {"status": "candidate"}
         return MilestoneStepAnalysis(hit=ready_llm_review_hit, attempt_detail=attempt_detail)
 
     if blocked_best is None:
         return MilestoneStepAnalysis(attempt_detail=attempt_detail)
 
-    blocked_detail = _build_blocked_detail(
-        step=step,
-        ready=ready,
-        matched_ids=matched_ids,
-        frontier=frontier,
-        blocked_best=blocked_best,
-        blocked_candidate_details=blocked_candidate_details,
-        candidate_by_milestone=candidate_by_milestone,
+    milestone, blocked_boundary, score, missing_predecessors = blocked_best
+    _mark_selected_candidate_details(blocked_candidate_details, (milestone, blocked_boundary, score))
+    return MilestoneStepAnalysis(
+        attempt_detail=attempt_detail,
+        blocked_detail={
+            "diagnostic_type": "blocked_milestone_hit",
+            "step_index": step.index,
+            "step_id": step.step_id,
+            "matched_before": sorted(matched_ids),
+            "ready_before": [item.milestone_id for item in ready],
+            "missing_predecessors": list(missing_predecessors),
+            "predecessor_diagnostics": _build_predecessor_diagnostics(
+                frontier, missing_predecessors, candidate_by_milestone
+            ),
+            "candidate_scores": blocked_candidate_details,
+        },
     )
-    return MilestoneStepAnalysis(attempt_detail=attempt_detail, blocked_detail=blocked_detail)
 
 
 def _analyze_ready_candidates(
@@ -180,7 +163,19 @@ def _analyze_ready_candidates(
             continue
         score = scorer.score_milestone(milestone, boundary, trajectory, trajectory.snapshots, context=context)
         needs_llm_review = _is_llm_semantic_review_candidate(milestone, score)
-        detail = _build_ready_candidate_detail(milestone, boundary, score, needs_llm_review)
+        detail = build_milestone_candidate_detail(
+            milestone=milestone,
+            boundary=boundary,
+            score=score,
+            selected=False,
+            reject_reason=(
+                None
+                if score.status == StageStatus.PASS
+                else "needs_llm_semantic_review"
+                if needs_llm_review
+                else "status_not_pass"
+            ),
+        )
         ready_candidate_details.append(detail)
         candidate_by_milestone[milestone_id] = detail
         if score.status == StageStatus.PASS and (ready_hit is None or score.score > ready_hit[2].score):
@@ -226,113 +221,22 @@ def _analyze_blocked_candidates(
     return blocked_candidate_details, blocked_best
 
 
-def _build_ready_candidate_detail(
-    milestone: Milestone,
-    boundary: Boundary,
-    score: MilestoneScore,
-    needs_llm_review: bool,
-) -> JsonObject:
-    return build_milestone_candidate_detail(
-        milestone=milestone,
-        boundary=boundary,
-        score=score,
-        selected=False,
-        reject_reason=(
-            None
-            if score.status == StageStatus.PASS
-            else "needs_llm_semantic_review"
-            if needs_llm_review
-            else "status_not_pass"
-        ),
-    )
-
-
-def _build_blocked_detail(
-    step: TrajectoryStep,
-    ready: list[Milestone],
-    matched_ids: set[str],
-    frontier: MilestoneFrontierState,
-    blocked_best: tuple[Milestone, Boundary, MilestoneScore, list[str]],
-    blocked_candidate_details: list[JsonObject],
-    candidate_by_milestone: dict[str, JsonObject],
-) -> JsonObject:
-    milestone, boundary, score, missing_predecessors = blocked_best
-    _mark_selected_candidate_details(blocked_candidate_details, (milestone, boundary, score))
-    predecessor_diagnostics = _build_predecessor_diagnostics(
-        frontier,
-        missing_predecessors,
-        candidate_by_milestone,
-    )
-    return {
-        "diagnostic_type": "blocked_milestone_hit",
-        "step_index": step.index,
-        "step_id": step.step_id,
-        "current_step": trajectory_step_to_dict(step),
-        "matched_before": sorted(matched_ids),
-        "ready_before": [item.milestone_id for item in ready],
-        "milestone_id": milestone.milestone_id,
-        "matched_milestone": milestone_summary_to_dict(milestone),
-        "boundary": boundary_to_dict(boundary),
-        "score": milestone_score_to_dict(score),
-        "missing_predecessors": list(missing_predecessors),
-        "missing_predecessor_ids": list(missing_predecessors),
-        "predecessor_diagnostics": predecessor_diagnostics,
-        "candidate_scores": blocked_candidate_details,
-    }
-
-
 def _build_predecessor_diagnostics(
-    frontier: MilestoneFrontierState,
-    missing_predecessors: list[str],
-    candidate_by_milestone: dict[str, JsonObject],
+    frontier: MilestoneFrontierState, missing_predecessors: list[str], candidate_by_milestone: dict[str, JsonObject]
 ) -> list[JsonObject]:
     predecessor_diagnostics: list[JsonObject] = []
     for predecessor_id in missing_predecessors:
         predecessor = frontier.milestone_by_id.get(predecessor_id)
         if predecessor is None:
-            predecessor_diagnostics.append(
-                {
-                    "milestone_id": predecessor_id,
-                    "missing_node": True,
-                    "candidate_scores": [],
-                }
-            )
+            predecessor_diagnostics.append({"milestone_id": predecessor_id, "missing_node": True, "best_candidate": None})
             continue
         best_predecessor = candidate_by_milestone.get(predecessor_id)
-        predecessor_diagnostics.append(
-            {
-                "milestone_id": predecessor_id,
-                "missing_node": False,
-                "candidate_scores": [best_predecessor] if best_predecessor is not None else [],
-                "best_candidate": best_predecessor,
-            }
-        )
+        predecessor_diagnostics.append({"milestone_id": predecessor_id, "missing_node": False, "best_candidate": best_predecessor})
     return predecessor_diagnostics
 
 
-def _build_step_attempt_detail(
-    step: TrajectoryStep,
-    boundary: Boundary,
-    matched_ids: set[str],
-    ready: list[Milestone],
-    candidate_details: list[JsonObject],
-    selected: tuple[Milestone, Boundary, MilestoneScore] | None,
-) -> JsonObject:
-    return {
-        "step_index": step.index,
-        "step_id": step.step_id,
-        "boundaries": [boundary_to_dict(boundary)],
-        "boundary": boundary_to_dict(boundary),
-        "matched_before": sorted(matched_ids),
-        "ready_before": [milestone.milestone_id for milestone in ready],
-        "candidate_scores": candidate_details,
-        "selected_milestone_id": selected[0].milestone_id if selected is not None else None,
-    }
-
-
 def _mark_selected_candidate_details(
-    candidate_details: list[JsonObject],
-    selected: tuple[Milestone, Boundary, MilestoneScore] | None,
+    candidate_details: list[JsonObject], selected: tuple[Milestone, Boundary, MilestoneScore] | None
 ) -> None:
     selected_milestone_id = selected[0].milestone_id if selected is not None else None
     selected_boundary_id = selected[1].boundary_id if selected is not None else None

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 
 from dynsteer.language import TaskLanguage
@@ -9,7 +7,7 @@ from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageIn
 from dynsteer.prompt.rubrics import rubrics_for_dimensions
 from dynsteer.prompt.template import PromptTemplate, load_prompt_text
 from dynsteer.stage import stage_trajectory_steps
-from dynsteer.utils import json_safe
+from dynsteer.utils import json_safe, validated_target_dimensions
 
 
 def build_judge_system_prompt(language: TaskLanguage = TaskLanguage.ENGLISH) -> str:
@@ -22,7 +20,6 @@ def build_judge_prompt(
     interval: StageInterval,
     task_case: TaskCase,
     trajectory: Trajectory,
-    weights: dict[Dimension, float],
     *,
     language: TaskLanguage = TaskLanguage.ENGLISH,
     extra: JsonObject | None = None,
@@ -31,13 +28,7 @@ def build_judge_prompt(
 ) -> str:
     """按模板名称构造 judge prompt。"""
     context_json = _context_json(
-        interval,
-        task_case,
-        trajectory,
-        weights,
-        language=language,
-        extra=extra,
-        target_dimensions=target_dimensions,
+        interval, task_case, trajectory, language=language, extra=extra, target_dimensions=target_dimensions
     )
     return _render_template(template_name, language, context_json=context_json, **dict(render_kwargs or {}))
 
@@ -46,21 +37,17 @@ def _context_json(
     interval: StageInterval,
     task_case: TaskCase,
     trajectory: Trajectory,
-    weights: dict[Dimension, float],
     language: TaskLanguage = TaskLanguage.ENGLISH,
     extra: JsonObject | None = None,
     target_dimensions: Iterable[Dimension] | None = None,
 ) -> str:
     """把阶段评估上下文序列化为 JSON 文本。"""
-    if interval is None or task_case is None or trajectory is None or weights is None:
-        raise ValueError("prompt 上下文参数不能为空")
     from dynsteer.stage import resolve_stage_goal
-    dimensions = _target_dimensions(target_dimensions)
+
+    dimensions = validated_target_dimensions(target_dimensions)
 
     data: JsonObject = {
-        "task": {
-            "task_description": task_case.task_description,
-        },
+        "task": {"task_description": task_case.task_description},
         "stage_goal": resolve_stage_goal(interval, task_case),
         "rubrics": rubrics_for_dimensions(dimensions),
         "interval": {
@@ -104,11 +91,7 @@ def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[Jso
             if candidate.milestone_id == interval.milestone_id:
                 milestone = candidate
                 break
-    constraints: dict[str, Constraint] = (
-        {constraint.constraint_id: constraint for constraint in milestone.constraints}
-        if milestone is not None
-        else {}
-    )
+    constraints: dict[str, Constraint] = {constraint.constraint_id: constraint for constraint in milestone.constraints} if milestone is not None else {}
     checks: list[JsonObject] = []
     for score in interval.milestone_score.constraint_scores:
         constraint = constraints.get(score.constraint_id)
@@ -129,24 +112,10 @@ def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[Jso
 
 def _output_schema(language: TaskLanguage, dimensions: list[Dimension]) -> JsonObject:
     """按任务语言返回 required_output 字段说明。"""
-    if not isinstance(language, TaskLanguage):
-        raise ValueError("language 必须是 TaskLanguage 枚举类")
     schema = dict(_OUTPUT_SCHEMA.get(language, _OUTPUT_SCHEMA[TaskLanguage.ENGLISH]))
-    dimension_text = ",".join(dimension.value for dimension in dimensions)
-    if language == TaskLanguage.CHINESE:
-        schema["dimension_scores"] = f"dict[str,float]，只包含这些维度：{dimension_text}"
-    else:
-        schema["dimension_scores"] = f"dict[str,float] containing only these dimensions: {dimension_text}"
+    dimension_text = ", ".join(dimension.value for dimension in dimensions)
+    schema["dimension_scores"] = schema["dimension_scores"].format(dimensions=dimension_text)
     return schema
-
-
-def _target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:
-    if dimensions is None:
-        return list(Dimension)
-    result = list(dict.fromkeys(dimensions))
-    if not result:
-        raise ValueError("target_dimensions 不能为空")
-    return result
 
 
 def _constraint_goal(constraint: Constraint | None) -> str:
@@ -170,13 +139,15 @@ def _constraint_goal(constraint: Constraint | None) -> str:
 
 _OUTPUT_SCHEMA: dict[TaskLanguage, JsonObject] = {
     TaskLanguage.ENGLISH: {
-        "dimension_scores": "dict[str,float] covering progress,state_consistency,tool_quality,efficiency,safety,interaction_quality,recovery",
+        "dimension_scores": (
+            "dict[str,float], covering only these dimensions: {dimensions}"
+        ),
         "status": "pass|warn|fail|missing|ambiguous|invalid",
         "evidence": "list[str] with step index, interval.evidence, or constraint_checks references",
         "diagnosis": "list[str], each item is one independent diagnostic conclusion; prefix with overall or a rubric dimension when useful",
     },
     TaskLanguage.CHINESE: {
-        "dimension_scores": "dict[str,float]，覆盖 progress,state_consistency,tool_quality,efficiency,safety,interaction_quality,recovery",
+        "dimension_scores": "dict[str,float]，只覆盖这些维度: {dimensions}",
         "status": "pass|warn|fail|missing|ambiguous|invalid",
         "evidence": "list[str]，包含 step index、interval.evidence 或 constraint_checks 引用",
         "diagnosis": "list[str]，每一项是一条独立诊断结论，建议用 overall 或 rubric 维度名前缀标明归属",

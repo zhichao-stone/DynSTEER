@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,10 +21,7 @@ def load_toolsandbox_module(module_name: str) -> object:
     return import_module(module_name, TOOL_SANDBOX_DEPENDENCY_ERROR)
 
 
-def tool_backend(
-    config: HarnessRunConfig,
-    module_loader: Callable[[str], object] = load_toolsandbox_module,
-) -> object:
+def tool_backend(config: HarnessRunConfig, module_loader: Callable[[str], object] = load_toolsandbox_module) -> object:
     """读取 ToolSandbox tool backend。"""
     if config is None:
         raise ValueError("config 不能为空")

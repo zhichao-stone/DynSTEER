@@ -1,21 +1,40 @@
-from __future__ import annotations
-
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 import re
 from typing import Any, Mapping
+from collections.abc import Iterable
 
-from dynsteer.model import JsonObject, JsonValue, MISSING
+from dynsteer.model import JsonObject, JsonValue, MISSING, Dimension
+
+
+def validated_target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:
+    if dimensions is None:
+        return list(Dimension)
+    result = list(dict.fromkeys(dimensions))
+    if not result:
+        raise ValueError("target dimensions 不能为空")
+    return result
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     """将数值裁剪到 [lower, upper] 闭区间。"""
-    if value < lower:
-        return lower
-    if value > upper:
-        return upper
-    return value
+    return min(max(value, lower), upper)
+
+
+def as_number(value: object, default: float | None = None) -> float | None:
+    """读取 JSON 数字值，bool 或非数字返回默认值。"""
+    if not isinstance(value, int | float):
+        return float(default)
+    return float(value)
+
+
+def clamped_number(value: object, default: float = 0.0, lower: float = 0.0, upper: float = 1.0) -> float:
+    """读取 JSON 数字值并裁剪到指定范围。"""
+    number = as_number(value, default)
+    if number is None:
+        number = default
+    return clamp(float(number), lower, upper)
 
 
 def read_token(current: Any, token: str) -> Any:
@@ -112,8 +131,6 @@ def clean_evidence_items(values: list[str], limit: int | None = None) -> list[st
     输出：
         保序去重后的 evidence；当存在 `step N: ...` 具体证据时，删除裸 `step N`。
     """
-    if values is None:
-        raise ValueError("evidence values 不能为空")
     if limit is not None and limit < 0:
         raise ValueError("evidence limit 不能为负数")
 
@@ -127,21 +144,11 @@ def clean_evidence_items(values: list[str], limit: int | None = None) -> list[st
         deduped.append(text)
 
     detailed_steps = _detailed_step_indexes(deduped)
-    cleaned = [
-        item
-        for item in deduped
-        if not _is_redundant_bare_step_reference(item, detailed_steps)
-    ]
+    cleaned = [item for item in deduped if not _is_redundant_bare_step_reference(item, detailed_steps)]
     return cleaned[:limit] if limit is not None else cleaned
 
 
-def get_object(
-    data: JsonObject,
-    key: str,
-    type: object = None,
-    default: object = None,
-    required: bool = True,
-) -> object:
+def get_object(data: JsonObject, key: str, type: object = None, default: object = None, required: bool = True) -> object:
     """从 JSON 对象读取字段，并按需校验存在性和类型。"""
     if data is None:
         raise ValueError("待读取字段的 JSON 对象不能为空")
@@ -196,23 +203,16 @@ def json_safe(value: object) -> JsonValue:
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: json_safe(getattr(value, field.name)) for field in fields(value)}
     enum_raw_value = getattr(value, "value", None)
-    if isinstance(enum_raw_value, (str, int, float, bool)) or (
-        enum_raw_value is None and isinstance(value, Enum)
-    ):
+    if isinstance(enum_raw_value, (str, int, float, bool)) or (enum_raw_value is None and isinstance(value, Enum)):
         return enum_raw_value
     if isinstance(value, dict):
-        return {_json_safe_key(key): json_safe(item) for key, item in value.items()}
+        return {
+            (raw if isinstance(raw := getattr(key, "value", None), str) else str(key)): json_safe(item)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     return str(value)
-
-
-def _json_safe_key(key: object) -> str:
-    """把 JSON dict key 转成稳定字符串。"""
-    raw_value = getattr(key, "value", None)
-    if isinstance(raw_value, str):
-        return raw_value
-    return str(key)
 
 
 def _detailed_step_indexes(values: list[str]) -> set[int]:

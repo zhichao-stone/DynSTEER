@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -132,8 +130,7 @@ def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
     for run_dir, run_outputs in outputs_by_run_dir.items():
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "summary.json").write_text(
-            json.dumps(_build_run_level_summary(run_dir, run_outputs), ensure_ascii=False, indent=4),
-            encoding="utf-8",
+            json.dumps(_build_run_level_summary(run_dir, run_outputs), ensure_ascii=False, indent=4), encoding="utf-8"
         )
 
 

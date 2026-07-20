@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import Milestone, MilestoneGraph, MilestoneFrontierState
 
@@ -47,9 +45,7 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
 
 
 def advance_milestone_frontier(
-    frontier: MilestoneFrontierState,
-    matched_milestone_id: str,
-    matched: dict[str, HarnessStageSettlement],
+    frontier: MilestoneFrontierState, matched_milestone_id: str, matched: dict[str, HarnessStageSettlement]
 ) -> None:
     """在 milestone matched 后原地推进 frontier。
 
@@ -108,8 +104,7 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
 
 
 def ready_milestone_ids(
-    frontier: MilestoneFrontierState,
-    matched: dict[str, HarnessStageSettlement],
+    frontier: MilestoneFrontierState, matched: dict[str, HarnessStageSettlement]
 ) -> tuple[str, ...]:
     """返回当前 ready frontier 的稳定 milestone id 元组。
 
@@ -120,17 +115,11 @@ def ready_milestone_ids(
         尚未匹配的 ready milestone id。
     """
     return tuple(
-        milestone.milestone_id
-        for milestone in ready_milestones(frontier)
-        if milestone.milestone_id not in matched
+        milestone.milestone_id for milestone in ready_milestones(frontier) if milestone.milestone_id not in matched
     )
 
 
-def _insert_id_by_order(
-    milestone_ids: list[str],
-    milestone_id: str,
-    order_by_id: dict[str, int],
-) -> None:
+def _insert_id_by_order(milestone_ids: list[str], milestone_id: str, order_by_id: dict[str, int]) -> None:
     if milestone_id in milestone_ids:
         return
     order = order_by_id.get(milestone_id, len(order_by_id))

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import os
 from pathlib import Path
@@ -31,7 +29,7 @@ def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObje
     }
 
 
-def _read_json_object(path: Path, label: str) -> JsonObject:
+def _read_json_file(path: Path, label: str, expected_type: type) -> Any:
     """读取 JSON 对象配置文件。"""
     if path is None:
         raise ValueError(f"{label} 路径不能为空")
@@ -41,23 +39,9 @@ def _read_json_object(path: Path, label: str) -> JsonObject:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"{label} 不是合法 JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{label} 必须是 JSON 对象")
-    return data
-
-
-def _read_json_array(path: Path, label: str) -> list[Any]:
-    """读取 JSON 数组配置文件。"""
-    if path is None:
-        raise ValueError(f"{label} 路径不能为空")
-    if not path.exists():
-        raise ValueError(f"{label} 不存在: {path}")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} 不是合法 JSON: {path}") from exc
-    if not isinstance(data, list):
-        raise ValueError(f"{label} 必须是 JSON 数组")
+    if not isinstance(data, expected_type):
+        expected = "JSON 对象" if expected_type is dict else "JSON 数组"
+        raise ValueError(f"{label} 必须是 {expected}")
     return data
 
 
@@ -77,29 +61,6 @@ def _optional_str(data: dict[str, Any], key: str) -> str | None:
     return None
 
 
-def _optional_bool(data: dict[str, Any], key: str, default: bool) -> bool:
-    """读取可选布尔字段。"""
-    value = data.get(key)
-    if value is None:
-        return default
-    if not isinstance(value, bool):
-        raise ValueError(f"run_configs.json 字段 {key} 必须是布尔值")
-    return value
-
-
-def _optional_non_negative_float(data: dict[str, Any], key: str, default: float) -> float:
-    """读取可选非负浮点字段。"""
-    value = data.get(key)
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"run_configs.json 字段 {key} 必须是数字")
-    parsed = float(value)
-    if parsed < 0:
-        raise ValueError(f"run_configs.json 字段 {key} 不能为负数")
-    return parsed
-
-
 def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) -> int:
     """从环境变量读取 ready frontier 无进展 patience。"""
     source = env if env is not None else os.environ
@@ -113,24 +74,6 @@ def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) 
     if patience < 1:
         raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须大于 0")
     return patience
-
-
-def _manifest_language(manifest: dict[str, Any]) -> str:
-    """读取 benchmark prompt 语言配置。"""
-    value = manifest.get("language", "en")
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("benchmark.json language 必须是非空字符串")
-    return value.strip()
-
-
-def _manifest_max_workers(manifest: dict[str, Any]) -> int | None:
-    """读取 benchmark 允许的最大 worker 数。"""
-    value = manifest.get("max_workers")
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("benchmark.json max_workers 必须是整数")
-    return max(value, 1)
 
 
 def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | None:
@@ -150,10 +93,7 @@ def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | N
 
 
 def load_harness_run_configs(
-    benchmark: str,
-    data_root: Path,
-    runs_dir: Path,
-    results_dir: Path,
+    benchmark: str, data_root: Path, runs_dir: Path, results_dir: Path
 ) -> list[HarnessRunConfig]:
     """从 benchmark data-root 加载多组 harness 运行配置。"""
     if benchmark is None or not benchmark.strip():
@@ -161,16 +101,22 @@ def load_harness_run_configs(
     if data_root is None:
         raise ValueError("data_root 不能为空")
     normalized_benchmark = benchmark.strip().lower()
-    manifest = _read_json_object(data_root / "benchmark.json", "benchmark.json")
+    manifest: dict = _read_json_file(data_root / "benchmark.json", "benchmark.json", dict)
     manifest_benchmark = _required_str(manifest, "benchmark", "benchmark.json").lower()
     if manifest_benchmark != normalized_benchmark:
         raise ValueError(f"benchmark.json 中的 benchmark 必须是 {normalized_benchmark}")
     _required_str(manifest, "source_root", "benchmark.json")
     tool_backend = _required_str(manifest, "tool_backend", "benchmark.json")
-    language = _manifest_language(manifest)
-    manifest_max_workers = _manifest_max_workers(manifest)
+    language = manifest.get("language", "en")
+    if not isinstance(language, str) or not language.strip():
+        raise ValueError("benchmark.json language 必须是非空字符串")
+    language = language.strip()
+    manifest_max_workers = manifest.get("max_workers")
+    if manifest_max_workers is None or not isinstance(manifest_max_workers, int):
+        raise ValueError("benchmark.json max_workers 必须是整数")
+    manifest_max_workers = max(manifest_max_workers, 1)
 
-    raw_specs = _read_json_array(data_root / "run_configs.json", "run_configs.json")
+    raw_specs = _read_json_file(data_root / "run_configs.json", "run_configs.json", list)
     if not raw_specs:
         raise ValueError("run_configs.json 至少需要包含一组运行配置")
 
@@ -182,13 +128,10 @@ def load_harness_run_configs(
         if not isinstance(raw_spec, dict):
             raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
         metadata: JsonObject = {
-            str(key): value
-            for key, value in raw_spec.items()
-            if key not in {"scenarios", "ready_frontier_patience"}
+            str(key): value for key, value in raw_spec.items() if key not in {"scenarios", "ready_frontier_patience"}
         }
         metadata["language"] = language
-        if manifest_max_workers is not None:
-            metadata["benchmark_max_workers"] = manifest_max_workers
+        metadata["benchmark_max_workers"] = manifest_max_workers
         if normalized_benchmark == "toolsandbox":
             _required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
             _required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
@@ -211,6 +154,15 @@ def load_harness_run_configs(
             metadata["run_config_name"] = name
         if judge_config:
             metadata["judge"] = judge_config
+        stop_on_ready = raw_spec.get("stop_on_ready_frontier_no_progress", True)
+        if not isinstance(stop_on_ready, bool):
+            raise ValueError("run_configs.json 字段 stop_on_ready_frontier_no_progress 必须是布尔值")
+        ready_min_delta = raw_spec.get("ready_frontier_min_delta", 0.02)
+        if not isinstance(ready_min_delta, (int, float)):
+            raise ValueError("run_configs.json 字段 ready_frontier_min_delta 必须是数字")
+        ready_min_delta = float(ready_min_delta)
+        if ready_min_delta < 0:
+            raise ValueError("run_configs.json 字段 ready_frontier_min_delta 不能为负数")
         configs.append(
             HarnessRunConfig(
                 benchmark=normalized_benchmark,
@@ -218,13 +170,9 @@ def load_harness_run_configs(
                 case_ids=_case_ids_from_spec(raw_spec, index),
                 runs_dir=runs_dir,
                 results_dir=results_dir,
-                stop_on_ready_frontier_no_progress=_optional_bool(
-                    raw_spec,
-                    "stop_on_ready_frontier_no_progress",
-                    True,
-                ),
+                stop_on_ready_frontier_no_progress=stop_on_ready,
                 ready_frontier_patience=ready_frontier_patience,
-                ready_frontier_min_delta=_optional_non_negative_float(raw_spec, "ready_frontier_min_delta", 0.02),
+                ready_frontier_min_delta=ready_min_delta,
                 metadata=metadata,
             )
         )

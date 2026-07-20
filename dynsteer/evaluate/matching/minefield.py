@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import asdict
 
 from dynsteer.evaluate.scoring import GeneralScorer, get_effective_scorer
@@ -27,10 +25,7 @@ def evaluate_minefields_at_boundary(
         evidence: list[str] = []
         for constraint in minefield.constraints:
             source, reference = effective_scorer.constraint_sources(
-                constraint,
-                boundary,
-                trajectory,
-                trajectory.snapshots,
+                constraint, boundary, trajectory, trajectory.snapshots
             )
             score = effective_scorer.score_constraint(constraint, source, reference, context=context)
             weight = max(float(constraint.weight), 0.0)

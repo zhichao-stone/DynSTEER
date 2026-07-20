@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.model import Dimension, DynamicWeightConfig, TaskType
 
 
@@ -60,6 +58,7 @@ TASK_TYPE_WEIGHTS: dict[TaskType, dict[Dimension, float]] = {
         Dimension.RECOVERY: 0.05,
     },
 }
+
 
 def default_dynamic_weight_config() -> DynamicWeightConfig:
     """创建默认动态权重配置。"""

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import threading
@@ -157,10 +155,7 @@ def sanitize_log_value(value: object) -> JsonValue:
     if isinstance(value, list):
         return [sanitize_log_value(item) for item in value[:_LOG_EXTRA_LIST_LIMIT]]
     if isinstance(value, dict):
-        return {
-            str(key): sanitize_log_value(item)
-            for key, item in list(value.items())[:_LOG_EXTRA_LIST_LIMIT]
-        }
+        return {str(key): sanitize_log_value(item) for key, item in list(value.items())[:_LOG_EXTRA_LIST_LIMIT]}
     return compact_text(value, _LOG_EXTRA_TEXT_LIMIT)
 
 
@@ -170,19 +165,11 @@ def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
         value = extra.get(key)
         if value is not None:
             result[key] = value
-    diagnosis = extra.get("diagnosis")
-    if diagnosis is None:
-        diagnosis = extra.get("stage_first_diagnosis")
-    if diagnosis is None:
-        diagnosis = extra.get("judge_first_diagnosis")
-    if diagnosis is not None:
-        result["diagnosis"] = diagnosis
-    evidence = extra.get("evidence")
-    if evidence is None:
-        evidence = extra.get("stage_first_evidence")
-    if evidence is None:
-        evidence = extra.get("judge_first_evidence")
-    if evidence is not None:
-        result["evidence"] = evidence
+    for target, keys in (
+        ("diagnosis", ("diagnosis", "stage_first_diagnosis", "judge_first_diagnosis")),
+        ("evidence", ("evidence", "stage_first_evidence", "judge_first_evidence")),
+    ):
+        value = next((extra.get(key) for key in keys if extra.get(key) is not None), None)
+        if value is not None:
+            result[target] = value
     return result
-

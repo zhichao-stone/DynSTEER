@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 
 from dynsteer.model import JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, TrajectoryStep
@@ -9,11 +7,7 @@ from dynsteer.utils import compact_text, first_text, string_list
 
 
 def judge_input_metadata(
-    interval: StageInterval,
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    prompt: str,
-    prompt_type: str | None = None,
+    interval: StageInterval, task_case: TaskCase, trajectory: Trajectory, prompt: str, prompt_type: str | None = None
 ) -> JsonObject:
     """构造 LLM judge 调用前输入快照元数据。"""
     if interval is None or task_case is None or trajectory is None or prompt is None:
@@ -52,7 +46,7 @@ def judge_result_output_metadata(result: StageEvaluationResult, input_metadata: 
         raise ValueError("judge 输出快照参数不能为空")
     return {
         "judge_status": result.status.value,
-        "judge_stage_score": result.stage_score,
+        "judge_dimension_scores": {dimension.value: score for dimension, score in result.dimension_scores.items()},
         "judge_dimension_confidence_avg": _average_confidence(result),
         "judge_first_diagnosis": first_text(result.diagnosis, 240),
         "judge_first_evidence": first_text(result.evidence, 240),
@@ -60,21 +54,24 @@ def judge_result_output_metadata(result: StageEvaluationResult, input_metadata: 
     }
 
 
-def judge_payload_output_metadata(
-    payload: JsonObject,
-    stage_score: float,
-    input_metadata: JsonObject,
-) -> JsonObject:
+def judge_payload_output_metadata(payload: JsonObject, input_metadata: JsonObject) -> JsonObject:
     """根据已校验 payload 构造中间轮次输出快照。"""
     if payload is None or input_metadata is None:
         raise ValueError("judge payload 输出快照参数不能为空")
     return {
         "judge_status": str(payload.get("status")),
-        "judge_stage_score": stage_score,
+        "judge_dimension_scores": _payload_dimension_scores(payload),
         "judge_first_diagnosis": first_text(string_list(payload.get("diagnosis")), 240),
         "judge_first_evidence": first_text(string_list(payload.get("evidence")), 240),
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
     }
+
+
+def _payload_dimension_scores(payload: JsonObject) -> JsonObject:
+    value = payload.get("dimension_scores")
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items() if isinstance(item, int | float)}
 
 
 def _average_confidence(result: StageEvaluationResult) -> float | None:
@@ -91,12 +88,10 @@ def _step_excerpt(step: TrajectoryStep | None) -> str | None:
         return compact_text(f"step {step.index} {step.actor.value}/{step.event_type.value}: {content}", 240)
     if step.tool_call is not None:
         return compact_text(
-            f"step {step.index} {step.actor.value}/{step.event_type.value}: tool_call={step.tool_call.name}",
-            240,
+            f"step {step.index} {step.actor.value}/{step.event_type.value}: tool_call={step.tool_call.name}", 240
         )
     if step.tool_result is not None:
         return compact_text(
-            f"step {step.index} {step.actor.value}/{step.event_type.value}: tool_result={step.tool_result.success}",
-            240,
+            f"step {step.index} {step.actor.value}/{step.event_type.value}: tool_result={step.tool_result.success}", 240
         )
     return compact_text(f"step {step.index} {step.actor.value}/{step.event_type.value}", 240)

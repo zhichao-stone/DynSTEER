@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,11 +44,11 @@ class HarnessRunConfig:
             raise ValueError("results_dir 不能为空")
         if not isinstance(self.stop_on_ready_frontier_no_progress, bool):
             raise TypeError("stop_on_ready_frontier_no_progress 必须是 bool")
-        if isinstance(self.ready_frontier_patience, bool) or not isinstance(self.ready_frontier_patience, int):
+        if not isinstance(self.ready_frontier_patience, int):
             raise TypeError("ready_frontier_patience 必须是整数")
         if self.ready_frontier_patience < 1:
             raise ValueError("ready_frontier_patience 必须大于 0")
-        if isinstance(self.ready_frontier_min_delta, bool) or not isinstance(self.ready_frontier_min_delta, (int, float)):
+        if not isinstance(self.ready_frontier_min_delta, (int, float)):
             raise TypeError("ready_frontier_min_delta 必须是数字")
         if self.ready_frontier_min_delta < 0:
             raise ValueError("ready_frontier_min_delta 不能为负数")

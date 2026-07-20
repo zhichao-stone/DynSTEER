@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import functools
 import importlib
 import json
@@ -46,17 +44,10 @@ def rows_from_dataframe(dataframe: object | None) -> list[dict[str, object]]:
         return [dict(row) for row in dataframe]
     if isinstance(dataframe, dict):
         keys = list(dataframe)
-        lengths = [
-            len(value)
-            for value in dataframe.values()
-            if isinstance(value, list)
-        ]
+        lengths = [len(value) for value in dataframe.values() if isinstance(value, list)]
         if lengths and len(set(lengths)) == 1:
             return [
-                {
-                    key: dataframe[key][index] if isinstance(dataframe[key], list) else dataframe[key]
-                    for key in keys
-                }
+                {key: dataframe[key][index] if isinstance(dataframe[key], list) else dataframe[key] for key in keys}
                 for index in range(lengths[0])
             ]
     raise TypeError(f"不支持的 dataframe 类型: {type(dataframe)!r}")

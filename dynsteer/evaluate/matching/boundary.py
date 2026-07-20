@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.model import Actor, Boundary, EventType, StateSnapshot, Trajectory, TrajectoryStep
 
 
@@ -49,10 +47,7 @@ def boundary_snapshot(boundary: Boundary, snapshots: list[StateSnapshot]) -> Sta
     return max(candidates, key=lambda item: item.after_step_index)
 
 
-def candidate_boundary_for_current_step(
-    trajectory: Trajectory,
-    step: TrajectoryStep,
-) -> Boundary:
+def candidate_boundary_for_current_step(trajectory: Trajectory, step: TrajectoryStep) -> Boundary:
     """基于当前新增 step 构造运行期唯一候选边界。"""
     return Boundary(
         boundary_id=f"runtime:b{step.index}",

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer
@@ -24,7 +22,6 @@ from dynsteer.utils import clean_evidence_items, compact_text, json_safe
 def build_finish_verification(
     task_case: TaskCase,
     trajectory: Trajectory,
-    matched: dict[str, HarnessStageSettlement],
     state: RuntimeEvaluationState,
     scorer: GeneralScorer,
 ) -> JsonObject:
@@ -39,11 +36,8 @@ def build_finish_verification(
     输出：
         JSON payload，供 finish stage report 组装使用。
     """
-    if task_case is None or trajectory is None or matched is None or state is None or scorer is None:
-        raise ValueError("finish verification 参数不能为空")
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
+    matched = state.matched_settlements
 
     milestone_ids = [node.milestone_id for node in graph.nodes]
     matched_ids = set(matched)
@@ -78,8 +72,8 @@ def build_finish_verification(
             "finish 结算节点",
             f"真实 milestone 覆盖：{len(milestone_ids) - len(unmatched_ids)}/{len(milestone_ids)}",
             *([f"未完成 milestone：{', '.join(unmatched_ids)}"] if unmatched_ids else ["所有真实 milestone 已匹配"]),
-            *_terminal_check_evidence(terminal_state_checks),
-            *_terminal_message_check_evidence(terminal_message_checks),
+            *_terminal_check_evidence(terminal_state_checks, state_check=True),
+            *_terminal_check_evidence(terminal_message_checks, state_check=False),
             f"fatal minefield：{'触发' if fatal_minefield else '未触发'}",
             *_terminal_step_evidence(task_case, trajectory, matched),
         ]
@@ -107,14 +101,15 @@ def _terminal_state_checks(
     scorer: GeneralScorer,
 ) -> list[JsonObject]:
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
     milestone_by_id = {node.milestone_id: node for node in graph.nodes}
     final_step_index = trajectory.latest_step_index if trajectory.latest_step_index is not None else 0
+    snapshot = boundary_snapshot(
+        Boundary("finish:snapshot", final_step_index, None, "finish_snapshot_lookup"), trajectory.snapshots
+    )
     final_boundary = Boundary(
         boundary_id=f"finish:b{final_step_index}",
         step_index=final_step_index,
-        snapshot_id=_latest_snapshot_id(final_step_index, trajectory),
+        snapshot_id=snapshot.snapshot_id if snapshot is not None else None,
         reason="finish_final_state_check",
     )
     context = scoring_context(task_case, trajectory, matched)
@@ -136,13 +131,7 @@ def _terminal_state_checks(
             dependency_predecessor_ids=list(milestone.dependency_predecessor_ids),
             stage_anchor_predecessor_id=milestone.stage_anchor_predecessor_id,
         )
-        score = scorer.score_milestone(
-            recheck,
-            final_boundary,
-            trajectory,
-            trajectory.snapshots,
-            context=context,
-        )
+        score = scorer.score_milestone(recheck, final_boundary, trajectory, trajectory.snapshots, context=context)
         checks.append(
             {
                 "milestone_id": milestone_id,
@@ -159,13 +148,9 @@ def _terminal_state_checks(
 
 
 def _terminal_message_checks(
-    task_case: TaskCase,
-    matched: dict[str, HarnessStageSettlement],
-    terminal_ids: list[str],
+    task_case: TaskCase, matched: dict[str, HarnessStageSettlement], terminal_ids: list[str]
 ) -> list[JsonObject]:
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
     milestone_by_id = {node.milestone_id: node for node in graph.nodes}
     checks: list[JsonObject] = []
     for milestone_id in terminal_ids:
@@ -194,8 +179,6 @@ def _terminal_message_checks(
 
 def _terminal_milestone_ids(task_case: TaskCase) -> list[str]:
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
     real_ids = {node.milestone_id for node in graph.nodes}
     outgoing: dict[str, set[str]] = {node_id: set() for node_id in real_ids}
     for source, target in graph.edges:
@@ -242,42 +225,22 @@ def _is_terminal_message_constraint(constraint: Constraint) -> bool:
     return namespace.upper() == "SANDBOX"
 
 
-def _latest_snapshot_id(step_index: int, trajectory: Trajectory) -> str | None:
-    snapshot = boundary_snapshot(
-        Boundary("finish:snapshot", step_index, None, "finish_snapshot_lookup"),
-        trajectory.snapshots,
-    )
-    return snapshot.snapshot_id if snapshot is not None else None
-
-
-def _terminal_check_evidence(checks: list[JsonObject]) -> list[str]:
+def _terminal_check_evidence(checks: list[JsonObject], state_check: bool) -> list[str]:
     if not checks:
-        return ["terminal 状态约束：无需要最终重检的状态约束"]
+        return ["terminal 状态约束：无需要最终重检的状态约束"] if state_check else ["terminal 消息约束：无用户可见消息约束需要引用"]
     return [
         (
-            f"terminal 状态重检 {item.get('milestone_id')}："
+            f"terminal {'状态重检' if state_check else '消息约束'} {item.get('milestone_id')}："
             f"status={item.get('status')}, score={float(item.get('score') or 0.0):.3f}"
-        )
-        for item in checks
-    ]
-
-
-def _terminal_message_check_evidence(checks: list[JsonObject]) -> list[str]:
-    if not checks:
-        return ["terminal 消息约束：无用户可见消息约束需要引用"]
-    return [
-        (
-            f"terminal 消息约束 {item.get('milestone_id')}："
-            f"status={item.get('status')}，沿用原 milestone 匹配结果"
+            if state_check
+            else f"terminal 消息约束 {item.get('milestone_id')}：status={item.get('status')}，沿用原 milestone 匹配结果"
         )
         for item in checks
     ]
 
 
 def _terminal_step_evidence(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    matched: dict[str, HarnessStageSettlement],
+    task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement]
 ) -> list[str]:
     final_step_index = trajectory.latest_step_index
     if final_step_index is None:
@@ -290,13 +253,9 @@ def _terminal_step_evidence(
 
 
 def _finish_anchor_boundary_index(
-    task_case: TaskCase,
-    trajectory: Trajectory,
-    matched: dict[str, HarnessStageSettlement],
+    task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement]
 ) -> int:
     graph = task_case.milestone_graph
-    if graph is None:
-        raise ValueError("TaskCase 缺少 milestone_graph")
     analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
     anchor_id = analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else START_NODE_ID
     if not isinstance(anchor_id, str) or not anchor_id or anchor_id == START_NODE_ID:

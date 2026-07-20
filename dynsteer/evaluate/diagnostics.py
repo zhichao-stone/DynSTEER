@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 import json
 
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
+    Actor,
     Boundary,
     Constraint,
+    EventType,
     EvaluationTerminationState,
     JsonObject,
     Milestone,
@@ -16,21 +16,14 @@ from dynsteer.model import (
     TrajectoryStep,
 )
 from dynsteer.stage import stage_trajectory_steps
-from dynsteer.utils import compact_text, json_safe
+from dynsteer.utils import as_number, compact_text, json_safe
+
+STATE_MUTATION_TOOL_PREFIXES = ("set_", "modify_", "remove_", "add_", "create_", "delete_", "send_")
+QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
 
 
-def trajectory_step_to_dict(step: TrajectoryStep) -> JsonObject:
-    return json_safe(step)  # type: ignore[return-value]
-
-
-def build_stage_trace(
-    trajectory: Trajectory,
-    interval: StageInterval,
-) -> JsonObject:
-    steps = [
-        trajectory_step_to_dict(step)
-        for step in stage_trajectory_steps(interval, trajectory)
-    ]
+def build_stage_trace(trajectory: Trajectory, interval: StageInterval) -> JsonObject:
+    steps = [json_safe(step) for step in stage_trajectory_steps(interval, trajectory)]
     return {
         "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
         "start_boundary_step_index": interval.start_boundary_step_index,
@@ -40,10 +33,6 @@ def build_stage_trace(
         "step_count": len(steps),
         "steps": steps,
     }
-
-
-def milestone_score_to_dict(score: MilestoneScore) -> JsonObject:
-    return json_safe(score)  # type: ignore[return-value]
 
 
 def milestone_summary_to_dict(milestone: Milestone) -> JsonObject:
@@ -84,14 +73,8 @@ def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
     }
 
 
-def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
-
-
 def _format_number(value: object) -> str:
-    number = _number(value)
+    number = as_number(value)
     return "unknown" if number is None else f"{number:.3f}"
 
 
@@ -101,10 +84,6 @@ def _compact_json(value: object, limit: int = 360) -> str | None:
     safe_value = json_safe(value)
     text = safe_value if isinstance(safe_value, str) else json.dumps(safe_value, ensure_ascii=False)
     return compact_text(text, limit)
-
-
-def _constraint_by_id(milestone: Milestone) -> dict[str, Constraint]:
-    return {constraint.constraint_id: constraint for constraint in milestone.constraints}
 
 
 def _constraint_goal_hint(constraint: Constraint | None) -> str:
@@ -134,16 +113,11 @@ def _constraint_goal_hint(constraint: Constraint | None) -> str:
     return f"target={constraint.target.value}, operator={constraint.operator.value}"
 
 
-def _constraint_failure_detail(
-    constraint: Constraint | None,
-    score: JsonObject,
-) -> JsonObject:
+def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject) -> JsonObject:
     threshold = constraint.threshold if constraint is not None else 1.0
     evidence = score.get("evidence")
     metadata = constraint.metadata.get("toolsandbox") if constraint is not None else None
-    toolsandbox_measure = (
-        str(metadata.get("snapshot_constraint") or "") if isinstance(metadata, dict) else ""
-    )
+    toolsandbox_measure = str(metadata.get("snapshot_constraint") or "") if isinstance(metadata, dict) else ""
     actual_excerpt = _compact_json(score.get("actual"), 420) if "actual" in score else None
     detail: JsonObject = {
         "constraint_id": str(score.get("constraint_id") or (constraint.constraint_id if constraint else "constraint")),
@@ -161,10 +135,7 @@ def _constraint_failure_detail(
         ),
         "goal_hint": _constraint_goal_hint(constraint),
         "toolsandbox_measure": toolsandbox_measure,
-        "evidence": [
-            compact_text(item, 220)
-            for item in evidence[:2]
-        ] if isinstance(evidence, list) else [],
+        "evidence": [compact_text(item, 220) for item in evidence[:2]] if isinstance(evidence, list) else [],
         "actual_excerpt": actual_excerpt,
     }
     if constraint is not None:
@@ -178,7 +149,7 @@ def _failed_constraint_details(milestone: Milestone, score_payload: JsonObject |
     raw_scores = score_payload.get("constraint_scores")
     if not isinstance(raw_scores, list):
         return []
-    constraints = _constraint_by_id(milestone)
+    constraints = {constraint.constraint_id: constraint for constraint in milestone.constraints}
     details: list[tuple[float, JsonObject]] = []
     fallbacks: list[tuple[float, JsonObject]] = []
     for raw_score in raw_scores:
@@ -187,7 +158,7 @@ def _failed_constraint_details(milestone: Milestone, score_payload: JsonObject |
         constraint_id = str(raw_score.get("constraint_id") or "")
         constraint = constraints.get(constraint_id)
         threshold = constraint.threshold if constraint is not None else 1.0
-        score_value = _number(raw_score.get("score"))
+        score_value = as_number(raw_score.get("score"))
         missing = bool(raw_score.get("missing"))
         detail = _constraint_failure_detail(constraint, raw_score)
         sort_key = score_value if score_value is not None else -1.0
@@ -231,7 +202,11 @@ def _pending_failure_diagnostics(
         step_text = ""
         if isinstance(boundary, dict) and boundary.get("step_index") is not None:
             step_text = f"；最佳候选位于 step={boundary.get('step_index')}"
-        status_text = str(score_payload.get("status") or common.get("best_status") or "unknown") if isinstance(score_payload, dict) else str(common.get("best_status") or "unknown")
+        status_text = (
+            str(score_payload.get("status") or common.get("best_status") or "unknown")
+            if isinstance(score_payload, dict)
+            else str(common.get("best_status") or "unknown")
+        )
         summary = (
             f"milestone {milestone.milestone_id} 已尝试匹配 {attempt_count} 次，但没有候选达到通过阈值 "
             f"{threshold:.3f}{step_text}，最佳得分 {_format_number(common.get('best_score'))}（status={status_text}）。"
@@ -244,30 +219,18 @@ def _pending_failure_diagnostics(
             reasons.extend(_constraint_failure_line(item) for item in failed_constraints[1:])
         elif isinstance(last_entry, dict) and last_entry.get("reject_reason"):
             reasons.append(f"最后一次拒绝原因：{last_entry.get('reject_reason')}")
-        return {
-            "failure_summary": summary,
-            "failure_reasons": reasons,
-            "failed_constraints": failed_constraints,
-        }
+        return {"failure_summary": summary, "failure_reasons": reasons, "failed_constraints": failed_constraints}
 
     if blocker == "predecessor_not_matched":
         missing_text = ", ".join(pending_predecessors) if pending_predecessors else "unknown"
         summary = f"milestone {milestone.milestone_id} 尚未进入可评估状态，因为前驱 milestone 未完成：{missing_text}。"
-        return {
-            "failure_summary": summary,
-            "failure_reasons": [summary],
-            "failed_constraints": failed_constraints,
-        }
+        return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
 
     if blocker == "ready_without_candidate":
         summary = f"milestone {milestone.milestone_id} 曾经 ready，但运行结束前没有出现可评分的候选边界。"
     else:
         summary = f"milestone {milestone.milestone_id} 从未 ready；可能仍缺少前序阶段证据或轨迹未推进到该阶段。"
-    return {
-        "failure_summary": summary,
-        "failure_reasons": [summary],
-        "failed_constraints": failed_constraints,
-    }
+    return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
 
 
 def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
@@ -285,10 +248,6 @@ def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
     }
 
 
-def boundary_to_dict(boundary: Boundary) -> JsonObject:
-    return json_safe(boundary)  # type: ignore[return-value]
-
-
 def build_milestone_candidate_detail(
     milestone: Milestone,
     boundary: Boundary | None,
@@ -298,15 +257,14 @@ def build_milestone_candidate_detail(
 ) -> JsonObject:
     return {
         "milestone_id": milestone.milestone_id,
-        "boundary": boundary_to_dict(boundary) if boundary is not None else None,
-        "score": milestone_score_to_dict(score) if score is not None else None,
+        "boundary": json_safe(boundary) if boundary is not None else None,
+        "score": json_safe(score) if score is not None else None,
         "selected": selected,
         "reject_reason": reject_reason,
     }
 
 
 def build_milestone_matching_detail(
-    graph: MilestoneGraph,
     matched: dict[str, HarnessStageSettlement],
     milestone: Milestone,
     boundary: Boundary,
@@ -317,8 +275,8 @@ def build_milestone_matching_detail(
         "mode": "runtime_checkpoint",
         "matched": True,
         "milestone": milestone_summary_to_dict(milestone),
-        "boundary": boundary_to_dict(boundary),
-        "score": milestone_score_to_dict(milestone_score),
+        "boundary": json_safe(boundary),
+        "score": json_safe(milestone_score),
         "ready_milestone_ids_before_match": list(ready_milestone_ids_before_match),
         "matched_milestone_ids_before_match": sorted(matched),
         "predecessor_milestone_ids": list(milestone.dependency_predecessor_ids),
@@ -364,9 +322,7 @@ def build_final_milestone_diagnostics(
             "attempt_count": len(candidate_entries),
             "best_score": best_score.get("score") if isinstance(best_score, dict) else None,
             "best_status": best_score.get("status") if isinstance(best_score, dict) else None,
-            "best_boundary_step_index": (
-                best_boundary.get("step_index") if isinstance(best_boundary, dict) else None
-            ),
+            "best_boundary_step_index": (best_boundary.get("step_index") if isinstance(best_boundary, dict) else None),
         }
 
         if node.milestone_id in matched:
@@ -428,10 +384,7 @@ def build_final_milestone_diagnostics(
     return diagnostics
 
 
-def build_finish_matching_detail(
-    graph: MilestoneGraph,
-    matched: dict[str, HarnessStageSettlement],
-) -> JsonObject:
+def build_finish_matching_detail(graph: MilestoneGraph, matched: dict[str, HarnessStageSettlement]) -> JsonObject:
     matched_ids = set(matched)
     milestone_ids = {node.milestone_id for node in graph.nodes}
     pending_ids = milestone_ids - matched_ids
@@ -442,3 +395,155 @@ def build_finish_matching_detail(
         "pending_milestone_ids": sorted(pending_ids),
         "total_milestone_count": len(graph.nodes),
     }
+
+
+def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
+    tool_argument_warnings: list[JsonObject] = []
+    empty_tool_results: list[JsonObject] = []
+    failed_tool_results: list[JsonObject] = []
+    grounding_warnings: list[JsonObject] = []
+    next_agent_message_by_index = _next_agent_message_by_index(steps)
+    first_user_index: int | None = None
+    first_tool_index: int | None = None
+    tool_call_count = 0
+    latest_tool_call: TrajectoryStep | None = None
+
+    for step in steps:
+        if step.actor == Actor.USER and first_user_index is None:
+            first_user_index = step.index
+        if step.tool_call is not None or step.event_type == EventType.TOOL_CALL:
+            tool_call_count += 1
+            first_tool_index = step.index if first_tool_index is None else first_tool_index
+            latest_tool_call = step
+            tool_argument_warnings.extend(_tool_argument_warnings(step))
+            continue
+        if step.tool_result is None and step.event_type != EventType.TOOL_RESULT:
+            continue
+        result = step.tool_result
+        tool_name = latest_tool_call.tool_call.name if latest_tool_call and latest_tool_call.tool_call else None
+        success = bool(result.success) if result is not None else False
+        exception = result.exception if result is not None else None
+        content = result.content if result is not None else None
+        if not success or exception:
+            failed_tool_results.append(
+                {"step_index": step.index, "step_id": step.step_id, "tool_name": tool_name, "exception": exception}
+            )
+        if success and _is_empty_tool_content(content):
+            empty = {
+                "step_index": step.index,
+                "step_id": step.step_id,
+                "tool_name": tool_name,
+                "content": content,
+                **_classify_empty_tool_result(tool_name),
+            }
+            empty_tool_results.append(empty)
+            answer = next_agent_message_by_index.get(step.index)
+            if empty["severity"] == "warning" and answer is not None:
+                grounding_warnings.append(
+                    {
+                        "warning": "agent_answer_after_empty_tool_result",
+                        "tool_name": tool_name,
+                        "tool_result_step_index": step.index,
+                        "answer_step_index": answer.index,
+                        "answer_excerpt": compact_text(answer.content or ""),
+                    }
+                )
+
+    first_user_index = -1 if first_user_index is None else first_user_index
+    first_tool_index = max((step.index for step in steps), default=first_user_index) + 1 if first_tool_index is None else first_tool_index
+    extra_user_turns = [
+        step.index for step in steps if step.actor == Actor.USER and first_user_index < step.index < first_tool_index
+    ]
+    agent_messages = [
+        step.index
+        for step in steps
+        if step.actor == Actor.AGENT
+        and step.event_type == EventType.MESSAGE
+        and first_user_index < step.index < first_tool_index
+    ]
+    empty_tool_warning_count = sum(1 for item in empty_tool_results if item.get("severity") == "warning")
+    warning_count = (
+        len(tool_argument_warnings)
+        + empty_tool_warning_count
+        + len(failed_tool_results)
+        + len(grounding_warnings)
+        + (1 if extra_user_turns else 0)
+    )
+    efficiency = {
+        "extra_user_turns_before_first_tool_call": len(extra_user_turns),
+        "extra_user_turn_step_indices": extra_user_turns,
+        "agent_messages_before_first_tool_call": len(agent_messages),
+        "agent_message_step_indices_before_first_tool_call": agent_messages,
+        "tool_call_count": tool_call_count,
+        "step_count": len(steps),
+    }
+    return {
+        "step_count": len(steps),
+        "warning_count": warning_count,
+        "tool_argument_warnings": tool_argument_warnings,
+        "empty_tool_results": empty_tool_results,
+        "failed_tool_results": failed_tool_results,
+        "grounding_warnings": grounding_warnings,
+        "efficiency": efficiency,
+    }
+
+
+def _classify_empty_tool_result(tool_name: str | None) -> JsonObject:
+    if tool_name is None or not str(tool_name).strip():
+        return {"severity": "warning", "result_category": "unknown_empty_payload"}
+    normalized = str(tool_name).strip().lower()
+    if normalized.startswith(STATE_MUTATION_TOOL_PREFIXES):
+        return {"severity": "info", "result_category": "state_mutation_no_payload"}
+    if normalized.startswith(QUERY_TOOL_PREFIXES) or normalized in {"timestamp_diff"}:
+        return {"severity": "warning", "result_category": "query_empty_payload"}
+    return {"severity": "warning", "result_category": "unknown_empty_payload"}
+
+
+def _tool_argument_warnings(step: TrajectoryStep) -> list[JsonObject]:
+    tool_call = step.tool_call
+    if tool_call is None:
+        return []
+    warnings: list[JsonObject] = []
+    for key, value in tool_call.arguments.items():
+        argument_name = str(key)
+        if (
+            (argument_name.endswith("_id") or argument_name.endswith("_person_id"))
+            and isinstance(value, str)
+            and value.strip().lower() in {"self", "me", "user", "agent"}
+        ):
+            warnings.append(
+                {
+                    "warning": "literal_alias_for_id_argument",
+                    "step_index": step.index,
+                    "step_id": step.step_id,
+                    "tool_name": tool_call.name,
+                    "argument_name": argument_name,
+                    "argument_value": value,
+                }
+            )
+    return warnings
+
+
+def _next_agent_message_by_index(steps: list[TrajectoryStep]) -> dict[int, TrajectoryStep | None]:
+    result: dict[int, TrajectoryStep | None] = {}
+    next_message: TrajectoryStep | None = None
+    for step in reversed(steps):
+        result[step.index] = next_message
+        if (
+            step.actor == Actor.AGENT
+            and step.event_type in {EventType.MESSAGE, EventType.FINAL}
+            and isinstance(step.content, str)
+            and step.content.strip()
+        ):
+            next_message = step
+    return result
+
+
+def _is_empty_tool_content(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"", "none", "null", "[]", "{}"}
+    if isinstance(value, list | dict):
+        return len(value) == 0
+    return False

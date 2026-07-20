@@ -1,35 +1,30 @@
-from __future__ import annotations
-
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import (
-    JsonObject,
-    JsonValue,
-    MilestoneGraph,
-    RuntimeEvaluationDecision,
-    StageEvaluationResult,
-    TaskCase,
-)
+from dynsteer.evaluate.runtime import selected_candidate_from_attempt
+from dynsteer.model import JsonObject, JsonValue, RuntimeEvaluationDecision, StageEvaluationResult, TaskCase
 from dynsteer.utils import compact_text, first_text
 
 _TEXT_LIMIT = 160
 _LIST_LIMIT = 8
 
 
-def policy_stop_log_extra(
-    case_id: str,
-    task_case: TaskCase,
-    decision: RuntimeEvaluationDecision,
-) -> JsonObject:
+def policy_stop_log_extra(task_case: TaskCase, decision: RuntimeEvaluationDecision) -> JsonObject:
     """构造策略提前终止 warning 摘要。"""
     stage_result = decision.stage_result
     matched_ids = sorted(decision.next_state.matched_settlements)
-    pending_ids = _pending_milestone_ids(task_case.milestone_graph, matched_ids)
-    milestone_score, milestone_status = _milestone_layer_from_stage(stage_result)
+    matched_set = set(matched_ids)
+    pending_ids = sorted(
+        node.milestone_id for node in task_case.milestone_graph.nodes if node.milestone_id not in matched_set
+    )
+    milestone_score, milestone_status = _milestone_layer(stage_result)
     if milestone_score is None and milestone_status is None:
-        milestone_score, milestone_status = _milestone_layer_from_checkpoint(decision.checkpoint)
-    last_attempt = _last_match_attempt(decision.next_state.match_attempts)
+        milestone_score, milestone_status = _milestone_layer(decision.checkpoint)
+    last_attempt = next((item for item in reversed(decision.next_state.match_attempts) if isinstance(item, dict)), None)
+    selected_candidate = selected_candidate_from_attempt(last_attempt) if last_attempt is not None else None
+    dimension_levels = {}
+    if stage_result is not None:
+        dimension_levels = {dimension.value: level.value for dimension, level in stage_result.dimension_levels.items()}
     extra: JsonObject = {
-        "case_id": str(case_id),
+        "case_id": str(task_case.case_id),
         "termination_code": decision.termination.termination_code,
         "termination_reason": decision.termination.termination_reason,
         "matched_milestone_ids": matched_ids,
@@ -40,62 +35,25 @@ def policy_stop_log_extra(
         "milestone_status": milestone_status,
         "stage_score": stage_result.stage_score if stage_result is not None else None,
         "stage_status": stage_result.status.value if stage_result is not None else None,
-        "dimension_levels": _dimension_levels(stage_result),
+        "dimension_levels": dimension_levels,
         "stage_first_evidence": first_text(stage_result.evidence, _TEXT_LIMIT) if stage_result is not None else None,
         "stage_first_diagnosis": first_text(stage_result.diagnosis, _TEXT_LIMIT) if stage_result is not None else None,
         "last_match_step_index": last_attempt.get("step_index") if last_attempt is not None else None,
-        "last_selected_milestone_id": (
-            last_attempt.get("selected_milestone_id") if last_attempt is not None else None
-        ),
+        "last_selected_milestone_id": selected_candidate.get("milestone_id") if selected_candidate is not None else None,
     }
     return _sanitize_extra(extra)
 
 
-def _dimension_levels(stage_result: StageEvaluationResult | None) -> JsonObject | None:
-    if stage_result is None:
-        return None
-    return {
-        dimension.value: level.value
-        for dimension, level in stage_result.dimension_levels.items()
-    }
-
-
-def _pending_milestone_ids(graph: MilestoneGraph, matched_ids: list[str]) -> list[str]:
-    matched = set(matched_ids)
-    return sorted(node.milestone_id for node in graph.nodes if node.milestone_id not in matched)
-
-
-def _milestone_layer_from_stage(stage_result: StageEvaluationResult | None) -> tuple[float | None, str | None]:
-    if stage_result is None:
+def _milestone_layer(source: StageEvaluationResult | HarnessStageSettlement | None) -> tuple[float | None, str | None]:
+    if source is None:
         return None, None
-    matching = stage_result.metadata.get("milestone_matching")
+    matching = source.metadata.get("milestone_matching")
     if not isinstance(matching, dict):
         return None, None
     score = matching.get("score")
     if not isinstance(score, dict):
         return None, None
     return _optional_float(score.get("score")), _optional_str(score.get("status"))
-
-
-def _milestone_layer_from_checkpoint(
-    checkpoint: HarnessStageSettlement | None,
-) -> tuple[float | None, str | None]:
-    if checkpoint is None:
-        return None, None
-    matching = checkpoint.metadata.get("milestone_matching")
-    if not isinstance(matching, dict):
-        return None, None
-    score = matching.get("score")
-    if not isinstance(score, dict):
-        return None, None
-    return _optional_float(score.get("score")), _optional_str(score.get("status"))
-
-
-def _last_match_attempt(attempts: list[JsonObject]) -> JsonObject | None:
-    for item in reversed(attempts):
-        if isinstance(item, dict):
-            return item
-    return None
 
 
 def _optional_str(value: object) -> str | None:
