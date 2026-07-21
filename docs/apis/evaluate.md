@@ -42,6 +42,10 @@ ready frontier 无进展终止会观察当前 ready frontier 内每个 milestone
 
 ready frontier 的观察单位是完整闭合的 agent step，不是 raw step。agent 发出 tool call 后、tool result 尚未返回前，不会因为该 outbound 立即触发 no-progress。
 
+## 闭包 Route 匹配
+
+`AgentStepTracker` 在 agent outbound 闭合时会返回完整闭包步骤组。milestone 匹配仍只评分一次：若 milestone 的 `metadata.milestone_matching.route_groups` 中存在唯一 route，则从当前闭包内选择最后一个 sender/recipient 匹配的 step 构造评分 boundary；无 route 或闭包内找不到匹配 step 时沿用闭包终点。当前实现显式拒绝同一 milestone 存在多个 route group 的 adapted case。
+
 ## Scoring
 
 `GeneralScorer` 支持三类 operator：

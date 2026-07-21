@@ -1,4 +1,356 @@
-# ToolSandbox 闭包路由式 milestone/minefield 匹配修复方案
+# 通用 Benchmark 闭包路由式 milestone 匹配修订方案
+
+生成日期：2026-07-21  
+修订状态：本文件以本节“修订版方案”为准；下方“历史草稿（已废弃）”仅保留问题背景对照，不作为实现依据。  
+适用范围：所有 Benchmark 适配数据中的 route 预计算、milestone 匹配时选定评分 step 的逻辑，以及为了把闭包 steps 传到该逻辑所需的最小数据传递。  
+
+## 1. 当前代码核查结论
+
+经核查，用户提出的问题属实：
+
+1. `AgentStepTracker.ingest()` 当前在闭包完成时只返回闭包终点 `TrajectoryStep`。
+2. `DynSTEEREvaluator.evaluate()` 只在 tracker 返回闭包终点后调用 `evaluate_agent_step()`。
+3. `evaluate_agent_step()` 基于闭包终点构造唯一 `Boundary`，随后调用 `analyze_milestone_step()`。
+4. `analyze_milestone_step()` 在 ready / blocked candidate 分析中直接用该 boundary 调用 `scorer.score_milestone(...)`。
+
+因此，当前 milestone 匹配确实只使用闭包终点 step 作为评分依据，没有把完整 `Agent -> X -> Agent` 闭包执行步骤组交给 milestone 匹配逻辑选择证据 step。
+
+## 2. 修订后的目标
+
+本方案仅解决 milestone 匹配时“应该用闭包内哪一个 step 作为评分边界”的问题：
+
+1. 在所有 Benchmark 的通用适配后处理阶段解析每个 constraint 的 `发起方 -> 接收方` route，并写入 adapted case，避免运行期每次 milestone 匹配重复解析。
+2. milestone 匹配入口接收当前闭包的完整 steps：`Agent -> X -> Agent`。
+3. 在匹配某个 milestone 前，读取适配数据中预计算的 route，从闭包 steps 中选定需要评估的 step。
+4. 当前已核查的 ToolSandbox adapted 数据中每个 milestone 至多只有一个显式 route；本轮实现基于该事实采用单 route 快路径，并用通用 invariant 检查约束未来 benchmark 数据。
+5. 只对选定的 step 构造 boundary 并执行一次 milestone 评分，不对闭包内所有 steps 逐条执行 milestone 评分。
+6. 不针对 `emit_message`、`tool_call`、`tool_result` 等具体 step 类型写特判。
+7. 不改 scorer 评分接口，不改任何 benchmark 私有 scorer，不改 minefield，不新增闭包级 minefield 扫描，不改展示层诊断结构。
+
+## 3. 非目标
+
+以下内容从上一版方案中移除：
+
+1. 不新增 `score_constraint_at_boundary(...)`。
+2. 不在任何 benchmark 私有 scorer 中覆盖闭包感知评分入口。
+3. 不把候选 step 转换成某个 benchmark 私有 row / event source 后逐条评分。
+4. 不修改 minefield 匹配流程。
+5. 不新增 closure-level minefield。
+6. 不修改 StandardJudge prompt。
+7. 不把本次修复扩展为通用 scorer / diagnostics 架构调整。
+
+## 4. 设计原则
+
+### 4.0 通用适配期预计算 route
+
+route 是 TaskCase 固定结构，不依赖运行期轨迹，因此应在所有 Benchmark 的适配阶段完成解析，并持久化到 adapted case。
+
+该逻辑不是 ToolSandbox 私有逻辑，而是通用 TaskCase 后处理逻辑：
+
+1. 各 benchmark adapter 仍只负责把原生 benchmark case 转换为 `TaskCase`。
+2. `adapter.adapt_task_case(...)` 返回 `TaskCase` 后，由统一后处理函数补充 route metadata。
+3. 推荐落点是 `dynsteer/adapter/loader.py::_adapt_task_case(...)` 调用一个共享 helper，例如 `dynsteer/adapter/route.py::enrich_milestone_routes(...)`。
+4. 所有后续 benchmark 只要产出 `MilestoneGraph` 与 `Constraint`，都会自动获得同一套 route metadata。
+
+建议写入两级 metadata：
+
+1. constraint 级：
+
+```json
+{
+  "metadata": {
+    "milestone_matching": {
+      "route": {
+        "sender": "AGENT",
+        "recipient": "USER"
+      },
+      "route_source": "stage_goal_semantics"
+    }
+  }
+}
+```
+
+2. milestone 级：
+
+```json
+{
+  "metadata": {
+    "milestone_matching": {
+      "route_groups": [
+        {
+          "route": {
+            "sender": "AGENT",
+            "recipient": "USER"
+          },
+          "constraint_ids": ["m0_c0"]
+        }
+      ],
+      "route_group_count": 1
+    }
+  }
+}
+```
+
+无 route 的 constraint 写入：
+
+```json
+{
+  "metadata": {
+    "milestone_matching": {
+      "route": null,
+      "route_source": null
+    }
+  }
+}
+```
+
+运行期 milestone 匹配只读取上述 canonical metadata，不再从 `stage_goal_semantics` 或 `expected.rows` 重新解析 route。若 adapted case 缺少该 metadata，应通过通用 loader 后处理补齐；如果补齐失败，则视为适配数据版本不满足当前方案，需要重新适配或迁移数据。
+
+### 4.1 保留闭包协议
+
+不改变当前 `AgentStepTracker` 的闭包判定语义：
+
+1. `Agent -> Environment` 仍需等到 `Environment -> Agent` 才闭合。
+2. `Agent -> User` 仍需等到 `User -> Agent` 才闭合。
+3. 自然结束时允许终局 `Agent -> User` message 自闭合。
+
+代码落地时如需让 milestone 匹配看到完整闭包，可以对 tracker / evaluator 做最小数据传递调整，但这只是把已存在的闭包 steps 传下去，不改变何时闭合、不改变 step count、不改变 settlement 语义。
+
+### 4.2 当前已核查数据下只选一个 step，不逐条匹配
+
+milestone 匹配流程应变为：
+
+```text
+闭合 agent step
+  -> 得到完整 closure_steps
+  -> 对每个 ready / blocked milestone 读取预计算 route_groups
+  -> 当前 milestone 若 route_group_count == 1，则根据该 route 从 closure_steps 中选定一个 scoring_step
+  -> 当前 milestone 若 route_group_count == 0，则使用闭包终点 default_step
+  -> 基于 scoring_step 构造 boundary
+  -> 调用一次 scorer.score_milestone(...)
+```
+
+关键点：
+
+1. route 解析不属于运行期 milestone 匹配热路径。
+2. scorer 仍只接收一个 boundary，不感知闭包。
+3. 基于当前已核查数据的单 route invariant，一个 milestone candidate 只评分一次。
+4. route 只能决定“选哪个 step”，不能改变 constraint 的评分语义。
+
+### 4.3 无 route 时保持旧行为
+
+如果 milestone 约束无法解析出明确 route，则保持当前逻辑：
+
+1. 使用闭包终点 step 构造 boundary。
+2. 状态类 milestone、无 sender/recipient 的 guardrail、普通 metric 等不被闭包历史污染。
+
+### 4.4 多 route 的正确语义与本轮边界
+
+如果同一个 milestone 中存在多个不同的明确 route，正确语义不应是回退闭包终点，也不应逐条匹配闭包内所有 step；而应按 constraint route 分组：
+
+1. 每个 constraint 使用自己预计算的 route。
+2. 同 route constraints 共享同一个闭包内 selected step。
+3. 不同 route constraint groups 分别选择不同 step。
+4. 每个 constraint 只在所属 route group 的 selected step 上评分。
+5. 最后按现有 milestone 聚合规则合并所有 constraint score。
+
+但当前已核查的 ToolSandbox 适配数据中不存在多 route milestone，因此本轮不实现多 route constraint 分组评分，以免引入 scorer 聚合重构。实际落地时应增加通用适配数据 invariant 检查：如果发现 `route_group_count > 1`，直接报出清晰错误，提示需要先扩展“多 route constraint group 评分”方案，而不是静默回退。
+
+## 4.5 当前 ToolSandbox 适配数据核查
+
+由于当前仓库主要已有 ToolSandbox adapted case，本轮先对现有 ToolSandbox 数据做实证核查，用于判断当前落地是否会遇到多 route milestone。该核查不意味着 route 预计算属于 ToolSandbox 私有能力。
+
+核查范围：
+
+1. `data/toolsandbox/adapted_cases/*.json`
+2. 附带参考核查：`data/toolsandbox-backup/adapted_cases/*.json`
+
+核查规则：
+
+1. 优先从 `stage_goal_semantics.sender/recipient` 读取 route。
+2. 缺失时从 `expected.rows` 中读取唯一 `sender/recipient` route。
+3. `EXECUTION_ENVIRONMENT` 归一为内部 `ENVIRONMENT`。
+4. 对每个 milestone 聚合显式 route 集合。
+
+核查结果：
+
+| 数据目录 | case 数 | milestone 数 | 多 route milestone 数 | route 分布 |
+|---|---:|---:|---:|---|
+| `data/toolsandbox/adapted_cases` | 18 | 66 | 0 | `ENVIRONMENT->AGENT`: 27；`AGENT->USER`: 16；无 route: 23 |
+| `data/toolsandbox-backup/adapted_cases` | 8 | 36 | 0 | `ENVIRONMENT->AGENT`: 14；`AGENT->USER`: 8；无 route: 14 |
+
+结论：
+
+1. 当前正式 ToolSandbox adapted 数据中，一个 milestone 没有出现多个显式 route。
+2. route-bearing milestone 都只有一种 route。
+3. 无 route milestone 主要对应纯状态或 guardrail 类约束。
+4. 本轮实现可基于当前已核查 ToolSandbox 数据中“每个 milestone 至多一个显式 route”的事实设计单 route 路径，同时在通用适配后处理和运行期加 invariant 检查，避免未来 benchmark 数据悄悄破坏假设。
+
+## 5. 适配期 route 解析规则
+
+route 解析只在通用 Benchmark 适配后处理阶段执行，依赖约束已有声明，不依赖 step 类型：
+
+1. 优先读取 `constraint.stage_goal_semantics.sender` 与 `constraint.stage_goal_semantics.recipient`。
+2. 若 semantics 中没有 route，则从 `constraint.expected.rows` 中读取唯一的 `sender` 与 `recipient`。
+3. 支持同义字段只用于约束数据兼容：`sender/source/initiator` 与 `recipient/target/receiver`。
+4. `EXECUTION_ENVIRONMENT` 与 `ENVIRONMENT` 均映射为内部 `Actor.ENVIRONMENT`。
+5. 每个 constraint 的 route 结果写入 `constraint.metadata.milestone_matching.route`。
+6. 每个 milestone 的 route groups 写入 `milestone.metadata.milestone_matching.route_groups`。
+7. 当前实现要求 `route_group_count <= 1`；超过 1 时适配期或运行期必须显式报错。
+
+## 6. step 选择规则
+
+新增 milestone 内部 helper，例如：
+
+```python
+def milestone_scoring_step(
+    milestone: Milestone,
+    closure_steps: list[TrajectoryStep],
+    default_step: TrajectoryStep,
+) -> TrajectoryStep:
+    ...
+```
+
+选择规则：
+
+1. 从 `milestone.metadata.milestone_matching.route_groups` 读取 route groups。
+2. 无 route：返回 `default_step`，即原闭包终点。
+3. route group 数量大于 1：直接报错，不静默回退。
+4. route group 数量等于 1：在 `closure_steps` 中寻找 route 匹配 step。
+5. 找不到匹配 step：返回 `default_step`。
+6. 找到匹配 step：返回该 step。
+
+闭包内若同一路由出现多个 step，选择最后一个匹配 step。原因是 milestone 评分原本使用“当前闭合时刻”的最近证据，选择最后一个同 route step 与现有运行期语义最接近。
+
+## 7. 最小代码落点
+
+实际落地时只允许以下最小改动：
+
+1. 新增或集中实现通用 route enrich helper
+   - 推荐新增 `dynsteer/adapter/route.py`，避免把通用 route 逻辑放进某个 benchmark 私有目录。
+   - 提供 `enrich_milestone_routes(graph: MilestoneGraph) -> MilestoneGraph`。
+   - 对所有 milestone / constraint 解析并写入通用 `metadata.milestone_matching`。
+   - 聚合 milestone 级 route groups。
+   - 增加当前实现 invariant：`route_group_count <= 1`。
+
+2. `dynsteer/adapter/loader.py`
+   - 在 `_adapt_task_case(...)` 中，所有 benchmark adapter 返回 `TaskCase` 且确认 `milestone_graph` 存在后，调用通用 `enrich_milestone_routes(...)`。
+   - 对已存在 adapted case 的加载路径，也应调用同一个后处理以补齐 metadata 或进行版本校验，避免新旧 adapted case 行为不一致。
+   - 该调用应位于 stage goal / stage evaluation spec 生成之前，保证后续阶段目标和运行期评估读取到一致的 route metadata。
+
+3. 当前 adapted case JSON 数据处理
+   - 重新适配或迁移现有 adapted cases，确保每个 constraint 和 milestone 都包含通用 route metadata。
+   - 当前仓库实际需要处理的是 `data/toolsandbox/adapted_cases/*.json`。
+   - 不手工修改语义内容，只补充由通用适配后处理确定的 canonical route metadata。
+
+4. `dynsteer/model.py`
+   - 让 `AgentStepTracker` 在闭包完成时能返回完整 closure steps。
+   - 不改变闭包判定条件。
+
+5. `dynsteer/evaluate/evaluator.py`
+   - 将 tracker 返回的 closure steps 传给 `evaluate_agent_step()`。
+   - 仍以闭包终点作为默认 step。
+
+6. `dynsteer/evaluate/step.py`
+   - `evaluate_agent_step()` 接收 closure steps。
+   - 将 closure steps 传给 `analyze_milestone_step()`。
+
+7. `dynsteer/evaluate/matching/milestone.py`
+   - 在 `_analyze_ready_candidates(...)` 与 `_analyze_blocked_candidates(...)` 中，调用 `scorer.score_milestone(...)` 前先选定 scoring step。
+   - 基于 scoring step 构造 boundary。
+   - route 只从预计算 metadata 读取，不在每次匹配时解析原始 constraint 字段。
+   - 其余 milestone 匹配、semantic review、frontier 推进逻辑保持不变。
+
+不得修改：
+
+1. `dynsteer/evaluate/scoring.py`
+2. 任意 benchmark 私有 scorer，例如 `dynsteer/adapter/toolsandbox/scorer.py`
+3. `dynsteer/evaluate/matching/minefield.py`
+4. judge prompt
+5. 展示层
+
+## 8. 测试计划
+
+只新增 milestone 匹配层单元测试，不做大范围集成改造。
+
+### 8.1 闭包 route step 被选中
+
+构造闭包：
+
+```text
+step 1: AGENT -> USER, content 包含目标消息
+step 2: USER -> AGENT, content 不包含目标消息
+```
+
+约束 route 为 `AGENT -> USER`。预期：
+
+1. milestone 使用 step 1 构造 boundary。
+2. milestone 匹配通过。
+3. 不使用 step 2 的用户回复作为唯一证据。
+
+### 8.2 不逐条匹配闭包所有 step
+
+构造闭包：
+
+```text
+step 1: AGENT -> USER, content 不满足目标
+step 2: USER -> AGENT, content 满足目标
+```
+
+约束 route 为 `AGENT -> USER`。预期：
+
+1. milestone 只评估 step 1。
+2. 不因为 step 2 文本满足目标而误判通过。
+
+### 8.3 无 route 保持旧行为
+
+构造无 sender/recipient 的状态约束。预期：
+
+1. 使用闭包终点 boundary。
+2. 不读取闭包内历史 step。
+
+### 8.4 通用适配期 route metadata
+
+对通用 `MilestoneGraph` 构造样例，并通过通用 route enrich helper 处理。预期：
+
+1. route-bearing constraint 具有 `metadata.milestone_matching.route`。
+2. 无 route constraint 具有 `metadata.milestone_matching.route = null`。
+3. milestone 具有 `metadata.milestone_matching.route_groups`。
+4. 无需依赖 ToolSandbox 私有 metadata。
+5. 当前正式 ToolSandbox adapted 数据全部满足 `route_group_count <= 1`。
+
+### 8.5 多 route 显式拒绝
+
+构造同一 milestone 中两个不同 route。预期：
+
+1. 不静默回退闭包终点。
+2. 不逐条匹配闭包内所有 step。
+3. 抛出清晰错误，提示当前实现只支持单 milestone 至多一个 route 的临时 invariant。
+
+## 9. 验收标准
+
+1. 方案确认后再允许代码落地。
+2. 代码落地不得修改 scorer、benchmark 私有 scorer、minefield、judge prompt、展示层。
+3. route 只在通用 Benchmark 适配后处理阶段解析并持久化，运行期 milestone 匹配不重复解析原始 constraint route。
+4. 当前正式 ToolSandbox adapted 数据全部满足每个 milestone 至多一个显式 route。
+5. milestone candidate 在当前单 route invariant 下每次只调用一次 `score_milestone(...)`。
+6. 有唯一 route 的 milestone 使用闭包内 route 匹配 step 评分。
+7. 无 route milestone 保持旧闭包终点评分。
+8. 多 route milestone 不静默回退，必须显式报错或另行扩展方案。
+9. 目标 case `remove_contact_by_phone_no_remove_contact_insufficient_information` 的 m0 应能在 `AGENT -> USER` 拒绝消息所在 step 上进行 milestone 匹配评估。
+
+## 附录A. 项目中没有把握实现的模块部分
+
+1. 多 route milestone 的正确实现应按 constraint route 分组选择不同 step 并分别评分，但当前正式 ToolSandbox adapted 数据没有这种情况。本轮不实现该扩展，避免引入 scorer 聚合重构；若未来出现，需要单独方案。
+2. `state_snapshot` 类约束在选中 route step 后依赖该 step 对应 snapshot 是否完整记录所需证据。当前 ToolSandbox 已有 per-step snapshot，因此目标 case 方案认为可行；其他 benchmark 若缺少 per-step snapshot，需要在对应 adapter 能力中单独确认。
+3. 现有 adapted case JSON 需要补充 route metadata。具体采用重新适配还是一次性迁移，需要落地前确认哪种方式更少扰动文件 diff。
+4. 如果 future benchmark 没有 per-step snapshot，只传 selected step boundary 可能不足；该情况不在本轮范围内。
+
+---
+
+## 历史草稿（已废弃，仅供对照）
+
+以下内容为上一版扩大化方案，包含 scorer、minefield、ToolSandbox scorer 和诊断展示等改造。该草稿已废弃，不作为后续代码实现依据。
 
 生成日期：2026-07-21  
 适用范围：`dynsteer/evaluate/*`、`dynsteer/adapter/toolsandbox/scorer.py`、`dynsteer/model.py`、相关 ToolSandbox 回归测试。  

@@ -32,6 +32,7 @@ from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.llm import build_llm_from_env
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
 from dynsteer.model import (
+    AgentStepClosure,
     DynamicWeightConfig,
     JsonObject,
     MilestoneGraph,
@@ -45,7 +46,6 @@ from dynsteer.model import (
     EvaluationTerminationState,
     ThresholdConfig,
     Trajectory,
-    TrajectoryStep,
     TrajectoryEvaluationReport,
 )
 from dynsteer.progress import CaseProgressReporter
@@ -171,7 +171,7 @@ class DynSTEEREvaluator:
                 milestone_frontier=initialize_milestone_frontier(task_case.milestone_graph),
             )
 
-            def evaluate_closed_agent_step(closed_step: TrajectoryStep) -> RuntimeEvaluationDecision | None:
+            def evaluate_closed_agent_step(closure: AgentStepClosure) -> RuntimeEvaluationDecision | None:
                 def checkpoint_evaluator(**kwargs: object) -> RuntimeEvaluationDecision:
                     return evaluate_checkpoint(
                         **kwargs,
@@ -191,7 +191,8 @@ class DynSTEEREvaluator:
                         task_case=task_case,
                         trajectory=trajectory,
                         state=state,
-                        step=closed_step,
+                        step=closure.end_step,
+                        closure_steps=list(closure.steps),
                         scorer=scorer,
                         standard_judge=self._standard_judge,
                         thresholds=self._thresholds,
@@ -230,21 +231,21 @@ class DynSTEEREvaluator:
                         termination = decision.termination
                         break
 
-                    closed_step = state.agent_step_tracker.ingest(step)
-                    if closed_step is None:
+                    closure = state.agent_step_tracker.ingest(step)
+                    if closure is None:
                         continue
                     completed_agent_steps += 1
-                    decision = evaluate_closed_agent_step(closed_step)
+                    decision = evaluate_closed_agent_step(closure)
                     if decision is not None:
                         state = decision.next_state
                         termination = decision.termination
                         break
 
                 if not termination.should_stop and not advance.continue_running:
-                    closed_step = state.agent_step_tracker.finalize()
-                    if closed_step is not None:
+                    closure = state.agent_step_tracker.finalize()
+                    if closure is not None:
                         completed_agent_steps += 1
-                        decision = evaluate_closed_agent_step(closed_step)
+                        decision = evaluate_closed_agent_step(closure)
                         if decision is not None:
                             state = decision.next_state
                             termination = decision.termination

@@ -96,6 +96,7 @@ def evaluate_agent_step(
     standard_judge: object | None,
     thresholds: ThresholdConfig,
     evaluate_checkpoint: Callable[..., RuntimeEvaluationDecision],
+    closure_steps: list[TrajectoryStep] | None = None,
 ) -> RuntimeEvaluationDecision | None:
     """处理一个已闭合 agent step，返回可能的策略终止决策。
 
@@ -109,6 +110,7 @@ def evaluate_agent_step(
         standard_judge: standard judge；未配置时语义候选会跳过复判。
         thresholds: 阶段阈值配置。
         evaluate_checkpoint: milestone checkpoint 结算回调。
+        closure_steps: 当前已闭合 agent step 包含的完整 raw steps。
     输出：
         需要提前终止时返回决策，否则返回 None。
     """
@@ -118,7 +120,14 @@ def evaluate_agent_step(
     context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
     analysis = analyze_milestone_step(
-        trajectory, step, boundary, state.matched_settlements, state.milestone_frontier, scorer=scorer, context=context
+        trajectory,
+        step,
+        boundary,
+        state.matched_settlements,
+        state.milestone_frontier,
+        closure_steps=closure_steps or [step],
+        scorer=scorer,
+        context=context,
     )
     if analysis.hit is None:
         no_progress_decision = _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)

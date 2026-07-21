@@ -161,6 +161,26 @@ class TrajectoryStep:
     raw: JsonObject = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AgentStepClosure:
+    """描述一次已闭合的 agent outbound 执行步骤组。
+
+    入参：
+        steps: 从 Agent -> X 起点到闭包终点的完整 raw steps。
+    输出：
+        `end_step` 返回闭包终点 step。
+    """
+
+    steps: tuple[TrajectoryStep, ...]
+
+    @property
+    def end_step(self) -> TrajectoryStep:
+        """返回闭包终点 step。"""
+        if not self.steps:
+            raise ValueError("agent step closure 不能为空")
+        return self.steps[-1]
+
+
 class AgentStepProtocolError(RuntimeError):
     """agent step 闭包协议不合法时抛出。"""
 
@@ -171,16 +191,18 @@ class AgentStepTracker:
 
     入参：
         pending_outbound: 尚未收到反馈的 Agent -> X 原始 step。
+        pending_steps: 当前未闭合 agent step 已收集的 raw steps。
         completed_count: 已闭合的 agent step 数量。
     输出：
-        `ingest()` 在闭包完成时返回闭包终点 step，否则返回 None。
+        `ingest()` 在闭包完成时返回完整闭包，否则返回 None。
     """
 
     pending_outbound: TrajectoryStep | None = None
+    pending_steps: list[TrajectoryStep] = field(default_factory=list)
     completed_count: int = 0
 
-    def ingest(self, raw_step: TrajectoryStep) -> TrajectoryStep | None:
-        """摄入一条 raw step，并在闭合 agent step 时返回闭包终点。"""
+    def ingest(self, raw_step: TrajectoryStep) -> AgentStepClosure | None:
+        """摄入一条 raw step，并在闭合 agent step 时返回完整闭包。"""
         if self._is_agent_outbound(raw_step):
             if self.pending_outbound is not None:
                 raise AgentStepProtocolError(
@@ -188,18 +210,18 @@ class AgentStepTracker:
                     f"pending_step_id={self.pending_outbound.step_id}, current_step_id={raw_step.step_id}"
                 )
             self.pending_outbound = raw_step
+            self.pending_steps = [raw_step]
             return None
 
         pending = self.pending_outbound
         if pending is None:
             return None
+        self.pending_steps.append(raw_step)
         if raw_step.actor == pending.recipient and raw_step.recipient == Actor.AGENT:
-            self.pending_outbound = None
-            self.completed_count += 1
-            return raw_step
+            return self._complete_pending()
         return None
 
-    def finalize(self) -> TrajectoryStep | None:
+    def finalize(self) -> AgentStepClosure | None:
         """自然结束时闭合允许自闭合的终局 agent message。"""
         pending = self.pending_outbound
         if pending is None:
@@ -209,10 +231,18 @@ class AgentStepTracker:
             and pending.recipient == Actor.USER
             and pending.event_type in {EventType.MESSAGE, EventType.FINAL}
         ):
-            self.pending_outbound = None
-            self.completed_count += 1
-            return pending
+            return self._complete_pending()
         return None
+
+    def _complete_pending(self) -> AgentStepClosure:
+        """完成当前 pending closure，并重置 tracker 状态。"""
+        steps = tuple(self.pending_steps)
+        if not steps:
+            raise AgentStepProtocolError("agent step closure 缺少 pending steps")
+        self.pending_outbound = None
+        self.pending_steps = []
+        self.completed_count += 1
+        return AgentStepClosure(steps=steps)
 
     def _is_agent_outbound(self, raw_step: TrajectoryStep) -> bool:
         """判断 raw step 是否为 Agent -> X 的行为起点。"""

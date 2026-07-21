@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.graph import enrich_milestone_graph
+from dynsteer.adapter.route import enrich_milestone_routes
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.llm import build_llm_from_env
 from dynsteer.model import (
@@ -76,6 +77,11 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
             if task_case.milestone_graph is None or not task_case.stage_evaluation_specs:
                 task_case = _adapt_task_case(config, adapter, case_id)
                 save_task_case(path, task_case)
+            else:
+                before = json_safe(task_case)
+                task_case = _postprocess_task_case(task_case)
+                if json_safe(task_case) != before:
+                    save_task_case(path, task_case)
         task_cases.append(task_case)
     return task_cases
 
@@ -98,6 +104,7 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
         raise ValueError(f"TaskCase 缺少 milestone_graph: {case_id}")
 
     task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
+    task_case = _postprocess_task_case(task_case)
     if not task_case.stage_goals:
         task_case.stage_goals = generate_stage_goals(
             task_case, mode=str(config.metadata.get("stage_goal_generation", "auto")), llm_provider=build_llm_from_env
@@ -105,6 +112,15 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
     if not task_case.stage_evaluation_specs:
         task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
     validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
+    return task_case
+
+
+def _postprocess_task_case(task_case: TaskCase) -> TaskCase:
+    """对 TaskCase 执行通用适配后处理。"""
+    if task_case is None:
+        raise ValueError("task_case 不能为空")
+    if task_case.milestone_graph is not None:
+        task_case.milestone_graph = enrich_milestone_routes(task_case.milestone_graph)
     return task_case
 
 
