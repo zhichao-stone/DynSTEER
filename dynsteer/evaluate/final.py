@@ -38,6 +38,8 @@ def build_finish_verification(
     """
     graph = task_case.milestone_graph
     matched = state.matched_settlements
+    if not graph.nodes:
+        return _empty_graph_finish_verification(state)
 
     milestone_ids = [node.milestone_id for node in graph.nodes]
     matched_ids = set(matched)
@@ -88,6 +90,34 @@ def build_finish_verification(
         "fatal_minefield": fatal_minefield,
         "status": status.value,
         "score": score,
+        "evidence": evidence,
+        "diagnosis": diagnosis,
+    }
+
+
+def _empty_graph_finish_verification(state: RuntimeEvaluationState) -> JsonObject:
+    fatal_minefield = bool(state.fatal_minefield)
+    if fatal_minefield:
+        status = StageStatus.FAIL
+        evidence = ["finish 结算节点", "空 milestone graph 运行期触发 fatal minefield，finish 判定失败。"]
+        diagnosis = ["finish final verification 失败：运行期触发 fatal minefield。"]
+    else:
+        status = StageStatus.INVALID
+        evidence = [
+            "finish 结算节点",
+            "空 milestone graph 未配置 whole-trajectory fallback，不能默认通过。",
+        ]
+        diagnosis = ["finish final verification 无效：没有 milestone、minefield 命中或 terminal 约束提供完成证据。"]
+    return {
+        "all_milestones_matched": False,
+        "unmatched_milestone_ids": [],
+        "terminal_milestone_ids": [],
+        "terminal_state_checks": [],
+        "terminal_message_checks": [],
+        "fatal_minefield": fatal_minefield,
+        "empty_milestone_graph": True,
+        "status": status.value,
+        "score": 0.0,
         "evidence": evidence,
         "diagnosis": diagnosis,
     }

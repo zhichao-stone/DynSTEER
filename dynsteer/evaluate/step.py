@@ -13,6 +13,7 @@ from dynsteer.evaluate.runtime import (
 )
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import (
+    Dimension,
     JsonObject,
     EvaluationTerminationState,
     RuntimeEvaluationDecision,
@@ -105,7 +106,7 @@ def evaluate_agent_step(
         state: 当前运行期评估状态。
         step: tracker 返回的闭包终点 raw step。
         scorer: 当前 harness 提供的约束评分器。
-        standard_judge: standard judge；未配置时 WARN 语义候选会跳过复判。
+        standard_judge: standard judge；未配置时语义候选会跳过复判。
         thresholds: 阶段阈值配置。
         evaluate_checkpoint: milestone checkpoint 结算回调。
     输出：
@@ -143,7 +144,7 @@ def evaluate_agent_step(
         return None
 
     milestone, boundary, milestone_score = analysis.hit
-    requires_llm_review = milestone_score.status != StageStatus.PASS
+    requires_llm_review = analysis.requires_semantic_review
     if requires_llm_review and standard_judge is None:
         if analysis.attempt_detail is not None:
             review_detail = analysis.attempt_detail.get("llm_semantic_review")
@@ -159,6 +160,9 @@ def evaluate_agent_step(
         milestone=milestone,
         boundary=boundary,
         milestone_score=milestone_score,
+        force_standard_dimensions=[Dimension.PROGRESS, Dimension.INTERACTION_QUALITY]
+        if requires_llm_review
+        else None,
     )
     if requires_llm_review and analysis.attempt_detail is not None:
         review_detail = analysis.attempt_detail.get("llm_semantic_review")

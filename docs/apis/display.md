@@ -17,7 +17,9 @@
   - `scenario.stage_definitions[]` 是右列阶段渲染骨架，来自 adapted case 的 `stage_goals` 和 graph metadata 派生出的当前可展示阶段。每项包含 `stage_id`、`anchor_milestone_id`、`milestone_id` 与 `stage_goal`。
   - `scenario.stage_reports[]` 包含聚焦维度的 `dimension_scores`、`dimension_levels`、`dimension_confidence`、`dimension_uncertainty`、`next_weights`、`metadata.focus_dimensions`、`metadata.next_evaluation_policy` 与 `metadata.evaluation_termination`，用于展示阶段级评估动态和跨阶段评估策略。
   - `scenario.stage_settlements[].milestone_matching` 包含 milestone 命中边界、匹配分数和约束得分摘要，用于中列节点展开详情。
-  - `scenario.minefield_matches[]` 包含运行期 boundary 级 minefield 命中、`severity`、`score` 与 `penalty`，用于解释最终总分扣罚。
+  - `scenario.minefield_matches[]` 包含运行期 boundary 级 minefield 命中、`severity`、`fatal`、`score`、`penalty`、`trigger_summary` 与 adapted case 中的约束定义，用于解释最终总分扣罚。
+  - `scenario.termination` 透传 `terminated_by_policy`、`termination_code`、`termination_reason` 和 `termination_detail`。当策略提前终止且没有任何 stage report 时，展示数据会生成 `status="terminated"` 的 finish 未结算报告，并在 `metadata.finish_unsettled_due_to_termination=true` 中保留终止详情；若终止详情包含 minefield 命中，会合并 adapted case 的 minefield 名称、严重级别、触发条件和约束摘要。
+  - `scenario.summary.trajectory_cost_available` 与 `trajectory_latency_available` 表示轨迹 step cost 是否真实可用；不可用时 token/latency 汇总中的 `0` 仅表示缺省兜底。
 
 `scenario.stage_definitions[]` 的 `stage_id` 固定使用 `{anchor}->{milestone}`：
 
@@ -28,7 +30,7 @@
 
 静态面板右列以 `stage_definitions` 为骨架渲染，使用 `stage_reports` 按相同 `stage_id` 回填状态、分数、诊断、证据和策略 metadata。阶段标题固定显示为 `{stage_id}:{status}`，例如 `m3->m4:fail`、`m4->__finish__:pass`。若某个定义阶段尚无报告，面板使用 `status="not_started"` 的空报告展示该固定阶段；失败后的普通后续阶段不会进入该骨架，未报告的 finish definition 仅在 anchor milestone 已出现在报告中时保留。
 
-左列轨迹卡片标题显示通信方向：`step.index`、`actor -> recipient` 与 `event_type`。若历史轨迹缺少 `recipient`，前端显示为 `unknown`。
+左列轨迹卡片标题显示通信方向：`step.index`、`actor -> recipient` 与 `event_type`。若步骤是 `tool_call` 或 `tool_result`，标题行会额外显示 `tool: <name>`；工具结果会优先读取 `openai_function_name`，缺失时按 `openai_tool_call_id` 或最近一次工具调用回推工具名。若历史轨迹缺少 `recipient`，前端显示为 `unknown`。
 
 右列维度分数使用三列布局：维度名称、评估级别、分数。动态权重使用两列布局：维度名称、权重值。面板不再渲染灰色进度条，避免窄屏下挤压文本。
 
@@ -38,7 +40,7 @@
 
 失败阶段的右侧阶段卡片会优先展示 `metadata.failure_summary`、`metadata.failure_reasons` 和 `metadata.failed_constraints`。若历史结果缺少这些字段，前端会基于最佳 `match_attempts[].candidate_scores[]` 生成一条轻量匹配失败摘要，原始最佳候选仍保留在“最佳匹配尝试”折叠块中。
 
-warn 阶段会在中列 milestone 图中显示琥珀色状态，`not_started`/`missing` 会显示为灰色 pending 状态。右侧阶段卡片会从 `metadata.low_score_dimensions` 和 `metadata.stage_quality_diagnostics` 提炼“警告原因”，包含低分维度、工具参数警告、失败工具结果、空工具结果和 grounding 风险摘要；warn 阶段默认展开该摘要。
+warn 阶段会在中列 milestone 图中显示琥珀色状态，`not_started`/`missing` 会显示为灰色 pending 状态，`terminated` 会按失败样式展示。右侧阶段卡片会从 `metadata.low_score_dimensions` 和 `metadata.stage_quality_diagnostics` 提炼“警告原因”，包含低分维度、工具参数警告、失败工具结果、空工具结果和 grounding 风险摘要；warn 阶段默认展开该摘要。finish 未结算报告会展示“finish 未结算”折叠块，说明对应策略终止原因。
 
 顶部 run 与 case 切换都使用可搜索下拉框。run 输入框显示当前 `run.run_id`，case 输入框默认显示当前 `scenario.scenario_id`；键入内容后，下拉列表实时过滤为 id 以前缀匹配该输入的选项，例如输入 `fi` 时只显示 `fi...` 开头的 case。下拉列表最多显示 9 行，多余选项通过滚动查看；重新打开下拉时会高亮当前选中项，并尽量将其滚动到列表中间。过滤不改变当前选中项，只有点击选项或按 Enter 确认时才切换。
 
@@ -47,6 +49,8 @@ constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`
 - `constraint_id`、`target`、`namespace`、`operator`、`threshold`、`hard`。
 - `evaluator_hint`：面向评估器的提示摘要。
 - `expected_summary`：适合节点或短摘要使用的 expected 概览。
+- `semantic_kind`、`semantic_summary`：来自 `stage_goal_semantics` 的约束语义摘要，例如 `AGENT -> USER: ...` 或 `tool search_contacts args=...`。
+- `expected_rows_summary`：从 expected rows 提炼的可读行摘要，用于把 ToolSandbox 工具调用、消息或状态期望直接展示出来。
 - `expected_detail`：适合详情卡展示的 expected 完整截断内容，最长约 1200 字符。
 
 ## `write_display_data_js`

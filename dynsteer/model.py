@@ -438,6 +438,7 @@ class MilestoneStepAnalysis:
     hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
     attempt_detail: JsonObject | None = None
     blocked_detail: JsonObject | None = None
+    requires_semantic_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -545,6 +546,8 @@ class TrajectoryEvaluationReport:
             "llm_call_count": self.runtime_metrics.get("llm_call_count"),
             "llm_total_tokens": self.runtime_metrics.get("llm_total_tokens"),
             "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
+            "trajectory_cost_available": self.runtime_metrics.get("trajectory_cost_available"),
+            "trajectory_latency_available": self.runtime_metrics.get("trajectory_latency_available"),
         }
 
 
@@ -819,6 +822,7 @@ class ToolSandboxSession:
     scenario: object | None
     roles: dict[object, object]
     context: object | None
+    initial_state: JsonObject | None
     case_id: str
     run_id: str
     raw_output_dir: Path

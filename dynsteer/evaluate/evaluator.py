@@ -137,6 +137,13 @@ class DynSTEEREvaluator:
 
         try:
             session = harness.start_case(config, case_id, raw_output_dir)
+            runtime_initial_state = harness.initial_state_from_session(session)
+            if runtime_initial_state is not None:
+                task_case.initial_state = runtime_initial_state
+                task_case.metadata["runtime_initial_state_source"] = "harness_session"
+                task_case.metadata["runtime_initial_state_summary"] = _state_namespace_summary(runtime_initial_state)
+            else:
+                task_case.metadata.setdefault("runtime_initial_state_source", "adapted_case")
             language = config.metadata.get("language")
             if isinstance(language, str) and language.strip():
                 task_case.metadata["language"] = language.strip()
@@ -401,3 +408,16 @@ class DynSTEEREvaluator:
                     f"benchmark session 资源释放失败: benchmark={benchmark}, run_id={run_id}, "
                     f"case_id={case_id}, error={exc}"
                 ) from exc
+
+
+def _state_namespace_summary(state: JsonObject) -> JsonObject:
+    """生成状态 namespace 行数摘要，避免 raw summary 嵌入完整初始状态。"""
+    namespaces = state.get("namespaces")
+    if not isinstance(namespaces, dict):
+        return {"namespace_count": 0, "row_counts": {}}
+    row_counts = {
+        str(namespace): len(rows)
+        for namespace, rows in namespaces.items()
+        if isinstance(rows, list)
+    }
+    return {"namespace_count": len(namespaces), "row_counts": row_counts}

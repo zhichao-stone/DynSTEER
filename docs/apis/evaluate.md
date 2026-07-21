@@ -13,13 +13,14 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 执行顺序：
 
 1. `harness.start_case(...)` 启动 benchmark session。
-2. 初始化 `Trajectory`、动态权重、`EvaluationPolicyState` 和 milestone ready frontier。
-3. 每个 raw step 先写入 `trajectory.steps`，并立刻扫描 minefield；fatal minefield 可在下一次 harness 推进前触发策略终止。
-4. `AgentStepTracker` 根据规范化 `actor/recipient` 组装完整 agent step 闭包；未闭合 outbound 不触发 milestone matching、checkpoint 或 ready frontier no-progress。
-5. 完整 agent step 闭合后才分析当前 ready milestone 是否命中；未命中时更新 ready frontier 无进展 watch。
-6. milestone 命中后进入阶段结算，先读取 `TaskCase.stage_evaluation_specs[stage_id].focus_dimensions`，cheap/standard/expensive judge 都只评估本阶段聚焦维度。
-7. 阶段完成后仅根据本阶段实际评估维度更新权重和下一阶段评估策略；未评估维度不会被当成 0 分。
-8. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` final verification 阶段。
+2. 若 `harness.initial_state_from_session(...)` 返回真实运行期初始状态，则覆盖内存中的 `TaskCase.initial_state`，并在 `task_case_snapshot` 记录来源摘要。
+3. 初始化 `Trajectory`、动态权重、`EvaluationPolicyState` 和 milestone ready frontier。
+4. 每个 raw step 先写入 `trajectory.steps`，并立刻扫描 minefield；fatal minefield 可在下一次 harness 推进前触发策略终止。
+5. `AgentStepTracker` 根据规范化 `actor/recipient` 组装完整 agent step 闭包；未闭合 outbound 不触发 milestone matching、checkpoint 或 ready frontier no-progress。
+6. 完整 agent step 闭合后才分析当前 ready milestone 是否命中；未命中时更新 ready frontier 无进展 watch。
+7. milestone 命中后进入阶段结算，先读取 `TaskCase.stage_evaluation_specs[stage_id].focus_dimensions`，cheap/standard/expensive judge 都只评估本阶段聚焦维度。
+8. 阶段完成后仅根据本阶段实际评估维度更新权重和下一阶段评估策略；未评估维度不会被当成 0 分。
+9. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` final verification 阶段。
 
 ## Milestone 语义
 
@@ -87,6 +88,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 - `STANDARD` 维度只调用 standard judge 并覆盖这些维度。
 - `EXPENSIVE` 维度只调用 expensive judge 并覆盖这些维度。
 - 某一维 expensive 不会导致其他维度一起 expensive。
+- 对 `emit_message` 且 `match_policy=semantic_equivalent` 的候选，如果已出现同向 agent 消息、无 missing、且除语义消息外没有其他 hard 约束失败，结算会在 standard judge 可用时把 `progress` 与 `interaction_quality` 中属于本阶段 focus 的维度强制提升到 `STANDARD`。该逻辑覆盖 cheap 分数为 WARN 或 FAIL 的消息相似度误判；若 standard 复判确认语义达成，且唯一结构性失败来自该语义消息约束，会解除结构化文本相似度 hard fail 并允许 checkpoint 结算。结果记录在 `StageEvaluationResult.metadata.semantic_review`，包含候选 cheap 分数、强制维度、standard judge 状态、复判是否通过、是否解除结构性失败和 checkpoint 是否接受。
 
 下一阶段策略：
 
@@ -117,7 +119,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 
 自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。
 
-`__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。
+`__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。空 milestone graph 且没有 whole-trajectory fallback 时不会默认通过：若已触发 fatal minefield，finish 为 `fail/0`；否则为 `invalid/0`。
 
 finish payload 中的 `terminal_state_checks` 只包含 `set_state`、`preserve_state`、`STATE_DELTA` 和真实持久状态快照约束的最终边界重检。`emit_message`、`user_visible_required=true` 以及 ToolSandbox `SANDBOX` 用户可见消息约束不会在 `end_conversation` 后用最后的 `None` 重评；这些约束会进入 `terminal_message_checks`，表示它们已由原 terminal milestone 匹配结果确认。
 

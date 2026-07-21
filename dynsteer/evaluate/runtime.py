@@ -328,6 +328,8 @@ def task_case_snapshot(task_case: TaskCase) -> JsonObject:
         "task_types": [item.value for item in task_case.task_types],
         "scenario_name": task_case.metadata.get("scenario_name"),
         "categories": list(task_case.metadata.get("categories", [])),
+        "runtime_initial_state_source": task_case.metadata.get("runtime_initial_state_source"),
+        "runtime_initial_state_summary": task_case.metadata.get("runtime_initial_state_summary"),
     }
 
 

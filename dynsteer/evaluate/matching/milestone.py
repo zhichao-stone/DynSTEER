@@ -5,6 +5,7 @@ from dynsteer.evaluate.scoring import GeneralScorer, get_effective_scorer
 from dynsteer.model import (
     Boundary,
     Constraint,
+    ConstraintScore,
     JsonObject,
     Milestone,
     MilestoneScore,
@@ -17,6 +18,8 @@ from dynsteer.model import (
     TrajectoryStep,
 )
 from dynsteer.graph import START_NODE_ID
+
+SEMANTIC_REVIEW_MIN_SCORE = 0.3
 
 
 def stage_start_for_ready_milestone(
@@ -103,7 +106,11 @@ def analyze_milestone_step(
     if ready_llm_review_hit is not None:
         _mark_selected_candidate_details(ready_candidate_details, ready_llm_review_hit)
         attempt_detail["llm_semantic_review"] = {"status": "candidate"}
-        return MilestoneStepAnalysis(hit=ready_llm_review_hit, attempt_detail=attempt_detail)
+        return MilestoneStepAnalysis(
+            hit=ready_llm_review_hit,
+            attempt_detail=attempt_detail,
+            requires_semantic_review=True,
+        )
 
     if blocked_best is None:
         return MilestoneStepAnalysis(attempt_detail=attempt_detail)
@@ -255,23 +262,73 @@ def _mark_selected_candidate_details(
 
 
 def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScore) -> bool:
-    if score.status != StageStatus.WARN:
-        return False
-    if score.missing_ratio > 0.0 or not score.hard_constraints_all_pass:
+    if score.status == StageStatus.PASS:
         return False
     if not any(_is_semantic_emit_message_constraint(constraint) for constraint in milestone.constraints):
         return False
+    if score.missing_ratio > 0.0 or not score.hard_constraints_all_pass:
+        if not _hard_failures_are_semantic_emit_messages(milestone, score):
+            return False
 
     score_by_id = {item.constraint_id: item for item in score.constraint_scores}
+    has_reviewable_semantic_message = False
     for constraint in milestone.constraints:
         if _is_semantic_emit_message_constraint(constraint):
+            constraint_score = score_by_id.get(constraint.constraint_id)
+            if constraint_score is not None and _has_reviewable_semantic_message(constraint, constraint_score):
+                has_reviewable_semantic_message = True
             continue
         if not constraint.hard:
             continue
         constraint_score = score_by_id.get(constraint.constraint_id)
         if constraint_score is None or constraint_score.missing or constraint_score.score < constraint.threshold:
             return False
-    return True
+    return has_reviewable_semantic_message
+
+
+def _hard_failures_are_semantic_emit_messages(milestone: Milestone, score: MilestoneScore) -> bool:
+    score_by_id = {item.constraint_id: item for item in score.constraint_scores}
+    semantic_failure_found = False
+    for constraint in milestone.constraints:
+        if not constraint.hard:
+            continue
+        constraint_score = score_by_id.get(constraint.constraint_id)
+        failed = constraint_score is None or constraint_score.missing or constraint_score.score < constraint.threshold
+        if not failed:
+            continue
+        if not _is_semantic_emit_message_constraint(constraint):
+            return False
+        semantic_failure_found = True
+    return semantic_failure_found
+
+
+def _has_reviewable_semantic_message(constraint: Constraint, score: ConstraintScore) -> bool:
+    if score.missing:
+        return False
+    if _actual_contains_expected_message_route(score.actual, constraint.stage_goal_semantics):
+        return True
+    if isinstance(score.actual, list | dict):
+        return False
+    return score.score >= SEMANTIC_REVIEW_MIN_SCORE
+
+
+def _actual_contains_expected_message_route(actual: object, semantics: object) -> bool:
+    if not isinstance(semantics, dict):
+        return False
+    expected_sender = str(semantics.get("sender") or "").strip()
+    expected_recipient = str(semantics.get("recipient") or "").strip()
+    rows = actual if isinstance(actual, list) else [actual]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sender = str(row.get("sender") or "").strip()
+        recipient = str(row.get("recipient") or "").strip()
+        content = str(row.get("content") or "").strip()
+        if content and (not expected_sender or sender == expected_sender) and (
+            not expected_recipient or recipient == expected_recipient
+        ):
+            return True
+    return False
 
 
 def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:

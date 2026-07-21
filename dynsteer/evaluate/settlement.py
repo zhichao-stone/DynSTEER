@@ -15,6 +15,7 @@ from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.model import (
     Boundary,
+    Constraint,
     Dimension,
     DynamicWeightConfig,
     EvaluationLevel,
@@ -49,6 +50,7 @@ def evaluate_checkpoint(
     expensive_judge: ExpensiveJudge | None,
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
+    force_standard_dimensions: list[Dimension] | None = None,
 ) -> RuntimeEvaluationDecision:
     """结算单个 milestone checkpoint 并返回运行期决策。
 
@@ -65,6 +67,7 @@ def evaluate_checkpoint(
         expensive_judge: expensive 层评估器。
         thresholds: 阶段阈值配置。
         weight_config: 动态权重配置。
+        force_standard_dimensions: 需要强制使用 standard judge 的维度。
     输出：
         本 checkpoint 的结算结果和可能的策略终止决策。
     """
@@ -93,8 +96,26 @@ def evaluate_checkpoint(
         ready_milestone_ids_before_match=ready_milestone_ids_before_match,
     )
     stage_result, next_weights, next_policy, termination = _evaluate_stage(
-        interval, task_case, trajectory, state, cheap_judge, standard_judge, expensive_judge, thresholds, weight_config
+        interval,
+        task_case,
+        trajectory,
+        state,
+        cheap_judge,
+        standard_judge,
+        expensive_judge,
+        thresholds,
+        weight_config,
+        force_standard_dimensions=force_standard_dimensions,
     )
+    semantic_review = stage_result.metadata.get("semantic_review")
+    review_accepts_checkpoint = not (
+        milestone_score.status != StageStatus.PASS
+        and (stage_result.status != StageStatus.PASS or stage_result.stage_score < thresholds.pass_threshold)
+    )
+    if isinstance(semantic_review, dict):
+        semantic_review["settlement_accepted"] = review_accepts_checkpoint
+        semantic_review["final_stage_status"] = stage_result.status.value
+        semantic_review["final_stage_score"] = stage_result.stage_score
     settlement = HarnessStageSettlement(
         settlement_id=f"st{len(state.settlements)}",
         kind="milestone",
@@ -275,6 +296,7 @@ def _evaluate_stage(
     expensive_judge: ExpensiveJudge | None,
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
+    force_standard_dimensions: list[Dimension] | None = None,
 ) -> tuple[StageEvaluationResult, dict[Dimension, float], EvaluationPolicyState, EvaluationTerminationState]:
     """按当前评估粒度策略评估一个阶段。
 
@@ -288,6 +310,7 @@ def _evaluate_stage(
         expensive_judge: expensive 层评估器。
         thresholds: 阶段阈值配置。
         weight_config: 动态权重配置。
+        force_standard_dimensions: 需要覆盖为 standard 粒度的维度。
     输出：
         阶段报告、新权重和策略更新。
     """
@@ -299,8 +322,22 @@ def _evaluate_stage(
         dimension: evaluation_policy.dimension_levels.get(dimension, evaluation_policy.base_level)
         for dimension in focus_dimensions
     }
+    requested_force_dimensions = list(dict.fromkeys(force_standard_dimensions or []))
+    forced_dimensions = [dimension for dimension in requested_force_dimensions if dimension in focus_dimensions]
+    for dimension in forced_dimensions:
+        dimension_levels[dimension] = EvaluationLevel.STANDARD
     stage_result = cheap_judge.evaluate_stage(interval, task_case, trajectory, focus_dimensions)
     judge_results = [_judge_result_metadata(stage_result, focus_dimensions, weights)]
+    semantic_review_metadata: JsonObject | None = None
+    if requested_force_dimensions:
+        semantic_review_metadata = {
+            "status": "forced_standard" if forced_dimensions else "skipped_no_focus_dimension",
+            "candidate_cheap_score": interval.milestone_score.score if interval.milestone_score is not None else None,
+            "requested_dimensions": [dimension.value for dimension in requested_force_dimensions],
+            "forced_dimensions": [dimension.value for dimension in forced_dimensions],
+            "standard_judge_available": standard_judge is not None,
+        }
+        stage_result.metadata["semantic_review"] = semantic_review_metadata
 
     for level, judge, label in (
         (EvaluationLevel.STANDARD, standard_judge, "standard"),
@@ -315,7 +352,25 @@ def _evaluate_stage(
         _merge_dimension_result(stage_result, result, dimensions)
         judge_results.append(_judge_result_metadata(result, dimensions, weights))
 
+    semantic_review_passed = _semantic_review_dimensions_pass(stage_result, forced_dimensions, thresholds)
+    semantic_review_clears_structural_failure = semantic_review_passed and _semantic_only_hard_failure(
+        interval, task_case
+    )
+    if semantic_review_clears_structural_failure:
+        stage_result.hard_constraints_all_pass = True
+        stage_result.required_fields_missing_ratio = 0.0
+        stage_result.diagnosis = [
+            item
+            for item in stage_result.diagnosis
+            if item not in {"阶段未达成预期 milestone", "阶段完成度偏低"}
+        ]
+        stage_result.evidence = clean_evidence_items(
+            [*stage_result.evidence, "semantic review 确认消息语义等价，解除结构化文本相似度失败。"]
+        )
+
     stage_result.stage_score = stage_score_from_dimensions(stage_result.dimension_scores, weights)
+    if semantic_review_clears_structural_failure and stage_result.stage_score < thresholds.pass_threshold:
+        stage_result.stage_score = thresholds.pass_threshold
     structural_failure = interval.status in {StageStatus.MISSING, StageStatus.INVALID} or (
         stage_result.hard_constraints_all_pass is False
     )
@@ -351,6 +406,16 @@ def _evaluate_stage(
     stage_result.metadata["structural_failure"] = structural_failure
     if low_score_dimensions:
         stage_result.metadata["low_score_dimensions"] = low_score_dimensions
+    if semantic_review_metadata is not None:
+        semantic_review_metadata["standard_judge_status"] = (
+            "called" if forced_dimensions else "not_called_no_matching_focus_dimension"
+        )
+        semantic_review_metadata["semantic_review_passed"] = semantic_review_passed
+        semantic_review_metadata["structural_failure_cleared"] = semantic_review_clears_structural_failure
+        semantic_review_metadata["dimension_levels_after_review"] = {
+            dimension.value: stage_result.dimension_levels.get(dimension, EvaluationLevel.CHEAP).value
+            for dimension in forced_dimensions
+        }
 
     stage_result.metadata["weight_update_diagnostics"] = {
         "formula": "w_next = normalize(w * exp(alpha * (1 - score) + beta * uncertainty))",
@@ -382,6 +447,58 @@ def _merge_dimension_result(
                 base_attr[dimension] = update_attr[dimension]
     base.evidence = clean_evidence_items([*base.evidence, *update.evidence])
     base.diagnosis.extend(item for item in update.diagnosis if item not in base.diagnosis)
+
+
+def _semantic_review_dimensions_pass(
+    result: StageEvaluationResult, dimensions: list[Dimension], thresholds: ThresholdConfig
+) -> bool:
+    if not dimensions:
+        return False
+    return all(as_number(result.dimension_scores.get(dimension), 0.0) >= thresholds.pass_threshold for dimension in dimensions)
+
+
+def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) -> bool:
+    score = interval.milestone_score
+    if score is None or score.hard_constraints_all_pass:
+        return False
+    milestone = _milestone_for_interval(interval, task_case)
+    if milestone is None:
+        return False
+    score_by_id = {item.constraint_id: item for item in score.constraint_scores}
+    semantic_failure_found = False
+    for constraint in milestone.constraints:
+        if not constraint.hard:
+            continue
+        constraint_score = score_by_id.get(constraint.constraint_id)
+        failed = (
+            constraint_score is None
+            or constraint_score.missing
+            or constraint_score.score < constraint.threshold
+        )
+        if not failed:
+            continue
+        if not _is_semantic_emit_message_constraint(constraint):
+            return False
+        semantic_failure_found = True
+    return semantic_failure_found
+
+
+def _milestone_for_interval(interval: StageInterval, task_case: TaskCase) -> Milestone | None:
+    if interval.milestone_id is None or task_case.milestone_graph is None:
+        return None
+    return next(
+        (milestone for milestone in task_case.milestone_graph.nodes if milestone.milestone_id == interval.milestone_id),
+        None,
+    )
+
+
+def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:
+    semantics = constraint.stage_goal_semantics
+    return (
+        isinstance(semantics, dict)
+        and semantics.get("kind") == "emit_message"
+        and str(semantics.get("match_policy") or "semantic_equivalent") == "semantic_equivalent"
+    )
 
 
 def _judge_result_metadata(

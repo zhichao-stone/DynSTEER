@@ -24,13 +24,49 @@ def database_namespaces(module_loader: object, include_sandbox: bool = False) ->
     return [namespace for namespace in namespaces if enum_name(namespace) != "SANDBOX"]
 
 
-def initial_state_from_context(context: object, module_loader: object) -> dict[str, JsonValue]:
+def state_from_context(
+    context: object,
+    module_loader: object,
+    *,
+    sandbox_message_index: int | None = None,
+    include_sandbox: bool = True,
+) -> dict[str, JsonValue]:
+    """从 ToolSandbox context 提取统一 namespace 状态。
+
+    入参：
+        context: ToolSandbox 当前执行上下文。
+        module_loader: ToolSandbox 模块加载函数。
+        sandbox_message_index: 可选历史消息边界；为空时读取当前状态。
+        include_sandbox: 是否包含 SANDBOX 对话数据库。
+    输出：
+        统一 JSON 状态，所有 namespace 都保留 sandbox_message_index 列。
+    """
+    if context is None:
+        raise ValueError("context 不能为空")
     namespaces: dict[str, JsonValue] = {}
-    first_user_index = getattr(context, "first_user_sandbox_message_index", None)
-    for namespace in database_namespaces(module_loader):
-        dataframe = context.get_database(namespace=namespace, sandbox_message_index=first_user_index)
+    for namespace in database_namespaces(module_loader, include_sandbox=include_sandbox):
+        kwargs: dict[str, object] = {
+            "namespace": namespace,
+            "drop_sandbox_message_index": False,
+        }
+        if sandbox_message_index is not None:
+            kwargs["sandbox_message_index"] = sandbox_message_index
+        dataframe = context.get_database(**kwargs)
         namespaces[enum_name(namespace)] = [json_safe(row) for row in rows_from_dataframe(dataframe)]
     return {"namespaces": namespaces}
+
+
+def initial_state_from_context(context: object, module_loader: object) -> dict[str, JsonValue]:
+    """读取 ToolSandbox 初始状态，避免动态 timestamp 使用过期离线 JSON。"""
+    first_user_index = getattr(context, "first_user_sandbox_message_index", None)
+    # ToolSandbox 场景会在 session 创建时动态生成 timestamp，运行期评分必须引用
+    # 当前 context 的真实初始状态，并保留 sandbox_message_index 以匹配 runtime snapshot schema。
+    return state_from_context(
+        context,
+        module_loader,
+        sandbox_message_index=first_user_index if isinstance(first_user_index, int) else None,
+        include_sandbox=True,
+    )
 
 
 def snapshots_from_context(
@@ -53,18 +89,18 @@ def snapshots_from_context(
     snapshots: list[dict[str, JsonValue]] = []
     for sandbox_index in sorted(set(sandbox_indexes)):
         step = step_by_sandbox_index[sandbox_index]
-        namespaces: dict[str, JsonValue] = {}
-        for namespace in database_namespaces(module_loader, include_sandbox=True):
-            dataframe = context.get_database(
-                namespace=namespace, sandbox_message_index=sandbox_index, drop_sandbox_message_index=False
-            )
-            namespaces[enum_name(namespace)] = [json_safe(row) for row in rows_from_dataframe(dataframe)]
+        state = state_from_context(
+            context,
+            module_loader,
+            sandbox_message_index=sandbox_index,
+            include_sandbox=True,
+        )
         snapshots.append(
             {
                 "snapshot_id": f"toolsandbox:{sandbox_index}",
                 "after_step_id": str(step["step_id"]),
                 "after_step_index": int(step["index"]),
-                "namespaces": namespaces,
+                "namespaces": state["namespaces"],
                 "raw": {"sandbox_message_index": sandbox_index},
             }
         )

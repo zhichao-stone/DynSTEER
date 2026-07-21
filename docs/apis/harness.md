@@ -53,6 +53,7 @@ def case_finished(self, session: object) -> bool: ...
 def prepare_config(self, config: HarnessRunConfig) -> None: ...
 def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str: ...
 def metrics_from_session(self, session: object) -> JsonObject: ...
+def initial_state_from_session(self, session: object) -> JsonObject | None: ...
 def final_state_from_session(self, session: object) -> JsonObject | None: ...
 def raw_summary_from_session(self, session: object) -> JsonObject: ...
 def stop_case(self, session: object, reason: str) -> None: ...
@@ -82,6 +83,8 @@ class MyHarness(BaseBenchmarkHarness):
 - 对带原生全局消息索引的 benchmark，`steps[].index` 与 `snapshots[].after_step_index` 必须使用同一坐标系。
 - `steps[]` 必须提供规范化 `actor` 与 `recipient`。DynSTEER 用它们组装串行 agent step 闭包：`Agent -> X` 后必须由对应 `X -> Agent` feedback 闭合；未闭合 outbound 不会触发 milestone matching 或 no-progress 观察。
 - `metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空字典。
+- `initial_state_from_session()` 返回当前 session 的真实初始状态；默认返回 `None`。带动态初始状态的 benchmark 应在 `start_case()` 后固化该状态，供 `reference_milestone_node_index=-1` 等 guardrail 引用。
+- `final_state_from_session()` 返回当前或最终状态；默认返回 `None`。状态不可用时不要伪造空对象。
 - `case_finished()` 只作为查询接口或子类内部辅助能力；`DynSTEEREvaluator.evaluate()` 不用它控制主循环。
 
 ## 资源释放与异常处理契约
@@ -121,7 +124,7 @@ Harness 模式输出：
 
 `trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
 
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合和 LLM judge token usage 聚合。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合、cost 可用性字段和 LLM judge token usage 聚合。`trajectory_cost_available=false` 或 `trajectory_latency_available=false` 表示对应 `0` 值只是数据不可用兜底，不是真实零成本。`task_case_snapshot.runtime_initial_state_source` 记录运行期评分使用的初始状态来源，`runtime_initial_state_summary` 只保留 namespace 行数摘要。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 
@@ -137,7 +140,9 @@ ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER �
 
 ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
 
-ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息；每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
+ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息，并在初始化后把当前 context 的真实初始状态固化到 session。每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
+
+ToolSandbox 的 `initial_state_from_session()` 返回固化的 runtime initial state；`final_state_from_session()` 返回当前 context 的 namespace 状态。initial、runtime snapshots 和 final state 都保留 `sandbox_message_index` 列，避免离线 adapted JSON 中的动态 timestamp 或 schema 缺列影响运行期 guardrail。
 
 ToolSandbox harness 会按 `data_root + tool_backend` 在进程内缓存原生 `named_scenarios()` 结果，避免同一次运行中 `list_cases()`、`start_case()` 反复构造全部 ToolSandbox 场景。单 case 启动仍会深拷贝 `starting_context`，不共享运行期 context。
 

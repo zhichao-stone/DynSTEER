@@ -5,7 +5,7 @@ from threading import Lock
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.adapter.toolsandbox.utils.state import snapshots_from_context
+from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, snapshots_from_context, state_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
 from dynsteer.adapter.toolsandbox.utils.runtime import (
@@ -71,6 +71,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             scenario=scenario,
             roles=roles,
             context=context,
+            initial_state=None,
             case_id=case_id,
             run_id=run_id,
             raw_output_dir=raw_output_dir,
@@ -79,6 +80,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             max_messages=max_messages,
         )
         self._prepare_system_environment_messages(session)
+        session.initial_state = initial_state_from_context(session.context, load_toolsandbox_module)
         return session
 
     def advance_case(self, session: object) -> HarnessAdvanceResult:
@@ -117,6 +119,18 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """返回 ToolSandbox 运行期 metrics。"""
         self._require_session(session)
         return {"native_evaluation_skipped": True}
+
+    def initial_state_from_session(self, session: object) -> JsonObject | None:
+        """返回当前 ToolSandbox session 固化的真实初始状态。"""
+        session = self._require_session(session)
+        return session.initial_state
+
+    def final_state_from_session(self, session: object) -> JsonObject | None:
+        """返回 ToolSandbox 当前 context 的 namespace 状态。"""
+        session = self._require_session(session)
+        if session.context is None:
+            return None
+        return state_from_context(session.context, load_toolsandbox_module, include_sandbox=True)
 
     def raw_summary_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 原生摘要。"""

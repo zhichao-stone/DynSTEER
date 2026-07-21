@@ -9,6 +9,7 @@ from dynsteer.model import (
     Boundary,
     Constraint,
     ConstraintScore,
+    JsonObject,
     JsonValue,
     Milestone,
     MilestoneScore,
@@ -153,11 +154,11 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
 
         measure_name = str(metadata.get("snapshot_constraint") or "")
         try:
-            score = self._score_toolsandbox_snapshot_constraint(
+            score, reference_summary = self._score_toolsandbox_snapshot_constraint(
                 measure_name=measure_name, constraint=constraint, actual=actual, context=context
             )
         except Exception as exc:
-            return self._custom_constraint_failure_score(constraint, actual, exc)
+            return self._custom_constraint_failure_score(constraint, actual, exc, context)
         except BaseException as exc:
             exc_type = exc.__class__
             if (
@@ -165,30 +166,41 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 and str(getattr(exc_type, "__name__", "")) != "PanicException"
             ):
                 raise
-            return self._custom_constraint_failure_score(constraint, actual, exc)
+            return self._custom_constraint_failure_score(constraint, actual, exc, context)
         return ConstraintScore(
             constraint_id=constraint.constraint_id,
             score=score,
             missing=actual is None,
-            evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 得分 {score:.3f} ({measure_name})"],
+            evidence=[
+                f"ToolSandbox custom constraint {constraint.constraint_id} 得分 {score:.3f} ({measure_name})",
+                *self._reference_evidence(reference_summary),
+            ],
             actual=actual,
         )
 
     def _custom_constraint_failure_score(
-        self, constraint: Constraint, actual: JsonValue, exc: BaseException
+        self,
+        constraint: Constraint,
+        actual: JsonValue,
+        exc: BaseException,
+        context: ScoringContext | None = None,
     ) -> ConstraintScore:
         exc_type = f"{exc.__class__.__module__}.{exc.__class__.__name__}"
+        reference_summary = self._reference_summary(constraint, context)
         return ConstraintScore(
             constraint_id=constraint.constraint_id,
             score=0.0,
             missing=actual is None,
-            evidence=[f"ToolSandbox custom constraint {constraint.constraint_id} 评分失败: {exc_type}: {exc}"],
+            evidence=[
+                f"ToolSandbox custom constraint {constraint.constraint_id} 评分失败: {exc_type}: {exc}",
+                *self._reference_evidence(reference_summary),
+            ],
             actual=actual,
         )
 
     def _score_toolsandbox_snapshot_constraint(
         self, measure_name: str, constraint: Constraint, actual: JsonValue, context: ScoringContext | None
-    ) -> float:
+    ) -> tuple[float, JsonObject | None]:
         if not measure_name:
             raise ValueError("缺少 snapshot_constraint")
         evaluation = self._module_loader("tool_sandbox.common.evaluation")
@@ -202,9 +214,9 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         snapshot = self._rows_to_dataframe(actual, namespace=namespace)
         target = self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True)
         column_similarities = self._column_similarities(evaluation, constraint)
-        reference_snapshot = self._reference_dataframe(constraint, context)
+        reference_snapshot, reference_summary = self._reference_dataframe(constraint, context)
         kwargs = self._snapshot_constraint_kwargs(constraint)
-        return float(
+        score = float(
             measure(
                 snapshot=snapshot,
                 target_dataframe=target,
@@ -213,6 +225,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 **kwargs,
             )
         )
+        return score, reference_summary
 
     def _rows_to_dataframe(self, value: JsonValue, namespace: str | None = None, target: bool = False) -> pl.DataFrame:
         rows: JsonValue
@@ -347,13 +360,15 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             return partial(measure, **dict(raw_keywords))
         raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
 
-    def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None) -> pl.DataFrame | None:
+    def _reference_dataframe(
+        self, constraint: Constraint, context: ScoringContext | None
+    ) -> tuple[pl.DataFrame | None, JsonObject | None]:
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
-            return None
+            return None, None
         reference_index = metadata.get("reference_milestone_node_index")
         if reference_index is None:
-            return None
+            return None, None
         error = (
             "ToolSandbox reference snapshot 缺失: "
             f"constraint={constraint.constraint_id}, reference_milestone_node_index={reference_index}"
@@ -365,4 +380,63 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         if reference_snapshot is None:
             raise ValueError(error)
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
-        return self._rows_to_dataframe(reference_snapshot.namespaces.get(namespace), namespace=namespace)
+        rows = reference_snapshot.namespaces.get(namespace)
+        summary = self._reference_summary_from_rows(
+            reference_snapshot=reference_snapshot,
+            reference_milestone_id=reference_milestone_id,
+            namespace=namespace,
+            rows=rows,
+        )
+        return self._rows_to_dataframe(rows, namespace=namespace), summary
+
+    def _reference_summary(self, constraint: Constraint, context: ScoringContext | None) -> JsonObject | None:
+        try:
+            _, summary = self._reference_dataframe(constraint, context)
+        except Exception as exc:
+            metadata = constraint.metadata.get("toolsandbox")
+            reference_index = metadata.get("reference_milestone_node_index") if isinstance(metadata, dict) else None
+            if reference_index is None:
+                return None
+            return {"error": str(exc), "reference_milestone_node_index": reference_index}
+        return summary
+
+    def _reference_summary_from_rows(
+        self,
+        reference_snapshot: StateSnapshot,
+        reference_milestone_id: str,
+        namespace: str,
+        rows: JsonValue,
+    ) -> JsonObject:
+        row_list = rows if isinstance(rows, list) else []
+        columns = sorted(
+            {
+                str(column)
+                for row in row_list
+                if isinstance(row, dict)
+                for column in row
+            }
+        )
+        return {
+            "reference_snapshot_id": reference_snapshot.snapshot_id,
+            "reference_milestone_id": reference_milestone_id,
+            "namespace": namespace,
+            "row_count": len(row_list),
+            "columns": columns,
+        }
+
+    def _reference_evidence(self, summary: JsonObject | None) -> list[str]:
+        if not isinstance(summary, dict):
+            return []
+        if summary.get("error"):
+            return [f"ToolSandbox reference snapshot 诊断: error={summary.get('error')}"]
+        columns = summary.get("columns")
+        column_text = ",".join(str(column) for column in columns[:8]) if isinstance(columns, list) else ""
+        if isinstance(columns, list) and len(columns) > 8:
+            column_text = f"{column_text},..."
+        return [
+            "ToolSandbox reference snapshot 诊断: "
+            f"id={summary.get('reference_snapshot_id')}, "
+            f"milestone={summary.get('reference_milestone_id')}, "
+            f"namespace={summary.get('namespace')}, "
+            f"rows={summary.get('row_count')}, columns={column_text}"
+        ]

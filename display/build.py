@@ -76,13 +76,17 @@ def _scenario(
     report = _load_json(result_case_dir / "report.json")
     adapted_case = _load_json(data_dir / benchmark / "adapted_cases" / f"{scenario_id}.json")
     all_stage_definitions = _stage_definitions(adapted_case)
+    termination = _termination_summary(raw_summary, adapted_case)
     stage_reports, report_stage_id_map = _stage_reports(report.get("stage_reports", []), all_stage_definitions)
+    if not stage_reports and termination.get("terminated_by_policy") is True:
+        stage_reports = [_termination_stage_report(all_stage_definitions, termination)]
     stage_definitions = _active_stage_definitions(all_stage_definitions, stage_reports)
     stage_settlements, settlement_stage_id_map = _settlement_summaries(
         raw_summary.get("stage_settlements", []), all_stage_definitions
     )
     stage_settlements = _active_stage_settlements(stage_settlements, stage_reports)
     stage_id_map = {**settlement_stage_id_map, **report_stage_id_map}
+    minefield_matches = _scenario_minefield_matches(report, termination, adapted_case)
     return {
         "scenario_id": scenario_id,
         "task_id": str(summary.get("task_id") or trajectory.get("task_id") or f"{benchmark}::{scenario_id}"),
@@ -93,7 +97,8 @@ def _scenario(
         "stage_reports": stage_reports,
         "stage_settlements": stage_settlements,
         "match_attempts": raw_summary.get("milestone_match_attempts", []),
-        "minefield_matches": report.get("minefield_matches", []),
+        "minefield_matches": minefield_matches,
+        "termination": termination,
     }
 
 
@@ -112,6 +117,14 @@ def _collect_case_keys(base_dir: Path) -> set[CaseKey]:
                     if scenario_dir.is_dir()
                 )
     return keys
+
+
+def _scenario_minefield_matches(report: JsonObject, termination: JsonObject, adapted_case: JsonObject) -> list[JsonObject]:
+    matches = report.get("minefield_matches")
+    if not isinstance(matches, list) or not matches:
+        detail = termination.get("termination_detail")
+        matches = detail.get("minefield_matches") if isinstance(detail, dict) else []
+    return _enrich_minefield_matches(matches, adapted_case)
 
 
 def _load_json(path: Path) -> JsonObject:
@@ -173,6 +186,8 @@ def _summary_payload(summary: JsonObject) -> JsonObject:
         "llm_call_count",
         "llm_total_tokens",
         "trajectory_total_tokens",
+        "trajectory_cost_available",
+        "trajectory_latency_available",
     )
     payload = {key: summary[key] for key in keys if key in summary}
     if isinstance(metrics, dict):
@@ -318,6 +333,127 @@ def _settlement_summary(settlement: JsonObject, definitions: list[JsonObject] | 
         "checkpointed": settlement.get("checkpointed"),
         "evidence": clean_evidence_items([_text(value, 1200) for value in settlement.get("evidence", [])], 8),
     }
+
+
+def _termination_summary(raw_summary: JsonObject, adapted_case: JsonObject) -> JsonObject:
+    if raw_summary is None:
+        raise ValueError("raw_summary 不能为空")
+    detail = _json_copy(raw_summary.get("termination_detail") or {})
+    if isinstance(detail, dict):
+        detail["minefield_matches"] = _enrich_minefield_matches(detail.get("minefield_matches", []), adapted_case)
+    return {
+        "terminated_by_policy": bool(raw_summary.get("terminated_by_policy")),
+        "termination_code": str(raw_summary.get("termination_code") or ""),
+        "termination_reason": str(raw_summary.get("termination_reason") or ""),
+        "termination_detail": detail if isinstance(detail, dict) else {},
+    }
+
+
+def _termination_stage_report(definitions: list[JsonObject], termination: JsonObject) -> JsonObject:
+    finish_definition = _finish_definition(definitions) or {
+        "stage_id": f"{START_NODE_ID}->{FINISH_NODE_ID}",
+        "anchor_milestone_id": START_NODE_ID,
+        "milestone_id": FINISH_NODE_ID,
+        "stage_goal": DEFAULT_FINISH_STAGE_GOAL,
+    }
+    detail = termination.get("termination_detail")
+    evidence = clean_evidence_items(
+        [
+            f"策略提前终止：{termination.get('termination_code') or 'unknown'}",
+            str(termination.get("termination_reason") or ""),
+            *_termination_minefield_evidence(detail if isinstance(detail, dict) else {}),
+        ]
+    )
+    return {
+        "stage_id": str(finish_definition.get("stage_id") or f"{START_NODE_ID}->{FINISH_NODE_ID}"),
+        "milestone_id": FINISH_NODE_ID,
+        "status": "terminated",
+        "stage_score": 0.0,
+        "dimension_scores": {},
+        "dimension_levels": {},
+        "dimension_confidence": {},
+        "dimension_uncertainty": {},
+        "next_weights": {},
+        "evidence": evidence,
+        "diagnosis": ["finish 未结算：benchmark 已被策略提前终止。"],
+        "metadata": {
+            "stage_goal": str(finish_definition.get("stage_goal") or DEFAULT_FINISH_STAGE_GOAL),
+            "stage_anchor_milestone_id": str(finish_definition.get("anchor_milestone_id") or START_NODE_ID),
+            "finish_unsettled_due_to_termination": True,
+            "termination": termination,
+        },
+    }
+
+
+def _termination_minefield_evidence(detail: JsonObject) -> list[str]:
+    matches = detail.get("minefield_matches")
+    if not isinstance(matches, list):
+        return []
+    lines = []
+    for match in matches[:3]:
+        if not isinstance(match, dict):
+            continue
+        lines.append(_minefield_match_line(match))
+    if len(matches) > 3:
+        lines.append(f"另有 {len(matches) - 3} 条 minefield 命中")
+    return lines
+
+
+def _enrich_minefield_matches(matches: Any, adapted_case: JsonObject) -> list[JsonObject]:
+    if not isinstance(matches, list):
+        return []
+    definitions = {item["minefield_id"]: item for item in _minefield_definitions(adapted_case)}
+    enriched: list[JsonObject] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        item = _json_copy(match)
+        definition = definitions.get(str(item.get("minefield_id") or ""))
+        if definition is not None:
+            item.setdefault("name", definition.get("name"))
+            item.setdefault("description", definition.get("description"))
+            item.setdefault("severity", definition.get("severity"))
+            item.setdefault("fatal", definition.get("severity") == "fatal")
+            item["constraints"] = definition.get("constraints", [])
+            item["trigger_summary"] = definition.get("trigger_summary", "")
+        enriched.append(item)
+    return enriched
+
+
+def _minefield_definitions(adapted_case: JsonObject) -> list[JsonObject]:
+    graph = adapted_case.get("milestone_graph", {}) if isinstance(adapted_case, dict) else {}
+    values = graph.get("minefields") if isinstance(graph, dict) else None
+    if not isinstance(values, list):
+        values = graph.get("metadata", {}).get("minefields", []) if isinstance(graph, dict) else []
+    definitions: list[JsonObject] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        constraints = _constraint_definitions(value.get("constraints"))
+        definitions.append(
+            {
+                "minefield_id": str(value.get("minefield_id") or ""),
+                "name": str(value.get("name") or value.get("minefield_id") or ""),
+                "description": _text(value.get("description"), 1200),
+                "severity": str(value.get("severity") or ""),
+                "constraints": constraints,
+                "trigger_summary": _constraints_trigger_summary(constraints),
+            }
+        )
+    return definitions
+
+
+def _minefield_match_line(match: JsonObject) -> str:
+    pieces = [
+        f"minefield 命中：{match.get('minefield_id') or 'unknown'}",
+        f"severity={match.get('severity') or 'unknown'}",
+        f"score={match.get('score')}",
+        f"fatal={match.get('fatal')}",
+    ]
+    summary = str(match.get("trigger_summary") or "")
+    if summary:
+        pieces.append(f"触发条件：{summary}")
+    return "；".join(pieces)
 
 
 def _milestone_matching_summary(value: Any) -> JsonObject:
@@ -515,7 +651,7 @@ def _normalized_stage_id(
 
 
 def _is_terminal_stage_status(status: Any) -> bool:
-    return str(status or "").strip().lower() in {"fail", "missing", "invalid", "fatal"}
+    return str(status or "").strip().lower() in {"fail", "missing", "invalid", "fatal", "terminated"}
 
 
 def _json_copy(value: Any) -> Any:
@@ -569,6 +705,7 @@ def _constraint_definitions(value: Any) -> list[JsonObject]:
 
 
 def _constraint_definition(constraint: JsonObject) -> JsonObject:
+    semantics = constraint.get("stage_goal_semantics")
     return {
         "constraint_id": str(constraint.get("constraint_id") or ""),
         "target": str(constraint.get("target") or ""),
@@ -579,6 +716,9 @@ def _constraint_definition(constraint: JsonObject) -> JsonObject:
         "evaluator_hint": _text(constraint.get("evaluator_hint"), 240),
         "expected_summary": _expected_summary(constraint.get("expected")),
         "expected_detail": _expected_detail(constraint.get("expected")),
+        "semantic_kind": str(semantics.get("kind") or "") if isinstance(semantics, dict) else "",
+        "semantic_summary": _semantic_summary(semantics if isinstance(semantics, dict) else {}),
+        "expected_rows_summary": _expected_rows_summary(constraint.get("expected")),
     }
 
 
@@ -598,6 +738,88 @@ def _expected_summary(expected: Any) -> str:
 
 def _expected_detail(expected: Any) -> str:
     return _text(expected, 1200)
+
+
+def _semantic_summary(semantics: JsonObject) -> str:
+    kind = str(semantics.get("kind") or "")
+    if kind == "emit_message":
+        sender = str(semantics.get("sender") or "")
+        recipient = str(semantics.get("recipient") or "")
+        content = str(semantics.get("content") or "")
+        route = f"{sender} -> {recipient}".strip()
+        return f"{route}: {content}".strip(": ")
+    if kind == "tool_call":
+        tool_name = str(semantics.get("tool_name") or semantics.get("name") or "")
+        arguments = semantics.get("arguments")
+        if tool_name:
+            suffix = f" arguments={_text(arguments, 240)}" if arguments else ""
+            return f"tool {tool_name}{suffix}"
+    if kind:
+        return kind
+    return ""
+
+
+def _expected_rows_summary(expected: Any) -> list[str]:
+    if not isinstance(expected, dict):
+        return []
+    rows = expected.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [_expected_row_summary(row) for row in rows[:4] if isinstance(row, dict)]
+
+
+def _expected_row_summary(row: JsonObject) -> str:
+    tool_trace = row.get("tool_trace")
+    if tool_trace is not None:
+        return _tool_trace_summary(tool_trace)
+    sender = str(row.get("sender") or "")
+    recipient = str(row.get("recipient") or "")
+    content = str(row.get("content") or "")
+    if sender or recipient or content:
+        return f"{sender} -> {recipient}: {content}".strip(": ")
+    return _text(row, 360)
+
+
+def _tool_trace_summary(tool_trace: Any) -> str:
+    traces = _parse_tool_trace(tool_trace)
+    if not traces:
+        return _text(tool_trace, 360)
+    parts = []
+    for trace in traces[:3]:
+        tool_name = str(trace.get("tool_name") or trace.get("name") or "unknown")
+        arguments = trace.get("arguments")
+        suffix = f" args={_text(arguments, 220)}" if arguments is not None else ""
+        parts.append(f"tool {tool_name}{suffix}")
+    if len(traces) > 3:
+        parts.append(f"另有 {len(traces) - 3} 次工具调用")
+    return "; ".join(parts)
+
+
+def _parse_tool_trace(tool_trace: Any) -> list[JsonObject]:
+    values = tool_trace if isinstance(tool_trace, list) else [tool_trace]
+    traces: list[JsonObject] = []
+    for value in values:
+        parsed: Any = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(parsed, dict):
+            traces.append(parsed)
+        elif isinstance(parsed, list):
+            traces.extend(item for item in parsed if isinstance(item, dict))
+    return traces
+
+
+def _constraints_trigger_summary(constraints: list[JsonObject]) -> str:
+    summaries = [
+        str(constraint.get("semantic_summary") or "; ".join(constraint.get("expected_rows_summary", [])))
+        for constraint in constraints
+        if isinstance(constraint, dict)
+    ]
+    summaries = [item for item in summaries if item]
+    return " | ".join(summaries[:3])
 
 
 def _graph_edges(graph: JsonObject, adapted_graph: JsonObject) -> list[JsonObject]:

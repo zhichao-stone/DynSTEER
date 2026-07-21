@@ -77,6 +77,12 @@ class BaseBenchmarkHarness(ABC):
             raise ValueError("session 不能为空")
         return {}
 
+    def initial_state_from_session(self, session: object) -> JsonObject | None:
+        """从 session 提取当前运行的真实初始状态。"""
+        if session is None:
+            raise ValueError("session 不能为空")
+        return None
+
     def final_state_from_session(self, session: object) -> JsonObject | None:
         """从 session 提取最终或当前状态。"""
         if session is None:

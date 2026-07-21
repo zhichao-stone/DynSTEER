@@ -478,6 +478,18 @@
       font-size: calc(12px * var(--panel-scale));
     }
 
+    .tool-name {
+      border-radius: 6px;
+      padding: 3px 7px;
+      background: rgba(20, 99, 255, 0.08);
+      color: #174ea6;
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
     .content {
       white-space: pre-wrap;
       word-break: break-word;
@@ -1287,7 +1299,10 @@
         `threshold: ${formatValue(constraint.threshold)}`,
         `hard: ${formatValue(constraint.hard)}`,
         `evaluator_hint: ${formatValue(constraint.evaluator_hint)}`,
+        `semantic_kind: ${formatValue(constraint.semantic_kind)}`,
+        `semantic_summary: ${formatValue(constraint.semantic_summary)}`,
         `expected_summary: ${formatValue(constraint.expected_summary)}`,
+        `expected_rows_summary: ${formatValue((constraint.expected_rows_summary || []).join(" | "))}`,
         `expected_detail: ${formatValue(constraint.expected_detail)}`
       ].join("\n");
     }
@@ -1441,6 +1456,12 @@
       const type = el("span", "event-type");
       type.textContent = step.event_type || "event";
       meta.append(index, actor, arrow, recipient, type);
+      const toolName = toolNameForStep(step, scenario);
+      if (toolName) {
+        const tool = el("span", "tool-name");
+        tool.textContent = `tool: ${toolName}`;
+        meta.append(tool);
+      }
 
       const badges = el("div", "badge-row");
       matchedMilestones.forEach((milestoneId) => {
@@ -1455,10 +1476,10 @@
       card.append(head, content);
 
       if (step.tool_call) {
-        card.append(detailBlock("工具调用", toolCallText(step.tool_call)));
+        card.append(detailBlock(`工具调用：${toolName || step.tool_call.name || "unknown"}`, toolCallText(step.tool_call)));
       }
       if (step.tool_result) {
-        card.append(detailBlock("工具结果", toolResultText(step.tool_result)));
+        card.append(detailBlock(`工具结果：${toolName || "unknown"}`, toolResultText(step.tool_result, toolName)));
       }
       return card;
     }
@@ -1511,6 +1532,8 @@
       if (failure) body.append(failure);
       const pending = pendingMetadataSection(report);
       if (pending) body.append(pending);
+      const termination = terminationSection(report);
+      if (termination) body.append(termination);
       const attempt = pendingAttemptSection(report);
       if (attempt) body.append(attempt);
       const policy = policySection(report);
@@ -2119,7 +2142,7 @@
       if (value === "pass") return "pass";
       if (value === "warn") return "warn";
       if (["not_started", "missing", "pending"].includes(value)) return "pending";
-      if (["fail", "fatal", "invalid"].includes(value)) return "fail";
+      if (["fail", "fatal", "invalid", "terminated"].includes(value)) return "fail";
       return "";
     }
 
@@ -2188,6 +2211,52 @@
         }
       });
       return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function terminationSection(report) {
+      const metadata = report.metadata || {};
+      if (metadata.finish_unsettled_due_to_termination !== true) return null;
+      const termination = metadata.termination || {};
+      return detailBlock("finish 未结算", terminationDetailText(termination), true);
+    }
+
+    function terminationDetailText(termination) {
+      const detail = termination.termination_detail || {};
+      const lines = [
+        `termination_code: ${formatValue(termination.termination_code)}`,
+        `termination_reason: ${formatValue(termination.termination_reason)}`
+      ];
+      const matches = Array.isArray(detail.minefield_matches) ? detail.minefield_matches : [];
+      if (matches.length) {
+        lines.push("", "minefield_matches:");
+        matches.forEach((match) => lines.push(minefieldMatchLine(match)));
+      }
+      if (!matches.length && Object.keys(detail).length) {
+        lines.push("", "termination_detail:", JSON.stringify(detail, null, 2));
+      }
+      return lines.join("\n").trim();
+    }
+
+    function minefieldMatchLine(match) {
+      if (!match) return "- minefield: 无";
+      const pieces = [
+        match.minefield_id || "unknown",
+        `severity=${formatValue(match.severity)}`,
+        `score=${formatScore(match.score)}`,
+        `fatal=${formatValue(match.fatal)}`
+      ];
+      if (match.trigger_summary) pieces.push(`trigger=${match.trigger_summary}`);
+      const constraints = Array.isArray(match.constraints) ? match.constraints : [];
+      const constraintText = constraints
+        .slice(0, 2)
+        .map((constraint) => {
+          const summary = constraint.semantic_summary || (constraint.expected_rows_summary || []).join(" | ");
+          return `${constraint.constraint_id || "constraint"} ${summary}`.trim();
+        })
+        .filter(Boolean)
+        .join("; ");
+      if (constraintText) pieces.push(`constraints=${constraintText}`);
+      return `- ${pieces.join("; ")}`;
     }
 
     function warningSummarySection(report) {
@@ -2343,7 +2412,8 @@
         const id = constraint.constraint_id || "constraint";
         const operator = constraint.operator || "";
         const hard = constraint.hard ? "hard" : "soft";
-        return `${id} ${operator} ${hard}`.trim();
+        const summary = constraint.semantic_summary || (constraint.expected_rows_summary || [])[0] || "";
+        return `${id} ${operator} ${hard} ${summary}`.trim();
       });
     }
 
@@ -2432,11 +2502,46 @@
       return `${toolCall.name || "unknown"}\n${args}`;
     }
 
-    function toolResultText(toolResult) {
-      const lines = [`success: ${formatValue(toolResult.success)}`];
+    function toolResultText(toolResult, toolName) {
+      const lines = [];
+      if (toolName) lines.push(`tool_name: ${toolName}`);
+      lines.push(`success: ${formatValue(toolResult.success)}`);
       if (toolResult.content) lines.push(`content: ${toolResult.content}`);
       if (toolResult.exception) lines.push(`exception: ${toolResult.exception}`);
       return lines.join("\n");
+    }
+
+    function toolNameForStep(step, scenario) {
+      if (!step) return "";
+      if (step.tool_call && step.tool_call.name) return String(step.tool_call.name);
+      if (step.openai_function_name) return String(step.openai_function_name);
+      if (step.tool_result) return toolNameFromRelatedCall(step, scenario);
+      return String(step.event_type || "") === "tool_call" ? toolNameFromContent(step.content) : "";
+    }
+
+    function toolNameFromRelatedCall(step, scenario) {
+      const callId = step.openai_tool_call_id || "";
+      const steps = scenario && scenario.trajectory ? scenario.trajectory.steps || [] : [];
+      if (callId) {
+        const matched = steps.find((item) => (
+          item &&
+          item.openai_tool_call_id === callId &&
+          item.tool_call &&
+          item.tool_call.name
+        ));
+        if (matched) return String(matched.tool_call.name);
+      }
+      const stepIndex = Number(step.index);
+      const previousCall = [...steps]
+        .filter((item) => item && item.tool_call && item.tool_call.name && Number(item.index) <= stepIndex)
+        .sort((left, right) => Number(right.index) - Number(left.index))[0];
+      return previousCall ? String(previousCall.tool_call.name) : "";
+    }
+
+    function toolNameFromContent(content) {
+      if (!content || typeof content !== "string") return "";
+      const match = content.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+      return match ? match[1] : "";
     }
 
     function stepRangeText(settlement) {

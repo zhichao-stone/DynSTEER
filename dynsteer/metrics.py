@@ -55,6 +55,8 @@ def build_runtime_metrics(
     )
     trajectory_tokens = [step.cost.tokens for step in trajectory.steps]
     trajectory_latency = [step.cost.latency_ms for step in trajectory.steps]
+    trajectory_cost_available = any(value is not None for value in trajectory_tokens)
+    trajectory_latency_available = any(value is not None for value in trajectory_latency)
     llm_prompt_tokens = _sum_optional_int([call.prompt_tokens for call in llm_calls])
     llm_completion_tokens = _sum_optional_int([call.completion_tokens for call in llm_calls])
     llm_total_tokens = _sum_optional_int([call.total_tokens for call in llm_calls])
@@ -68,6 +70,8 @@ def build_runtime_metrics(
         "tool_call_count": tool_call_count,
         "trajectory_total_tokens": _sum_optional_int(trajectory_tokens) or 0,
         "trajectory_total_latency_ms": _sum_optional_int(trajectory_latency) or 0,
+        "trajectory_cost_available": trajectory_cost_available,
+        "trajectory_latency_available": trajectory_latency_available,
         "llm_call_count": len(llm_calls),
         "llm_failed_call_count": sum(1 for call in llm_calls if not call.success),
         "llm_prompt_tokens": llm_prompt_tokens,
