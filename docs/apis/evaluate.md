@@ -92,7 +92,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 - `STANDARD` 维度只调用 standard judge 并覆盖这些维度。
 - `EXPENSIVE` 维度只调用 expensive judge 并覆盖这些维度。
 - 某一维 expensive 不会导致其他维度一起 expensive。
-- 对 `emit_message` 且 `match_policy=semantic_equivalent` 的候选，如果已出现同向 agent 消息、无 missing、且除语义消息外没有其他 hard 约束失败，结算会在 standard judge 可用时把 `progress` 与 `interaction_quality` 中属于本阶段 focus 的维度强制提升到 `STANDARD`。该逻辑覆盖 cheap 分数为 WARN 或 FAIL 的消息相似度误判；若 standard 复判确认语义达成，且唯一结构性失败来自该语义消息约束，会解除结构化文本相似度 hard fail 并允许 checkpoint 结算。结果记录在 `StageEvaluationResult.metadata.semantic_review`，包含候选 cheap 分数、强制维度、standard judge 状态、复判是否通过、是否解除结构性失败和 checkpoint 是否接受。
+- 对 `emit_message` 且 `match_policy=semantic_equivalent` 的候选，运行期会在 checkpoint 前执行 constraint 级专用消息语义复判。该复判固定单次调用 LLM，只比较 expected content 与 actual content 在指定 sender/recipient route 下是否任务语义等价，不评价工具选择、效率、安全或完整阶段质量；复判 accepted 且置信度达标时，会把对应消息约束覆写为通过并重新聚合 `MilestoneScore`，随后按正常 cheap/standard/expensive 阶段结算。复判详情写入 `match_attempts[].llm_semantic_review`；accepted checkpoint 的阶段报告额外写入 `metadata.semantic_message_review`。若复判 rejected，pending stage 的 `metadata.semantic_review`、`failure_summary` 和 `failure_reasons` 会保留拒绝原因。
 
 下一阶段策略：
 
@@ -118,10 +118,13 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 - `metadata.low_score_dimensions`
 - `metadata.weight_update_diagnostics`
 - `metadata.stage_quality_diagnostics`（cheap baseline）
+- `metadata.semantic_message_review`（仅消息语义复判 accepted 后出现）
 
 `StageEvaluationResult.metadata` 主要用于报告、展示和诊断附加信息；其中 `structural_failure`、`missing_required_milestone` 等结构化标记会参与早停判断，但不参与阶段分数或权重更新。高阶 judge 的逐维结果应进入 `dimension_scores`、`dimension_levels`、`dimension_confidence` 和 `dimension_uncertainty`；不再把 standard/expensive judge 的整包 metadata 合并进 stage metadata。
 
-自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。
+自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。若最后一次专用消息语义复判 rejected，`metadata.semantic_review` 会保留复判目标、expected/actual 内容、置信度和原因。
+
+`stage_settlements[].metadata.stage_trace.state_snapshot_delta_summary` 提供轻量状态变化摘要，只包含命名空间行数、变化标记与 changed namespace 列表，不嵌入完整状态数据。
 
 `__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。空 milestone graph 且没有 whole-trajectory fallback 时不会默认通过：若已触发 fatal minefield，finish 为 `fail/0`；否则为 `invalid/0`。
 

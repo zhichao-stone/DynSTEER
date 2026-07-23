@@ -9,13 +9,13 @@ from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
 from dynsteer.evaluate.runtime import JudgeConfigurationError
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
+from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.evaluate.weights import update_weights
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.model import (
     Boundary,
-    Constraint,
     Dimension,
     DynamicWeightConfig,
     EvaluationLevel,
@@ -477,7 +477,7 @@ def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) ->
         )
         if not failed:
             continue
-        if not _is_semantic_emit_message_constraint(constraint):
+        if not is_semantic_emit_message_constraint(constraint):
             return False
         semantic_failure_found = True
     return semantic_failure_found
@@ -490,17 +490,6 @@ def _milestone_for_interval(interval: StageInterval, task_case: TaskCase) -> Mil
         (milestone for milestone in task_case.milestone_graph.nodes if milestone.milestone_id == interval.milestone_id),
         None,
     )
-
-
-def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:
-    semantics = constraint.stage_goal_semantics
-    return (
-        isinstance(semantics, dict)
-        and semantics.get("kind") == "emit_message"
-        and str(semantics.get("match_policy") or "semantic_equivalent") == "semantic_equivalent"
-    )
-
-
 def _judge_result_metadata(
     result: StageEvaluationResult, dimensions: list[Dimension], weights: dict[Dimension, float]
 ) -> JsonObject:

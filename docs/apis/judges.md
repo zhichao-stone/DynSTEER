@@ -22,6 +22,7 @@ dynsteer/prompt/
 - judge.py         # prompt context 构造
 - rubrics.py       # 七维详细 rubric
 - templates/judge/standard.{zh,en}.md
+- templates/judge/semantic_message_equivalence.{zh,en}.md
 - templates/judge/expensive/{dimension}.{zh,en}.md
 ```
 
@@ -73,6 +74,14 @@ cheap confidence 由结构化规则来源估计。hard fail / missing 是确定�
 - 多 pass status 取更严重状态。
 - confidence 使用离散 score anchor 的一致性估计。
 
+`StandardJudge.review_message_equivalence(target, task_case=...)` 是专用于 `emit_message + semantic_equivalent` 的窄域复判接口。它只要求 LLM 返回：
+
+- `equivalent: bool`
+- `confidence: float`
+- `reason: str`
+
+该接口固定只调用一次 LLM，不跟随 `DYNSTEER_STANDARD_JUDGE_PASSES`。它不输出阶段维度分，也不参与动态权重更新；运行期只用它决定单条消息约束是否可覆写为通过。prompt 模板位于 `templates/judge/semantic_message_equivalence.{zh,en}.md`，与其他 judge prompt 采用同一套 `PromptTemplate` 多语言渲染机制。
+
 ## ExpensiveJudge
 
 `ExpensiveJudge` 对每个目标维度独立执行专项 prompt。
@@ -112,6 +121,8 @@ dynsteer/prompt/templates/judge/expensive/
 - `score`
 - `missing`
 - `hard`
+- `expected_excerpt`
+- `actual_excerpt`
 - `short_evidence`
 
 默认不暴露 operator、namespace、raw actual 或完整 snapshot，避免 LLM judge 被底层 scorer 字段牵引。`steps` 是主要行为证据。

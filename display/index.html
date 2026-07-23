@@ -167,17 +167,25 @@
     .panel-title {
       padding: 12px 14px 10px;
       border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .panel-title-text {
+      min-width: 0;
+    }
+
+    .panel-title-row {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 12px;
-      background: var(--panel-soft);
     }
 
     .panel-title h2 {
       margin: 0;
       font-size: calc(16px * var(--panel-scale));
       line-height: 1.3;
+      flex: 0 0 auto;
     }
 
     .panel-title p {
@@ -185,6 +193,7 @@
       color: var(--muted);
       font-size: calc(12px * var(--panel-scale));
       line-height: 1.4;
+      overflow-wrap: anywhere;
     }
 
     .panel-body {
@@ -202,6 +211,58 @@
       color: var(--muted);
       font-size: calc(11px * var(--panel-scale));
       line-height: 1.2;
+    }
+
+    .trajectory-filter-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex: 0 0 auto;
+      flex-wrap: nowrap;
+    }
+
+    .filter-select {
+      min-height: 28px;
+      width: 128px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 4px 8px;
+      font: inherit;
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .filter-notice {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(199, 122, 0, 0.28);
+      border-radius: 8px;
+      background: rgba(199, 122, 0, 0.08);
+      color: var(--warn);
+      line-height: 1.4;
+    }
+
+    .text-button {
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      min-height: 28px;
+      padding: 4px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .text-button:hover,
+    .text-button:focus-visible {
+      border-color: var(--accent);
+      color: #073fba;
     }
 
     .legend-row {
@@ -824,6 +885,8 @@
       selectedStageId: null,
       openStageIds: new Set(),
       closedStageIds: new Set(),
+      trajectoryFilters: { actor: "all", recipient: "all" },
+      hiddenTrajectoryStepIndex: null,
       panelFractions: { trajectory: 34, graph: 30, stage: 36 },
       resizeObserver: null
     };
@@ -1181,7 +1244,16 @@
       const container = document.querySelector(".trajectory-panel");
       clear(container);
       const steps = scenario && scenario.trajectory ? scenario.trajectory.steps || [] : [];
-      appendPanelTitle(container, "执行轨迹", scenario ? `${scenario.task_id} · 共 ${steps.length} 步` : "等待选择 scenario");
+      const filteredSteps = steps.filter((step) => (
+        matchesActorFilter(step, state.trajectoryFilters.actor) &&
+        matchesRecipientFilter(step, state.trajectoryFilters.recipient)
+      ));
+      appendPanelTitle(
+        container,
+        "执行轨迹",
+        scenario ? `${scenario.task_id} · 显示 ${filteredSteps.length} / 共 ${steps.length} 步` : "等待选择 scenario",
+        trajectoryFilterControls()
+      );
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
@@ -1194,11 +1266,131 @@
         return;
       }
 
+      const hiddenSelectedIndex = hiddenSelectedTrajectoryStepIndex(scenario, filteredSteps);
+      if (hiddenSelectedIndex !== null) {
+        body.append(trajectoryFilterNotice(hiddenSelectedIndex));
+      }
+
+      if (!filteredSteps.length) {
+        appendEmpty(body, "当前筛选没有匹配的轨迹步骤");
+        return;
+      }
+
       const fragment = document.createDocumentFragment();
-      steps.forEach((step) => {
+      filteredSteps.forEach((step) => {
         fragment.append(stepCard(step, scenario));
       });
       body.append(fragment);
+    }
+
+    function trajectoryFilterControls() {
+      const controls = el("div", "trajectory-filter-controls");
+      controls.append(
+        trajectoryFilterSelect("actor", "发起方", [
+          ["all", "全部发起"],
+          ["agent", "agent"],
+          ["user", "user"],
+          ["environment", "environment"],
+          ["system", "system"],
+          ["evaluator", "evaluator"],
+          ["unknown", "unknown"]
+        ]),
+        trajectoryFilterSelect("recipient", "接收方", [
+          ["all", "全部接收"],
+          ["agent", "agent"],
+          ["user", "user"],
+          ["environment", "environment"],
+          ["system", "system"],
+          ["evaluator", "evaluator"],
+          ["unknown", "unknown"]
+        ])
+      );
+      return controls;
+    }
+
+    function trajectoryFilterSelect(key, label, options) {
+      const select = el("select", "filter-select");
+      select.setAttribute("aria-label", label);
+      options.forEach(([value, text]) => {
+        const option = el("option");
+        option.value = value;
+        option.textContent = text;
+        option.selected = state.trajectoryFilters[key] === value;
+        select.append(option);
+      });
+      select.addEventListener("change", () => {
+        state.trajectoryFilters[key] = select.value;
+        state.hiddenTrajectoryStepIndex = null;
+        renderTrajectory();
+        updatePanelScales();
+      });
+      return select;
+    }
+
+    function matchesActorFilter(step, filter) {
+      if (filter === "all") return true;
+      return normalizedTrajectoryActor(step && step.actor) === filter;
+    }
+
+    function matchesRecipientFilter(step, filter) {
+      if (filter === "all") return true;
+      return normalizedTrajectoryActor(step && step.recipient) === filter;
+    }
+
+    function normalizedTrajectoryActor(value) {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (!normalized) return "unknown";
+      if (normalized === "execution_environment") return "environment";
+      return ["agent", "user", "environment", "system", "evaluator"].includes(normalized) ? normalized : "unknown";
+    }
+
+    function hiddenSelectedTrajectoryStepIndex(scenario, filteredSteps) {
+      const visibleIndexes = new Set(filteredSteps.map((step) => Number(step.index)).filter((value) => Number.isFinite(value)));
+      const candidates = selectedTrajectoryStepIndexes(scenario);
+      if (state.hiddenTrajectoryStepIndex !== null && state.hiddenTrajectoryStepIndex !== undefined) {
+        candidates.push(Number(state.hiddenTrajectoryStepIndex));
+      }
+      const hidden = candidates.find((index) => Number.isFinite(index) && !visibleIndexes.has(index));
+      if (hidden === undefined) {
+        state.hiddenTrajectoryStepIndex = null;
+        return null;
+      }
+      state.hiddenTrajectoryStepIndex = hidden;
+      return hidden;
+    }
+
+    function selectedTrajectoryStepIndexes(scenario) {
+      if (!scenario) return [];
+      const indexes = [];
+      if (state.selectedStageId) {
+        const settlement = settlementForStage(state.selectedStageId);
+        if (settlement && Number.isFinite(Number(settlement.start_step_index))) {
+          indexes.push(Number(settlement.start_step_index));
+        }
+      }
+      if (state.selectedMilestoneId) {
+        const matched = matchedStepIndexForMilestone(state.selectedMilestoneId, scenario);
+        if (matched !== null) indexes.push(matched);
+      }
+      return indexes;
+    }
+
+    function trajectoryFilterNotice(stepIndex) {
+      const notice = el("div", "filter-notice");
+      const text = el("span");
+      text.textContent = `当前筛选隐藏了选中步骤 #${stepIndex}`;
+      const button = el("button", "text-button");
+      button.type = "button";
+      button.textContent = "清除筛选";
+      button.addEventListener("click", () => {
+        state.trajectoryFilters = { actor: "all", recipient: "all" };
+        state.hiddenTrajectoryStepIndex = null;
+        renderTrajectory();
+        updatePanelScales();
+        requestAnimationFrame(() => focusStepCard(stepIndex));
+      });
+      notice.append(text, button);
+      return notice;
     }
 
     function renderGraph(options) {
@@ -2036,9 +2228,17 @@
 
     function focusStepCard(stepIndex) {
       if (stepIndex === null || stepIndex === undefined) return;
+      const normalizedStepIndex = finiteStepIndex(stepIndex);
+      if (normalizedStepIndex === null) return;
       const panel = document.querySelector(".trajectory-panel .panel-body");
-      const target = panel ? panel.querySelector(`[data-step-index="${stepIndex}"]`) : null;
-      if (!panel || !target) return;
+      const target = panel ? panel.querySelector(`[data-step-index="${normalizedStepIndex}"]`) : null;
+      if (!panel || !target) {
+        state.hiddenTrajectoryStepIndex = normalizedStepIndex;
+        renderTrajectory();
+        updatePanelScales();
+        return;
+      }
+      state.hiddenTrajectoryStepIndex = null;
       const panelRect = panel.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
       const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
@@ -2080,19 +2280,28 @@
     function scrollToMatchedStep(milestoneId) {
       const scenario = currentScenario();
       if (!scenario) return;
+      const stepIndex = matchedStepIndexForMilestone(milestoneId, scenario);
+      if (stepIndex !== null) focusStepCard(stepIndex);
+    }
+
+    function matchedStepIndexForMilestone(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
       const attempts = scenario.match_attempts || [];
       const match = attempts.find((item) => selectedAttemptMilestoneId(item) === milestoneId);
       if (match) {
-        focusStepCard(match.step_index);
-        return;
+        return finiteStepIndex(match.step_index);
       }
       const settlement = (scenario.stage_settlements || []).find((item) => item.milestone_id === milestoneId);
       if (settlement) {
-        focusStepCard(settlement.start_step_index);
-        return;
+        return finiteStepIndex(settlement.start_step_index);
       }
       const best = bestMilestoneAttempt(milestoneId, scenario);
-      if (best) focusStepCard(best.attempt.step_index);
+      return best ? finiteStepIndex(best.attempt.step_index) : null;
+    }
+
+    function finiteStepIndex(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
     }
 
     function scrollToStepRange(settlement) {
@@ -2352,6 +2561,9 @@
         parts.push("", "failed_constraints:");
         failedConstraints.forEach((item) => parts.push(failedConstraintLine(item)));
       }
+      if (metadata && metadata.semantic_review) {
+        parts.push("", "semantic_review:", semanticReviewText(metadata.semantic_review));
+      }
       if (bestAttempt && includeBestAttemptDetail !== false) {
         parts.push("", "best_attempt:", milestoneAttemptDetailText(bestAttempt));
       }
@@ -2389,8 +2601,24 @@
       ];
       if (item.goal_hint) pieces.push(String(item.goal_hint));
       if (item.evidence && item.evidence.length) pieces.push(`evidence=${item.evidence.join(" | ")}`);
+      if (item.expected_excerpt) pieces.push(`expected=${item.expected_excerpt}`);
       if (item.actual_excerpt) pieces.push(`actual=${item.actual_excerpt}`);
       return `- ${pieces.join("; ")}`;
+    }
+
+    function semanticReviewText(review) {
+      if (!review) return "无";
+      const lines = [
+        `status: ${formatValue(review.status)}`,
+        `reason: ${formatValue(review.reason)}`,
+        `accepted_constraint_ids: ${formatValue((review.accepted_constraint_ids || []).join(", "))}`,
+        `rejected_constraint_ids: ${formatValue((review.rejected_constraint_ids || []).join(", "))}`
+      ];
+      const reviews = Array.isArray(review.reviews) ? review.reviews : [];
+      reviews.slice(0, 4).forEach((item) => {
+        lines.push(`- ${formatValue(item.constraint_id)} equivalent=${formatValue(item.equivalent)} confidence=${formatScore(item.confidence)} reason=${formatValue(item.reason)}`);
+      });
+      return lines.join("\n");
     }
 
     function pendingAttemptSection(report) {
@@ -2454,14 +2682,16 @@
 
     function appendPanelTitle(container, title, subtitle, extra) {
       const head = el("div", "panel-title");
-      const text = el("div");
+      const text = el("div", "panel-title-text");
+      const row = el("div", "panel-title-row");
       const h2 = el("h2");
       h2.textContent = title;
       const p = el("p");
       p.textContent = subtitle || "";
-      text.append(h2, p);
+      row.append(h2);
+      if (extra) row.append(extra);
+      text.append(row, p);
       head.append(text);
-      if (extra) head.append(extra);
       container.append(head);
     }
 
@@ -2585,6 +2815,7 @@
       state.selectedMilestoneId = null;
       state.selectedMilestoneSize = null;
       state.selectedStageId = null;
+      state.hiddenTrajectoryStepIndex = null;
       state.openStageIds.clear();
       state.closedStageIds.clear();
     }

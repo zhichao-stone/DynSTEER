@@ -71,3 +71,23 @@ def load_prompt_text(domain: str, name: str, language: TaskLanguage) -> str:
     if not text:
         raise ValueError(f"prompt 模板不能为空: {path}")
     return text
+
+
+def load_prompt_template(domain: str, name: str) -> PromptTemplate:
+    """读取指定 prompt 的全部已存在语言模板。"""
+    if not isinstance(domain, str) or not domain.strip():
+        raise ValueError("prompt domain 不能为空")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("prompt name 不能为空")
+    templates: dict[str, str] = {}
+    for language in TaskLanguage:
+        path = _TEMPLATE_DIR / domain / f"{name}.{language.value}.md"
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            raise ValueError(f"prompt 模板不能为空: {path}")
+        templates[language.value] = text
+    if not templates:
+        raise FileNotFoundError(f"缺少 prompt 模板: {_TEMPLATE_DIR / domain / f'{name}.<language>.md'}")
+    return PromptTemplate(**templates)

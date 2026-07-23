@@ -1,11 +1,12 @@
 import json
-
-from dynsteer.language import TaskLanguage
 from collections.abc import Iterable
 
+from dynsteer.language import TaskLanguage
+
+from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
 from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageInterval, TaskCase, Trajectory
 from dynsteer.prompt.rubrics import rubrics_for_dimensions
-from dynsteer.prompt.template import PromptTemplate, load_prompt_text
+from dynsteer.prompt.template import load_prompt_template
 from dynsteer.stage import stage_trajectory_steps
 from dynsteer.utils import json_safe, validated_target_dimensions
 
@@ -31,6 +32,28 @@ def build_judge_prompt(
         interval, task_case, trajectory, language=language, extra=extra, target_dimensions=target_dimensions
     )
     return _render_template(template_name, language, context_json=context_json, **dict(render_kwargs or {}))
+
+
+def build_semantic_message_equivalence_prompt(
+    task_case: TaskCase,
+    check: JsonObject,
+    *,
+    language: TaskLanguage = TaskLanguage.ENGLISH,
+) -> str:
+    """构造专用消息语义等价复判 prompt。"""
+    if task_case is None or check is None:
+        raise ValueError("task_case 和 check 不能为空")
+    context = {
+        "task": {"task_description": task_case.task_description},
+        "semantic_message_check": check,
+        "required_output": {
+            "equivalent": "bool",
+            "confidence": "float in [0,1]",
+            "reason": "short string explaining the semantic equivalence or mismatch",
+        },
+    }
+    context_json = json.dumps(context, ensure_ascii=False, indent=2)
+    return _render_template("semantic_message_equivalence", language, context_json=context_json)
 
 
 def _context_json(
@@ -76,8 +99,7 @@ def _context_json(
 
 
 def _render_template(name: str, language: TaskLanguage, **kwargs: object) -> str:
-    template_text = load_prompt_text("judge", name, language)
-    return PromptTemplate(**{language.value: template_text}).render(language=language, **kwargs)
+    return load_prompt_template("judge", name).render(language=language, **kwargs)
 
 
 def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[JsonObject]:
@@ -104,6 +126,8 @@ def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[Jso
                 "score": score.score,
                 "missing": score.missing,
                 "hard": constraint.hard if constraint is not None else None,
+                "expected_excerpt": constraint_expected_excerpt(constraint),
+                "actual_excerpt": constraint_actual_excerpt(constraint, score),
                 "short_evidence": [str(item) for item in score.evidence[:2]],
             }
         )

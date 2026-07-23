@@ -11,11 +11,19 @@ from dynsteer.evaluate.runtime import (
     scoring_context,
     update_ready_frontier_progress_watch,
 )
+from dynsteer.evaluate.semantic import (
+    apply_semantic_message_reviews,
+    semantic_message_review_targets,
+    semantic_review_attempt_detail,
+    skipped_semantic_review_detail,
+)
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import (
-    Dimension,
+    Boundary,
     JsonObject,
     EvaluationTerminationState,
+    Milestone,
+    MilestoneScore,
     RuntimeEvaluationDecision,
     RuntimeEvaluationState,
     StageStatus,
@@ -153,13 +161,20 @@ def evaluate_agent_step(
         return None
 
     milestone, boundary, milestone_score = analysis.hit
-    requires_llm_review = analysis.requires_semantic_review
-    if requires_llm_review and standard_judge is None:
+    semantic_review_detail: JsonObject | None = None
+    if analysis.requires_semantic_review:
+        milestone_score, semantic_review_detail = _semantic_message_review_score(
+            standard_judge=standard_judge,
+            task_case=task_case,
+            milestone=milestone,
+            milestone_score=milestone_score,
+            trajectory=trajectory,
+            boundary=boundary,
+        )
         if analysis.attempt_detail is not None:
-            review_detail = analysis.attempt_detail.get("llm_semantic_review")
-            if isinstance(review_detail, dict):
-                review_detail["status"] = "skipped_no_standard_judge"
-        return _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)
+            analysis.attempt_detail["llm_semantic_review"] = semantic_review_detail
+        if milestone_score.status != StageStatus.PASS:
+            return _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)
 
     decision = evaluate_checkpoint(
         config=config,
@@ -169,16 +184,15 @@ def evaluate_agent_step(
         milestone=milestone,
         boundary=boundary,
         milestone_score=milestone_score,
-        force_standard_dimensions=[Dimension.PROGRESS, Dimension.INTERACTION_QUALITY]
-        if requires_llm_review
-        else None,
     )
-    if requires_llm_review and analysis.attempt_detail is not None:
-        review_detail = analysis.attempt_detail.get("llm_semantic_review")
-        if isinstance(review_detail, dict) and decision.stage_result is not None:
-            review_detail["status"] = "accepted" if decision.checkpoint is not None else "rejected"
-            review_detail["judge_status"] = decision.stage_result.status.value
-            review_detail["settlement_stage_score"] = decision.stage_result.stage_score
+    if semantic_review_detail is not None:
+        semantic_review_detail["settlement_accepted"] = decision.checkpoint is not None
+        if decision.stage_result is not None:
+            semantic_review_detail["final_stage_status"] = decision.stage_result.status.value
+            semantic_review_detail["final_stage_score"] = decision.stage_result.stage_score
+            decision.stage_result.metadata["semantic_message_review"] = dict(semantic_review_detail)
+            if decision.checkpoint is not None:
+                decision.checkpoint.metadata["stage_report"] = decision.stage_result.to_dict()
     if analysis.attempt_detail is not None:
         state.match_attempts.append(analysis.attempt_detail)
     if decision.checkpoint is None and analysis.attempt_detail is not None:
@@ -186,6 +200,30 @@ def evaluate_agent_step(
     if decision.termination.should_stop:
         return decision
     return None
+
+
+def _semantic_message_review_score(
+    standard_judge: object | None,
+    task_case: TaskCase,
+    milestone: Milestone,
+    milestone_score: MilestoneScore,
+    trajectory: Trajectory | None = None,
+    boundary: Boundary | None = None,
+) -> tuple[MilestoneScore, JsonObject]:
+    """对需要复判的 emit_message 约束执行专用语义等价判断。"""
+    targets = semantic_message_review_targets(milestone, milestone_score, trajectory=trajectory, boundary=boundary)
+    if not targets:
+        return milestone_score, skipped_semantic_review_detail("skipped_no_reviewable_message", targets)
+    if standard_judge is None:
+        return milestone_score, skipped_semantic_review_detail("skipped_no_standard_judge", targets)
+
+    reviewer = getattr(standard_judge, "review_message_equivalence", None)
+    if not callable(reviewer):
+        return milestone_score, skipped_semantic_review_detail("skipped_no_semantic_message_judge", targets)
+
+    reviews = [reviewer(target, task_case=task_case) for target in targets]
+    reviewed_score = apply_semantic_message_reviews(milestone, milestone_score, reviews)
+    return reviewed_score, semantic_review_attempt_detail(targets, reviews, reviewed_score)
 
 
 def _record_attempt_and_check_no_progress(

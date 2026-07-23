@@ -1,4 +1,5 @@
 import json
+import re
 
 from dynsteer.adapter.loader import parse_milestone_graph
 from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
@@ -69,12 +70,14 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
             "evidence_source": "structured_scorer",
             "user_visible_required": False,
         }
-    # SANDBOX namespace 表达可见消息目标，文本匹配采用语义等价策略。
+    # SANDBOX namespace 表达对话消息或工具调用目标。
     elif namespace == "SANDBOX":
         first = rows[0] if rows and isinstance(rows[0], dict) else {}
         tool_trace_semantics = _tool_trace_stage_goal_semantics(first) if isinstance(first, dict) else None
         if tool_trace_semantics is not None:
             stage_goal_semantics = tool_trace_semantics
+        elif _is_sandbox_tool_call_row(first):
+            stage_goal_semantics = _sandbox_tool_call_semantics(first)
         else:
             sender = first.get("sender") if isinstance(first, dict) else None
             recipient = first.get("recipient") if isinstance(first, dict) else None
@@ -86,7 +89,7 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
                 "content": str(content or ""),
                 "match_policy": "semantic_equivalent",
                 "evidence_source": "trajectory_or_structured_scorer",
-                "user_visible_required": True,
+                "user_visible_required": _is_user_visible_message_route(sender, recipient),
             }
     # 其他 snapshot constraint 表达目标 state namespace 的设置或校验。
     else:
@@ -167,6 +170,45 @@ def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | 
         "evidence_source": "trajectory_or_structured_scorer",
         "user_visible_required": False,
     }
+
+
+def _is_sandbox_tool_call_row(row: dict[str, JsonValue]) -> bool:
+    sender = str(row.get("sender") or "").strip().upper()
+    recipient = str(row.get("recipient") or "").strip().upper()
+    if sender == "AGENT" and recipient in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"}:
+        return True
+    raw_name = row.get("openai_function_name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        return True
+    return False
+
+
+def _sandbox_tool_call_semantics(row: dict[str, JsonValue]) -> JsonObject:
+    return {
+        "kind": StageGoalSemanticKind.TOOL_CALL.value,
+        "tool_name": _sandbox_tool_name(row) or "unknown",
+        "arguments": {},
+        "evidence_source": "trajectory_or_structured_scorer",
+        "user_visible_required": False,
+    }
+
+
+def _sandbox_tool_name(row: dict[str, JsonValue]) -> str:
+    raw_name = row.get("openai_function_name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        return raw_name.strip()
+    content = row.get("content")
+    if isinstance(content, str) and content.strip():
+        match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)", content.strip())
+        if match is not None:
+            return match.group(1)
+    return ""
+
+
+def _is_user_visible_message_route(sender: object, recipient: object) -> bool:
+    sender_text = str(sender or "").strip().upper()
+    recipient_text = str(recipient or "").strip().upper()
+    return recipient_text == "USER" and sender_text in {"AGENT", "ENVIRONMENT", "SYSTEM", ""}
 
 
 def _matcher_nodes(matcher: object | None, prefix: str, is_milestone: bool) -> list[dict[str, JsonValue]]:

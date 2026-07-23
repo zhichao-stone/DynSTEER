@@ -5,6 +5,7 @@ from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
+from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.model import (
     Boundary,
     Constraint,
@@ -110,6 +111,12 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                     hard_pass = False
             else:
                 non_guardrail_count += 1
+                if (
+                    constraint.hard
+                    and (result.missing or constraint_score < constraint.threshold)
+                    and not (is_semantic_emit_message_constraint(constraint) and not result.missing)
+                ):
+                    hard_pass = False
 
         score = score_product ** (1.0 / non_guardrail_count) if non_guardrail_count > 0 else score_product
         score = 0.0 if not hard_pass else clamp(score)

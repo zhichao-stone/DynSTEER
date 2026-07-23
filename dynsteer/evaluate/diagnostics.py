@@ -1,5 +1,6 @@
 import json
 
+from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Actor,
@@ -12,6 +13,7 @@ from dynsteer.model import (
     MilestoneGraph,
     MilestoneScore,
     StageInterval,
+    StateSnapshot,
     Trajectory,
     TrajectoryStep,
 )
@@ -32,6 +34,7 @@ def build_stage_trace(trajectory: Trajectory, interval: StageInterval) -> JsonOb
         "interval_semantics": "(start_boundary_step_index, end_step_index]",
         "step_count": len(steps),
         "steps": steps,
+        "state_snapshot_delta_summary": _state_snapshot_delta_summary(trajectory, interval),
     }
 
 
@@ -78,6 +81,39 @@ def _format_number(value: object) -> str:
     return "unknown" if number is None else f"{number:.3f}"
 
 
+def _state_snapshot_delta_summary(trajectory: Trajectory, interval: StageInterval) -> JsonObject:
+    start_snapshot = _latest_snapshot_at_or_before(trajectory, interval.start_boundary_step_index)
+    end_snapshot = _latest_snapshot_at_or_before(trajectory, interval.end_step_index)
+    if start_snapshot is None and end_snapshot is None:
+        return {"available": False, "namespaces": {}}
+    start_namespaces = start_snapshot.namespaces if start_snapshot is not None else {}
+    end_namespaces = end_snapshot.namespaces if end_snapshot is not None else {}
+    namespace_names = sorted({*start_namespaces.keys(), *end_namespaces.keys()})
+    summaries: JsonObject = {}
+    for namespace in namespace_names:
+        before = start_namespaces.get(namespace)
+        after = end_namespaces.get(namespace)
+        summaries[namespace] = {
+            "before_row_count": len(before) if isinstance(before, list) else None,
+            "after_row_count": len(after) if isinstance(after, list) else None,
+            "changed": json_safe(before) != json_safe(after),
+        }
+    return {
+        "available": True,
+        "start_snapshot_id": start_snapshot.snapshot_id if start_snapshot is not None else None,
+        "end_snapshot_id": end_snapshot.snapshot_id if end_snapshot is not None else None,
+        "changed_namespaces": [namespace for namespace, item in summaries.items() if isinstance(item, dict) and item.get("changed")],
+        "namespaces": summaries,
+    }
+
+
+def _latest_snapshot_at_or_before(trajectory: Trajectory, step_index: int) -> StateSnapshot | None:
+    snapshots = [snapshot for snapshot in trajectory.snapshots if snapshot.after_step_index <= step_index]
+    if not snapshots:
+        return None
+    return max(snapshots, key=lambda snapshot: (snapshot.after_step_index, snapshot.snapshot_id))
+
+
 def _compact_json(value: object, limit: int = 360) -> str | None:
     if value is None:
         return None
@@ -118,7 +154,9 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     evidence = score.get("evidence")
     metadata = constraint.metadata.get("toolsandbox") if constraint is not None else None
     toolsandbox_measure = str(metadata.get("snapshot_constraint") or "") if isinstance(metadata, dict) else ""
-    actual_excerpt = _compact_json(score.get("actual"), 420) if "actual" in score else None
+    actual_excerpt = constraint_actual_excerpt(constraint, score) if "actual" in score else None
+    if actual_excerpt is None and "actual" in score:
+        actual_excerpt = _compact_json(score.get("actual"), 420)
     detail: JsonObject = {
         "constraint_id": str(score.get("constraint_id") or (constraint.constraint_id if constraint else "constraint")),
         "score": score.get("score"),
@@ -140,6 +178,7 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     }
     if constraint is not None:
         detail["expected_summary"] = constraint_summary_to_dict(constraint)["expected_summary"]
+        detail["expected_excerpt"] = constraint_expected_excerpt(constraint)
     return detail
 
 
@@ -219,7 +258,15 @@ def _pending_failure_diagnostics(
             reasons.extend(_constraint_failure_line(item) for item in failed_constraints[1:])
         elif isinstance(last_entry, dict) and last_entry.get("reject_reason"):
             reasons.append(f"最后一次拒绝原因：{last_entry.get('reject_reason')}")
-        return {"failure_summary": summary, "failure_reasons": reasons, "failed_constraints": failed_constraints}
+        semantic_review = _semantic_review_from_candidate(best_entry, last_entry)
+        if semantic_review is not None:
+            review_line = _semantic_review_failure_line(semantic_review)
+            summary = f"{summary} {review_line}"
+            reasons.insert(1, review_line)
+        result: JsonObject = {"failure_summary": summary, "failure_reasons": reasons, "failed_constraints": failed_constraints}
+        if semantic_review is not None:
+            result["semantic_review"] = semantic_review
+        return result
 
     if blocker == "predecessor_not_matched":
         missing_text = ", ".join(pending_predecessors) if pending_predecessors else "unknown"
@@ -231,6 +278,25 @@ def _pending_failure_diagnostics(
     else:
         summary = f"milestone {milestone.milestone_id} 从未 ready；可能仍缺少前序阶段证据或轨迹未推进到该阶段。"
     return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
+
+
+def _semantic_review_from_candidate(*candidates: JsonObject | None) -> JsonObject | None:
+    """从候选详情中读取最后一次 rejected semantic review。"""
+    for candidate in reversed([item for item in candidates if isinstance(item, dict)]):
+        semantic_review = candidate.get("llm_semantic_review")
+        if isinstance(semantic_review, dict) and semantic_review.get("status") == "rejected":
+            return dict(semantic_review)
+    return None
+
+
+def _semantic_review_failure_line(review: JsonObject) -> str:
+    """生成语义复判失败摘要。"""
+    reason = str(review.get("reason") or "").strip()
+    rejected_ids = review.get("rejected_constraint_ids")
+    id_text = ",".join(str(item) for item in rejected_ids) if isinstance(rejected_ids, list) else ""
+    if reason:
+        return f"消息语义复判 rejected{id_text and f'（{id_text}）'}：{compact_text(reason, 220)}。"
+    return f"消息语义复判 rejected{id_text and f'（{id_text}）'}。"
 
 
 def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
@@ -300,7 +366,11 @@ def build_final_milestone_diagnostics(
         if isinstance(raw_candidates, list):
             for candidate in raw_candidates:
                 if isinstance(candidate, dict) and str(candidate.get("milestone_id")) in milestone_ids:
-                    attempts_by_milestone[str(candidate["milestone_id"])].append(candidate)
+                    candidate_detail = dict(candidate)
+                    semantic_review = attempt.get("llm_semantic_review")
+                    if isinstance(semantic_review, dict):
+                        candidate_detail["llm_semantic_review"] = semantic_review
+                    attempts_by_milestone[str(candidate["milestone_id"])].append(candidate_detail)
 
     diagnostics: list[JsonObject] = []
     for node in graph.nodes:

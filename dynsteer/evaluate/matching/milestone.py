@@ -1,6 +1,7 @@
 from dynsteer.evaluate.diagnostics import build_milestone_candidate_detail
 from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
 from dynsteer.evaluate.matching.frontier import blocked_candidate_milestones, ready_milestones
+from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.scoring import GeneralScorer, get_effective_scorer
 from dynsteer.model import (
@@ -13,7 +14,6 @@ from dynsteer.model import (
     MilestoneFrontierState,
     MilestoneStepAnalysis,
     ScoringContext,
-    StageGoalSemanticKind,
     StageStatus,
     Trajectory,
     TrajectoryStep,
@@ -350,7 +350,7 @@ def _mark_selected_candidate_details(
 def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScore) -> bool:
     if score.status == StageStatus.PASS:
         return False
-    if not any(_is_semantic_emit_message_constraint(constraint) for constraint in milestone.constraints):
+    if not any(is_semantic_emit_message_constraint(constraint) for constraint in milestone.constraints):
         return False
     if score.missing_ratio > 0.0 or not score.hard_constraints_all_pass:
         if not _hard_failures_are_semantic_emit_messages(milestone, score):
@@ -359,7 +359,7 @@ def _is_llm_semantic_review_candidate(milestone: Milestone, score: MilestoneScor
     score_by_id = {item.constraint_id: item for item in score.constraint_scores}
     has_reviewable_semantic_message = False
     for constraint in milestone.constraints:
-        if _is_semantic_emit_message_constraint(constraint):
+        if is_semantic_emit_message_constraint(constraint):
             constraint_score = score_by_id.get(constraint.constraint_id)
             if constraint_score is not None and _has_reviewable_semantic_message(constraint, constraint_score):
                 has_reviewable_semantic_message = True
@@ -382,7 +382,7 @@ def _hard_failures_are_semantic_emit_messages(milestone: Milestone, score: Miles
         failed = constraint_score is None or constraint_score.missing or constraint_score.score < constraint.threshold
         if not failed:
             continue
-        if not _is_semantic_emit_message_constraint(constraint):
+        if not is_semantic_emit_message_constraint(constraint):
             return False
         semantic_failure_found = True
     return semantic_failure_found
@@ -415,12 +415,3 @@ def _actual_contains_expected_message_route(actual: object, semantics: object) -
         ):
             return True
     return False
-
-
-def _is_semantic_emit_message_constraint(constraint: Constraint) -> bool:
-    semantics = constraint.stage_goal_semantics
-    if not isinstance(semantics, dict):
-        return False
-    if semantics.get("kind") != StageGoalSemanticKind.EMIT_MESSAGE.value:
-        return False
-    return str(semantics.get("match_policy") or "semantic_equivalent") == "semantic_equivalent"
