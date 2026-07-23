@@ -1,4 +1,5 @@
 import json
+import re
 
 from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
 from dynsteer.harness.model import HarnessStageSettlement
@@ -128,24 +129,24 @@ def _constraint_goal_hint(constraint: Constraint | None) -> str:
     semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
     kind = str(semantics.get("kind") or "")
     if kind == "emit_message":
-        return "需要向用户发出符合语义要求的消息"
+        return "Need to emit the required user-visible message."
     if kind == "set_state":
         namespace = constraint.namespace or "state"
-        return f"需要让 {namespace} 状态达到目标值"
+        return f"Need to bring {namespace} state to the target value."
     if kind == "preserve_state":
         namespace = constraint.namespace or "state"
-        return f"需要保持 {namespace} 状态不被破坏"
+        return f"Need to preserve {namespace} state."
     if kind == "tool_call":
-        return "需要调用符合要求的工具"
+        return "Need to call the required tool."
 
     metadata = constraint.metadata.get("toolsandbox")
     if isinstance(metadata, dict):
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
         measure = str(metadata.get("snapshot_constraint") or "")
         if metadata.get("guardrail"):
-            return f"需要保持 {namespace or 'state'} guardrail 通过"
+            return f"Need to preserve {namespace or 'state'} guardrail."
         if namespace:
-            return f"需要满足 {namespace} 的 {measure or 'snapshot'} 约束"
+            return f"Need to satisfy the {namespace} {measure or 'snapshot'} constraint."
     return f"target={constraint.target.value}, operator={constraint.operator.value}"
 
 
@@ -215,12 +216,36 @@ def _constraint_failure_line(detail: JsonObject) -> str:
     goal_hint = str(detail.get("goal_hint") or "")
     evidence = detail.get("evidence")
     evidence_text = str(evidence[0]) if isinstance(evidence, list) and evidence else ""
-    parts = [f"{constraint_id} 得分 {score}，低于阈值 {threshold}"]
+    actual_excerpt = str(detail.get("actual_excerpt") or "")
+
+    if _excerpt_shows_matched_expected_rows(actual_excerpt) and _score_value(detail.get("score")) < _score_value(detail.get("threshold")):
+        parts = [f"{constraint_id} score {score}, below threshold {threshold}"]
+        parts.append("target-related rows already appeared, but structured scoring still failed; check extra state changes or reference drift")
+        if goal_hint:
+            parts.append(goal_hint)
+        if evidence_text:
+            parts.append(f"evidence: {evidence_text}")
+        return " | ".join(parts)
+
+    parts = [f"{constraint_id} score {score}, below threshold {threshold}"]
     if goal_hint:
         parts.append(goal_hint)
     if evidence_text:
-        parts.append(f"证据：{evidence_text}")
-    return "；".join(parts)
+        parts.append(f"evidence: {evidence_text}")
+    return " | ".join(parts)
+
+
+def _excerpt_shows_matched_expected_rows(actual_excerpt: str) -> bool:
+    match = re.search(r"matched_expected_rows=(\d+)/(\d+)", actual_excerpt)
+    if match is None:
+        return False
+    matched = int(match.group(1))
+    expected = int(match.group(2))
+    return expected > 0 and matched > 0
+
+
+def _score_value(value: object) -> float:
+    return float(value) if isinstance(value, int | float) else 0.0
 
 
 def _pending_failure_diagnostics(
@@ -240,24 +265,24 @@ def _pending_failure_diagnostics(
     if blocker == "attempted_but_not_pass":
         step_text = ""
         if isinstance(boundary, dict) and boundary.get("step_index") is not None:
-            step_text = f"；最佳候选位于 step={boundary.get('step_index')}"
+            step_text = f"; best candidate step={boundary.get('step_index')}"
         status_text = (
             str(score_payload.get("status") or common.get("best_status") or "unknown")
             if isinstance(score_payload, dict)
             else str(common.get("best_status") or "unknown")
         )
         summary = (
-            f"milestone {milestone.milestone_id} 已尝试匹配 {attempt_count} 次，但没有候选达到通过阈值 "
-            f"{threshold:.3f}{step_text}，最佳得分 {_format_number(common.get('best_score'))}（status={status_text}）。"
+            f"milestone {milestone.milestone_id} tried {attempt_count} times but never reached threshold {threshold:.3f}{step_text}; "
+            f"best score {_format_number(common.get('best_score'))} (status={status_text})."
         )
         reasons = [summary]
         if failed_constraints:
             lead = _constraint_failure_line(failed_constraints[0])
-            summary = f"{summary} 主要未满足约束：{lead}。"
+            summary = f"{summary} Main unmet constraint: {lead}."
             reasons[0] = summary
             reasons.extend(_constraint_failure_line(item) for item in failed_constraints[1:])
         elif isinstance(last_entry, dict) and last_entry.get("reject_reason"):
-            reasons.append(f"最后一次拒绝原因：{last_entry.get('reject_reason')}")
+            reasons.append(f"Last reject reason: {last_entry.get('reject_reason')}")
         semantic_review = _semantic_review_from_candidate(best_entry, last_entry)
         if semantic_review is not None:
             review_line = _semantic_review_failure_line(semantic_review)
@@ -270,16 +295,14 @@ def _pending_failure_diagnostics(
 
     if blocker == "predecessor_not_matched":
         missing_text = ", ".join(pending_predecessors) if pending_predecessors else "unknown"
-        summary = f"milestone {milestone.milestone_id} 尚未进入可评估状态，因为前驱 milestone 未完成：{missing_text}。"
+        summary = f"milestone {milestone.milestone_id} is not yet evaluable because predecessor milestones are incomplete: {missing_text}."
         return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
 
     if blocker == "ready_without_candidate":
-        summary = f"milestone {milestone.milestone_id} 曾经 ready，但运行结束前没有出现可评分的候选边界。"
+        summary = f"milestone {milestone.milestone_id} was ready, but no candidate boundary appeared before the run ended."
     else:
-        summary = f"milestone {milestone.milestone_id} 从未 ready；可能仍缺少前序阶段证据或轨迹未推进到该阶段。"
+        summary = f"milestone {milestone.milestone_id} has not become ready yet; the run may still lack the prerequisite evidence."
     return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
-
-
 def _semantic_review_from_candidate(*candidates: JsonObject | None) -> JsonObject | None:
     """从候选详情中读取最后一次 rejected semantic review。"""
     for candidate in reversed([item for item in candidates if isinstance(item, dict)]):

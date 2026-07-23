@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import json
 
 from dynsteer.model import (
     Boundary,
@@ -20,6 +21,74 @@ from dynsteer.utils import clamp, compact_text, json_safe
 SEMANTIC_MESSAGE_CONFIDENCE_THRESHOLD = 0.7
 SEMANTIC_MESSAGE_CONTEXT_STEP_LIMIT = 12
 SEMANTIC_MESSAGE_CONTEXT_SNAPSHOT_LIMIT = 4
+FOCUSED_STATE_ROW_LIMIT = 4
+
+_STATE_EXCERPT_KINDS = {
+    StageGoalSemanticKind.SET_STATE.value,
+    StageGoalSemanticKind.PRESERVE_STATE.value,
+}
+_LOW_SIGNAL_MATCH_KEYS = {
+    "conversation_active",
+    "creation_timestamp",
+    "is_self",
+    "latitude",
+    "longitude",
+    "reminder_timestamp",
+    "sandbox_message_index",
+}
+_STATE_IDENTIFIER_KEYS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "CONTACT": (("person_id",), ("name",), ("phone_number",)),
+    "REMINDER": (("reminder_id",),),
+    "MESSAGING": (
+        ("message_id",),
+        ("sender_person_id", "recipient_person_id", "content"),
+        ("sender_phone_number", "recipient_phone_number", "content"),
+    ),
+    "SETTING": (("device_id",),),
+    "SANDBOX": (
+        ("openai_tool_call_id",),
+        ("sender", "recipient", "tool_trace"),
+        ("sender", "recipient", "content"),
+    ),
+}
+_STATE_DISPLAY_KEYS: dict[str, tuple[str, ...]] = {
+    "CONTACT": ("person_id", "name", "phone_number", "relationship", "is_self"),
+    "REMINDER": (
+        "reminder_id",
+        "content",
+        "creation_timestamp",
+        "reminder_timestamp",
+        "latitude",
+        "longitude",
+    ),
+    "MESSAGING": (
+        "message_id",
+        "sender_person_id",
+        "sender_phone_number",
+        "recipient_person_id",
+        "recipient_phone_number",
+        "content",
+        "creation_timestamp",
+    ),
+    "SETTING": (
+        "device_id",
+        "cellular",
+        "wifi",
+        "location_service",
+        "low_battery_mode",
+        "latitude",
+        "longitude",
+    ),
+    "SANDBOX": (
+        "sandbox_message_index",
+        "sender",
+        "recipient",
+        "content",
+        "openai_function_name",
+        "tool_trace",
+        "tool_call_exception",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -240,10 +309,269 @@ def constraint_actual_excerpt(
         return None
     actual = score.actual if isinstance(score, ConstraintScore) else score.get("actual")
     semantics = constraint.stage_goal_semantics if constraint is not None else {}
+    focused = _focused_state_excerpt(constraint, actual, limit)
+    if focused is not None:
+        return focused
     message = _matching_message(actual, semantics if isinstance(semantics, dict) else {})
     if message is not None:
         return compact_text(message[2], limit)
     return compact_text(json_safe(actual), limit) if actual is not None else None
+
+
+def _focused_state_excerpt(
+    constraint: Constraint | None,
+    actual: JsonValue,
+    limit: int,
+) -> str | None:
+    if constraint is None or not _should_focus_state_excerpt(constraint):
+        return None
+    expected_rows = _state_rows_from_value(constraint.expected)
+    actual_rows = _state_rows_from_value(actual)
+    if expected_rows is None or actual_rows is None:
+        return None
+
+    namespace = _constraint_namespace(constraint)
+    matches = _expected_actual_matches(namespace, expected_rows, actual_rows)
+    matched_count = sum(1 for _, actual_index in matches if actual_index is not None)
+    selected_indices = _focused_actual_row_indices(namespace, expected_rows, actual_rows, matches)
+    expected_by_actual_index = {
+        actual_index: expected_rows[expected_index]
+        for expected_index, actual_index in matches
+        if actual_index is not None
+    }
+    relevant_rows = [
+        _state_row_excerpt_payload(namespace, actual_rows[index], expected_by_actual_index.get(index))
+        for index in selected_indices
+    ]
+    parts = [
+        f"actual_rows={len(actual_rows)}",
+        f"expected_rows={len(expected_rows)}",
+        f"matched_expected_rows={matched_count}/{len(expected_rows)}",
+    ]
+    if relevant_rows:
+        parts.append(f"relevant_actual_rows={json.dumps(relevant_rows, ensure_ascii=False, separators=(',', ':'))}")
+    omitted_count = max(len(actual_rows) - len(selected_indices), 0)
+    if omitted_count > 0:
+        parts.append(f"omitted_actual_rows={omitted_count}")
+    return compact_text("; ".join(parts), limit)
+
+
+def _should_focus_state_excerpt(constraint: Constraint) -> bool:
+    semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    kind = str(semantics.get("kind") or "")
+    if kind in _STATE_EXCERPT_KINDS:
+        return True
+    target = getattr(constraint.target, "value", constraint.target)
+    return str(target) == "state_snapshot"
+
+
+def _constraint_namespace(constraint: Constraint) -> str:
+    if constraint.namespace:
+        return str(constraint.namespace).strip().upper()
+    semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    namespace = semantics.get("namespace")
+    if isinstance(namespace, str) and namespace.strip():
+        return namespace.strip().upper()
+    metadata = constraint.metadata.get("toolsandbox")
+    if isinstance(metadata, dict):
+        namespace = metadata.get("database_namespace")
+        if isinstance(namespace, str) and namespace.strip():
+            return namespace.strip().upper()
+    return ""
+
+
+def _state_rows_from_value(value: JsonValue) -> list[JsonObject] | None:
+    if isinstance(value, dict):
+        rows = value.get("rows")
+        if isinstance(rows, list):
+            return [dict(row) for row in rows if isinstance(row, dict)]
+        return [dict(value)] if _looks_like_state_row(value) else None
+    if isinstance(value, list):
+        return [dict(row) for row in value if isinstance(row, dict)]
+    return None
+
+
+def _looks_like_state_row(value: JsonObject) -> bool:
+    return any(
+        key not in {"columns", "metadata", "namespace", "row_count", "rows"} and _has_value(item)
+        for key, item in value.items()
+    )
+
+
+def _expected_actual_matches(
+    namespace: str,
+    expected_rows: list[JsonObject],
+    actual_rows: list[JsonObject],
+) -> list[tuple[int, int | None]]:
+    used_actual_indices: set[int] = set()
+    matches: list[tuple[int, int | None]] = []
+    for expected_index, expected_row in enumerate(expected_rows):
+        actual_index = _best_identifier_match(namespace, expected_row, actual_rows, used_actual_indices)
+        if actual_index is not None:
+            used_actual_indices.add(actual_index)
+        matches.append((expected_index, actual_index))
+    return matches
+
+
+def _best_identifier_match(
+    namespace: str,
+    expected_row: JsonObject,
+    actual_rows: list[JsonObject],
+    used_actual_indices: set[int],
+) -> int | None:
+    identifier_keys = _identifier_keys(namespace, expected_row)
+    if not identifier_keys:
+        return None
+    candidates: list[tuple[int, int, int]] = []
+    for index, actual_row in enumerate(actual_rows):
+        if index in used_actual_indices:
+            continue
+        if all(_values_equal(expected_row.get(key), actual_row.get(key)) for key in identifier_keys):
+            shared_count = _shared_value_count(namespace, expected_row, actual_row)
+            candidates.append((shared_count, -index, index))
+    if not candidates:
+        return None
+    return max(candidates)[2]
+
+
+def _identifier_keys(namespace: str, expected_row: JsonObject) -> tuple[str, ...]:
+    for keys in _STATE_IDENTIFIER_KEYS.get(namespace, ()):
+        if all(_has_value(expected_row.get(key)) for key in keys):
+            return keys
+    meaningful_keys = [
+        key
+        for key, value in expected_row.items()
+        if _has_value(value) and not _is_low_signal_match_key(namespace, key)
+    ]
+    return tuple(meaningful_keys)
+
+
+def _focused_actual_row_indices(
+    namespace: str,
+    expected_rows: list[JsonObject],
+    actual_rows: list[JsonObject],
+    matches: list[tuple[int, int | None]],
+) -> list[int]:
+    selected: list[int] = []
+    for _, actual_index in matches:
+        if actual_index is not None and actual_index not in selected:
+            selected.append(actual_index)
+        if len(selected) >= FOCUSED_STATE_ROW_LIMIT:
+            return selected
+
+    if not actual_rows:
+        return selected
+    if not expected_rows:
+        return selected + [
+            index
+            for index in range(len(actual_rows))
+            if index not in selected
+        ][: max(FOCUSED_STATE_ROW_LIMIT - len(selected), 0)]
+
+    candidates: list[tuple[int, int, int]] = []
+    for index, actual_row in enumerate(actual_rows):
+        if index in selected:
+            continue
+        score = max(_shared_value_count(namespace, expected_row, actual_row) for expected_row in expected_rows)
+        candidates.append((score, -index, index))
+    positive_candidate_found = any(score > 0 for score, _, _ in candidates)
+    for score, _, index in sorted(candidates, reverse=True):
+        if positive_candidate_found and score <= 0:
+            continue
+        if not positive_candidate_found and len(selected) >= min(2, len(actual_rows)):
+            break
+        selected.append(index)
+        if len(selected) >= FOCUSED_STATE_ROW_LIMIT:
+            break
+    return selected
+
+
+def _shared_value_count(namespace: str, expected_row: JsonObject, actual_row: JsonObject) -> int:
+    count = 0
+    for key, expected_value in expected_row.items():
+        if _is_low_signal_match_key(namespace, key) or not _has_value(expected_value):
+            continue
+        if _values_equal(expected_value, actual_row.get(key)):
+            count += 1
+    return count
+
+
+def _state_row_excerpt_payload(
+    namespace: str,
+    actual_row: JsonObject,
+    expected_row: JsonObject | None = None,
+) -> JsonObject:
+    display_keys = _state_display_keys(namespace, actual_row, expected_row)
+    payload: JsonObject = {
+        key: _compact_field_value(actual_row.get(key))
+        for key in display_keys
+        if key in actual_row
+    }
+    if expected_row is None:
+        return payload
+    mismatched_fields: JsonObject = {}
+    for key, expected_value in expected_row.items():
+        if _is_low_signal_match_key(namespace, key) or not _has_value(expected_value):
+            continue
+        actual_value = actual_row.get(key)
+        if not _values_equal(expected_value, actual_value):
+            mismatched_fields[key] = {
+                "expected": _compact_field_value(expected_value),
+                "actual": _compact_field_value(actual_value),
+            }
+    if mismatched_fields:
+        payload["mismatched_fields"] = mismatched_fields
+    return payload
+
+
+def _state_display_keys(
+    namespace: str,
+    actual_row: JsonObject,
+    expected_row: JsonObject | None = None,
+) -> list[str]:
+    keys: list[str] = []
+    for key in _STATE_DISPLAY_KEYS.get(namespace, ()):
+        if key not in keys:
+            keys.append(key)
+    if expected_row is not None:
+        for key in expected_row:
+            if key not in keys:
+                keys.append(key)
+    for key in actual_row:
+        if key not in keys and not _is_low_signal_match_key(namespace, key):
+            keys.append(key)
+    return keys[:8]
+
+
+def _is_low_signal_match_key(namespace: str, key: str) -> bool:
+    if namespace == "SETTING" and key in {"cellular", "wifi", "location_service", "low_battery_mode"}:
+        return False
+    return key in _LOW_SIGNAL_MATCH_KEYS
+
+
+def _has_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list | dict):
+        return bool(value)
+    return True
+
+
+def _values_equal(expected: object, actual: object) -> bool:
+    if isinstance(expected, str) or isinstance(actual, str):
+        return str(expected or "").strip() == str(actual or "").strip()
+    return json_safe(expected) == json_safe(actual)
+
+
+def _compact_field_value(value: object) -> JsonValue:
+    safe_value = json_safe(value)
+    if isinstance(safe_value, str):
+        return compact_text(safe_value, 140)
+    if isinstance(safe_value, list | dict):
+        return compact_text(safe_value, 180)
+    return safe_value
 
 
 def _review_target(
