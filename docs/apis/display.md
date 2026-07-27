@@ -10,6 +10,8 @@
 - `results_dir: Path`：评估结果目录。
 - `data_dir: Path | None`：benchmark 数据目录；为 `None` 时默认使用 `runs_dir` 同级的 `data` 目录。
 
+`runs_dir` 与 `results_dir` 下的 case 产物按 `<benchmark>/<method>/<run_id>/<case_id>` 扫描；看板数据中的 run 节点会保留 `benchmark`、`method` 和序号型 `run_id`。
+
 输出：
 
 - `dict[str, Any]`：包含 `generated_at` 与 `runs` 的展示数据。
@@ -44,7 +46,7 @@
 
 warn 阶段会在中列 milestone 图中显示琥珀色状态，`not_started`/`missing` 会显示为灰色 pending 状态，`terminated` 会按失败样式展示。右侧阶段卡片会从 `metadata.low_score_dimensions` 和 `metadata.stage_quality_diagnostics` 提炼“警告原因”，包含低分维度、工具参数警告、失败工具结果、空工具结果和 grounding 风险摘要；warn 阶段默认展开该摘要。finish 未结算报告会展示“finish 未结算”折叠块，说明对应策略终止原因。
 
-顶部 run 与 case 切换都使用可搜索下拉框。run 输入框显示当前 `run.run_id`，case 输入框默认显示当前 `scenario.scenario_id`；键入内容后，下拉列表实时过滤为 id 以前缀匹配该输入的选项，例如输入 `fi` 时只显示 `fi...` 开头的 case。下拉列表最多显示 9 行，多余选项通过滚动查看；重新打开下拉时会高亮当前选中项，并尽量将其滚动到列表中间。过滤不改变当前选中项，只有点击选项或按 Enter 确认时才切换。
+顶部 run 与 case 切换都使用可搜索下拉框。run 输入框显示当前 `run.run_id / run.method`，case 输入框默认显示当前 `scenario.scenario_id`；键入内容后，下拉列表实时过滤为 id 以前缀匹配该输入的选项，例如输入 `fi` 时只显示 `fi...` 开头的 case。下拉列表最多显示 9 行，多余选项通过滚动查看；重新打开下拉时会高亮当前选中项，并尽量将其滚动到列表中间。过滤不改变当前选中项，只有点击选项或按 Enter 确认时才切换。
 
 constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`，每项包含：
 

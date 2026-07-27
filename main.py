@@ -19,14 +19,14 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     """解析 benchmark-only 命令行参数。"""
     parser = argparse.ArgumentParser(description="运行 DynSTEER benchmark 阶段式动态评估实验")
     parser.add_argument("--benchmark", default=None, help="benchmark harness 名称，例如 toolsandbox")
-    parser.add_argument("--experiment-config", default=None, help="统一实验矩阵 JSON 配置路径")
+    parser.add_argument("--exp", "--experiment-config", dest="experiment_config", default=None, help="统一实验矩阵 JSON 配置路径")
     parser.add_argument("--data-root", default=None, help="benchmark 静态配置与 manifest 目录")
     parser.add_argument("--runs-dir", default="runs", help="benchmark 中间产物与原生输出目录")
     parser.add_argument("--results-dir", default="results", help="最终 DynSTEER 评估结果目录")
     parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
     parser.add_argument("--workers", type=int, default=3, help="benchmark case 最大并行 worker 数，默认 3")
-    parser.add_argument("--only_adapt", action="store_true", help="仅适配 benchmark 数据并写入 data-root，不执行评估")
-    parser.add_argument("--force_adapt", action="store_true", help="与 --only_adapt 搭配使用，强制重建已有 adapted case")
+    parser.add_argument("--only_adapt", "--only-adapt", action="store_true", help="仅适配 benchmark 数据并写入 data-root，不执行评估")
+    parser.add_argument("--force_adapt", "--force-adapt", action="store_true", help="强制重建已有 adapted case，可与评估流程独立使用")
     return parser.parse_args(argv)
 
 
@@ -84,21 +84,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.experiment_config is not None:
             if int(args.workers) < 1:
                 raise ValueError("--workers 必须大于 0")
-            results = run_experiment(Path(args.experiment_config), workers=int(args.workers))
+            results = run_experiment(
+                Path(args.experiment_config),
+                workers=int(args.workers),
+                force_adapt=bool(args.force_adapt),
+            )
             logger.info("统一实验完成，case结果数量: %s", len(results), extra={"case_count": len(results)})
             for result in results:
                 print(f"{result.benchmark}/{result.method.value}/{result.model_id}/{result.case_id}")
             return 0
 
         if args.benchmark is None:
-            raise ValueError("运行单 benchmark harness 时必须提供 --benchmark；统一实验请提供 --experiment-config")
+            raise ValueError("运行单 benchmark harness 时必须提供 --benchmark；统一实验请提供 --exp")
         data_root = Path(args.data_root) if args.data_root is not None else Path(__file__).parent / "data" / args.benchmark
         if not data_root.exists():
             raise ValueError("运行 benchmark harness 时需要提供可靠的 data-root，通过 --data-root 提供或者使用 data/{benchmark}")
         if int(args.workers) < 1:
             raise ValueError("--workers 必须大于 0")
-        if args.force_adapt and not args.only_adapt:
-            raise ValueError("--force_adapt 必须与 --only_adapt 一起使用，避免普通评估隐式覆盖 adapted 数据")
 
         configs = load_harness_run_configs(
             benchmark=str(args.benchmark),
@@ -116,6 +118,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         outputs: list[HarnessEvaluationOutput] = run_harness_configs(
             configs=configs,
             max_workers=int(args.workers),
+            force_adapt=bool(args.force_adapt),
         )
         logger.info("评估完成，输出报告数量: %s", len(outputs), extra={"report_count": len(outputs)})
         for output in outputs:

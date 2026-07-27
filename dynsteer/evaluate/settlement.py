@@ -3,11 +3,10 @@ from dynsteer.evaluate.diagnostics import (
     build_milestone_matching_detail,
     build_stage_trace,
 )
+from dynsteer.evaluate import JudgeConfigurationError
 from dynsteer.evaluate.final import build_finish_verification
-from dynsteer.evaluate.matching.frontier import advance_milestone_frontier, ready_milestones
-from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
+from dynsteer.evaluate.matching import advance_milestone_frontier, ready_milestones, stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
-from dynsteer.evaluate.runtime import JudgeConfigurationError
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.evaluate.weights import update_weights

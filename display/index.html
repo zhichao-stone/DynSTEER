@@ -1232,7 +1232,9 @@
     }
 
     function runId(run) {
-      return run ? run.run_id || "未命名 run" : "未命名 run";
+      if (!run) return "未命名 run";
+      const parts = [run.run_id || "未命名 run", run.method || ""].filter(Boolean);
+      return parts.join(" / ");
     }
 
     function scenarioCaseId(scenario) {

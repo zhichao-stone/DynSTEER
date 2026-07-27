@@ -67,44 +67,33 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 通过 Docker 启动实验：
 
 ```bash
-./scripts/start_experiment.sh \
-  --experiment-config data/experiments/double_benchmark_initial.json \
-  --source ../ToolSandbox \
-  --workers 1
+./scripts/start_experiment.sh --exp data/experiments/double_benchmark_initial.json
 ```
 
 不通过 Docker、使用本地 uv 环境启动实验：
 
 ```bash
-./scripts/start_experiment_no_docker.sh \
-  --experiment-config data/experiments/double_benchmark_initial.json \
-  --source ../ToolSandbox \
-  --workers 1
+./scripts/start_experiment_no_docker.sh --exp data/experiments/double_benchmark_initial.json
 ```
 
-如果 benchmark 源码已经可以被当前环境导入，也可以省略 `--source`：
+如需强制重建 `data/<benchmark>/adapted_cases`，在命令后追加 `--force_adapt`。
 
-```bash
-./scripts/start_experiment_no_docker.sh \
-  --experiment-config data/experiments/double_benchmark_initial.json \
-  --workers 1
-```
+实验脚本会按实验配置中的 benchmark `data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数。`--source` 与 `--workers` 仍可作为临时覆盖项。
 
 脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text
-runs/experiments/double_benchmark_initial
-results/experiments/double_benchmark_initial
+runs/experiments/double_benchmark_initial/<benchmark>/<method>/<run_id>/<case_id>
+results/experiments/double_benchmark_initial/<benchmark>/<method>/<run_id>/<case_id>
 ```
 
 也可以绕过脚本直接调用主入口：
 
 ```bash
-uv run python main.py \
-  --experiment-config data/experiments/double_benchmark_initial.json \
-  --workers 1
+uv run python main.py --exp data/experiments/double_benchmark_initial.json
 ```
-Docker 容器内传入 `--source` 时，启动脚本会复制 `data/{benchmark}` 到 `.dynsteer-runtime/data/{benchmark}`，并只在该运行期副本中把 `benchmark.json` 的 `source_root` 改为容器内挂载路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
+直接调用主入口时，benchmark 源码仍需要已能被当前环境导入；自动读取 `source_root` 和 `max_workers` 的是实验 wrapper 脚本。
+Docker 启动时，脚本会把 `benchmark.json.source_root` 指向的源码目录自动挂载到容器内与 `benchmark.json` 相同的相对路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
 
 Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通过 `scripts/start.sh` 启动时，脚本会自动检测宿主机当前用户的 UID/GID，并让容器以该用户运行；直接使用 Docker Compose 且未传入 UID/GID 时，默认回退到 `1000:100`。运行期 uv 虚拟环境和 cache 默认写入项目目录下的 `.venv` 与 `.uv-cache`，因此新生成的 `runs`、`results` 产物会归属当前宿主机用户，便于通过 SFTP 清理。
 

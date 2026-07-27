@@ -4,19 +4,20 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./scripts/start_experiment.sh --experiment-config PATH [--source PATH] [options]
+  ./scripts/start_experiment.sh --exp PATH [--source PATH] [options]
 
 Options:
-  --experiment-config PATH   Unified experiment config JSON. Required.
-  --source PATH              Host/container benchmark source tree to install editable.
-  --workers NUM              Max parallel experiment workers. Defaults to main.py default.
+  --exp PATH                 Unified experiment config JSON. Required.
+  --experiment-config PATH   Same as --exp.
+  --source PATH              Optional source tree override. Defaults to benchmark.json source_root.
+  --workers NUM              Optional worker override. Defaults to benchmark.json max_workers or 1.
+  --force_adapt              Rebuild adapted cases even if cached data already exists.
   --env-file PATH            Env file to source before running. Defaults to .env.
   --no-env-file              Do not source an env file.
   -h, --help                 Show this help.
 
 Examples:
-  ./scripts/start_experiment.sh --experiment-config data/experiments/double_benchmark_initial.json --source ../ToolSandbox --workers 1
-  docker compose run --rm --entrypoint bash -v ../ToolSandbox:/workspace/benchmark-sources/toolsandbox dynsteer /workspace/DynSTEER/scripts/start_experiment.sh --experiment-config data/experiments/double_benchmark_initial.json --source /workspace/benchmark-sources/toolsandbox
+  ./scripts/start_experiment.sh --exp data/experiments/double_benchmark_initial.json
 EOF
 }
 
@@ -84,6 +85,7 @@ run_in_container() {
     export DYNSTEER_HOST_UID="${DYNSTEER_HOST_UID:-$(id -u)}"
     export DYNSTEER_HOST_GID="${DYNSTEER_HOST_GID:-$(id -g)}"
 
+    local experiment_config=""
     local source_path=""
     local arg
     local -a raw_args=("$@")
@@ -91,6 +93,14 @@ run_in_container() {
     while [[ $index -lt ${#raw_args[@]} ]]; do
         arg="${raw_args[$index]}"
         case "$arg" in
+            --exp|--experiment-config)
+                experiment_config="${raw_args[$((index + 1))]:-}"
+                index=$((index + 2))
+                ;;
+            --exp=*|--experiment-config=*)
+                experiment_config="${arg#*=}"
+                index=$((index + 1))
+                ;;
             --source)
                 source_path="${raw_args[$((index + 1))]:-}"
                 index=$((index + 2))
@@ -118,6 +128,32 @@ run_in_container() {
         docker_source="$(docker_mount_path "$source_abs")"
         container_source="/workspace/benchmark-sources/experiment-benchmark"
         run_options+=(--volume "${docker_source}:${container_source}:rw")
+    elif [[ -n "$experiment_config" ]]; then
+        local bootstrap_lines
+        bootstrap_lines="$(experiment_bootstrap_lines "$project_root" "$experiment_config" "/workspace/DynSTEER")"
+        local bootstrap_benchmark
+        local bootstrap_data_root
+        local bootstrap_source_root
+        local bootstrap_container_source_root
+        local bootstrap_max_workers
+        declare -A mounted_sources=()
+        while IFS=$'\t' read -r bootstrap_benchmark bootstrap_data_root bootstrap_source_root bootstrap_container_source_root bootstrap_max_workers; do
+            if [[ -z "$bootstrap_benchmark" || "$bootstrap_source_root" == "-" || "$bootstrap_container_source_root" == "-" ]]; then
+                continue
+            fi
+            if [[ -n "${mounted_sources[$bootstrap_source_root]+x}" ]]; then
+                continue
+            fi
+            local source_abs
+            if ! source_abs="$(absolute_host_path "$project_root" "$bootstrap_source_root")"; then
+                echo "Benchmark source not found: $bootstrap_source_root" >&2
+                exit 66
+            fi
+            local docker_source
+            docker_source="$(docker_mount_path "$source_abs")"
+            run_options+=(--volume "${docker_source}:${bootstrap_container_source_root}:rw")
+            mounted_sources["$bootstrap_source_root"]=1
+        done <<< "$bootstrap_lines"
     fi
 
     index=0
@@ -217,6 +253,8 @@ main() {
     invocation_dir="$(pwd)"
     local script_root
     script_root="$(script_dir)"
+    # shellcheck source=scripts/experiment_bootstrap.sh
+    . "$script_root/experiment_bootstrap.sh"
     local project_root
     project_root="$(cd -- "$script_root/.." && pwd)"
 
@@ -231,15 +269,21 @@ main() {
     local experiment_config=""
     local source_path=""
     local workers=""
+    local force_adapt="0"
     local env_file="${DYNSTEER_ENV_FILE:-.env}"
     local load_env_file="1"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --experiment-config)
+            --exp|--experiment-config)
                 require_value "$1" "${2:-}"
                 experiment_config="$2"
                 shift 2
+                ;;
+            --exp=*)
+                experiment_config="${1#*=}"
+                require_value "--exp" "$experiment_config"
+                shift
                 ;;
             --experiment-config=*)
                 experiment_config="${1#*=}"
@@ -264,6 +308,10 @@ main() {
             --workers=*)
                 workers="${1#*=}"
                 require_value "--workers" "$workers"
+                shift
+                ;;
+            --force_adapt|--force-adapt)
+                force_adapt="1"
                 shift
                 ;;
             --env-file)
@@ -306,17 +354,67 @@ main() {
     if [[ -n "$source_path" ]]; then
         install_benchmark_source "$source_path"
     else
+        local bootstrap_lines
+        bootstrap_lines="$(experiment_bootstrap_lines "$project_root" "$experiment_config")"
+        local bootstrap_benchmark
+        local bootstrap_data_root
+        local bootstrap_source_root
+        local bootstrap_container_source_root
+        local bootstrap_max_workers
+        local derived_workers=""
+        declare -A installed_sources=()
+        while IFS=$'\t' read -r bootstrap_benchmark bootstrap_data_root bootstrap_source_root bootstrap_container_source_root bootstrap_max_workers; do
+            if [[ -z "$bootstrap_benchmark" ]]; then
+                continue
+            fi
+            if [[ "$bootstrap_source_root" != "-" && -n "$bootstrap_source_root" && -z "${installed_sources[$bootstrap_source_root]+x}" ]]; then
+                install_benchmark_source "$bootstrap_source_root"
+                installed_sources["$bootstrap_source_root"]=1
+            fi
+            if [[ "$bootstrap_max_workers" != "-" && -n "$bootstrap_max_workers" ]]; then
+                if [[ -z "$derived_workers" || "$bootstrap_max_workers" -lt "$derived_workers" ]]; then
+                    derived_workers="$bootstrap_max_workers"
+                fi
+            fi
+        done <<< "$bootstrap_lines"
         unset DYNSTEER_BENCHMARK_SOURCE_ROOT
+        if [[ -z "$workers" ]]; then
+            workers="${derived_workers:-1}"
+        fi
+    fi
+
+    if [[ -n "$source_path" && -z "$workers" ]]; then
+        local manual_bootstrap_lines
+        manual_bootstrap_lines="$(experiment_bootstrap_lines "$project_root" "$experiment_config")"
+        local manual_benchmark
+        local manual_data_root
+        local manual_source_root
+        local manual_container_source_root
+        local manual_max_workers
+        local manual_derived_workers=""
+        while IFS=$'\t' read -r manual_benchmark manual_data_root manual_source_root manual_container_source_root manual_max_workers; do
+            if [[ "$manual_max_workers" != "-" && -n "$manual_max_workers" ]]; then
+                if [[ -z "$manual_derived_workers" || "$manual_max_workers" -lt "$manual_derived_workers" ]]; then
+                    manual_derived_workers="$manual_max_workers"
+                fi
+            fi
+        done <<< "$manual_bootstrap_lines"
+        workers="${manual_derived_workers:-1}"
     fi
 
     local worker_args=()
     if [[ -n "$workers" ]]; then
         worker_args=(--workers "$workers")
     fi
+    local force_adapt_args=()
+    if [[ "$force_adapt" == "1" ]]; then
+        force_adapt_args=(--force_adapt)
+    fi
 
     exec python main.py \
-        --experiment-config "$experiment_config" \
+        --exp "$experiment_config" \
         "${worker_args[@]}"
+        "${force_adapt_args[@]}"
 }
 
 main "$@"

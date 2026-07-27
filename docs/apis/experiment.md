@@ -7,7 +7,7 @@
 ## 配置入口
 
 ```bash
-python main.py --experiment-config data/experiments/double_benchmark_initial.json --workers 1
+python main.py --exp data/experiments/double_benchmark_initial.json
 ```
 
 配置字段：
@@ -20,9 +20,12 @@ python main.py --experiment-config data/experiments/double_benchmark_initial.jso
 - `threshold_profiles`: `ThresholdConfig` 字段集合。
 - `threshold_matrix`: 需要展开的阈值档位。
 
+启动脚本 `scripts/start_experiment.sh` 与 `scripts/start_experiment_no_docker.sh` 会根据 `benchmarks[*].data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数；`--source`、`--workers` 仅作为覆盖项。`--force_adapt` 可以单独使用，用于在评估前强制重建 `data/<benchmark>/adapted_cases`。
+直接调用 `main.py --exp ...` 时，benchmark 源码仍需要已在当前环境中可导入；自动 bootstrap 逻辑只在 wrapper 脚本中执行。
+
 ## 输出
 
-实验层输出到 `results/experiments/<experiment_id>/` 或配置指定的 `results_dir`。
+实验层输出到 `results/experiments/<experiment_id>/` 或配置指定的 `results_dir`；case 产物按 `results/experiments/<experiment_id>/<benchmark>/<method>/<run_id>/<case_id>/` 分层写入。`run_id` 只表示同一 `benchmark/method` 下的运行序号，例如 `run_0`。
 
 - `index.json`: 分层 case 索引，按 `benchmark -> method -> model_id -> repeats -> repeat_index -> cases -> case_id` 组织。
 - `scores.json`: `method -> benchmark -> model_id -> average_score`。
@@ -41,7 +44,7 @@ python main.py --experiment-config data/experiments/double_benchmark_initial.jso
                 "toolsandbox_gpt4o": {
                     "repeats": {
                         "0": {
-                            "run_id": "double_benchmark_initial_toolsandbox_default_toolsandbox_gpt4o_default_r0",
+                            "run_id": "run_0",
                             "cases": {
                                 "add_contact_with_birthday": {
                                     "score": 1.0,

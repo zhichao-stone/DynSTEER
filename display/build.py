@@ -16,7 +16,7 @@ from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file
 
 JsonObject = dict[str, Any]
-CaseKey = tuple[str, str, str]
+CaseKey = tuple[str, str, str, str]
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
@@ -62,23 +62,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _discover_runs(runs_dir: Path, results_dir: Path, data_dir: Path) -> list[JsonObject]:
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for benchmark, run_id, scenario_id in sorted(_collect_case_keys(runs_dir) | _collect_case_keys(results_dir)):
-        grouped.setdefault((benchmark, run_id), []).append(scenario_id)
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    for benchmark, method, run_id, scenario_id in sorted(_collect_case_keys(runs_dir) | _collect_case_keys(results_dir)):
+        grouped.setdefault((benchmark, method, run_id), []).append(scenario_id)
     return [
-        {"benchmark": benchmark, "run_id": run_id, "summary": _run_summary(scenarios), "scenarios": scenarios}
-        for (benchmark, run_id), scenario_ids in grouped.items()
+        {
+            "benchmark": benchmark,
+            "method": method,
+            "run_id": run_id,
+            "summary": _run_summary(scenarios),
+            "scenarios": scenarios,
+        }
+        for (benchmark, method, run_id), scenario_ids in grouped.items()
         for scenarios in [
-            [_scenario(runs_dir, results_dir, data_dir, benchmark, run_id, item) for item in scenario_ids]
+            [_scenario(runs_dir, results_dir, data_dir, benchmark, method, run_id, item) for item in scenario_ids]
         ]
     ]
 
 
 def _scenario(
-    runs_dir: Path, results_dir: Path, data_dir: Path, benchmark: str, run_id: str, scenario_id: str
+    runs_dir: Path, results_dir: Path, data_dir: Path, benchmark: str, method: str, run_id: str, scenario_id: str
 ) -> JsonObject:
-    run_case_dir = runs_dir / benchmark / run_id / scenario_id
-    result_case_dir = results_dir / benchmark / run_id / scenario_id
+    run_case_dir = runs_dir / benchmark / method / run_id / scenario_id
+    result_case_dir = results_dir / benchmark / method / run_id / scenario_id
     trajectory = _load_json(run_case_dir / "trajectory.json")
     raw_summary = _load_json(run_case_dir / "raw_summary.json")
     summary = _load_json(result_case_dir / "summary.json")
@@ -125,10 +131,14 @@ def _collect_case_keys(base_dir: Path) -> set[CaseKey]:
     for benchmark_dir in base_dir.iterdir():
         if not benchmark_dir.is_dir():
             continue
-        for run_dir in benchmark_dir.iterdir():
-            if run_dir.is_dir():
+        for method_dir in benchmark_dir.iterdir():
+            if not method_dir.is_dir():
+                continue
+            for run_dir in method_dir.iterdir():
+                if not run_dir.is_dir():
+                    continue
                 keys.update(
-                    (benchmark_dir.name, run_dir.name, scenario_dir.name)
+                    (benchmark_dir.name, method_dir.name, run_dir.name, scenario_dir.name)
                     for scenario_dir in run_dir.iterdir()
                     if scenario_dir.is_dir()
                 )

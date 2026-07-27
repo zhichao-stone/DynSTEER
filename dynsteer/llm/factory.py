@@ -1,9 +1,7 @@
 import os
 from typing import Any, Mapping
 
-from dynsteer.llm.anthropic import AnthropicLLM
 from dynsteer.llm.base import BaseLLM, LLMConfigurationError
-from dynsteer.llm.openai import OpenaiLLM
 from dynsteer.model import LLMConfig
 
 from dynsteer.utils import normalize_str_from_source
@@ -13,19 +11,23 @@ _ANTHROPIC_PROVIDERS = {"anthropic", "claude"}
 
 
 def build_llm(config: LLMConfig) -> BaseLLM:
-    """根据 provider 构建对应的 BaseLLM 实例。"""
+    """鏍规嵁 provider 鏋勫缓瀵瑰簲鐨?BaseLLM 瀹炰緥銆?"""
     if config is None:
-        raise LLMConfigurationError("LLMConfig 不能为空")
+        raise LLMConfigurationError("LLMConfig 涓嶈兘涓虹┖")
     provider = config.provider.strip().lower()
     if provider in _OPENAI_PROVIDERS:
+        from dynsteer.llm.openai import OpenaiLLM
+
         return OpenaiLLM(config)
     if provider in _ANTHROPIC_PROVIDERS:
+        from dynsteer.llm.anthropic import AnthropicLLM
+
         return AnthropicLLM(config)
-    raise LLMConfigurationError(f"不支持的 judge provider: {config.provider}")
+    raise LLMConfigurationError(f"涓嶆敮鎸佺殑 judge provider: {config.provider}")
 
 
 def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
-    """从环境变量构建 BaseLLM。"""
+    """浠庣幆澧冨彉閲忔瀯寤?BaseLLM銆?"""
     source = env if env is not None else os.environ
 
     provider_raw = normalize_str_from_source(source, "DYNSTEER_JUDGE_PROVIDER")
@@ -35,7 +37,7 @@ def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
 
     model = normalize_str_from_source(source, "DYNSTEER_JUDGE_MODEL")
     if model is None:
-        raise LLMConfigurationError("DYNSTEER_JUDGE_MODEL 不能为空")
+        raise LLMConfigurationError("DYNSTEER_JUDGE_MODEL 涓嶈兘涓虹┖")
 
     config = LLMConfig(
         provider=provider,
@@ -56,28 +58,29 @@ def build_llm_from_env(env: Mapping[str, str] | None = None) -> BaseLLM | None:
     return build_llm(config)
 
 
-def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Mapping[str, str] | None = None) -> BaseLLM | None:
-    """从结构化配置构建 BaseLLM。
-
-    入参：
-        config: Judge profile 或 LLMConfig；为空时返回 None。
-        env: 环境变量来源，API key 只从这里读取。
-    输出：
-        BaseLLM 实例；没有配置 provider 时返回 None。
+def build_llm_from_config(
+    config: Mapping[str, Any] | LLMConfig | None, env: Mapping[str, str] | None = None
+) -> BaseLLM | None:
+    """浠庣粨鏋勫寲閰嶇疆鏋勫缓 BaseLLM銆?
+    鍏ュ弬锛?
+        config: Judge profile 鎴?LLMConfig锛涗负绌烘椂杩斿洖 None銆?
+        env: 鐜鍙橀噺鏉ユ簮锛孉PI key 鍙粠杩欓噷璇诲彇銆?
+    杈撳嚭锛?
+        BaseLLM 瀹炰緥锛涙病鏈夐厤缃?provider 鏃惰繑鍥?None銆?
     """
     if config is None:
         return None
     if isinstance(config, LLMConfig):
         return build_llm(config)
     if not isinstance(config, Mapping):
-        raise LLMConfigurationError("LLM 配置必须是 JSON 对象")
+        raise LLMConfigurationError("LLM 閰嶇疆蹇呴』鏄?JSON 瀵硅薄")
     provider_raw = config.get("provider")
     if provider_raw is None or not str(provider_raw).strip():
         return None
     provider = str(provider_raw).strip().lower()
     model = config.get("model")
     if model is None or not str(model).strip():
-        raise LLMConfigurationError("Judge profile 中 model 不能为空")
+        raise LLMConfigurationError("Judge profile 涓?model 涓嶈兘涓虹┖")
     source = env if env is not None else os.environ
     llm_config = LLMConfig(
         provider=provider,
@@ -95,22 +98,22 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
 
 
 def _read_positive_int(value: str | None, label: str, default: int) -> int:
-    """读取正整数环境变量。"""
+    """璇诲彇姝ｆ暣鏁扮幆澧冨彉閲忋€?"""
     if value is None or not value.strip():
         return default
     parsed = int(value)
     if parsed <= 0:
-        raise LLMConfigurationError(f"{label} 必须是正整数")
+        raise LLMConfigurationError(f"{label} 蹇呴』鏄鏁存暟")
     return parsed
 
 
 def _read_non_negative_float(value: str | None, label: str, default: float) -> float:
-    """读取非负浮点环境变量。"""
+    """璇诲彇闈炶礋娴偣鐜鍙橀噺銆?"""
     if value is None or not value.strip():
         return default
     parsed = float(value)
     if parsed < 0:
-        raise LLMConfigurationError(f"{label} 不能为负数")
+        raise LLMConfigurationError(f"{label} 涓嶈兘涓鸿礋鏁?")
     return parsed
 
 
@@ -131,30 +134,30 @@ def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:
 
 
 def _config_str(value: object) -> str | None:
-    """读取配置字符串。"""
+    """璇诲彇閰嶇疆瀛楃涓层€?"""
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
 
 
 def _config_positive_int(value: object, label: str) -> int | None:
-    """读取配置中的可选正整数。"""
+    """璇诲彇閰嶇疆涓殑鍙€夋鏁存暟銆?"""
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
-        raise LLMConfigurationError(f"{label} 必须是正整数")
+        raise LLMConfigurationError(f"{label} 蹇呴』鏄鏁存暟")
     if value <= 0:
-        raise LLMConfigurationError(f"{label} 必须是正整数")
+        raise LLMConfigurationError(f"{label} 蹇呴』鏄鏁存暟")
     return value
 
 
 def _config_non_negative_float(value: object, label: str, default: float) -> float:
-    """读取配置中的非负浮点数。"""
+    """璇诲彇閰嶇疆涓殑闈炶礋娴偣鏁般€?"""
     if value is None:
         return default
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise LLMConfigurationError(f"{label} 必须是非负数字")
+        raise LLMConfigurationError(f"{label} 蹇呴』鏄潪璐熸暟瀛?")
     parsed = float(value)
     if parsed < 0:
-        raise LLMConfigurationError(f"{label} 不能为负数")
+        raise LLMConfigurationError(f"{label} 涓嶈兘涓鸿礋鏁?")
     return parsed

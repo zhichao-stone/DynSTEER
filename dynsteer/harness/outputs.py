@@ -7,6 +7,7 @@ from pathlib import Path
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.harness.paths import case_output_dir
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
 from dynsteer.model import (
     AgentStepTracker,
@@ -105,8 +106,8 @@ def write_case_outputs(
         }
     )
     return _write_output_payloads(
-        raw_run_dir=config.runs_dir / config.benchmark / harness_result.run_id / case_id,
-        result_dir=config.results_dir / config.benchmark / harness_result.run_id / case_id,
+        raw_run_dir=case_output_dir(config.runs_dir, config, harness_result.run_id, case_id, "dynsteer_evaluate"),
+        result_dir=case_output_dir(config.results_dir, config, harness_result.run_id, case_id, "dynsteer_evaluate"),
         report_name="report.json",
         summary=report.to_summary_dict(),
         report=report.to_dict(),
@@ -136,9 +137,9 @@ def write_default_case_outputs(
     case_id = task_case.case_id
     harness.prepare_config(config)
     run_id = harness.build_run_id(config, case_id)
-    raw_run_dir = config.runs_dir / config.benchmark / run_id / case_id
+    raw_run_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "default")
     raw_output_dir = raw_run_dir / "raw"
-    result_dir = config.results_dir / config.benchmark / run_id / case_id
+    result_dir = case_output_dir(config.results_dir, config, run_id, case_id, "default")
     raw_output_dir.mkdir(parents=True, exist_ok=True)
     session: object | None = None
     metrics_recorder = RuntimeMetricsRecorder()
@@ -254,8 +255,12 @@ def write_replay_case_outputs(
     report = harness_result.evaluation_report
     if report is None:
         raise ValueError("evaluate_replay 必须返回 evaluation_report")
-    raw_run_dir = replay_config.runs_dir / replay_config.benchmark / harness_result.run_id / task_case.case_id
-    result_dir = replay_config.results_dir / replay_config.benchmark / harness_result.run_id / task_case.case_id
+    raw_run_dir = case_output_dir(
+        replay_config.runs_dir, replay_config, harness_result.run_id, task_case.case_id, "dynsteer_replay"
+    )
+    result_dir = case_output_dir(
+        replay_config.results_dir, replay_config, harness_result.run_id, task_case.case_id, "dynsteer_replay"
+    )
     raw_summary = dict(harness_result.raw_summary)
     if default_reference is not None:
         raw_summary["default_reference"] = dict(default_reference)
@@ -325,7 +330,7 @@ def _merge_snapshots(trajectory: Trajectory, snapshots: list[StateSnapshot]) -> 
 
 
 def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
-    """按 run 目录写出所有场景的汇总摘要。"""
+    """按 benchmark/method/run_id 目录写出所有场景的汇总摘要。"""
     outputs_by_run_dir: dict[Path, list[HarnessEvaluationOutput]] = {}
     for output in outputs:
         if output is None:
@@ -339,7 +344,7 @@ def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
 
 
 def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutput]) -> dict[str, object]:
-    """构造单个 run_id 下所有场景的汇总摘要。"""
+    """构造单个 benchmark/method/run_id 下所有场景的汇总摘要。"""
     cases: list[dict[str, object]] = []
     coverage_counts: dict[str, int] = {}
     score_sum = 0.0
@@ -380,7 +385,8 @@ def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutpu
         cases.append(case_summary)
     case_count = len(cases)
     return {
-        "benchmark": run_dir.parent.name,
+        "benchmark": run_dir.parent.parent.name,
+        "method": run_dir.parent.name,
         "run_id": run_dir.name,
         "case_count": case_count,
         "average_overall_score": score_sum / case_count if case_count else 0.0,

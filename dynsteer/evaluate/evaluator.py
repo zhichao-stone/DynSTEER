@@ -10,16 +10,20 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from dynsteer.config import default_dynamic_weight_config
-from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
-from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
-from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
-from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement
-from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
-from dynsteer.evaluate.runtime import (
+from dynsteer.evaluate import (
     HarnessTeardownError,
+    evaluate_agent_step,
+    evaluate_checkpoint,
+    evaluate_step_minefields,
+    finish_settlement,
     pending_milestone_stage_results,
     runtime_diagnostics_summary,
     task_case_snapshot,
+)
+from dynsteer.evaluate.matching import (
+    candidate_boundary_for_current_step,
+    evaluate_minefields_at_boundary,
+    initialize_milestone_frontier,
 )
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
@@ -35,6 +39,7 @@ from dynsteer.harness.config import (
     threshold_config_from_mapping,
 )
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
+from dynsteer.harness.paths import case_output_dir
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.llm import build_llm_from_config, build_llm_from_env
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
@@ -174,7 +179,7 @@ class DynSTEEREvaluator:
         case_id = task_case.case_id
         harness.prepare_config(config)
         run_id = harness.build_run_id(config, case_id)
-        raw_output_dir = config.runs_dir / config.benchmark / run_id / case_id / "raw"
+        raw_output_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "dynsteer_evaluate") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
 
         session: object | None = None
@@ -334,7 +339,7 @@ class DynSTEEREvaluator:
             raise ValueError("task_case、trajectory、scorer 和 config 不能为空")
         case_id = task_case.case_id
         run_id = self._replay_run_id(config, trajectory, case_id)
-        raw_output_dir = config.runs_dir / config.benchmark / run_id / case_id / "raw"
+        raw_output_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "dynsteer_replay") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
         replay_trajectory = Trajectory(
             run_id=run_id,

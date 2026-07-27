@@ -11,7 +11,9 @@ from dynsteer.log import configure_logger
 from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput
 
 
-def run_harness_configs(configs: list[HarnessRunConfig], max_workers: int = 1) -> list[HarnessEvaluationOutput]:
+def run_harness_configs(
+    configs: list[HarnessRunConfig], max_workers: int = 1, force_adapt: bool = False
+) -> list[HarnessEvaluationOutput]:
     """运行多组 harness 配置，并按 config 顺序执行其中的 case。"""
     if configs is None:
         raise ValueError("configs 不能为空")
@@ -23,11 +25,20 @@ def run_harness_configs(configs: list[HarnessRunConfig], max_workers: int = 1) -
     for config in configs:
         if config is None:
             raise ValueError("configs 不能包含空配置")
-        outputs.extend(_run_config(config, max_workers=_effective_max_workers(max_workers, config), logger=logger))
+        outputs.extend(
+            _run_config(
+                config,
+                max_workers=_effective_max_workers(max_workers, config),
+                logger=logger,
+                force_adapt=force_adapt,
+            )
+        )
     return outputs
 
 
-def _run_config(config: HarnessRunConfig, *, max_workers: int, logger: logging.Logger) -> list[HarnessEvaluationOutput]:
+def _run_config(
+    config: HarnessRunConfig, *, max_workers: int, logger: logging.Logger, force_adapt: bool = False
+) -> list[HarnessEvaluationOutput]:
     """按单个 config 加载 TaskCase 列表并执行。"""
     if config is None or logger is None:
         raise ValueError("config 和 logger 不能为空")
@@ -36,7 +47,7 @@ def _run_config(config: HarnessRunConfig, *, max_workers: int, logger: logging.L
     case_ids = select_case_ids(config, harness, run_all=True)
     run_config = config_with_case_ids(config, case_ids)
     harness.prepare_config(run_config)
-    task_cases = load_task_case(run_config, adapter)
+    task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
     validate_loaded_task_cases(case_ids, task_cases)
     logger.info(
         "基于配置%s，开始基于 %s 展开评估，Cases数量: %s",

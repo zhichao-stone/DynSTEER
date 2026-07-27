@@ -1,4 +1,4 @@
-from dynsteer.evaluate.matching.boundary import boundary_snapshot
+from dynsteer.evaluate.matching import boundary_snapshot
 from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID

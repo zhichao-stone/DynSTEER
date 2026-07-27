@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,6 +43,7 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
     default_threshold_profile = str(config.get("default_threshold_profile", "default"))
     threshold_names = _threshold_names(config, threshold_profiles, default_threshold_profile)
     specs: list[ExperimentRunSpec] = []
+    run_sequences: dict[tuple[str, str], int] = {}
     for benchmark_spec in benchmarks:
         benchmark_data = _spec_mapping(benchmark_spec, "benchmark")
         benchmark = required_str(benchmark_data, "benchmark", "实验配置").lower()
@@ -72,14 +72,7 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
                             model_data.get("harness_metadata"),
                             method_data.get("harness_metadata"),
                         )
-                        run_id = _run_id(
-                            experiment_id=experiment_id,
-                            benchmark=benchmark,
-                            method=method.value,
-                            model_id=model_id,
-                            threshold_profile=threshold_name,
-                            repeat_index=repeat_index,
-                        )
+                        run_id = _next_run_id(run_sequences, benchmark, method.value)
                         specs.append(
                             ExperimentRunSpec(
                                 experiment_id=experiment_id,
@@ -121,16 +114,16 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
 
 
 def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
-    """检查实验矩阵 run_id 唯一性与基础字段合法性。"""
+    """检查实验矩阵输出路径唯一性与基础字段合法性。"""
     if specs is None:
         raise ValueError("specs 不能为空")
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str]] = set()
     for spec in specs:
         if spec is None:
             raise ValueError("specs 不能包含空规格")
-        key = spec.run_id
+        key = (spec.benchmark, spec.method.value, spec.run_id)
         if key in seen:
-            raise ValueError(f"实验 run_id 重复: {key}")
+            raise ValueError(f"实验输出路径重复: benchmark={key[0]}, method={key[1]}, run_id={key[2]}")
         seen.add(key)
         if spec.method == ExperimentMethod.DYNSTEER_GUIDANCE and not spec.strategy.guidance_enabled:
             raise ValueError("dynsteer_guidance 方法必须启用 guidance_enabled")
@@ -264,20 +257,8 @@ def _resolve_output_path(value: object) -> Path:
     return Path(str(value))
 
 
-def _run_id(
-    *,
-    experiment_id: str,
-    benchmark: str,
-    method: str,
-    model_id: str,
-    threshold_profile: str | None,
-    repeat_index: int,
-) -> str:
-    parts = [experiment_id, benchmark, method, model_id, threshold_profile or "default", f"r{repeat_index}"]
-    text = "__".join(_safe_id(part) for part in parts if part)
-    return re.sub(r"_+", "_", text).strip("_")
-
-
-def _safe_id(value: object) -> str:
-    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
-    return text or "unknown"
+def _next_run_id(run_sequences: dict[tuple[str, str], int], benchmark: str, method: str) -> str:
+    key = (benchmark, method)
+    index = run_sequences.get(key, 0)
+    run_sequences[key] = index + 1
+    return f"run_{index}"

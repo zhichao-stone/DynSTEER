@@ -92,21 +92,17 @@ def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
     keys = sorted(set(left) & set(right))
     if len(keys) < 2:
         return 0.0
-    concordant = 0
-    discordant = 0
-    left_ties = 0
-    right_ties = 0
+    concordant, discordant = 0, 0
+    left_ties, right_ties = 0, 0
     for left_index, first_key in enumerate(keys):
         for second_key in keys[left_index + 1:]:
             left_delta = _compare_score(left[first_key], left[second_key])
             right_delta = _compare_score(right[first_key], right[second_key])
-            if left_delta == 0 and right_delta == 0:
-                continue
-            if left_delta == 0:
-                left_ties += 1
-                continue
-            if right_delta == 0:
-                right_ties += 1
+            if left_delta == 0 or right_delta == 0:
+                if left_delta != 0:
+                    right_ties += 1
+                elif right_delta != 0:
+                    left_ties += 1
                 continue
             if left_delta == right_delta:
                 concordant += 1
@@ -188,8 +184,7 @@ def write_metric_tables(results: Sequence[ExperimentCaseResult], output_dir: Pat
 
 
 def _compare_score(left: float, right: float) -> int:
-    left_score = case_score(left)
-    right_score = case_score(right)
+    left_score, right_score = case_score(left), case_score(right)
     if abs(left_score - right_score) < 1e-12:
         return 0
     return 1 if left_score > right_score else -1

@@ -116,7 +116,7 @@ dynsteer/
 | 文件 | 修改方案 |
 |---|---|
 | `main.py` | 保留单 benchmark harness 调试入口；新增 `--experiment-config` 时转入 `dynsteer.experiment.runner.run_experiment()`。 |
-| `scripts/exp_main.sh` | 当前只是循环 benchmark；可保留为调试脚本。双 Benchmark 主实验建议新增 `scripts/exp_double_benchmark.sh` 或直接用 `main.py --experiment-config`。 |
+| `scripts/exp_main.sh` | 当前只是循环 benchmark；可保留为调试脚本。双 Benchmark 主实验建议直接用 `scripts/start_experiment.sh --exp ...` 或 `scripts/start_experiment_no_docker.sh --exp ...`。 |
 
 ## 5. 必须新增的功能函数
 

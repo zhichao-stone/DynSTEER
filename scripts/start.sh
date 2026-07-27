@@ -14,6 +14,7 @@ Options:
   --results-dir PATH    DynSTEER reports directory. Defaults to results.
   --workers NUM         Max parallel benchmark workers. Defaults to main.py default.
   --only_adapt          Only adapt benchmark data into data-root, do not run evaluation.
+  --force_adapt         Rebuild adapted cases even if cached data already exists.
   --env-file PATH       Env file to source before running. Defaults to .env.
   --no-env-file         Do not source an env file.
   -h, --help            Show this help.
@@ -257,6 +258,7 @@ main() {
     local results_dir="${DYNSTEER_RESULTS_DIR:-results}"
     local workers=""
     local only_adapt="0"
+    local force_adapt="0"
     local env_file="${DYNSTEER_ENV_FILE:-.env}"
     local load_env_file="1"
     local extra_args=()
@@ -327,6 +329,10 @@ main() {
                 only_adapt="1"
                 shift
                 ;;
+            --force_adapt|--force-adapt)
+                force_adapt="1"
+                shift
+                ;;
             --env-file)
                 require_value "$1" "${2:-}"
                 env_file="$2"
@@ -387,6 +393,10 @@ main() {
     if [[ "$only_adapt" == "1" ]]; then
         only_adapt_args=(--only_adapt)
     fi
+    local force_adapt_args=()
+    if [[ "$force_adapt" == "1" ]]; then
+        force_adapt_args=(--force_adapt)
+    fi
 
     exec python main.py \
         --benchmark "$benchmark" \
@@ -394,6 +404,7 @@ main() {
         --runs-dir "$runs_dir" \
         --results-dir "$results_dir" \
         "${worker_args[@]}" \
+        "${force_adapt_args[@]}" \
         "${only_adapt_args[@]}" \
         "${extra_args[@]}"
 }
