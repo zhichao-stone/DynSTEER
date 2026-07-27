@@ -331,14 +331,9 @@ def _focused_state_excerpt(
         return None
 
     namespace = _constraint_namespace(constraint)
-    matches = _expected_actual_matches(namespace, expected_rows, actual_rows)
-    matched_count = sum(1 for _, actual_index in matches if actual_index is not None)
-    selected_indices = _focused_actual_row_indices(namespace, expected_rows, actual_rows, matches)
-    expected_by_actual_index = {
-        actual_index: expected_rows[expected_index]
-        for expected_index, actual_index in matches
-        if actual_index is not None
-    }
+    matched_count, selected_indices, expected_by_actual_index = _focused_state_rows(
+        namespace, expected_rows, actual_rows
+    )
     relevant_rows = [
         _state_row_excerpt_payload(namespace, actual_rows[index], expected_by_actual_index.get(index))
         for index in selected_indices
@@ -398,40 +393,61 @@ def _looks_like_state_row(value: JsonObject) -> bool:
     )
 
 
-def _expected_actual_matches(
+def _focused_state_rows(
     namespace: str,
     expected_rows: list[JsonObject],
     actual_rows: list[JsonObject],
-) -> list[tuple[int, int | None]]:
+) -> tuple[int, list[int], dict[int, JsonObject]]:
     used_actual_indices: set[int] = set()
-    matches: list[tuple[int, int | None]] = []
-    for expected_index, expected_row in enumerate(expected_rows):
-        actual_index = _best_identifier_match(namespace, expected_row, actual_rows, used_actual_indices)
-        if actual_index is not None:
-            used_actual_indices.add(actual_index)
-        matches.append((expected_index, actual_index))
-    return matches
+    selected_indices: list[int] = []
+    expected_by_actual_index: dict[int, JsonObject] = {}
+    matched_count = 0
+    for expected_row in expected_rows:
+        identifier_keys = _identifier_keys(namespace, expected_row)
+        if not identifier_keys:
+            continue
+        candidates: list[tuple[int, int, int]] = []
+        for index, actual_row in enumerate(actual_rows):
+            if index in used_actual_indices:
+                continue
+            if all(_values_equal(expected_row.get(key), actual_row.get(key)) for key in identifier_keys):
+                shared_count = _shared_value_count(namespace, expected_row, actual_row)
+                candidates.append((shared_count, -index, index))
+        if not candidates:
+            continue
+        actual_index = max(candidates)[2]
+        used_actual_indices.add(actual_index)
+        expected_by_actual_index[actual_index] = expected_row
+        matched_count += 1
+        if actual_index not in selected_indices and len(selected_indices) < FOCUSED_STATE_ROW_LIMIT:
+            selected_indices.append(actual_index)
 
+    if len(selected_indices) >= FOCUSED_STATE_ROW_LIMIT or not actual_rows:
+        return matched_count, selected_indices, expected_by_actual_index
+    if not expected_rows:
+        selected_indices.extend(
+            index
+            for index in range(len(actual_rows))
+            if index not in selected_indices
+        )
+        return matched_count, selected_indices[:FOCUSED_STATE_ROW_LIMIT], expected_by_actual_index
 
-def _best_identifier_match(
-    namespace: str,
-    expected_row: JsonObject,
-    actual_rows: list[JsonObject],
-    used_actual_indices: set[int],
-) -> int | None:
-    identifier_keys = _identifier_keys(namespace, expected_row)
-    if not identifier_keys:
-        return None
     candidates: list[tuple[int, int, int]] = []
     for index, actual_row in enumerate(actual_rows):
-        if index in used_actual_indices:
+        if index in selected_indices:
             continue
-        if all(_values_equal(expected_row.get(key), actual_row.get(key)) for key in identifier_keys):
-            shared_count = _shared_value_count(namespace, expected_row, actual_row)
-            candidates.append((shared_count, -index, index))
-    if not candidates:
-        return None
-    return max(candidates)[2]
+        score = max(_shared_value_count(namespace, expected_row, actual_row) for expected_row in expected_rows)
+        candidates.append((score, -index, index))
+    positive_candidate_found = any(score > 0 for score, _, _ in candidates)
+    for score, _, index in sorted(candidates, reverse=True):
+        if positive_candidate_found and score <= 0:
+            continue
+        if not positive_candidate_found and len(selected_indices) >= min(2, len(actual_rows)):
+            break
+        selected_indices.append(index)
+        if len(selected_indices) >= FOCUSED_STATE_ROW_LIMIT:
+            break
+    return matched_count, selected_indices, expected_by_actual_index
 
 
 def _identifier_keys(namespace: str, expected_row: JsonObject) -> tuple[str, ...]:
@@ -444,46 +460,6 @@ def _identifier_keys(namespace: str, expected_row: JsonObject) -> tuple[str, ...
         if _has_value(value) and not _is_low_signal_match_key(namespace, key)
     ]
     return tuple(meaningful_keys)
-
-
-def _focused_actual_row_indices(
-    namespace: str,
-    expected_rows: list[JsonObject],
-    actual_rows: list[JsonObject],
-    matches: list[tuple[int, int | None]],
-) -> list[int]:
-    selected: list[int] = []
-    for _, actual_index in matches:
-        if actual_index is not None and actual_index not in selected:
-            selected.append(actual_index)
-        if len(selected) >= FOCUSED_STATE_ROW_LIMIT:
-            return selected
-
-    if not actual_rows:
-        return selected
-    if not expected_rows:
-        return selected + [
-            index
-            for index in range(len(actual_rows))
-            if index not in selected
-        ][: max(FOCUSED_STATE_ROW_LIMIT - len(selected), 0)]
-
-    candidates: list[tuple[int, int, int]] = []
-    for index, actual_row in enumerate(actual_rows):
-        if index in selected:
-            continue
-        score = max(_shared_value_count(namespace, expected_row, actual_row) for expected_row in expected_rows)
-        candidates.append((score, -index, index))
-    positive_candidate_found = any(score > 0 for score, _, _ in candidates)
-    for score, _, index in sorted(candidates, reverse=True):
-        if positive_candidate_found and score <= 0:
-            continue
-        if not positive_candidate_found and len(selected) >= min(2, len(actual_rows)):
-            break
-        selected.append(index)
-        if len(selected) >= FOCUSED_STATE_ROW_LIMIT:
-            break
-    return selected
 
 
 def _shared_value_count(namespace: str, expected_row: JsonObject, actual_row: JsonObject) -> int:

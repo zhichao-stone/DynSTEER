@@ -1,11 +1,44 @@
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, TaskCase
+
+
+@dataclass(frozen=True)
+class BenchmarkDefaultResult:
+    """benchmark 原生 Default 结果。
+
+    入参：
+        score: 原生主分数，已归一到 [0, 1]。
+        resolved: benchmark 是否判定为 resolved；无法判断时为 None。
+        raw: 原生未压缩摘要。
+        metrics: 原生评估统计。
+    输出：
+        `to_dict()` 返回 JSON 可序列化结构。
+    """
+
+    score: float
+    resolved: bool | None = None
+    raw: JsonObject = field(default_factory=dict)
+    metrics: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.score < 0.0 or self.score > 1.0:
+            raise ValueError("Default score 必须位于 [0, 1]")
+
+    def to_dict(self) -> JsonObject:
+        """转换为 JSON 可序列化字典。"""
+        return {
+            "score": self.score,
+            "resolved": self.resolved,
+            "raw": dict(self.raw),
+            "metrics": dict(self.metrics),
+        }
 
 
 class BaseBenchmarkConstraintScorer(GeneralScorer):
@@ -94,6 +127,12 @@ class BaseBenchmarkHarness(ABC):
         if session is None:
             raise ValueError("session 不能为空")
         return {}
+
+    def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:
+        """从完整执行后的 session 提取 benchmark 原生 Default 结果。"""
+        if session is None:
+            raise ValueError("session 不能为空")
+        raise NotImplementedError(f"{self.benchmark} 尚未实现 default_result_from_session")
 
     def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止当前 benchmark session。"""

@@ -180,6 +180,20 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     if constraint is not None:
         detail["expected_summary"] = constraint_summary_to_dict(constraint)["expected_summary"]
         detail["expected_excerpt"] = constraint_expected_excerpt(constraint)
+    score_text = _format_number(detail.get("score"))
+    threshold_text = _format_number(detail.get("threshold"))
+    evidence_text = str(detail["evidence"][0]) if isinstance(detail.get("evidence"), list) and detail["evidence"] else ""
+    actual_text = str(detail.get("actual_excerpt") or "")
+    parts = [f"{detail['constraint_id']} score {score_text}, below threshold {threshold_text}"]
+    if _excerpt_shows_matched_expected_rows(actual_text) and _score_value(detail.get("score")) < _score_value(detail.get("threshold")):
+        parts.append(
+            "target-related rows already appeared, but structured scoring still failed; check extra state changes or reference drift"
+        )
+    if detail["goal_hint"]:
+        parts.append(str(detail["goal_hint"]))
+    if evidence_text:
+        parts.append(f"evidence: {evidence_text}")
+    detail["line"] = " | ".join(parts)
     return detail
 
 
@@ -207,32 +221,6 @@ def _failed_constraint_details(milestone: Milestone, score_payload: JsonObject |
             details.append((sort_key, detail))
     selected = details or sorted(fallbacks, key=lambda item: item[0])[:1]
     return [detail for _, detail in sorted(selected, key=lambda item: item[0])[:5]]
-
-
-def _constraint_failure_line(detail: JsonObject) -> str:
-    constraint_id = str(detail.get("constraint_id") or "constraint")
-    score = _format_number(detail.get("score"))
-    threshold = _format_number(detail.get("threshold"))
-    goal_hint = str(detail.get("goal_hint") or "")
-    evidence = detail.get("evidence")
-    evidence_text = str(evidence[0]) if isinstance(evidence, list) and evidence else ""
-    actual_excerpt = str(detail.get("actual_excerpt") or "")
-
-    if _excerpt_shows_matched_expected_rows(actual_excerpt) and _score_value(detail.get("score")) < _score_value(detail.get("threshold")):
-        parts = [f"{constraint_id} score {score}, below threshold {threshold}"]
-        parts.append("target-related rows already appeared, but structured scoring still failed; check extra state changes or reference drift")
-        if goal_hint:
-            parts.append(goal_hint)
-        if evidence_text:
-            parts.append(f"evidence: {evidence_text}")
-        return " | ".join(parts)
-
-    parts = [f"{constraint_id} score {score}, below threshold {threshold}"]
-    if goal_hint:
-        parts.append(goal_hint)
-    if evidence_text:
-        parts.append(f"evidence: {evidence_text}")
-    return " | ".join(parts)
 
 
 def _excerpt_shows_matched_expected_rows(actual_excerpt: str) -> bool:
@@ -277,15 +265,14 @@ def _pending_failure_diagnostics(
         )
         reasons = [summary]
         if failed_constraints:
-            lead = _constraint_failure_line(failed_constraints[0])
+            lead = str(failed_constraints[0].get("line") or "")
             summary = f"{summary} Main unmet constraint: {lead}."
             reasons[0] = summary
-            reasons.extend(_constraint_failure_line(item) for item in failed_constraints[1:])
+            reasons.extend(str(item.get("line") or "") for item in failed_constraints[1:])
         elif isinstance(last_entry, dict) and last_entry.get("reject_reason"):
             reasons.append(f"Last reject reason: {last_entry.get('reject_reason')}")
-        semantic_review = _semantic_review_from_candidate(best_entry, last_entry)
-        if semantic_review is not None:
-            review_line = _semantic_review_failure_line(semantic_review)
+        semantic_review, review_line = _semantic_review_failure(best_entry, last_entry)
+        if semantic_review is not None and review_line is not None:
             summary = f"{summary} {review_line}"
             reasons.insert(1, review_line)
         result: JsonObject = {"failure_summary": summary, "failure_reasons": reasons, "failed_constraints": failed_constraints}
@@ -303,23 +290,20 @@ def _pending_failure_diagnostics(
     else:
         summary = f"milestone {milestone.milestone_id} has not become ready yet; the run may still lack the prerequisite evidence."
     return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
-def _semantic_review_from_candidate(*candidates: JsonObject | None) -> JsonObject | None:
-    """从候选详情中读取最后一次 rejected semantic review。"""
+
+
+def _semantic_review_failure(*candidates: JsonObject | None) -> tuple[JsonObject | None, str | None]:
+    """从候选详情中读取并格式化最后一次 rejected semantic review。"""
     for candidate in reversed([item for item in candidates if isinstance(item, dict)]):
         semantic_review = candidate.get("llm_semantic_review")
         if isinstance(semantic_review, dict) and semantic_review.get("status") == "rejected":
-            return dict(semantic_review)
-    return None
-
-
-def _semantic_review_failure_line(review: JsonObject) -> str:
-    """生成语义复判失败摘要。"""
-    reason = str(review.get("reason") or "").strip()
-    rejected_ids = review.get("rejected_constraint_ids")
-    id_text = ",".join(str(item) for item in rejected_ids) if isinstance(rejected_ids, list) else ""
-    if reason:
-        return f"消息语义复判 rejected{id_text and f'（{id_text}）'}：{compact_text(reason, 220)}。"
-    return f"消息语义复判 rejected{id_text and f'（{id_text}）'}。"
+            review = dict(semantic_review)
+            reason = str(review.get("reason") or "").strip()
+            rejected_ids = review.get("rejected_constraint_ids")
+            id_text = ",".join(str(item) for item in rejected_ids) if isinstance(rejected_ids, list) else ""
+            suffix = f"：{compact_text(reason, 220)}" if reason else ""
+            return review, f"消息语义复判 rejected{id_text and f'（{id_text}）'}{suffix}。"
+    return None, None
 
 
 def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:

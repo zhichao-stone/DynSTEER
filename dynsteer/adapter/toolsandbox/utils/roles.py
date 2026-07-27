@@ -5,6 +5,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import lru_cache
 
+import anthropic
+from openai import OpenAI
+
 from dynsteer.model import Actor
 from dynsteer.utils import enum_name
 
@@ -188,14 +191,10 @@ def _client_kwargs(api_key_env: str, base_url_env: str, default_api_key: str | N
 
 
 def _openai_client_from_env(default_api_key: str | None = None) -> object:
-    from openai import OpenAI
-
     return OpenAI(**_client_kwargs("OPENAI_API_KEY", "OPENAI_BASE_URL", default_api_key))
 
 
 def _anthropic_client_from_env() -> object:
-    import anthropic
-
     return anthropic.Anthropic(**_client_kwargs("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"))
 
 

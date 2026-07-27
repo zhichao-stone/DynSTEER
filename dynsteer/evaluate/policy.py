@@ -9,23 +9,26 @@ from dynsteer.model import (
 
 
 def update_evaluation_policy(
-    policy: EvaluationPolicyState, result: StageEvaluationResult, thresholds: ThresholdConfig
+    policy: EvaluationPolicyState,
+    result: StageEvaluationResult,
+    thresholds: ThresholdConfig,
+    allow_stop: bool = True,
 ) -> tuple[EvaluationPolicyState, EvaluationTerminationState]:
     """根据当前阶段结果生成下一阶段评估策略。"""
-    if result.metadata.get("structural_failure") is True:
-        reason = "阶段存在结构性失败，触发策略终止"
-    elif result.metadata.get("missing_required_milestone") is True:
-        reason = "阶段缺少必要 milestone，触发策略终止"
-    elif result.fatal_minefield_score >= thresholds.fatal_minefield_threshold:
-        reason = f"fatal minefield score={result.fatal_minefield_score:.3f}，触发策略终止"
-    elif result.stage_score < thresholds.fail_threshold:
-        reason = f"阶段分数 {result.stage_score:.3f} 低于失败阈值 " f"{thresholds.fail_threshold:.3f}，触发策略终止"
-    else:
-        reason = None
-    if reason:
+    stop_reason = None
+    if allow_stop:
+        if result.metadata.get("structural_failure") is True:
+            stop_reason = "阶段存在结构性失败，触发策略终止"
+        elif result.metadata.get("missing_required_milestone") is True:
+            stop_reason = "阶段缺少必要 milestone，触发策略终止"
+        elif result.fatal_minefield_score >= thresholds.fatal_minefield_threshold:
+            stop_reason = f"fatal minefield score={result.fatal_minefield_score:.3f}，触发策略终止"
+        elif result.stage_score < thresholds.fail_threshold:
+            stop_reason = f"阶段分数 {result.stage_score:.3f} 低于失败阈值 " f"{thresholds.fail_threshold:.3f}，触发策略终止"
+    if stop_reason:
         return (
-            EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=reason),
-            EvaluationTerminationState(should_stop=True, termination_code="evaluation_policy_stop", termination_reason=reason),
+            EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=stop_reason),
+            EvaluationTerminationState(should_stop=True, termination_code="evaluation_policy_stop", termination_reason=stop_reason),
         )
 
     max_uncertainty = max(result.dimension_uncertainty.values(), default=0.0)

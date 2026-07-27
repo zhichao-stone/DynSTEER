@@ -56,6 +56,7 @@ def metrics_from_session(self, session: object) -> JsonObject: ...
 def initial_state_from_session(self, session: object) -> JsonObject | None: ...
 def final_state_from_session(self, session: object) -> JsonObject | None: ...
 def raw_summary_from_session(self, session: object) -> JsonObject: ...
+def default_result_from_session(self, session: object) -> BenchmarkDefaultResult: ...
 def stop_case(self, session: object, reason: str) -> None: ...
 def teardown_case(self, session: object) -> None: ...
 def constraint_scorer(self) -> BaseBenchmarkConstraintScorer: ...
@@ -71,6 +72,17 @@ class MyHarness(BaseBenchmarkHarness):
     def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
         return MyBenchmarkConstraintScorer()
 ```
+
+### `BaseBenchmarkHarness.default_result_from_session()`
+
+完整 Default 实验会在 benchmark 自然结束后调用该接口，提取原生 benchmark 分数。正式实验 benchmark 必须显式实现，返回：
+
+- `score`: `[0, 1]` 主分数。
+- `resolved`: benchmark 原生 resolved 布尔值；不可用时为 `None`。
+- `raw`: 原生映射、相似度等审计信息。
+- `metrics`: 原生 turn count、耗时或其他可用指标。
+
+ToolSandbox 当前通过 `scenario.evaluation.evaluate(execution_context=session.context, max_turn_count=session.max_messages)` 提取 `similarity`，并把 `milestone_mapping`、`minefield_mapping` 和 `turn_count` 写入 raw。
 
 ## 返回契约
 
@@ -125,6 +137,8 @@ Harness 模式输出：
 `trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
 
 `raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合、cost 可用性字段和 LLM judge token usage 聚合。`trajectory_cost_available=false` 或 `trajectory_latency_available=false` 表示对应 `0` 值只是数据不可用兜底，不是真实零成本。`task_case_snapshot.runtime_initial_state_source` 记录运行期评分使用的初始状态来源，`runtime_initial_state_summary` 只保留 namespace 行数摘要。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+
+Default 输出使用同一目录结构，但 case 目录下的报告文件为 `default_report.json`，summary 中的 `overall_score` 与 `default_score` 均来自 benchmark 原生 `BenchmarkDefaultResult.score`。Replay 输出使用 `report.json`，并在 summary/report metadata 中记录 `method`、`strategy`、`model_id`、`repeat_index` 和可选 `default_reference`。
 
 `raw_summary.json` 还包含实时 milestone 匹配诊断字段：
 

@@ -98,7 +98,7 @@ class TqdmCaseProgressManager:
         if case_index is not None and (
             isinstance(case_index, bool) or not isinstance(case_index, int) or case_index < 1
         ):
-            raise ValueError("case_index 蹇呴』澶т簬 0")
+            raise ValueError("case_index 必须大于 0")
         if case_id in self.active_order:
             return
         if self.active_count >= self.max_workers:
@@ -136,7 +136,7 @@ class TqdmCaseProgressManager:
             if isinstance(current_total, int | float) and state.step_count > current_total:
                 bars.progress_bar.total = max(state.step_count, int(current_total) * 2, self.estimated_total)
             bars.progress_bar.update(step_count)
-            self._set_bar_postfix(bars.progress_bar, state)
+            bars.progress_bar.set_postfix(self._timing_postfix(state))
 
     def case_finished(self, case_id: str) -> None:
         """标记指定 case 完成，并在可见窗口中保留满进度条。"""
@@ -155,7 +155,7 @@ class TqdmCaseProgressManager:
         if bars is not None:
             bars.progress_bar.total = state.step_count
             self._restore_bar_elapsed(bars.progress_bar, state)
-            self._set_bar_postfix(bars.progress_bar, state)
+            bars.progress_bar.set_postfix(self._timing_postfix(state))
             refresh = getattr(bars.progress_bar, "refresh", None)
             if callable(refresh):
                 refresh()
@@ -189,8 +189,6 @@ class TqdmCaseProgressManager:
 
     def _sync_visible_bars(self, previous_visible_order: list[str]) -> None:
         """在位置不变时增量同步可见进度条，避免重建导致 tqdm 计时丢失。"""
-        if previous_visible_order is None:
-            raise ValueError("previous_visible_order 不能为空")
         previous_positions = {case_id: index for index, case_id in enumerate(previous_visible_order)}
         should_rebuild = any(
             case_id in self.bars and previous_positions.get(case_id) != position
@@ -237,21 +235,14 @@ class TqdmCaseProgressManager:
         bars = self.bars.get(case_id)
         if bars is not None:
             self._restore_bar_elapsed(bars.progress_bar, state)
-            self._set_bar_postfix(bars.progress_bar, state)
+            bars.progress_bar.set_postfix(self._timing_postfix(state))
 
     def _refresh_state(self, state: CaseProgressState) -> None:
         state.elapsed_seconds = max(self._time_fn() - state.started_at, 0.0)
         state.avg_step_seconds = state.elapsed_seconds / state.step_count if state.step_count else None
 
-    def _set_bar_postfix(self, bar: Any, state: CaseProgressState) -> None:
-        elapsed = tqdm.format_interval(max(state.elapsed_seconds, 0.0))
-        avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
-        bar.set_postfix({"elapsed": elapsed, "steps": state.step_count, "avg_step": avg_step})
-
     def _restore_bar_elapsed(self, bar: Any, state: CaseProgressState) -> None:
         """恢复 tqdm 内部累计耗时，避免重建后显示 00:00<?, ?step/s。"""
-        if bar is None or state is None:
-            raise ValueError("bar 和 state 不能为空")
         bar_time = getattr(bar, "_time", None)
         if not callable(bar_time):
             return
@@ -309,16 +300,24 @@ class TqdmCaseProgressManager:
             state.step_count if state.finished and state.step_count > 0 else max(self.estimated_total, state.step_count)
         )
         percent = 100 if total and state.step_count >= total else int(state.step_count * 100 / total)
-        elapsed = tqdm.format_interval(max(state.elapsed_seconds, 0.0))
-        avg_step = f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-"
+        timing = self._timing_postfix(state)
         return (
             f"{self._progress_description(state)}: {percent:3d}%| "
-            f"{state.step_count}/{total} [elapsed={elapsed}, steps={state.step_count}, avg_step={avg_step}]"
+            f"{state.step_count}/{total} "
+            f"[elapsed={timing['elapsed']}, steps={timing['steps']}, avg_step={timing['avg_step']}]"
         )
 
     def _validate_case_id(self, case_id: str) -> None:
         if case_id is None or not str(case_id).strip():
             raise ValueError("case_id 不能为空")
+
+    def _timing_postfix(self, state: CaseProgressState) -> dict[str, object]:
+        """构造 tqdm 与静态行共用的耗时字段。"""
+        return {
+            "elapsed": tqdm.format_interval(max(state.elapsed_seconds, 0.0)),
+            "steps": state.step_count,
+            "avg_step": f"{state.avg_step_seconds:.2f}s/step" if state.avg_step_seconds is not None else "-",
+        }
 
 
 @contextmanager

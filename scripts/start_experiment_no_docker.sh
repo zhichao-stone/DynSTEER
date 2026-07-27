@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./scripts/start_experiment_no_docker.sh --experiment-config PATH [--source PATH] [options]
+
+Options:
+  --experiment-config PATH   Unified experiment config JSON. Required.
+  --source PATH              Local benchmark source tree to install editable.
+  --workers NUM              Max parallel experiment workers. Defaults to main.py default.
+  --env-file PATH            Env file to source before running. Defaults to .env.
+  --no-env-file              Do not source an env file.
+  -h, --help                 Show this help.
+
+Examples:
+  ./scripts/start_experiment_no_docker.sh --experiment-config data/experiments/double_benchmark_initial.json --source ../ToolSandbox --workers 1
+  ./scripts/start_experiment_no_docker.sh --experiment-config data/experiments/double_benchmark_initial.json --no-env-file
+EOF
+}
+
+script_dir() {
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
+}
+
+require_value() {
+    local option_name="$1"
+    local option_value="${2:-}"
+    if [[ -z "$option_value" ]]; then
+        echo "$option_name requires a non-empty value." >&2
+        exit 64
+    fi
+}
+
+absolute_host_path() {
+    local base_dir="$1"
+    local input_path="$2"
+    if [[ "$input_path" == /* || "$input_path" =~ ^[A-Za-z]:[\\/] ]]; then
+        cd -- "$input_path" && pwd
+    else
+        cd -- "$base_dir/$input_path" && pwd
+    fi
+}
+
+source_env_file() {
+    local project_root="$1"
+    local env_file="$2"
+
+    if [[ "$env_file" != /* && ! "$env_file" =~ ^[A-Za-z]:[\\/] ]]; then
+        env_file="$project_root/$env_file"
+    fi
+
+    if [[ ! -f "$env_file" ]]; then
+        echo "Env file not found, continuing without it: $env_file" >&2
+        return 0
+    fi
+
+    set -a
+    # shellcheck source=/dev/null
+    . "$env_file"
+    set +a
+}
+
+ensure_uv_environment() {
+    local project_root="$1"
+    local venv_dir="${UV_PROJECT_ENVIRONMENT:-.venv}"
+    local cache_dir="${UV_CACHE_DIR:-.uv-cache}"
+    export UV_PROJECT_ENVIRONMENT="$venv_dir"
+    export UV_CACHE_DIR="$cache_dir"
+
+    cd "$project_root"
+    uv sync --frozen --no-dev --no-install-project --inexact
+}
+
+project_python() {
+    local venv_dir="${UV_PROJECT_ENVIRONMENT:-.venv}"
+    local candidate
+    for candidate in "$venv_dir/bin/python" "$venv_dir/Scripts/python.exe" "$venv_dir/Scripts/python"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "Python executable not found in uv environment: $venv_dir" >&2
+    exit 127
+}
+
+install_benchmark_source() {
+    local source_path="$1"
+    local invocation_dir="$2"
+    local python_executable="$3"
+
+    local source_abs
+    if ! source_abs="$(absolute_host_path "$invocation_dir" "$source_path")"; then
+        echo "Benchmark source not found: $source_path" >&2
+        exit 66
+    fi
+    if [[ ! -f "$source_abs/pyproject.toml" && ! -f "$source_abs/setup.py" ]]; then
+        echo "Benchmark source must contain pyproject.toml or setup.py: $source_abs" >&2
+        exit 66
+    fi
+
+    export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_abs"
+    echo "Installing benchmark source for experiment: $source_abs"
+    uv pip install --python "$python_executable" --editable "$source_abs"
+}
+
+main() {
+    local invocation_dir
+    invocation_dir="$(pwd)"
+    local script_root
+    script_root="$(script_dir)"
+    local project_root
+    project_root="$(cd -- "$script_root/.." && pwd)"
+
+    local experiment_config=""
+    local source_path=""
+    local workers=""
+    local env_file="${DYNSTEER_ENV_FILE:-.env}"
+    local load_env_file="1"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --experiment-config)
+                require_value "$1" "${2:-}"
+                experiment_config="$2"
+                shift 2
+                ;;
+            --experiment-config=*)
+                experiment_config="${1#*=}"
+                require_value "--experiment-config" "$experiment_config"
+                shift
+                ;;
+            --source)
+                require_value "$1" "${2:-}"
+                source_path="$2"
+                shift 2
+                ;;
+            --source=*)
+                source_path="${1#*=}"
+                require_value "--source" "$source_path"
+                shift
+                ;;
+            --workers)
+                require_value "$1" "${2:-}"
+                workers="$2"
+                shift 2
+                ;;
+            --workers=*)
+                workers="${1#*=}"
+                require_value "--workers" "$workers"
+                shift
+                ;;
+            --env-file)
+                require_value "$1" "${2:-}"
+                env_file="$2"
+                shift 2
+                ;;
+            --env-file=*)
+                env_file="${1#*=}"
+                require_value "--env-file" "$env_file"
+                shift
+                ;;
+            --no-env-file|--no-dotenv)
+                load_env_file="0"
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage >&2
+                exit 64
+                ;;
+        esac
+    done
+
+    if [[ -z "$experiment_config" ]]; then
+        usage >&2
+        exit 64
+    fi
+
+    if [[ "$load_env_file" == "1" ]]; then
+        source_env_file "$project_root" "$env_file"
+    fi
+
+    cd "$project_root"
+    ensure_uv_environment "$project_root"
+    local python_executable
+    python_executable="$(project_python)"
+    if [[ -n "$source_path" ]]; then
+        install_benchmark_source "$source_path" "$invocation_dir" "$python_executable"
+    else
+        unset DYNSTEER_BENCHMARK_SOURCE_ROOT
+    fi
+
+    local worker_args=()
+    if [[ -n "$workers" ]]; then
+        worker_args=(--workers "$workers")
+    fi
+
+    exec "$python_executable" main.py \
+        --experiment-config "$experiment_config" \
+        "${worker_args[@]}"
+}
+
+main "$@"

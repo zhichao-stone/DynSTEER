@@ -33,7 +33,7 @@ from dynsteer.model import (
     ensure_json_object,
 )
 from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goals, validate_stage_evaluation_specs
-from dynsteer.utils import enum_value, get_object, json_safe, unknown_fields
+from dynsteer.utils import enum_value, get_object, json_safe, read_json_file, required_str, unknown_fields
 
 
 def safe_case_file_name(case_id: str) -> str:
@@ -63,13 +63,8 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
             save_task_case(path, task_case)
         else:
             ### load task case from file
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"TaskCase 文件不是合法 JSON: {path}") from exc
-            if not isinstance(data, dict):
-                raise ValueError(f"TaskCase 文件必须是 JSON 对象: {path}")
-            task_case = parse_task_case(ensure_json_object(data))
+            data = read_json_file(path, f"TaskCase 文件: {path}", dict)
+            task_case = parse_task_case(data)
             if task_case.case_id != case_id:
                 raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
 
@@ -126,13 +121,6 @@ def _postprocess_task_case(task_case: TaskCase) -> TaskCase:
 
 ## 解析JSON对象为DynSTEER模型对象
 
-def _required_str(data: JsonObject, key: str) -> str:
-    value = get_object(data, key, str)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"字段 {key} 必须是非空字符串")
-    return value
-
-
 def _optional_object(data: JsonObject, key: str) -> JsonObject:
     value = data.get(key)
     return dict(value) if isinstance(value, dict) else {}
@@ -141,9 +129,9 @@ def _optional_object(data: JsonObject, key: str) -> JsonObject:
 def parse_constraint(data: JsonObject) -> Constraint:
     constraint_data = ensure_json_object(data)
     return Constraint(
-        constraint_id=_required_str(constraint_data, "constraint_id"),
+        constraint_id=required_str(constraint_data, "constraint_id", "Constraint"),
         target=enum_value(ConstraintTarget, constraint_data.get("target"), "target"),
-        selector=_required_str(constraint_data, "selector"),
+        selector=required_str(constraint_data, "selector", "Constraint"),
         operator=enum_value(Operator, constraint_data.get("operator"), "operator"),
         expected=constraint_data.get("expected"),
         namespace=constraint_data.get("namespace"),
@@ -164,9 +152,9 @@ def parse_milestone(data: JsonObject) -> Milestone:
     constraints_value = milestone_data.get("constraints", [])
     stage_anchor = milestone_data.get("stage_anchor_predecessor_id")
     return Milestone(
-        milestone_id=_required_str(milestone_data, "milestone_id"),
-        name=_required_str(milestone_data, "name"),
-        description=_required_str(milestone_data, "description"),
+        milestone_id=required_str(milestone_data, "milestone_id", "Milestone"),
+        name=required_str(milestone_data, "name", "Milestone"),
+        description=required_str(milestone_data, "description", "Milestone"),
         constraints=[parse_constraint(ensure_json_object(item)) for item in constraints_value],
         pass_threshold=float(milestone_data["pass_threshold"]) if milestone_data.get("pass_threshold") is not None else None,
         metadata=_optional_object(milestone_data, "metadata"),
@@ -180,9 +168,9 @@ def parse_minefield(data: JsonObject) -> Minefield:
     constraints_value = minefield_data.get("constraints", [])
     penalty_data = ensure_json_object(minefield_data.get("penalty", {"mode": "fixed", "value": 0.0}))
     return Minefield(
-        minefield_id=_required_str(minefield_data, "minefield_id"),
-        name=_required_str(minefield_data, "name"),
-        description=_required_str(minefield_data, "description"),
+        minefield_id=required_str(minefield_data, "minefield_id", "Minefield"),
+        name=required_str(minefield_data, "name", "Minefield"),
+        description=required_str(minefield_data, "description", "Minefield"),
         severity=str(minefield_data.get("severity", "warning")),
         constraints=[parse_constraint(ensure_json_object(item)) for item in constraints_value],
         penalty=MinefieldPenalty(
@@ -235,9 +223,9 @@ def parse_task_case(data: JsonObject) -> TaskCase:
     if task_data.get("milestone_graph") is not None:
         milestone_graph = parse_milestone_graph(ensure_json_object(task_data["milestone_graph"]))
     task_case = TaskCase(
-        task_id=_required_str(task_data, "task_id"),
-        task_description=_required_str(task_data, "task_description"),
-        case_id=_required_str(task_data, "case_id"),
+        task_id=required_str(task_data, "task_id", "TaskCase"),
+        task_description=required_str(task_data, "task_description", "TaskCase"),
+        case_id=required_str(task_data, "case_id", "TaskCase"),
         environment_schema=_optional_object(task_data, "environment_schema"),
         tool_schema=_optional_object(task_data, "tool_schema"),
         policy_constraints=[ensure_json_object(item) for item in policy_constraints],
@@ -294,30 +282,30 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     index = get_object(data, "index", int)
     if not isinstance(index, int):
         raise ValueError("step.index 必须是整数")
-    tool_call_data = data.get("tool_call")
-    tool_result_data = data.get("tool_result")
-    cost_data = data.get("cost")
-    tool_call = (
-        ToolCall(name=_required_str(tool_call_data, "name"), arguments=_optional_object(tool_call_data, "arguments"))
-        if tool_call_data is not None else None
-    )
-    tool_result = (
-        ToolResult(
+    tool_call_data = ensure_json_object(data["tool_call"]) if data.get("tool_call") is not None else None
+    tool_result_data = ensure_json_object(data["tool_result"]) if data.get("tool_result") is not None else None
+    cost_data = ensure_json_object(data["cost"]) if data.get("cost") is not None else None
+    tool_call = None
+    if tool_call_data is not None:
+        tool_call = ToolCall(
+            name=required_str(tool_call_data, "name", "tool_call"),
+            arguments=_optional_object(tool_call_data, "arguments"),
+        )
+    tool_result = None
+    if tool_result_data is not None:
+        tool_result = ToolResult(
             success=bool(tool_result_data.get("success", False)),
             content=tool_result_data.get("content"),
             exception=tool_result_data.get("exception") if isinstance(tool_result_data.get("exception"), str) else None,
         )
-        if tool_result_data is not None else None
-    )
-    cost = (
-        StepCost(
-            tokens=int(cost_data["tokens"]) if cost_data is not None and cost_data.get("tokens") is not None else None,
-            latency_ms=int(cost_data["latency_ms"]) if cost_data is not None and cost_data.get("latency_ms") is not None else None,
+    cost = StepCost()
+    if cost_data is not None:
+        cost = StepCost(
+            tokens=int(cost_data["tokens"]) if cost_data.get("tokens") is not None else None,
+            latency_ms=int(cost_data["latency_ms"]) if cost_data.get("latency_ms") is not None else None,
         )
-        if cost_data is not None else StepCost()
-    )
     return TrajectoryStep(
-        step_id=_required_str(data, "step_id"),
+        step_id=required_str(data, "step_id", "TrajectoryStep"),
         index=index,
         actor=_load_actor(get_object(data, "actor"), "actor") or Actor.EVALUATOR,
         event_type=enum_value(EventType, get_object(data, "event_type"), "event_type"),
@@ -340,8 +328,8 @@ def _load_snapshot(data: JsonObject) -> StateSnapshot:
     if not isinstance(namespaces, dict):
         raise ValueError("snapshot.namespaces 必须是对象")
     return StateSnapshot(
-        snapshot_id=_required_str(data, "snapshot_id"),
-        after_step_id=_required_str(data, "after_step_id"),
+        snapshot_id=required_str(data, "snapshot_id", "StateSnapshot"),
+        after_step_id=required_str(data, "after_step_id", "StateSnapshot"),
         after_step_index=index,
         namespaces=namespaces,
         raw=unknown_fields(data, {"snapshot_id", "after_step_id", "after_step_index", "namespaces"}),
@@ -362,8 +350,8 @@ def load_trajectory(data: JsonObject) -> Trajectory:
     final_state = get_object(trajectory_data, "final_state", (dict, type(None)), default=None, required=False)
     known = {"run_id", "task_id", "steps", "snapshots", "final_state", "metrics"}
     return Trajectory(
-        run_id=_required_str(trajectory_data, "run_id"),
-        task_id=_required_str(trajectory_data, "task_id"),
+        run_id=required_str(trajectory_data, "run_id", "Trajectory"),
+        task_id=required_str(trajectory_data, "task_id", "Trajectory"),
         steps=[_load_step(ensure_json_object(item)) for item in step_values],
         snapshots=[_load_snapshot(ensure_json_object(item)) for item in snapshot_values],
         final_state=final_state if isinstance(final_state, dict) else None,

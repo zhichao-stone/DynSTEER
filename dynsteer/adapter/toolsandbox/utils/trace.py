@@ -7,23 +7,35 @@ from dynsteer.model import EventType, JsonObject, JsonValue
 from dynsteer.utils import enum_name, json_safe
 
 
+def tool_trace_items(raw_trace: object) -> list[JsonObject]:
+    """解析 ToolSandbox tool_trace 字段为对象列表。
+
+    入参：
+        raw_trace: 可能来自 Polars row、JSON 文件或目标约束的 tool_trace 值。
+    输出：
+        保序解析出的 tool trace 对象列表；非法 JSON 字符串返回空列表。
+    """
+    trace_value = _parse_tool_trace_value(raw_trace)
+    if isinstance(trace_value, dict):
+        return [trace_value]
+    if not isinstance(trace_value, list):
+        return []
+    items: list[JsonObject] = []
+    for item in trace_value:
+        parsed_item = _parse_tool_trace_value(item)
+        if isinstance(parsed_item, dict):
+            items.append(parsed_item)
+        elif isinstance(parsed_item, list):
+            items.extend(dict(nested) for nested in parsed_item if isinstance(nested, dict))
+    return items
+
+
 def tool_trace_from_row(row: dict[str, object]) -> dict[str, JsonValue] | None:
     raw_trace = row.get("tool_trace")
-    if raw_trace is None:
+    trace_items = tool_trace_items(raw_trace)
+    if not trace_items:
         return None
-    trace_items = list(raw_trace) if isinstance(raw_trace, list) else [raw_trace]
-    if not trace_items or trace_items[0] is None:
-        return None
-    first = trace_items[0]
-    if isinstance(first, dict):
-        return json_safe(first)  # type: ignore[return-value]
-    try:
-        trace = json.loads(str(first))
-    except json.JSONDecodeError as exc:
-        raise ValueError("ToolSandbox tool_trace 不是合法 JSON") from exc
-    if not isinstance(trace, dict):
-        return None
-    return json_safe(trace)  # type: ignore[return-value]
+    return trace_items[0]
 
 
 def tool_arguments_from_agent_content(content: object) -> JsonObject:
@@ -116,3 +128,13 @@ def sandbox_rows_to_step_dicts(rows: list[dict[str, object]]) -> list[dict[str, 
             }
         )
     return steps
+
+
+def _parse_tool_trace_value(value: object) -> JsonValue:
+    """解析单个 tool_trace 值为 JSON 安全值。"""
+    if isinstance(value, str):
+        try:
+            return json_safe(json.loads(value))
+        except json.JSONDecodeError:
+            return None
+    return json_safe(value)

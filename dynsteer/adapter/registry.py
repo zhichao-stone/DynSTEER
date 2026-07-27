@@ -8,9 +8,11 @@ _RegisteredType = type[_T] | str
 
 _ADAPTERS: dict[str, _RegisteredType[BaseBenchmarkAdapter]] = {
     "toolsandbox": "dynsteer.adapter.toolsandbox.adapter:ToolSandboxAdapter",
+    "swebench_pro": "dynsteer.adapter.swebench.adapter:SwebenchProAdapter",
 }
 _HARNESSES: dict[str, _RegisteredType[BaseBenchmarkHarness]] = {
     "toolsandbox": "dynsteer.adapter.toolsandbox.harness:ToolSandboxHarness",
+    "swebench_pro": "dynsteer.adapter.swebench.harness:SwebenchProHarness",
 }
 
 
@@ -33,9 +35,7 @@ def get_harness(benchmark: str) -> BaseBenchmarkHarness:
 
 
 def _normalize_benchmark(benchmark: str) -> str:
-    if benchmark is None or not benchmark.strip():
-        raise ValueError("benchmark 不能为空")
-    return benchmark.strip().lower()
+    return benchmark.strip().lower().replace("-", "_")
 
 
 def _load_registered_type(target: _RegisteredType[_T], base_type: type[_T]) -> type[_T]:

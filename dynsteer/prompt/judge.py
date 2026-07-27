@@ -7,7 +7,7 @@ from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_exp
 from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageInterval, TaskCase, Trajectory
 from dynsteer.prompt.rubrics import rubrics_for_dimensions
 from dynsteer.prompt.template import load_prompt_template
-from dynsteer.stage import stage_trajectory_steps
+from dynsteer.stage import resolve_stage_goal, stage_trajectory_steps
 from dynsteer.utils import json_safe, validated_target_dimensions
 
 
@@ -65,8 +65,6 @@ def _context_json(
     target_dimensions: Iterable[Dimension] | None = None,
 ) -> str:
     """把阶段评估上下文序列化为 JSON 文本。"""
-    from dynsteer.stage import resolve_stage_goal
-
     dimensions = validated_target_dimensions(target_dimensions)
 
     data: JsonObject = {

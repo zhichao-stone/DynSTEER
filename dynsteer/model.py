@@ -440,6 +440,14 @@ class Boundary:
     step_id: Optional[str] = None
 
 
+def _enum_key_dict(values: Mapping[Enum, object]) -> JsonObject:
+    """将 enum key 字典转换为 JSON key 字典。"""
+    return {
+        key.value: value.value if isinstance(value, Enum) else value
+        for key, value in values.items()
+    }
+
+
 ## 评分与阶段评估模型
 
 @dataclass
@@ -520,13 +528,13 @@ class StageEvaluationResult:
             "milestone_id": self.milestone_id,
             "status": self.status.value,
             "stage_score": self.stage_score,
-            "dimension_scores": {key.value: value for key, value in self.dimension_scores.items()},
-            "dimension_levels": {key.value: value.value for key, value in self.dimension_levels.items()},
-            "dimension_confidence": {key.value: value for key, value in self.dimension_confidence.items()},
-            "dimension_uncertainty": {key.value: value for key, value in self.dimension_uncertainty.items()},
+            "dimension_scores": _enum_key_dict(self.dimension_scores),
+            "dimension_levels": _enum_key_dict(self.dimension_levels),
+            "dimension_confidence": _enum_key_dict(self.dimension_confidence),
+            "dimension_uncertainty": _enum_key_dict(self.dimension_uncertainty),
             "evidence": list(self.evidence),
             "diagnosis": list(self.diagnosis),
-            "next_weights": {key.value: value for key, value in self.next_weights.items()},
+            "next_weights": _enum_key_dict(self.next_weights),
             "fatal": self.fatal,
             "hard_constraints_all_pass": self.hard_constraints_all_pass,
             "required_fields_missing_ratio": self.required_fields_missing_ratio,
@@ -546,6 +554,7 @@ class TrajectoryEvaluationReport:
     minefield_matches: list[JsonObject] = field(default_factory=list)
     first_failure_stage_id: Optional[str] = None
     runtime_metrics: JsonObject = field(default_factory=dict)
+    metadata: JsonObject = field(default_factory=dict)
 
     def to_dict(self) -> JsonObject:
         """转换为完整 JSON 可序列化报告。"""
@@ -558,6 +567,7 @@ class TrajectoryEvaluationReport:
             "minefield_matches": list(self.minefield_matches),
             "first_failure_stage_id": self.first_failure_stage_id,
             "runtime_metrics": dict(self.runtime_metrics),
+            "metadata": dict(self.metadata),
         }
 
     def to_summary_dict(self) -> JsonObject:
@@ -578,6 +588,7 @@ class TrajectoryEvaluationReport:
             "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
             "trajectory_cost_available": self.runtime_metrics.get("trajectory_cost_available"),
             "trajectory_latency_available": self.runtime_metrics.get("trajectory_latency_available"),
+            "metadata": dict(self.metadata),
         }
 
 
@@ -606,7 +617,7 @@ class EvaluationPolicyState:
         """转换为可序列化策略字典。"""
         return {
             "base_level": self.base_level.value,
-            "dimension_levels": {dimension.value: level.value for dimension, level in self.dimension_levels.items()},
+            "dimension_levels": _enum_key_dict(self.dimension_levels),
             "reason": self.reason,
         }
 

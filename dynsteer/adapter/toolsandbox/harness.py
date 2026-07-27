@@ -4,7 +4,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from dynsteer.adapter.base import BaseBenchmarkHarness
+from dynsteer.adapter.base import BaseBenchmarkHarness, BenchmarkDefaultResult
+from dynsteer.adapter.toolsandbox.utils.roles import get_agent_factory, get_user_factory
 from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, snapshots_from_context, state_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
@@ -17,7 +18,7 @@ from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.adapter.utils import rows_from_dataframe
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, ToolSandboxSession
-from dynsteer.utils import enum_name
+from dynsteer.utils import clamp, enum_name, json_safe
 
 logger = logging.getLogger(__name__)
 _NAMED_SCENARIOS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
@@ -137,6 +138,41 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         session = self._require_session(session)
         return {"native_evaluation_skipped": True, "case_id": session.case_id}
 
+    def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:
+        """从 ToolSandbox 原生 evaluation 提取 Default 结果。"""
+        session = self._require_session(session)
+        if session.scenario is None or session.context is None:
+            raise RuntimeError("ToolSandbox session 已释放，无法提取 Default 结果")
+        evaluation = getattr(session.scenario, "evaluation", None)
+        evaluate = getattr(evaluation, "evaluate", None)
+        if not callable(evaluate):
+            raise NotImplementedError("ToolSandbox scenario 缺少可调用的原生 evaluation.evaluate")
+        try:
+            result = evaluate(execution_context=session.context, max_turn_count=session.max_messages)
+        except Exception as exc:
+            logger.exception(
+                "toolsandbox_default_evaluation_failed",
+                extra={"事件": "ToolSandbox原生Default评估失败", "case_id": session.case_id, "error": str(exc)},
+            )
+            raise
+        score = clamp(float(getattr(result, "similarity", 0.0)))
+        raw: JsonObject = {
+            "score_source": "toolsandbox_native_evaluation",
+            "case_id": session.case_id,
+            "milestone_similarity": clamp(float(getattr(result, "milestone_similarity", 0.0))),
+            "minefield_similarity": clamp(float(getattr(result, "minefield_similarity", 0.0))),
+            "similarity": score,
+            "turn_count": int(getattr(result, "turn_count", 0)),
+            "milestone_mapping": _mapping_to_json(getattr(result, "milestone_mapping", {})),
+            "minefield_mapping": _mapping_to_json(getattr(result, "minefield_mapping", {})),
+        }
+        return BenchmarkDefaultResult(
+            score=score,
+            resolved=score >= 1.0,
+            raw=raw,
+            metrics={"turn_count": int(getattr(result, "turn_count", 0))},
+        )
+
     def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止 ToolSandbox session。"""
         session = self._require_session(session)
@@ -217,7 +253,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         execution_environment = load_toolsandbox_module("tool_sandbox.roles.execution_environment")
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
-        from dynsteer.adapter.toolsandbox.utils.roles import get_agent_factory, get_user_factory
 
         role_type = getattr(execution_context, "RoleType")
         agent_type = self._role_impl_type(config.metadata.get("agent"), "agent")
@@ -353,3 +388,15 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         get_current_context = getattr(execution_context, "get_current_context")
         return get_current_context()
+
+
+def _mapping_to_json(value: object) -> JsonObject:
+    """将 ToolSandbox OrderedDict mapping 转成 JSON 对象。"""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): json_safe({"snapshot_index": item[0], "similarity": item[1]})
+        if isinstance(item, tuple) and len(item) == 2
+        else json_safe(item)
+        for key, item in value.items()
+    }

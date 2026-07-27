@@ -60,7 +60,7 @@ def _run_case(task: HarnessCaseTask, progress_reporter: CaseProgressReporter | N
     harness: BaseBenchmarkHarness | None = None
     try:
         harness = get_harness(task.config.benchmark)
-        evaluator = DynSTEEREvaluator.from_env()
+        evaluator = DynSTEEREvaluator.from_config(task.config)
         case_config = config_with_case_ids(task.config, [task.case_id])
         return write_case_outputs(case_config, harness, evaluator, task.task_case, progress_reporter)
     except HarnessCaseExecutionError:

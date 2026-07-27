@@ -1,5 +1,6 @@
 from dataclasses import fields, is_dataclass
 from enum import Enum
+import json
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -24,8 +25,8 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
 
 def as_number(value: object, default: float | None = None) -> float | None:
     """读取 JSON 数字值，bool 或非数字返回默认值。"""
-    if not isinstance(value, int | float):
-        return float(default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
     return float(value)
 
 
@@ -35,6 +36,30 @@ def clamped_number(value: object, default: float = 0.0, lower: float = 0.0, uppe
     if number is None:
         number = default
     return clamp(float(number), lower, upper)
+
+
+def read_json_file(path: Path, label: str, expected_type: type) -> Any:
+    """读取 JSON 文件并校验顶层类型。
+
+    入参：
+        path: JSON 文件路径。
+        label: 错误信息中展示的配置名称。
+        expected_type: 顶层 JSON 期望类型。
+    输出：
+        已解析且通过类型校验的 JSON 值。
+    """
+    if path is None:
+        raise ValueError(f"{label} 路径不能为空")
+    if not path.exists():
+        raise ValueError(f"{label} 不存在: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} 不是合法 JSON: {path}") from exc
+    if not isinstance(data, expected_type):
+        expected = "JSON 对象" if expected_type is dict else "JSON 数组"
+        raise ValueError(f"{label} 必须是 {expected}")
+    return data
 
 
 def read_token(current: Any, token: str) -> Any:
@@ -96,6 +121,21 @@ def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None
     return None
 
 
+def required_str(data: Mapping[str, Any], key: str, label: str = "配置") -> str:
+    """从 JSON 映射读取必填非空字符串。"""
+    if data is None:
+        raise ValueError(f"{label} 不能为空")
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} 必须提供非空字符串字段 {key}")
+    return value.strip()
+
+
+def optional_str(value: object) -> str | None:
+    """读取可选非空字符串。"""
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def compact_text(value: object, limit: int = 160) -> str:
     """压缩任意值为单行短文本。"""
     if value is None:
@@ -106,6 +146,13 @@ def compact_text(value: object, limit: int = 160) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 3, 0)] + "..."
+
+
+def compact_json_text(value: object, limit: int = 160) -> str:
+    """将 JSON 安全值压缩为单行短文本。"""
+    if isinstance(value, str):
+        return compact_text(value, limit)
+    return compact_text(json.dumps(json_safe(value), ensure_ascii=False), limit)
 
 
 def first_text(values: list[str], limit: int = 160) -> str | None:

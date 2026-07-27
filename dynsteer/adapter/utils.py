@@ -1,13 +1,12 @@
 import functools
 import importlib
-import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from dynsteer.model import JsonValue
-from dynsteer.utils import json_safe
+from dynsteer.utils import json_safe, read_json_file
 
 
 def callable_name(value: object) -> str:
@@ -62,13 +61,7 @@ def load_manifest(data_root: Path, benchmark: str) -> dict[str, object]:
     manifest_path = data_root / "benchmark.json"
     if not manifest_path.exists():
         return {"benchmark": benchmark, "source_root": None}
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"benchmark.json 不是合法 JSON: {manifest_path}") from exc
-    if not isinstance(data, dict):
-        raise ValueError("benchmark.json 必须是 JSON 对象")
-    return data
+    return read_json_file(manifest_path, "benchmark.json", dict)
 
 
 def ensure_source_root(data_root: Path, project_root: Path, benchmark: str) -> None:

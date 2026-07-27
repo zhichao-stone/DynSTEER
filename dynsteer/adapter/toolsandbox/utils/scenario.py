@@ -1,7 +1,7 @@
-import json
 import re
 
 from dynsteer.adapter.loader import parse_milestone_graph
+from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
 from dynsteer.model import Actor, JsonObject, JsonValue, MilestoneGraph, StageGoalSemanticKind, TaskType
 from dynsteer.utils import enum_name, json_safe
@@ -73,11 +73,9 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
     # SANDBOX namespace 表达对话消息或工具调用目标。
     elif namespace == "SANDBOX":
         first = rows[0] if rows and isinstance(rows[0], dict) else {}
-        tool_trace_semantics = _tool_trace_stage_goal_semantics(first) if isinstance(first, dict) else None
-        if tool_trace_semantics is not None:
-            stage_goal_semantics = tool_trace_semantics
-        elif _is_sandbox_tool_call_row(first):
-            stage_goal_semantics = _sandbox_tool_call_semantics(first)
+        tool_call_semantics = _sandbox_tool_call_semantics(first) if isinstance(first, dict) else None
+        if tool_call_semantics is not None:
+            stage_goal_semantics = tool_call_semantics
         else:
             sender = first.get("sender") if isinstance(first, dict) else None
             recipient = first.get("recipient") if isinstance(first, dict) else None
@@ -151,58 +149,38 @@ def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
     )
 
 
-def _tool_trace_stage_goal_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
-    raw_trace = row.get("tool_trace")
-    if raw_trace is None:
-        return None
-    trace_items = _tool_trace_items(raw_trace)
-    if not trace_items:
-        return None
-    trace_value = trace_items[0]
-    tool_name = trace_value.get("tool_name")
-    if not isinstance(tool_name, str) or not tool_name.strip():
-        return None
-    arguments = trace_value.get("arguments")
-    return {
-        "kind": StageGoalSemanticKind.TOOL_CALL.value,
-        "tool_name": tool_name.strip(),
-        "arguments": arguments if isinstance(arguments, dict) else {},
-        "evidence_source": "trajectory_or_structured_scorer",
-        "user_visible_required": False,
-    }
-
-
-def _is_sandbox_tool_call_row(row: dict[str, JsonValue]) -> bool:
+def _sandbox_tool_call_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
+    traces = tool_trace_items(row.get("tool_trace"))
+    if traces:
+        trace = traces[0]
+        tool_name = trace.get("tool_name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            arguments = trace.get("arguments")
+            return {
+                "kind": StageGoalSemanticKind.TOOL_CALL.value,
+                "tool_name": tool_name.strip(),
+                "arguments": arguments if isinstance(arguments, dict) else {},
+                "evidence_source": "trajectory_or_structured_scorer",
+                "user_visible_required": False,
+            }
+    raw_name = row.get("openai_function_name")
+    tool_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else ""
+    if not tool_name:
+        content = row.get("content")
+        if isinstance(content, str) and content.strip():
+            match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)", content.strip())
+            tool_name = match.group(1) if match is not None else ""
     sender = str(row.get("sender") or "").strip().upper()
     recipient = str(row.get("recipient") or "").strip().upper()
-    if sender == "AGENT" and recipient in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"}:
-        return True
-    raw_name = row.get("openai_function_name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        return True
-    return False
-
-
-def _sandbox_tool_call_semantics(row: dict[str, JsonValue]) -> JsonObject:
+    if not tool_name and not (sender == "AGENT" and recipient in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"}):
+        return None
     return {
         "kind": StageGoalSemanticKind.TOOL_CALL.value,
-        "tool_name": _sandbox_tool_name(row) or "unknown",
+        "tool_name": tool_name or "unknown",
         "arguments": {},
         "evidence_source": "trajectory_or_structured_scorer",
         "user_visible_required": False,
     }
-
-
-def _sandbox_tool_name(row: dict[str, JsonValue]) -> str:
-    raw_name = row.get("openai_function_name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        return raw_name.strip()
-    content = row.get("content")
-    if isinstance(content, str) and content.strip():
-        match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)", content.strip())
-        if match is not None:
-            return match.group(1)
-    return ""
 
 
 def _is_user_visible_message_route(sender: object, recipient: object) -> bool:
@@ -239,29 +217,3 @@ def _visible_only_to_user_simulator(value: JsonValue) -> bool:
     if not isinstance(value, list) or len(value) != 1:
         return False
     return str(value[0]) == "USER"
-
-
-def _tool_trace_items(raw_trace: JsonValue) -> list[JsonObject]:
-    trace_value = _parse_tool_trace_value(raw_trace)
-    if isinstance(trace_value, dict):
-        return [trace_value]
-    if not isinstance(trace_value, list):
-        return []
-    items: list[JsonObject] = []
-    for item in trace_value:
-        parsed_item = _parse_tool_trace_value(item)
-        if isinstance(parsed_item, dict):
-            items.append(parsed_item)
-        elif isinstance(parsed_item, list):
-            items.extend(dict(nested) for nested in parsed_item if isinstance(nested, dict))
-    return items
-
-
-def _parse_tool_trace_value(value: JsonValue) -> JsonValue:
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-        return json_safe(parsed)
-    return json_safe(value)

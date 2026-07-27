@@ -138,9 +138,13 @@ def evaluate_agent_step(
         context=context,
     )
     if analysis.hit is None:
-        no_progress_decision = _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)
-        if no_progress_decision is not None:
-            return no_progress_decision
+        if analysis.attempt_detail is not None:
+            state.match_attempts.append(analysis.attempt_detail)
+            no_progress_decision = _ready_frontier_no_progress_decision(
+                config, state, analysis.attempt_detail, thresholds
+            )
+            if no_progress_decision is not None:
+                return no_progress_decision
         if analysis.blocked_detail is not None:
             state.match_attempts.append(analysis.blocked_detail)
             if config.stop_on_stage_failure:
@@ -174,7 +178,10 @@ def evaluate_agent_step(
         if analysis.attempt_detail is not None:
             analysis.attempt_detail["llm_semantic_review"] = semantic_review_detail
         if milestone_score.status != StageStatus.PASS:
-            return _record_attempt_and_check_no_progress(config, state, analysis.attempt_detail, thresholds)
+            if analysis.attempt_detail is None:
+                return None
+            state.match_attempts.append(analysis.attempt_detail)
+            return _ready_frontier_no_progress_decision(config, state, analysis.attempt_detail, thresholds)
 
     decision = evaluate_checkpoint(
         config=config,
@@ -226,23 +233,9 @@ def _semantic_message_review_score(
     return reviewed_score, semantic_review_attempt_detail(targets, reviews, reviewed_score)
 
 
-def _record_attempt_and_check_no_progress(
-    config: HarnessRunConfig,
-    state: RuntimeEvaluationState,
-    attempt_detail: JsonObject | None,
-    thresholds: ThresholdConfig,
-) -> RuntimeEvaluationDecision | None:
-    if attempt_detail is None:
-        return None
-    state.match_attempts.append(attempt_detail)
-    return _ready_frontier_no_progress_decision(config, state, attempt_detail, thresholds)
-
-
 def _ready_frontier_no_progress_decision(
     config: HarnessRunConfig, state: RuntimeEvaluationState, attempt_detail: JsonObject, thresholds: ThresholdConfig
 ) -> RuntimeEvaluationDecision | None:
-    if state.milestone_frontier is None:
-        raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
     ready_ids = ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
 
     if config.stop_on_ready_frontier_no_progress:

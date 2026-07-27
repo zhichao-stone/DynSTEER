@@ -11,6 +11,7 @@ from dynsteer.evaluate.runtime import JudgeConfigurationError
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.evaluate.weights import update_weights
+from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
@@ -50,6 +51,7 @@ def evaluate_checkpoint(
     expensive_judge: ExpensiveJudge | None,
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
+    strategy: EvaluationStrategyConfig | None = None,
     force_standard_dimensions: list[Dimension] | None = None,
 ) -> RuntimeEvaluationDecision:
     """结算单个 milestone checkpoint 并返回运行期决策。
@@ -105,6 +107,7 @@ def evaluate_checkpoint(
         expensive_judge,
         thresholds,
         weight_config,
+        strategy=strategy,
         force_standard_dimensions=force_standard_dimensions,
     )
     semantic_review = stage_result.metadata.get("semantic_review")
@@ -157,7 +160,12 @@ def evaluate_checkpoint(
         }
         stage_result.metadata["evaluation_termination"] = termination.to_dict()
         return RuntimeEvaluationDecision(state, settlement, stage_result, termination=termination)
-    stop_termination = should_stop_after_stage(config, state, stage_result, thresholds)
+    active_strategy = strategy or EvaluationStrategyConfig()
+    stop_termination = (
+        should_stop_after_stage(config, state, stage_result, thresholds)
+        if active_strategy.policy_stop
+        else EvaluationTerminationState()
+    )
     if not stop_termination.should_stop:
         return RuntimeEvaluationDecision(state, settlement, stage_result)
     stage_result.metadata["evaluation_termination"] = stop_termination.to_dict()
@@ -170,6 +178,7 @@ def finish_settlement(
     trajectory: Trajectory,
     scorer: GeneralScorer,
     state: RuntimeEvaluationState,
+    replay_termination: EvaluationTerminationState | None = None,
 ) -> tuple[
     HarnessStageSettlement,
     StageEvaluationResult,
@@ -241,6 +250,7 @@ def finish_settlement(
     )
     diagnosis = [str(item) for item in verification.get("diagnosis", [])] if isinstance(verification.get("diagnosis"), list) else []
 
+    replay_metadata = replay_termination.to_dict() if replay_termination is not None else None
     stage_result = StageEvaluationResult(
         stage_id=interval.stage_id,
         milestone_id=interval.milestone_id,
@@ -262,6 +272,8 @@ def finish_settlement(
             "finish_stage_evaluation": verification,
             "next_evaluation_policy": evaluation_policy.to_dict(),
             "evaluation_termination": EvaluationTerminationState().to_dict(),
+            "replay_virtual_stop": replay_metadata,
+            "finish_after_virtual_stop": replay_metadata is not None,
         },
     )
 
@@ -281,6 +293,8 @@ def finish_settlement(
             "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
             "milestone_matching": build_finish_matching_detail(graph=graph, matched=matched),
             "finish_stage_evaluation": verification,
+            "replay_virtual_stop": replay_metadata,
+            "finish_after_virtual_stop": replay_metadata is not None,
         },
     )
     return settlement, stage_result, evaluation_policy
@@ -296,6 +310,7 @@ def _evaluate_stage(
     expensive_judge: ExpensiveJudge | None,
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
+    strategy: EvaluationStrategyConfig | None = None,
     force_standard_dimensions: list[Dimension] | None = None,
 ) -> tuple[StageEvaluationResult, dict[Dimension, float], EvaluationPolicyState, EvaluationTerminationState]:
     """按当前评估粒度策略评估一个阶段。
@@ -314,14 +329,18 @@ def _evaluate_stage(
     输出：
         阶段报告、新权重和策略更新。
     """
+    active_strategy = strategy or EvaluationStrategyConfig()
     weights = state.weights
     evaluation_policy = state.evaluation_policy
     spec = resolve_stage_evaluation_spec(interval, task_case)
     focus_dimensions = list(dict.fromkeys(spec.focus_dimensions))
-    dimension_levels = {
-        dimension: evaluation_policy.dimension_levels.get(dimension, evaluation_policy.base_level)
-        for dimension in focus_dimensions
-    }
+    if active_strategy.dynamic_routing:
+        dimension_levels = {
+            dimension: evaluation_policy.dimension_levels.get(dimension, evaluation_policy.base_level)
+            for dimension in focus_dimensions
+        }
+    else:
+        dimension_levels = {dimension: active_strategy.fixed_judge_level for dimension in focus_dimensions}
     requested_force_dimensions = list(dict.fromkeys(force_standard_dimensions or []))
     forced_dimensions = [dimension for dimension in requested_force_dimensions if dimension in focus_dimensions]
     for dimension in forced_dimensions:
@@ -352,7 +371,10 @@ def _evaluate_stage(
         _merge_dimension_result(stage_result, result, dimensions)
         judge_results.append(_judge_result_metadata(result, dimensions, weights))
 
-    semantic_review_passed = _semantic_review_dimensions_pass(stage_result, forced_dimensions, thresholds)
+    semantic_review_passed = bool(forced_dimensions) and all(
+        as_number(stage_result.dimension_scores.get(dimension), 0.0) >= thresholds.pass_threshold
+        for dimension in forced_dimensions
+    )
     semantic_review_clears_structural_failure = semantic_review_passed and _semantic_only_hard_failure(
         interval, task_case
     )
@@ -385,7 +407,12 @@ def _evaluate_stage(
         stage_result.status = StageStatus.PASS
     stage_result.minefield_score = state.max_minefield_score
     stage_result.fatal_minefield_score = state.max_minefield_score if state.fatal_minefield else 0.0
-    next_weights = update_weights(weights, stage_result.dimension_scores, stage_result.dimension_uncertainty, weight_config)
+    if active_strategy.dynamic_weighting:
+        next_weights = update_weights(
+            weights, stage_result.dimension_scores, stage_result.dimension_uncertainty, weight_config
+        )
+    else:
+        next_weights = dict(weights)
     stage_result.next_weights = next_weights
     low_score_dimensions = [
         {
@@ -403,6 +430,7 @@ def _evaluate_stage(
         for dimension, reason in spec.dimension_rationale.items()
         if dimension in focus_dimensions
     }
+    stage_result.metadata["evaluation_strategy"] = active_strategy.to_dict()
     stage_result.metadata["structural_failure"] = structural_failure
     if low_score_dimensions:
         stage_result.metadata["low_score_dimensions"] = low_score_dimensions
@@ -431,7 +459,17 @@ def _evaluate_stage(
             for dimension in Dimension
         },
     }
-    next_policy, termination = update_evaluation_policy(evaluation_policy, stage_result, thresholds)
+    if active_strategy.dynamic_routing:
+        next_policy, termination = update_evaluation_policy(
+            evaluation_policy, stage_result, thresholds, allow_stop=active_strategy.policy_stop
+        )
+    else:
+        next_policy = EvaluationPolicyState(
+            base_level=active_strategy.fixed_judge_level,
+            dimension_levels={dimension: active_strategy.fixed_judge_level for dimension in Dimension},
+            reason="static_routing",
+        )
+        termination = EvaluationTerminationState()
     stage_result.metadata["next_evaluation_policy"] = next_policy.to_dict()
     stage_result.metadata["evaluation_termination"] = termination.to_dict()
     return stage_result, next_weights, next_policy, termination
@@ -449,19 +487,16 @@ def _merge_dimension_result(
     base.diagnosis.extend(item for item in update.diagnosis if item not in base.diagnosis)
 
 
-def _semantic_review_dimensions_pass(
-    result: StageEvaluationResult, dimensions: list[Dimension], thresholds: ThresholdConfig
-) -> bool:
-    if not dimensions:
-        return False
-    return all(as_number(result.dimension_scores.get(dimension), 0.0) >= thresholds.pass_threshold for dimension in dimensions)
-
-
 def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) -> bool:
     score = interval.milestone_score
     if score is None or score.hard_constraints_all_pass:
         return False
-    milestone = _milestone_for_interval(interval, task_case)
+    milestone = None
+    if interval.milestone_id is not None and task_case.milestone_graph is not None:
+        milestone = next(
+            (node for node in task_case.milestone_graph.nodes if node.milestone_id == interval.milestone_id),
+            None,
+        )
     if milestone is None:
         return False
     score_by_id = {item.constraint_id: item for item in score.constraint_scores}
@@ -483,13 +518,6 @@ def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) ->
     return semantic_failure_found
 
 
-def _milestone_for_interval(interval: StageInterval, task_case: TaskCase) -> Milestone | None:
-    if interval.milestone_id is None or task_case.milestone_graph is None:
-        return None
-    return next(
-        (milestone for milestone in task_case.milestone_graph.nodes if milestone.milestone_id == interval.milestone_id),
-        None,
-    )
 def _judge_result_metadata(
     result: StageEvaluationResult, dimensions: list[Dimension], weights: dict[Dimension, float]
 ) -> JsonObject:
@@ -497,6 +525,11 @@ def _judge_result_metadata(
     scored_dimensions = {
         dimension: score for dimension, score in dimension_scores.items() if isinstance(score, int | float)
     }
+    confidence_values = [
+        result.dimension_confidence[dimension]
+        for dimension in dimensions
+        if dimension in result.dimension_confidence
+    ]
     return {
         "status": result.status.value,
         "dimension_stage_score": stage_score_from_dimensions(scored_dimensions, weights),
@@ -511,17 +544,10 @@ def _judge_result_metadata(
         "dimension_confidence": {
             dimension.value: result.dimension_confidence.get(dimension) for dimension in dimensions
         },
-        "dimension_confidence_avg": _average_dimension_confidence(result, dimensions),
+        "dimension_confidence_avg": sum(confidence_values) / len(confidence_values) if confidence_values else None,
         "first_evidence": result.evidence[0] if result.evidence else None,
         "first_diagnosis": result.diagnosis[0] if result.diagnosis else None,
     }
-
-
-def _average_dimension_confidence(result: StageEvaluationResult, dimensions: list[Dimension]) -> float | None:
-    values = [result.dimension_confidence[dimension] for dimension in dimensions if dimension in result.dimension_confidence]
-    if not values:
-        return None
-    return sum(values) / len(values)
 
 
 def should_stop_after_stage(

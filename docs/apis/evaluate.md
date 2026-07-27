@@ -2,7 +2,7 @@
 
 ## 目标
 
-`dynsteer.evaluate` 提供 DynSTEER 的运行期阶段式评估入口。当前只保留 `DynSTEEREvaluator.evaluate(harness, config, task_case)` 主流程，不再提供离线整轨迹评估入口。
+`dynsteer.evaluate` 提供 DynSTEER 的运行期阶段式评估入口。主流程仍是 `DynSTEEREvaluator.evaluate(harness, config, task_case)`；实验层另提供 `DynSTEEREvaluator.evaluate_replay(task_case, trajectory, scorer, config)`，用于对同一条完整轨迹执行离线阶段式回放。
 
 ## 主流程
 
@@ -21,6 +21,21 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 7. milestone 命中后进入阶段结算，先读取 `TaskCase.stage_evaluation_specs[stage_id].focus_dimensions`，cheap/standard/expensive judge 都只评估本阶段聚焦维度。
 8. 阶段完成后仅根据本阶段实际评估维度更新权重和下一阶段评估策略；未评估维度不会被当成 0 分。
 9. 收尾时，任何未完成 milestone 都会生成 synthetic pending stage；只有全部 milestone 完成且不是策略提前终止时才追加 `__finish__` final verification 阶段。
+
+## Replay 流程
+
+```python
+result = evaluator.evaluate_replay(task_case, trajectory, scorer, config)
+```
+
+Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它把完整 `Trajectory` 按 step 顺序重新喂入 minefield、agent step closure、milestone matching 和 checkpoint 逻辑。若策略触发提前终止，结果写入 `termination` 与 stage metadata 的 `replay_virtual_stop`；默认继续扫描完整轨迹，并在 finish metadata 中标记 `finish_after_virtual_stop=true`。
+
+`EvaluationStrategyConfig` 控制 replay 与在线评估共享的策略开关：
+
+- `dynamic_routing`: 关闭后固定使用 `fixed_judge_level`。
+- `dynamic_weighting`: 关闭后下一阶段权重保持不变。
+- `policy_stop`: 关闭后不产生在线 stop 或 replay 虚拟 stop。
+- `replay_continue_after_virtual_stop`: replay 虚拟早停后是否继续扫描完整轨迹。
 
 ## Milestone 语义
 
@@ -115,6 +130,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 - `metadata.dimension_judge_results`
 - `metadata.focus_dimensions`
 - `metadata.dimension_rationale`
+- `metadata.evaluation_strategy`
 - `metadata.low_score_dimensions`
 - `metadata.weight_update_diagnostics`
 - `metadata.stage_quality_diagnostics`（cheap baseline）

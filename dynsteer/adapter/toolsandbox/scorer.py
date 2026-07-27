@@ -5,6 +5,7 @@ from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
+from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.model import (
     Boundary,
@@ -256,23 +257,10 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
     def _serialize_target_tool_trace(self, value: JsonValue) -> JsonValue:
         if value is None or isinstance(value, str):
             return value
-        if isinstance(value, dict):
-            return json.dumps(value, ensure_ascii=False)
-        if isinstance(value, list):
-            traces: list[JsonValue] = []
-            for item in value:
-                if isinstance(item, str):
-                    try:
-                        parsed = json.loads(item)
-                    except json.JSONDecodeError:
-                        return json.dumps(value, ensure_ascii=False)
-                    traces.append(parsed)
-                else:
-                    traces.append(item)
-            if len(traces) == 1:
-                return json.dumps(traces[0], ensure_ascii=False)
-            return json.dumps(traces, ensure_ascii=False)
-        return json.dumps(value, ensure_ascii=False)
+        traces = tool_trace_items(value)
+        if len(traces) == 1:
+            return json.dumps(traces[0], ensure_ascii=False)
+        return json.dumps(traces or value, ensure_ascii=False)
 
     def _restore_namespace_schema(
         self, dataframe: pl.DataFrame, namespace: str | None, target: bool = False
@@ -295,7 +283,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             try:
                 result = result.with_columns(pl.col(column_name).cast(dtype))
             except Exception as exc:
-                raise ValueError(f"ToolSandbox SANDBOX schema 恢复失败: column={column_name}") from exc
+                raise ValueError(f"ToolSandbox {namespace.upper()} schema 恢复失败: column={column_name}") from exc
         return result
 
     def _namespace_schema(self, namespace: str) -> dict[str, Any]:
@@ -388,12 +376,22 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             raise ValueError(error)
         namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
         rows = reference_snapshot.namespaces.get(namespace)
-        summary = self._reference_summary_from_rows(
-            reference_snapshot=reference_snapshot,
-            reference_milestone_id=reference_milestone_id,
-            namespace=namespace,
-            rows=rows,
+        row_list = rows if isinstance(rows, list) else []
+        columns = sorted(
+            {
+                str(column)
+                for row in row_list
+                if isinstance(row, dict)
+                for column in row
+            }
         )
+        summary = {
+            "reference_snapshot_id": reference_snapshot.snapshot_id,
+            "reference_milestone_id": reference_milestone_id,
+            "namespace": namespace,
+            "row_count": len(row_list),
+            "columns": columns,
+        }
         return self._rows_to_dataframe(rows, namespace=namespace), summary
 
     def _reference_summary(self, constraint: Constraint, context: ScoringContext | None) -> JsonObject | None:
@@ -406,30 +404,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
                 return None
             return {"error": str(exc), "reference_milestone_node_index": reference_index}
         return summary
-
-    def _reference_summary_from_rows(
-        self,
-        reference_snapshot: StateSnapshot,
-        reference_milestone_id: str,
-        namespace: str,
-        rows: JsonValue,
-    ) -> JsonObject:
-        row_list = rows if isinstance(rows, list) else []
-        columns = sorted(
-            {
-                str(column)
-                for row in row_list
-                if isinstance(row, dict)
-                for column in row
-            }
-        )
-        return {
-            "reference_snapshot_id": reference_snapshot.snapshot_id,
-            "reference_milestone_id": reference_milestone_id,
-            "namespace": namespace,
-            "row_count": len(row_list),
-            "columns": columns,
-        }
 
     def _reference_evidence(self, summary: JsonObject | None) -> list[str]:
         if not isinstance(summary, dict):

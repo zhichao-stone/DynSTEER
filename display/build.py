@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -11,13 +12,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dynsteer.utils import clean_evidence_items
+from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
+from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file
 
 JsonObject = dict[str, Any]
 CaseKey = tuple[str, str, str]
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
+
+
+@dataclass(frozen=True)
+class StageDefinitionIndex:
+    by_stage_id: dict[str, JsonObject]
+    by_milestone_id: dict[str, JsonObject]
+    finish: JsonObject | None
 
 
 def build_display_data(runs_dir: Path, results_dir: Path, data_dir: Path | None = None) -> JsonObject:
@@ -76,21 +85,28 @@ def _scenario(
     report = _load_json(result_case_dir / "report.json")
     adapted_case = _load_json(data_dir / benchmark / "adapted_cases" / f"{scenario_id}.json")
     all_stage_definitions = _stage_definitions(adapted_case)
+    definition_index = _stage_definition_index(all_stage_definitions)
     termination = _termination_summary(raw_summary, adapted_case)
-    stage_reports, report_stage_id_map = _stage_reports(report.get("stage_reports", []), all_stage_definitions)
+    stage_reports, report_stage_id_map = _stage_reports(report.get("stage_reports", []), definition_index)
     if not stage_reports and termination.get("terminated_by_policy") is True:
-        stage_reports = [_termination_stage_report(all_stage_definitions, termination)]
-    stage_definitions = _active_stage_definitions(all_stage_definitions, stage_reports)
-    stage_settlements, settlement_stage_id_map = _settlement_summaries(
-        raw_summary.get("stage_settlements", []), all_stage_definitions
+        stage_reports = [_termination_stage_report(definition_index, termination)]
+    terminal_before_finish = any(
+        report.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(report.get("status"))
+        for report in stage_reports
     )
-    stage_settlements = _active_stage_settlements(stage_settlements, stage_reports)
+    stage_definitions = _active_stage_definitions(
+        all_stage_definitions, stage_reports, definition_index, terminal_before_finish
+    )
+    stage_settlements, settlement_stage_id_map = _settlement_summaries(
+        raw_summary.get("stage_settlements", []), definition_index
+    )
+    stage_settlements = _active_stage_settlements(stage_settlements, terminal_before_finish)
     stage_id_map = {**settlement_stage_id_map, **report_stage_id_map}
     minefield_matches = _scenario_minefield_matches(report, termination, adapted_case)
     return {
         "scenario_id": scenario_id,
         "task_id": str(summary.get("task_id") or trajectory.get("task_id") or f"{benchmark}::{scenario_id}"),
-        "summary": _normalize_summary_stage_ids(_summary_payload(summary), stage_definitions, stage_id_map),
+        "summary": _normalize_summary_stage_ids(_summary_payload(summary), stage_id_map, definition_index),
         "trajectory": {"steps": trajectory.get("steps", [])},
         "milestone_graph": _graph_summary(raw_summary, adapted_case),
         "stage_definitions": stage_definitions,
@@ -103,7 +119,7 @@ def _scenario(
 
 
 def _collect_case_keys(base_dir: Path) -> set[CaseKey]:
-    if base_dir is None or not base_dir.exists():
+    if not base_dir.exists():
         return set()
     keys: set[CaseKey] = set()
     for benchmark_dir in base_dir.iterdir():
@@ -128,15 +144,9 @@ def _scenario_minefield_matches(report: JsonObject, termination: JsonObject, ada
 
 
 def _load_json(path: Path) -> JsonObject:
-    if path is None or not path.exists():
+    if not path.exists():
         return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"JSON 文件格式错误: {path}") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"JSON 文件顶层必须是对象: {path}")
-    return payload
+    return read_json_file(path, str(path), dict)
 
 
 def _run_summary(scenarios: list[JsonObject]) -> JsonObject:
@@ -212,7 +222,7 @@ def _graph_summary(raw_summary: JsonObject, adapted_case: JsonObject) -> JsonObj
     return {"nodes": _with_virtual_graph_nodes(nodes, edges, metadata), "edges": edges, "metadata": metadata}
 
 
-def _stage_reports(reports: Any, definitions: list[JsonObject]) -> tuple[list[JsonObject], dict[str, str]]:
+def _stage_reports(reports: Any, index: StageDefinitionIndex) -> tuple[list[JsonObject], dict[str, str]]:
     if not isinstance(reports, list):
         return [], {}
     normalized: list[JsonObject] = []
@@ -223,8 +233,8 @@ def _stage_reports(reports: Any, definitions: list[JsonObject]) -> tuple[list[Js
             continue
         item = _json_copy(report)
         old_stage_id = str(item.get("stage_id") or "")
-        definition = _stage_definition_for_report(item, definitions)
-        new_stage_id = _normalized_stage_id(old_stage_id, definitions, stage_id_map, definition)
+        definition = _stage_definition_for_report(item, index)
+        new_stage_id = _normalized_stage_id(old_stage_id, stage_id_map, definition, index)
         if terminal_before_finish and definition is not None and definition.get("milestone_id") == FINISH_NODE_ID:
             if old_stage_id and old_stage_id != new_stage_id:
                 stage_id_map[old_stage_id] = new_stage_id
@@ -251,7 +261,7 @@ def _stage_reports(reports: Any, definitions: list[JsonObject]) -> tuple[list[Js
     return normalized, stage_id_map
 
 
-def _settlement_summaries(settlements: Any, definitions: list[JsonObject]) -> tuple[list[JsonObject], dict[str, str]]:
+def _settlement_summaries(settlements: Any, index: StageDefinitionIndex) -> tuple[list[JsonObject], dict[str, str]]:
     if not isinstance(settlements, list):
         return [], {}
     summaries: list[JsonObject] = []
@@ -260,7 +270,7 @@ def _settlement_summaries(settlements: Any, definitions: list[JsonObject]) -> tu
         if not isinstance(settlement, dict):
             continue
         old_stage_id = _settlement_stage_id(settlement)
-        summary = _settlement_summary(settlement, definitions)
+        summary = _settlement_summary(settlement, index)
         new_stage_id = str(summary.get("stage_id") or "")
         if old_stage_id and new_stage_id and old_stage_id != new_stage_id:
             stage_id_map[old_stage_id] = new_stage_id
@@ -268,29 +278,25 @@ def _settlement_summaries(settlements: Any, definitions: list[JsonObject]) -> tu
     return summaries, stage_id_map
 
 
-def _active_stage_definitions(definitions: list[JsonObject], reports: list[JsonObject]) -> list[JsonObject]:
-    if not reports:
-        return definitions
-    if not any(
-        report.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(report.get("status"))
-        for report in reports
-    ):
+def _active_stage_definitions(
+    definitions: list[JsonObject],
+    reports: list[JsonObject],
+    index: StageDefinitionIndex,
+    terminal_before_finish: bool,
+) -> list[JsonObject]:
+    if not reports or not terminal_before_finish:
         return definitions
     reported_ids = {str(report.get("stage_id") or "") for report in reports}
-    finish_definition = _finish_definition(definitions)
     return [
         definition
         for definition in definitions
         if str(definition.get("stage_id") or "") in reported_ids
-        or _should_keep_unreported_finish_definition(definition, finish_definition, reports)
+        or _should_keep_unreported_finish_definition(definition, index.finish, reports)
     ]
 
 
-def _active_stage_settlements(settlements: list[JsonObject], reports: list[JsonObject]) -> list[JsonObject]:
-    if not any(
-        report.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(report.get("status"))
-        for report in reports
-    ):
+def _active_stage_settlements(settlements: list[JsonObject], terminal_before_finish: bool) -> list[JsonObject]:
+    if not terminal_before_finish:
         return settlements
     return [
         settlement
@@ -299,12 +305,12 @@ def _active_stage_settlements(settlements: list[JsonObject], reports: list[JsonO
     ]
 
 
-def _settlement_summary(settlement: JsonObject, definitions: list[JsonObject] | None = None) -> JsonObject:
+def _settlement_summary(settlement: JsonObject, index: StageDefinitionIndex) -> JsonObject:
     metadata = settlement.get("metadata", {}) if isinstance(settlement.get("metadata"), dict) else {}
     stage_report = metadata.get("stage_report", {}) if isinstance(metadata.get("stage_report"), dict) else {}
     old_stage_id = str(stage_report.get("stage_id") or "")
-    definition = _stage_definition_for_settlement(settlement, definitions or [])
-    stage_id = _normalized_stage_id(old_stage_id, definitions or [], {}, definition)
+    definition = _stage_definition_for_settlement(settlement, index)
+    stage_id = _normalized_stage_id(old_stage_id, {}, definition, index)
     milestone_id = settlement.get("milestone_id")
     if not milestone_id and definition is not None:
         milestone_id = definition.get("milestone_id")
@@ -336,8 +342,6 @@ def _settlement_summary(settlement: JsonObject, definitions: list[JsonObject] | 
 
 
 def _termination_summary(raw_summary: JsonObject, adapted_case: JsonObject) -> JsonObject:
-    if raw_summary is None:
-        raise ValueError("raw_summary 不能为空")
     detail = _json_copy(raw_summary.get("termination_detail") or {})
     if isinstance(detail, dict):
         detail["minefield_matches"] = _enrich_minefield_matches(detail.get("minefield_matches", []), adapted_case)
@@ -349,8 +353,8 @@ def _termination_summary(raw_summary: JsonObject, adapted_case: JsonObject) -> J
     }
 
 
-def _termination_stage_report(definitions: list[JsonObject], termination: JsonObject) -> JsonObject:
-    finish_definition = _finish_definition(definitions) or {
+def _termination_stage_report(index: StageDefinitionIndex, termination: JsonObject) -> JsonObject:
+    finish_definition = index.finish or {
         "stage_id": f"{START_NODE_ID}->{FINISH_NODE_ID}",
         "anchor_milestone_id": START_NODE_ID,
         "milestone_id": FINISH_NODE_ID,
@@ -533,8 +537,6 @@ def _settlement_stage_id(settlement: JsonObject) -> str:
 
 
 def _stage_definitions(adapted_case: JsonObject) -> list[JsonObject]:
-    if adapted_case is None:
-        raise ValueError("adapted_case 不能为空")
     stage_goals = adapted_case.get("stage_goals", {})
     if not isinstance(stage_goals, dict):
         return []
@@ -558,65 +560,63 @@ def _stage_definitions(adapted_case: JsonObject) -> list[JsonObject]:
 
 
 def _normalize_summary_stage_ids(
-    summary: JsonObject, definitions: list[JsonObject], stage_id_map: dict[str, str]
+    summary: JsonObject, stage_id_map: dict[str, str], index: StageDefinitionIndex
 ) -> JsonObject:
-    if summary is None:
-        raise ValueError("summary 不能为空")
     normalized = _json_copy(summary)
     first_failure = normalized.get("first_failure_stage_id")
     if isinstance(first_failure, str):
-        normalized["first_failure_stage_id"] = _normalized_stage_id(first_failure, definitions, stage_id_map, None)
+        normalized["first_failure_stage_id"] = _normalized_stage_id(first_failure, stage_id_map, None, index)
     return normalized
 
 
-def _stage_definition_for_report(report: JsonObject, definitions: list[JsonObject]) -> JsonObject | None:
-    if report is None:
-        raise ValueError("stage report 不能为空")
+def _stage_definition_index(definitions: list[JsonObject]) -> StageDefinitionIndex:
+    by_stage_id = {
+        str(definition.get("stage_id") or ""): definition
+        for definition in definitions
+        if isinstance(definition.get("stage_id"), str) and definition.get("stage_id")
+    }
+    by_milestone_id = {
+        str(definition.get("milestone_id") or ""): definition
+        for definition in definitions
+        if isinstance(definition.get("milestone_id"), str) and definition.get("milestone_id")
+    }
+    return StageDefinitionIndex(by_stage_id, by_milestone_id, by_milestone_id.get(FINISH_NODE_ID))
+
+
+def _stage_definition_for_report(report: JsonObject, index: StageDefinitionIndex) -> JsonObject | None:
     stage_id = str(report.get("stage_id") or "")
-    direct = _definition_for_stage_id(stage_id, definitions)
+    direct = _definition_for_stage_id(stage_id, index)
     if direct is not None:
         return direct
     milestone_id = report.get("milestone_id")
     if isinstance(milestone_id, str) and milestone_id:
-        return _definition_for_milestone(milestone_id, definitions)
+        return index.by_milestone_id.get(milestone_id)
     if not milestone_id:
-        return _finish_definition(definitions)
+        return index.finish
     return None
 
 
-def _stage_definition_for_settlement(settlement: JsonObject, definitions: list[JsonObject]) -> JsonObject | None:
-    if settlement is None:
-        raise ValueError("settlement 不能为空")
+def _stage_definition_for_settlement(settlement: JsonObject, index: StageDefinitionIndex) -> JsonObject | None:
     stage_id = _settlement_stage_id(settlement)
-    direct = _definition_for_stage_id(stage_id, definitions)
+    direct = _definition_for_stage_id(stage_id, index)
     if direct is not None:
         return direct
     milestone_id = settlement.get("milestone_id")
     if isinstance(milestone_id, str) and milestone_id:
-        return _definition_for_milestone(milestone_id, definitions)
+        return index.by_milestone_id.get(milestone_id)
     if settlement.get("kind") == "finish":
-        return _finish_definition(definitions)
+        return index.finish
     return None
 
 
-def _definition_for_stage_id(stage_id: str, definitions: list[JsonObject]) -> JsonObject | None:
+def _definition_for_stage_id(stage_id: str, index: StageDefinitionIndex) -> JsonObject | None:
     if not stage_id:
         return None
-    for definition in definitions:
-        if definition.get("stage_id") == stage_id:
-            return definition
+    direct = index.by_stage_id.get(stage_id)
+    if direct is not None:
+        return direct
     legacy_milestone_id = _legacy_pending_milestone_id(stage_id)
-    return _definition_for_milestone(legacy_milestone_id, definitions) if legacy_milestone_id else None
-
-
-def _definition_for_milestone(milestone_id: str, definitions: list[JsonObject]) -> JsonObject | None:
-    if not milestone_id:
-        return None
-    return next((definition for definition in definitions if definition.get("milestone_id") == milestone_id), None)
-
-
-def _finish_definition(definitions: list[JsonObject]) -> JsonObject | None:
-    return _definition_for_milestone(FINISH_NODE_ID, definitions)
+    return index.by_milestone_id.get(legacy_milestone_id) if legacy_milestone_id else None
 
 
 def _should_keep_unreported_finish_definition(
@@ -638,13 +638,13 @@ def _legacy_pending_milestone_id(stage_id: str) -> str:
 
 
 def _normalized_stage_id(
-    stage_id: str, definitions: list[JsonObject], stage_id_map: dict[str, str], definition: JsonObject | None
+    stage_id: str, stage_id_map: dict[str, str], definition: JsonObject | None, index: StageDefinitionIndex
 ) -> str:
     if definition is not None:
         return str(definition.get("stage_id") or "")
     if stage_id in stage_id_map:
         return stage_id_map[stage_id]
-    direct = _definition_for_stage_id(stage_id, definitions)
+    direct = _definition_for_stage_id(stage_id, index)
     if direct is not None:
         return str(direct.get("stage_id") or "")
     return stage_id
@@ -671,8 +671,6 @@ def _replace_string(value: Any, source: str, target: str) -> Any:
 
 
 def _finish_stage_definition(adapted_case: JsonObject, stage_goals: JsonObject) -> JsonObject:
-    if adapted_case is None or stage_goals is None:
-        raise ValueError("finish 阶段定义参数不能为空")
     graph = adapted_case.get("milestone_graph", {})
     metadata = graph.get("metadata", {}) if isinstance(graph, dict) else {}
     analysis = metadata.get("graph_analysis", {}) if isinstance(metadata, dict) else {}
@@ -781,7 +779,7 @@ def _expected_row_summary(row: JsonObject) -> str:
 
 
 def _tool_trace_summary(tool_trace: Any) -> str:
-    traces = _parse_tool_trace(tool_trace)
+    traces = tool_trace_items(tool_trace)
     if not traces:
         return _text(tool_trace, 360)
     parts = []
@@ -793,23 +791,6 @@ def _tool_trace_summary(tool_trace: Any) -> str:
     if len(traces) > 3:
         parts.append(f"另有 {len(traces) - 3} 次工具调用")
     return "; ".join(parts)
-
-
-def _parse_tool_trace(tool_trace: Any) -> list[JsonObject]:
-    values = tool_trace if isinstance(tool_trace, list) else [tool_trace]
-    traces: list[JsonObject] = []
-    for value in values:
-        parsed: Any = value
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError:
-                continue
-        if isinstance(parsed, dict):
-            traces.append(parsed)
-        elif isinstance(parsed, list):
-            traces.extend(item for item in parsed if isinstance(item, dict))
-    return traces
 
 
 def _constraints_trigger_summary(constraints: list[JsonObject]) -> str:
@@ -885,14 +866,11 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    return float(value) if isinstance(value, (int, float)) else None
+    return as_number(value)
 
 
 def _text(value: Any, limit: int) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False) if value is not None else ""
-    return text if len(text) <= limit else f"{text[:limit]}..."
+    return "" if value is None else compact_json_text(value, limit)
 
 
 if __name__ == "__main__":
