@@ -8,30 +8,18 @@ from pathlib import Path
 from tqdm import tqdm
 
 from dynsteer.adapter.loader import load_task_case, load_trajectory
-from dynsteer.adapter.registry import get_adapter, get_harness
+from dynsteer.adapter import get_adapter, get_harness, BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
-from dynsteer.experiment.config import build_harness_config, config_for_case, expand_experiment_matrix, load_experiment_config
+from dynsteer.evaluate.state_summary import state_namespace_summary
+from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
 from dynsteer.experiment.metrics import write_metric_tables
 from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod, ExperimentRunSpec
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.outputs import write_case_outputs, write_default_case_outputs, write_replay_case_outputs
 from dynsteer.harness.selection import select_case_ids, validate_loaded_task_cases
+from dynsteer.harness.runner import prepare_task_cases
 from dynsteer.model import HarnessEvaluationOutput, JsonObject, TaskCase
 from dynsteer.utils import as_number, json_safe, read_json_file
-
-
-_TASK_CASE_CACHE_METADATA_EXCLUDE_KEYS = {
-    "experiment_id",
-    "method",
-    "model_id",
-    "repeat_index",
-    "run_id",
-    "judge_profile",
-    "judge",
-    "threshold_profile",
-    "thresholds",
-    "strategy",
-}
 
 
 def run_experiment(config_path: Path | str, workers: int = 1, force_adapt: bool = False) -> list[ExperimentCaseResult]:
@@ -47,63 +35,67 @@ def run_experiment(config_path: Path | str, workers: int = 1, force_adapt: bool 
         raise ValueError("workers 必须大于 0")
     config = load_experiment_config(config_path)
     specs = expand_experiment_matrix(config)
-    prepared_specs: list[tuple[ExperimentRunSpec, list[TaskCase]]] = []
-    task_case_cache: dict[str, tuple[TaskCase, ...]] = {}
-    total_case_runs = 0
+    task_cases_by_benchmark: dict[str, tuple[TaskCase, ...]] = {}
     for spec in specs:
-        harness_config = build_harness_config(spec)
-        task_cases = _load_task_cases_cached(harness_config, force_adapt=force_adapt, cache=task_case_cache)
-        prepared_specs.append((spec, task_cases))
-        total_case_runs += len(task_cases)
+        if spec.benchmark not in task_cases_by_benchmark:
+            harness_config = build_harness_config(spec)
+            task_cases, _ = prepare_task_cases(harness_config, force_adapt)
+            task_cases_by_benchmark[spec.benchmark] = task_cases
 
     results: list[ExperimentCaseResult] = []
     default_outputs: dict[tuple[str, str, int, str], tuple[HarnessEvaluationOutput, JsonObject]] = {}
-    with tqdm(total=total_case_runs, desc="统一实验 case 完成进度", unit="case") as progress_bar:
-        for spec, task_cases in prepared_specs:
-            for task_case in task_cases:
-                key = (spec.benchmark, spec.model_id, spec.repeat_index, task_case.case_id)
-                if spec.method == ExperimentMethod.DEFAULT:
-                    output, default_reference = run_default_case(spec, task_case)
-                    default_outputs[key] = (output, default_reference)
-                    results.append(
-                        _case_result_from_output(spec, task_case, output, default_reference=default_reference)
-                    )
-                elif spec.method in {ExperimentMethod.DYNSTEER_REPLAY, ExperimentMethod.DYNSTEER_REPLAY_STATIC}:
-                    cached_default = default_outputs.get(key)
-                    if cached_default is None:
-                        default_spec = replace(spec, method=ExperimentMethod.DEFAULT, run_id=spec.run_id)
-                        default_output, default_reference = run_default_case(default_spec, task_case)
-                        default_outputs[key] = (default_output, default_reference)
-                        results.append(
-                            _case_result_from_output(
-                                default_spec, task_case, default_output, default_reference=default_reference
-                            )
-                        )
-                    else:
-                        default_output, default_reference = cached_default
-                    output = run_replay_case(spec, task_case, default_output, default_reference)
-                    results.append(
-                        _case_result_from_output(spec, task_case, output, default_reference=default_reference)
-                    )
-                elif spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
-                    output = run_evaluate_case(spec, task_case)
-                    results.append(_case_result_from_output(spec, task_case, output))
-                elif spec.method == ExperimentMethod.DYNSTEER_GUIDANCE:
-                    output = run_guidance_case(spec, task_case)
-                    results.append(_case_result_from_output(spec, task_case, output))
-                progress_bar.update(1)
-    output_dir = _experiment_output_dir(specs)
-    write_experiment_index(results, output_dir)
-    write_metric_tables(results, output_dir)
+    for i, spec in enumerate(specs):
+        print("="*20 + f"第 {i:02d} 组实验" + "="*20)
+        print(f"Info: benchmark={spec.benchmark}, model={spec.model_id}, method={spec.method.name}, repeat_index={spec.repeat_index}")
+        for task_case in tqdm(task_cases_by_benchmark[spec.benchmark], desc="实验进度", unit="case"):
+            if spec.method == ExperimentMethod.DEFAULT:
+                _get_default_case_outputs(spec, task_case, results, default_outputs)
+            elif spec.method in {ExperimentMethod.DYNSTEER_REPLAY, ExperimentMethod.DYNSTEER_REPLAY_STATIC}:
+                default_output, default_reference = _get_default_case_outputs(
+                    spec, task_case, results, default_outputs
+                )
+                output = run_replay_case(spec, task_case, default_output, default_reference)
+                results.append(_case_result_from_output(spec, task_case, output, default_reference))
+            elif spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
+                output = run_evaluate_case(spec, task_case)
+                results.append(_case_result_from_output(spec, task_case, output))
+            elif spec.method == ExperimentMethod.DYNSTEER_GUIDANCE:
+                output = run_guidance_case(spec, task_case)
+                results.append(_case_result_from_output(spec, task_case, output))
+    if results:
+        output_dir = specs[0].results_dir
+        write_experiment_index(results, output_dir)
+        write_metric_tables(results, output_dir)
     return results
 
 
-def run_default_case(spec: ExperimentRunSpec, task_case: TaskCase) -> tuple[HarnessEvaluationOutput, JsonObject]:
-    """完整执行 benchmark，不进行 DynSTEER 介入。"""
-    if spec is None or task_case is None:
-        raise ValueError("spec 和 task_case 不能为空")
+def _get_default_case_outputs(
+    spec: ExperimentRunSpec, task_case: TaskCase, 
+    results: list[ExperimentCaseResult],
+    outputs: dict[tuple[str, str, int, str], tuple[HarnessEvaluationOutput, JsonObject]]
+) -> tuple[HarnessEvaluationOutput, JsonObject]:
+    key = (spec.benchmark, spec.model_id, spec.repeat_index, task_case.case_id)
+    cached = outputs.get(key)
+    if cached is None:
+        run_spec = spec if spec.method == ExperimentMethod.DEFAULT else replace(spec, method=ExperimentMethod.DEFAULT)
+        output, reference = run_default_case(run_spec, task_case)
+        outputs[key] = output, reference
+        results.append(_case_result_from_output(run_spec, task_case, output, reference))
+    else:
+        output, reference = cached
+    return output, reference
+
+
+def _prepare_for_run_case(spec: ExperimentRunSpec, task_case_template: TaskCase) -> tuple[TaskCase, BaseBenchmarkHarness, HarnessRunConfig]:
+    task_case = copy.deepcopy(task_case_template)
     harness = get_harness(spec.benchmark)
-    config = _config_for_method(spec, task_case.case_id, ExperimentMethod.DEFAULT)
+    config = build_harness_config(spec)
+    return task_case, harness, config
+
+
+def run_default_case(spec: ExperimentRunSpec, task_case_template: TaskCase) -> tuple[HarnessEvaluationOutput, JsonObject]:
+    """完整执行 benchmark，不进行 DynSTEER 介入。"""
+    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
     output = write_default_case_outputs(config=config, harness=harness, task_case=task_case)
     raw_summary = read_json_file(output.raw_summary_path, str(output.raw_summary_path), dict)
     default_result = raw_summary.get("default_result")
@@ -114,19 +106,22 @@ def run_default_case(spec: ExperimentRunSpec, task_case: TaskCase) -> tuple[Harn
 
 def run_replay_case(
     spec: ExperimentRunSpec,
-    task_case: TaskCase,
+    task_case_template: TaskCase,
     default_output: HarnessEvaluationOutput,
     default_reference: JsonObject,
 ) -> HarnessEvaluationOutput:
     """读取同一条 Default 轨迹，执行 DynSTEER-Replay。"""
-    if spec is None or task_case is None or default_output is None:
-        raise ValueError("spec、task_case 和 default_output 不能为空")
-    harness = get_harness(spec.benchmark)
+    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
     trajectory_data = read_json_file(default_output.trajectory_path, str(default_output.trajectory_path), dict)
     trajectory = load_trajectory(trajectory_data)
-    evaluator = DynSTEEREvaluator.from_config(build_harness_config(spec), strategy=spec.strategy)
+    runtime_initial_state = trajectory.raw.get("runtime_initial_state")
+    if isinstance(runtime_initial_state, dict):
+        task_case.initial_state = runtime_initial_state
+        task_case.metadata["runtime_initial_state_source"] = "default_trajectory"
+        task_case.metadata["runtime_initial_state_summary"] = state_namespace_summary(runtime_initial_state)
+    evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
     return write_replay_case_outputs(
-        config=config_for_case(build_harness_config(spec), task_case.case_id),
+        config=config,
         evaluator=evaluator,
         task_case=task_case,
         trajectory=trajectory,
@@ -135,12 +130,9 @@ def run_replay_case(
     )
 
 
-def run_evaluate_case(spec: ExperimentRunSpec, task_case: TaskCase) -> HarnessEvaluationOutput:
+def run_evaluate_case(spec: ExperimentRunSpec, task_case_template: TaskCase) -> HarnessEvaluationOutput:
     """调用 DynSTEEREvaluator.evaluate() 主入口执行在线动态评估。"""
-    if spec is None or task_case is None:
-        raise ValueError("spec 和 task_case 不能为空")
-    harness = get_harness(spec.benchmark)
-    config = config_for_case(build_harness_config(spec), task_case.case_id)
+    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
     evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
     return write_case_outputs(config=config, harness=harness, evaluator=evaluator, task_case=task_case)
 
@@ -152,8 +144,6 @@ def run_guidance_case(spec: ExperimentRunSpec, task_case: TaskCase) -> HarnessEv
 
 def write_experiment_index(results: list[ExperimentCaseResult], output_dir: Path) -> None:
     """写出所有 case 的结构化索引。"""
-    if results is None or output_dir is None:
-        raise ValueError("results 和 output_dir 不能为空")
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = _build_experiment_index_payload(results)
     (output_dir / "index.json").write_text(json.dumps(json_safe(payload), ensure_ascii=False, indent=4), encoding="utf-8")
@@ -224,61 +214,6 @@ def _experiment_index_sort_key(result: ExperimentCaseResult) -> tuple[str, str, 
     return (result.benchmark, result.method.value, result.model_id, result.repeat_index, result.case_id)
 
 
-def _load_task_cases_cached(
-    config: HarnessRunConfig, *, force_adapt: bool, cache: dict[str, tuple[TaskCase, ...]]
-) -> list[TaskCase]:
-    """缓存已适配的 TaskCase 模板，并为每个 spec 返回独立副本。"""
-    if config is None or cache is None:
-        raise ValueError("config 和 cache 不能为空")
-    cache_key = _task_case_cache_key(config, force_adapt)
-    cached_cases = cache.get(cache_key)
-    if cached_cases is None:
-        cached_cases = tuple(_load_task_cases(config, force_adapt=force_adapt))
-        cache[cache_key] = cached_cases
-    return [copy.deepcopy(task_case) for task_case in cached_cases]
-
-
-def _load_task_cases(config: HarnessRunConfig, force_adapt: bool = False) -> list[TaskCase]:
-    """加载当前规格的 adapted task cases。"""
-    adapter = get_adapter(config.benchmark)
-    harness = get_harness(config.benchmark)
-    case_ids = select_case_ids(config, harness, run_all=True)
-    run_config = replace(config, case_ids=tuple(case_ids))
-    harness.prepare_config(run_config)
-    task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
-    validate_loaded_task_cases(case_ids, task_cases)
-    return task_cases
-
-
-def _task_case_cache_key(config: HarnessRunConfig, force_adapt: bool) -> str:
-    """构造与 TaskCase 适配相关的缓存键。"""
-    if config is None:
-        raise ValueError("config 不能为空")
-    metadata = {
-        key: value
-        for key, value in dict(config.metadata).items()
-        if key not in _TASK_CASE_CACHE_METADATA_EXCLUDE_KEYS
-    }
-    payload = {
-        "benchmark": config.benchmark,
-        "data_root": str(config.data_root),
-        "runs_dir": str(config.runs_dir),
-        "results_dir": str(config.results_dir),
-        "case_ids": list(config.case_ids) if config.case_ids is not None else None,
-        "force_adapt": force_adapt,
-        "metadata": json_safe(metadata),
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-
-def _config_for_method(spec: ExperimentRunSpec, case_id: str, method: ExperimentMethod) -> HarnessRunConfig:
-    """构造指定 method 和 case 的 HarnessRunConfig。"""
-    metadata = spec.to_metadata()
-    metadata["method"] = method.value
-    config = build_harness_config(replace(spec, method=method, metadata={**spec.metadata, "method": method.value}))
-    return config_for_case(replace(config, metadata={**config.metadata, **metadata}), case_id)
-
-
 def _case_result_from_output(
     spec: ExperimentRunSpec,
     task_case: TaskCase,
@@ -315,10 +250,3 @@ def _case_result_from_output(
         },
         raw={"summary_metadata": dict(metadata), "default_reference": dict(default_reference or {})},
     )
-
-
-def _experiment_output_dir(specs: list[ExperimentRunSpec]) -> Path:
-    """读取实验输出目录。"""
-    if not specs:
-        return Path("results") / "experiments" / "empty"
-    return specs[0].results_dir

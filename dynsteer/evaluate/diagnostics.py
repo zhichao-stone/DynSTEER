@@ -1,7 +1,11 @@
 import json
 import re
 
-from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
+from dynsteer.evaluate.semantic import (
+    constraint_actual_excerpt,
+    constraint_expected_excerpt,
+    preserve_state_reference_label,
+)
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Actor,
@@ -135,7 +139,7 @@ def _constraint_goal_hint(constraint: Constraint | None) -> str:
         return f"Need to bring {namespace} state to the target value."
     if kind == "preserve_state":
         namespace = constraint.namespace or "state"
-        return f"Need to preserve {namespace} state."
+        return f"Need to preserve {namespace} state relative to {preserve_state_reference_label(constraint)}."
     if kind == "tool_call":
         return "Need to call the required tool."
 
@@ -185,6 +189,8 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     evidence_text = str(detail["evidence"][0]) if isinstance(detail.get("evidence"), list) and detail["evidence"] else ""
     actual_text = str(detail.get("actual_excerpt") or "")
     parts = [f"{detail['constraint_id']} score {score_text}, below threshold {threshold_text}"]
+    if detail["semantic_kind"] == "preserve_state" and detail.get("expected_summary", {}).get("row_count") == 0:
+        parts.append("expected_rows=0 is a serialized placeholder; preserve_state target is resolved from runtime reference baseline")
     if _excerpt_shows_matched_expected_rows(actual_text) and _score_value(detail.get("score")) < _score_value(detail.get("threshold")):
         parts.append(
             "target-related rows already appeared, but structured scoring still failed; check extra state changes or reference drift"
@@ -227,9 +233,7 @@ def _excerpt_shows_matched_expected_rows(actual_excerpt: str) -> bool:
     match = re.search(r"matched_expected_rows=(\d+)/(\d+)", actual_excerpt)
     if match is None:
         return False
-    matched = int(match.group(1))
-    expected = int(match.group(2))
-    return expected > 0 and matched > 0
+    return int(match.group(1)) > 0 and int(match.group(2)) > 0
 
 
 def _score_value(value: object) -> float:

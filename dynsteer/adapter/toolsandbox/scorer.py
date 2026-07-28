@@ -18,6 +18,7 @@ from dynsteer.model import (
     Operator,
     ScoringContext,
     StageStatus,
+    StageGoalSemanticKind,
     StateSnapshot,
     Trajectory,
 )
@@ -220,9 +221,15 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             str(metadata.get("database_namespace") or "") if isinstance(metadata, dict) else ""
         )
         snapshot = self._rows_to_dataframe(actual, namespace=namespace)
-        target = self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True)
         column_similarities = self._column_similarities(evaluation, constraint)
         reference_snapshot, reference_summary = self._reference_dataframe(constraint, context)
+        target, target_source = self._resolved_target_dataframe(
+            constraint=constraint,
+            namespace=namespace,
+            reference_snapshot=reference_snapshot,
+        )
+        if isinstance(reference_summary, dict):
+            reference_summary["target_source"] = target_source
         kwargs = self._snapshot_constraint_kwargs(constraint)
         score = float(
             measure(
@@ -234,6 +241,28 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             )
         )
         return score, reference_summary
+
+    def _resolved_target_dataframe(
+        self,
+        constraint: Constraint,
+        namespace: str,
+        reference_snapshot: pl.DataFrame | None,
+    ) -> tuple[pl.DataFrame, str]:
+        """解析 ToolSandbox snapshot constraint 的目标数据源。
+
+        入参：
+            constraint: 当前 ToolSandbox 结构化约束。
+            namespace: 当前约束对应的 database namespace。
+            reference_snapshot: 从 runtime scoring context 解析出的参考快照。
+        输出：
+            target dataframe 与来源标签。
+        """
+        semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+        if semantics.get("kind") == StageGoalSemanticKind.PRESERVE_STATE.value:
+            if reference_snapshot is None:
+                raise ValueError(f"preserve_state 缺少 reference snapshot: constraint={constraint.constraint_id}")
+            return reference_snapshot, "reference_snapshot"
+        return self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True), "constraint.expected"
 
     def _rows_to_dataframe(self, value: JsonValue, namespace: str | None = None, target: bool = False) -> pl.DataFrame:
         rows: JsonValue
@@ -391,6 +420,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             "namespace": namespace,
             "row_count": len(row_list),
             "columns": columns,
+            "target_source": "constraint.expected",
         }
         return self._rows_to_dataframe(rows, namespace=namespace), summary
 
@@ -419,5 +449,6 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
             f"id={summary.get('reference_snapshot_id')}, "
             f"milestone={summary.get('reference_milestone_id')}, "
             f"namespace={summary.get('namespace')}, "
-            f"rows={summary.get('row_count')}, columns={column_text}"
+            f"rows={summary.get('row_count')}, "
+            f"target_source={summary.get('target_source')}, columns={column_text}"
         ]

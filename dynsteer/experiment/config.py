@@ -129,13 +129,6 @@ def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
             raise ValueError("dynsteer_guidance 方法必须启用 guidance_enabled")
 
 
-def config_for_case(config: HarnessRunConfig, case_id: str) -> HarnessRunConfig:
-    """返回只包含单个 case 的 HarnessRunConfig。"""
-    if config is None or not case_id:
-        raise ValueError("config 和 case_id 不能为空")
-    return replace(config, case_ids=(case_id,))
-
-
 def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None = None) -> list[object]:
     raw_value = config.get(key, default)
     if not isinstance(raw_value, list) or not raw_value:

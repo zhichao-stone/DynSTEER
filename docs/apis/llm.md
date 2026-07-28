@@ -4,6 +4,8 @@
 
 `dynsteer.llm` 包负责不同 provider 的 LLM 构建与交互，对外只暴露统一的交互响应接口。Judge 只依赖 `BaseLLM.chat(...)`，不直接导入 provider SDK。
 
+包级导出使用显式顶层 import，不通过 `__getattr__` 或 `importlib.import_module` 懒加载隐藏 provider/factory 依赖。若 `openai` 或 `anthropic` SDK 缺失，应通过项目依赖环境修复，而不是恢复包级懒加载。
+
 ## 包结构
 
 ```text
@@ -115,7 +117,7 @@ DYNSTEER_STANDARD_JUDGE_PASSES=3
 DYNSTEER_EXPENSIVE_JUDGE_PASSES=3
 ```
 
-`build_llm_from_env` 在未配置 `DYNSTEER_JUDGE_PROVIDER` 时返回 `None`。
+`build_llm_from_env` 在未配置 `DYNSTEER_JUDGE_PROVIDER` 时返回 `None`。`build_llm_from_config(config, env=None)` 接收 Judge profile 或 `LLMConfig`，未配置 provider 时同样返回 `None`。
 
 API key 读取优先级：
 

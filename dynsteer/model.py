@@ -134,7 +134,7 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
-    success: bool
+    success: bool = False
     content: JsonValue = None
     exception: Optional[str] = None
 
@@ -291,8 +291,8 @@ class Milestone:
 
 @dataclass
 class MinefieldPenalty:
-    mode: str
-    value: float
+    mode: str = "fixed"
+    value: float = 0.0
 
 
 @dataclass

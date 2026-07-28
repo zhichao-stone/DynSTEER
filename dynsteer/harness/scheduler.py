@@ -6,7 +6,6 @@ from dynsteer.adapter.registry import get_harness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.outputs import write_case_outputs
-from dynsteer.harness.selection import config_with_case_ids
 from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput
 from dynsteer.progress import (
     CaseProgressEvent,
@@ -61,8 +60,7 @@ def _run_case(task: HarnessCaseTask, progress_reporter: CaseProgressReporter | N
     try:
         harness = get_harness(task.config.benchmark)
         evaluator = DynSTEEREvaluator.from_config(task.config)
-        case_config = config_with_case_ids(task.config, [task.case_id])
-        return write_case_outputs(case_config, harness, evaluator, task.task_case, progress_reporter)
+        return write_case_outputs(task.config, harness, evaluator, task.task_case, progress_reporter)
     except HarnessCaseExecutionError:
         raise
     except Exception as exc:

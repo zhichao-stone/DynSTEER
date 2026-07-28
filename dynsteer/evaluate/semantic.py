@@ -292,6 +292,12 @@ def constraint_expected_excerpt(constraint: Constraint | None, limit: int = 420)
     """从约束中提取用于诊断和 prompt 的 expected 文本摘要。"""
     if constraint is None:
         return None
+    if _is_preserve_state_constraint(constraint):
+        return compact_text(
+            f"preserve_state(reference={preserve_state_reference_label(constraint)}, "
+            f"namespace={_constraint_namespace(constraint) or 'state'})",
+            limit,
+        )
     content = _expected_content(constraint)
     if content:
         return compact_text(content, limit)
@@ -325,12 +331,32 @@ def _focused_state_excerpt(
 ) -> str | None:
     if constraint is None or not _should_focus_state_excerpt(constraint):
         return None
-    expected_rows = _state_rows_from_value(constraint.expected)
     actual_rows = _state_rows_from_value(actual)
-    if expected_rows is None or actual_rows is None:
+    if actual_rows is None:
         return None
 
     namespace = _constraint_namespace(constraint)
+    if _is_preserve_state_constraint(constraint):
+        _, selected_indices, _ = _focused_state_rows(namespace, [], actual_rows)
+        relevant_rows = [
+            _state_row_excerpt_payload(namespace, actual_rows[index])
+            for index in selected_indices
+        ]
+        parts = [
+            f"reference={preserve_state_reference_label(constraint)}",
+            "target_source=reference_snapshot",
+            f"actual_rows={len(actual_rows)}",
+        ]
+        if relevant_rows:
+            parts.append(f"relevant_actual_rows={json.dumps(relevant_rows, ensure_ascii=False, separators=(',', ':'))}")
+        omitted_count = max(len(actual_rows) - len(selected_indices), 0)
+        if omitted_count > 0:
+            parts.append(f"omitted_actual_rows={omitted_count}")
+        return compact_text("; ".join(parts), limit)
+
+    expected_rows = _state_rows_from_value(constraint.expected)
+    if expected_rows is None:
+        return None
     matched_count, selected_indices, expected_by_actual_index = _focused_state_rows(
         namespace, expected_rows, actual_rows
     )
@@ -358,6 +384,34 @@ def _should_focus_state_excerpt(constraint: Constraint) -> bool:
         return True
     target = getattr(constraint.target, "value", constraint.target)
     return str(target) == "state_snapshot"
+
+
+def preserve_state_reference_label(constraint: Constraint) -> str:
+    """返回 preserve_state 约束的参考状态标签。"""
+    if constraint is None:
+        raise ValueError("constraint 不能为空")
+    semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    reference = semantics.get("reference")
+    if isinstance(reference, dict):
+        reference_type = str(reference.get("type") or "")
+        value = reference.get("value")
+        if reference_type == "milestone_index":
+            return "initial_state" if value == -1 else f"milestone_index:{value}"
+        if reference_type:
+            return f"{reference_type}:{value}"
+    metadata = constraint.metadata.get("toolsandbox")
+    if isinstance(metadata, dict):
+        reference_index = metadata.get("reference_milestone_node_index")
+        if reference_index is not None:
+            return "initial_state" if reference_index == -1 else f"milestone_index:{reference_index}"
+    if constraint.reference_milestone_id is not None:
+        return f"milestone_id:{constraint.reference_milestone_id}"
+    return "runtime_reference"
+
+
+def _is_preserve_state_constraint(constraint: Constraint) -> bool:
+    semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    return semantics.get("kind") == StageGoalSemanticKind.PRESERVE_STATE.value
 
 
 def _constraint_namespace(constraint: Constraint) -> str:

@@ -18,24 +18,19 @@ _HARNESSES: dict[str, _RegisteredType[BaseBenchmarkHarness]] = {
 
 def get_adapter(benchmark: str) -> BaseBenchmarkAdapter:
     """按 benchmark 名称获取 adapter。"""
-    normalized = _normalize_benchmark(benchmark)
-    adapter_type = _ADAPTERS.get(normalized)
-    if adapter_type is None:
-        raise KeyError(f"不支持的 benchmark: {benchmark}")
-    return _load_registered_type(adapter_type, BaseBenchmarkAdapter)()
+    return _get_registered_class_by_benchmark(benchmark, _ADAPTERS, BaseBenchmarkAdapter)()
 
 
 def get_harness(benchmark: str) -> BaseBenchmarkHarness:
     """按 benchmark 名称获取运行期 harness。"""
-    normalized = _normalize_benchmark(benchmark)
-    harness_type = _HARNESSES.get(normalized)
-    if harness_type is None:
-        raise KeyError(f"不支持的 benchmark: {benchmark}")
-    return _load_registered_type(harness_type, BaseBenchmarkHarness)()
+    return _get_registered_class_by_benchmark(benchmark, _HARNESSES, BaseBenchmarkHarness)()
 
 
-def _normalize_benchmark(benchmark: str) -> str:
-    return benchmark.strip().lower().replace("-", "_")
+def _get_registered_class_by_benchmark(benchmark: str, type_mapping: dict, base_type: type[_T]) -> type[_T]:
+    class_type = type_mapping.get(benchmark.strip().lower().replace("-", "_"))
+    if class_type is None:
+        raise KeyError(f"不支持的 benchmark: {benchmark}。可选 benchmark: {list(_ADAPTERS.keys())}。")
+    return _load_registered_type(class_type, base_type)
 
 
 def _load_registered_type(target: _RegisteredType[_T], base_type: type[_T]) -> type[_T]:

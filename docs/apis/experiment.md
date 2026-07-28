@@ -23,6 +23,14 @@ python main.py --exp data/experiments/double_benchmark_initial.json
 启动脚本 `scripts/start_experiment.sh` 与 `scripts/start_experiment_no_docker.sh` 会根据 `benchmarks[*].data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数；`--source`、`--workers` 仅作为覆盖项。`--force_adapt` 可以单独使用，用于在评估前强制重建 `data/<benchmark>/adapted_cases`。
 直接调用 `main.py --exp ...` 时，benchmark 源码仍需要已在当前环境中可导入；自动 bootstrap 逻辑只在 wrapper 脚本中执行。
 
+## 执行流程
+
+`run_experiment(config_path, workers=1, force_adapt=False)` 会先展开实验矩阵，再按 benchmark 名称准备 `TaskCase` 模板。每个 benchmark 在同一次实验中只调用一次 `load_task_case(...)`；`model`、`method`、`judge_profile`、`threshold_profile` 和 `repeat` 不会触发 adapted case 重新加载或重建。
+
+`force_adapt=True` 是 adapted case 重建的唯一显式开关，并且只作用于上述统一准备阶段。后续 `default`、`dynsteer_replay`、`dynsteer_replay_static`、`dynsteer_evaluate` 会从同一批模板深拷贝得到单 case 输入，运行期对 `TaskCase.initial_state` 或 metadata 的写入不会污染其他 method。
+
+Default 输出的 `trajectory.json` 会携带本次 session 的 `runtime_initial_state`。Replay 读取 default trajectory 后，会优先把这个 runtime initial state 注入当前 `TaskCase.initial_state`，确保 `preserve_state`、`reference_milestone_node_index=-1` 等状态约束使用 default 真实初始状态，而不是 adapted JSON 中可能过期的静态占位。
+
 ## 输出
 
 实验层输出到 `results/experiments/<experiment_id>/` 或配置指定的 `results_dir`；case 产物按 `results/experiments/<experiment_id>/<benchmark>/<method>/<run_id>/<case_id>/` 分层写入。`run_id` 只表示同一 `benchmark/method` 下的运行序号，例如 `run_0`。

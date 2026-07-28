@@ -2,7 +2,7 @@
 
 ## 目标
 
-`dynsteer.evaluate` 提供 DynSTEER 的运行期阶段式评估入口。主流程仍是 `DynSTEEREvaluator.evaluate(harness, config, task_case)`；实验层另提供 `DynSTEEREvaluator.evaluate_replay(task_case, trajectory, scorer, config)`，用于对同一条完整轨迹执行离线阶段式回放。
+`dynsteer.evaluate` 提供 DynSTEER 的运行期阶段式评估入口。主流程仍是 `DynSTEEREvaluator.evaluate(harness, config, task_case)`；实验层另提供 `DynSTEEREvaluator.evaluate_replay(task_case, trajectory, scorer, config)`，用于对同一条完整轨迹执行离线阶段式回放。两个入口的当前 case 身份都来自 `task_case.case_id`，不要求调用方把 `HarnessRunConfig.case_ids` 改写成单元素元组。
 
 ## 主流程
 
@@ -29,6 +29,8 @@ result = evaluator.evaluate_replay(task_case, trajectory, scorer, config)
 ```
 
 Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它把完整 `Trajectory` 按 step 顺序重新喂入 minefield、agent step closure、milestone matching 和 checkpoint 逻辑。若策略触发提前终止，结果写入 `termination` 与 stage metadata 的 `replay_virtual_stop`；默认继续扫描完整轨迹，并在 finish metadata 中标记 `finish_after_virtual_stop=true`。
+
+实验 runner 在调用 replay 前会读取 default `trajectory.json` 顶层 raw 字段中的 `runtime_initial_state`，并覆盖当前 replay `TaskCase.initial_state`。因此 replay 的 `ScoringContext["initial"]` 与 default session 使用同一份真实初始状态，避免 `preserve_state` 被 adapted JSON 中的空 expected 占位或过期动态值误导。
 
 `EvaluationStrategyConfig` 控制 replay 与在线评估共享的策略开关：
 
@@ -74,6 +76,8 @@ ready frontier 的观察单位是完整闭合的 agent step，不是 raw step。
 `TOOL_CALL` / `TOOL_RESULT` 约束会在当前 milestone 阶段区间中寻找最近的对应 step。这样 milestone 评估延后到 tool result 闭合点后，仍能使用闭包内的 agent tool call 作为证据。
 
 selector/operator 详细规范见 [constraints.md](constraints.md)。
+
+ToolSandbox 专用 scorer 对 `preserve_state` 约束会把 `target_dataframe` 解析为 runtime reference snapshot；`set_state`、`emit_message`、`tool_call` 等其他语义仍使用 `constraint.expected`。诊断 evidence 会显示 `target_source=reference_snapshot` 或 `target_source=constraint.expected`，便于区分真实目标与 adapted case 的序列化占位。
 
 ## 阶段结果
 

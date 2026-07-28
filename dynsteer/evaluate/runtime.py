@@ -1,4 +1,4 @@
-from dynsteer.evaluate.matching import boundary_snapshot
+from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import (
     build_final_milestone_diagnostics,
     build_milestone_graph_summary,

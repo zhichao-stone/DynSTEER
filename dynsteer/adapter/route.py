@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 
-from dynsteer.model import Actor, Constraint, JsonObject, Milestone, MilestoneGraph, JsonValue
+from dynsteer.model import Actor, Constraint, JsonObject, Milestone, MilestoneGraph
+from dynsteer.utils import get_object
 
 MILESTONE_MATCHING_METADATA_KEY = "milestone_matching"
 
@@ -13,9 +14,6 @@ def enrich_milestone_routes(graph: MilestoneGraph) -> MilestoneGraph:
     输出：
         已写入 constraint 与 milestone 级 `metadata.milestone_matching` 的 graph。
     """
-    if graph is None:
-        raise ValueError("graph 不能为空")
-
     for milestone in graph.nodes:
         _enrich_milestone_route_groups(milestone)
     return graph
@@ -37,7 +35,7 @@ def _enrich_milestone_route_groups(milestone: Milestone) -> None:
             f"milestone={milestone.milestone_id}, route_group_count={len(route_groups)}"
         )
 
-    matching = _matching_metadata(milestone.metadata)
+    matching = get_object(milestone.metadata, MILESTONE_MATCHING_METADATA_KEY, dict, {}, False)
     matching["route_groups"] = [
         {
             "route": {"sender": sender, "recipient": recipient},
@@ -76,19 +74,13 @@ def _set_constraint_route_metadata(
     constraint: Constraint, route: tuple[str, str] | None, route_source: str | None
 ) -> None:
     """写入 constraint 级 milestone_matching route metadata。"""
-    matching = _matching_metadata(constraint.metadata)
+    matching = get_object(constraint.metadata, MILESTONE_MATCHING_METADATA_KEY, dict, {}, False)
     matching["route"] = {"sender": route[0], "recipient": route[1]} if route is not None else None
     matching["route_source"] = route_source
     constraint.metadata[MILESTONE_MATCHING_METADATA_KEY] = matching
 
 
-def _matching_metadata(metadata: JsonObject) -> JsonObject:
-    """读取或创建 milestone_matching metadata 对象。"""
-    raw_matching = metadata.get(MILESTONE_MATCHING_METADATA_KEY)
-    return dict(raw_matching) if isinstance(raw_matching, dict) else {}
-
-
-def _expected_rows(expected: JsonValue) -> list[JsonObject]:
+def _expected_rows(expected: dict) -> list[JsonObject]:
     """读取 expected.rows 中可用于 route 解析的行数据。"""
     if not isinstance(expected, dict):
         return []
@@ -110,9 +102,7 @@ def _route_from_mapping(data: Mapping[str, object]) -> tuple[str, str] | None:
 def _actor_from_aliases(data: Mapping[str, object], aliases: tuple[str, ...]) -> Actor | None:
     """按字段别名读取并规范化 Actor。"""
     for alias in aliases:
-        if alias not in data:
-            continue
-        actor = _normalize_actor(data[alias])
+        actor = _normalize_actor(data.get(alias))
         if actor is not None:
             return actor
     return None
@@ -122,18 +112,12 @@ def _normalize_actor(value: object) -> Actor | None:
     """将外部 actor 名称统一为内部 Actor 枚举。"""
     if value is None:
         return None
-    normalized = str(value).strip().upper()
     aliases = {
-        "SYSTEM": Actor.SYSTEM,
-        "USER": Actor.USER,
-        "AGENT": Actor.AGENT,
-        "ENVIRONMENT": Actor.ENVIRONMENT,
-        "EXECUTION_ENVIRONMENT": Actor.ENVIRONMENT,
-        "EVALUATOR": Actor.EVALUATOR,
+        "system": Actor.SYSTEM,
+        "user": Actor.USER,
+        "agent": Actor.AGENT,
+        "environment": Actor.ENVIRONMENT,
+        "execution_environment": Actor.ENVIRONMENT,
+        "evaluator": Actor.EVALUATOR,
     }
-    if normalized in aliases:
-        return aliases[normalized]
-    for actor in Actor:
-        if normalized == actor.value.upper():
-            return actor
-    return None
+    return aliases.get(str(value).strip().lower())

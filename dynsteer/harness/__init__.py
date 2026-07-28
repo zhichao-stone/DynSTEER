@@ -5,5 +5,6 @@ from dynsteer.harness.model import (
     HarnessRunResult,
     HarnessStageSettlement,
 )
+from dynsteer.harness.paths import case_output_dir
 
-__all__ = ["BenchmarkCase", "HarnessAdvanceResult", "HarnessRunConfig", "HarnessRunResult", "HarnessStageSettlement"]
+__all__ = ["BenchmarkCase", "HarnessAdvanceResult", "HarnessRunConfig", "HarnessRunResult", "HarnessStageSettlement", "case_output_dir"]

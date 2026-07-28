@@ -12,7 +12,7 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 
 ## 核心数据结构
 
-- `HarnessRunConfig`: 单次 harness 运行配置，包含 benchmark、data root、case_ids、runs_dir、results_dir、fail-fast 策略和 metadata。
+- `HarnessRunConfig`: 单次 harness 运行配置，包含 benchmark、data root、case_ids、runs_dir、results_dir、fail-fast 策略和 metadata。`case_ids` 只用于 adapter/loader 阶段选择本次要加载的 case；进入单 case 执行后，当前 case 身份统一来自 `TaskCase.case_id`。
 - `BenchmarkCase`: benchmark 内单个可运行测试任务。
 - `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 raw `steps`、`snapshots`、`continue_running` 和可选 `reason`。`snapshots` 是必填字段，表示本批推进后可见的状态快照，必须与 `steps` 使用同一时间坐标。
 - `HarnessStageSettlement`: evaluator 在运行期生成的 start/milestone/finish 阶段结算节点。
@@ -24,7 +24,7 @@ Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、�
 def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase: ...
 ```
 
-adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter, force_adapt=False)` 按 `data/{benchmark}/adapted_cases/<case_id>.json` 读取缓存；缺失时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。`force_adapt=True` 时会忽略缓存并重建对应 case。
+adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter, force_adapt=False)` 按 `data/{benchmark}/adapted_cases/<case_id>.json` 读取缓存；缺失或结构不完整时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。`force_adapt=True` 是 adapted case 重建的唯一显式开关，会在加载阶段忽略缓存并重建对应 case。
 
 运行期 harness 由 `dynsteer.adapter.registry.get_harness(benchmark)` 直接创建，不再通过 adapter 间接创建。这样单 case 运行期执行等只需要 harness 的路径不会实例化 adapter，adapter 也不再承担 harness 工厂职责。
 
@@ -113,7 +113,7 @@ ToolSandbox 当前通过 `scenario.evaluation.evaluate(execution_context=session
 
 - `run_harness_configs(configs, max_workers=1, force_adapt=False)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。若 `benchmark.json` 配置了 `max_workers`，实际 worker 数取命令行 workers 与该字段的较小值，且最小为 1。`force_adapt=True` 时会在运行前重建缓存的 adapted case。
 
-Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。
+Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。单 case 输出路径、summary 和 report 都以 `task_case.case_id` 为准，不要求把 `HarnessRunConfig.case_ids` 改写成单元素元组。
 
 当 `run_configs.json` 已通过 `scenarios` 显式指定 case 时，Runner 直接使用该顺序，不再调用 `list_cases()` 全量枚举 benchmark；未指定 `scenarios` 时才通过 `list_cases()` 展开可运行 case。这样已有 adapted cache 的指定 case 运行不会被 benchmark 原生全量场景构造拖慢。
 
@@ -134,9 +134,9 @@ Harness 模式输出：
 
 `results/<benchmark>/<method>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `benchmark/method/run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`method`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
-`trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
+`trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。Default 轨迹会在顶层 raw 字段中写入 `runtime_initial_state`，供 replay 复用本次 session 的真实初始状态。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
 
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合、cost 可用性字段和 LLM judge token usage 聚合。`trajectory_cost_available=false` 或 `trajectory_latency_available=false` 表示对应 `0` 值只是数据不可用兜底，不是真实零成本。`task_case_snapshot.runtime_initial_state_source` 记录运行期评分使用的初始状态来源，`runtime_initial_state_summary` 只保留 namespace 行数摘要。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
+`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。Default raw summary 还会写入 `runtime_initial_state_source=harness_session` 与 `runtime_initial_state_summary`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合、cost 可用性字段和 LLM judge token usage 聚合。`trajectory_cost_available=false` 或 `trajectory_latency_available=false` 表示对应 `0` 值只是数据不可用兜底，不是真实零成本。`task_case_snapshot.runtime_initial_state_source` 记录运行期评分使用的初始状态来源，`runtime_initial_state_summary` 只保留 namespace 行数摘要。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
 
 Default 输出使用同一目录结构，但 case 目录下的报告文件为 `default_report.json`，summary 中的 `overall_score` 与 `default_score` 均来自 benchmark 原生 `BenchmarkDefaultResult.score`。Replay 输出使用 `report.json`，并在 summary/report metadata 中记录 `method`、`strategy`、`model_id`、`repeat_index` 和可选 `default_reference`。
 
@@ -148,7 +148,7 @@ Default 输出使用同一目录结构，但 case 目录下的报告文件为 `d
 
 ## ToolSandbox 适配说明
 
-ToolSandbox adapter 通过懒加载导入 `tool_sandbox`，不会让 DynSTEER 核心包直接依赖 ToolSandbox。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。
+ToolSandbox 外部可选依赖由专门依赖边界工具函数加载，不通过 DynSTEER 包级 `__getattr__` 懒加载隐藏项目自身依赖。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。
 
 `data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。`benchmark.json` 还支持可选 `max_workers` 整数字段，用于为不支持并行的 benchmark 设置 case 并发上限。
 

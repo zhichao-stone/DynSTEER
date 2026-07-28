@@ -10,27 +10,24 @@ import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 from dynsteer.config import default_dynamic_weight_config
-from dynsteer.evaluate import (
+from dynsteer.evaluate.runtime import (
     HarnessTeardownError,
-    evaluate_agent_step,
-    evaluate_checkpoint,
-    evaluate_step_minefields,
-    finish_settlement,
     pending_milestone_stage_results,
     runtime_diagnostics_summary,
     task_case_snapshot,
 )
-from dynsteer.evaluate.matching import (
-    candidate_boundary_for_current_step,
-    evaluate_minefields_at_boundary,
-    initialize_milestone_frontier,
-)
+from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement
+from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
+from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
+from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
+from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
     GeneralScorer,
     minefield_penalty_score,
     overall_score,
 )
+from dynsteer.evaluate.state_summary import state_namespace_summary
 from dynsteer.evaluate.weights import select_initial_weights
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.harness.config import (
@@ -38,8 +35,7 @@ from dynsteer.harness.config import (
     load_judge_config_from_env,
     threshold_config_from_mapping,
 )
-from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement
-from dynsteer.harness.paths import case_output_dir
+from dynsteer.harness import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement, case_output_dir
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.llm import build_llm_from_config, build_llm_from_env
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
@@ -193,7 +189,7 @@ class DynSTEEREvaluator:
             if runtime_initial_state is not None:
                 task_case.initial_state = runtime_initial_state
                 task_case.metadata["runtime_initial_state_source"] = "harness_session"
-                task_case.metadata["runtime_initial_state_summary"] = _state_namespace_summary(runtime_initial_state)
+                task_case.metadata["runtime_initial_state_summary"] = state_namespace_summary(runtime_initial_state)
             else:
                 task_case.metadata.setdefault("runtime_initial_state_source", "adapted_case")
             language = config.metadata.get("language")
@@ -751,19 +747,6 @@ class DynSTEEREvaluator:
                     f"benchmark session 资源释放失败: benchmark={benchmark}, run_id={run_id}, "
                     f"case_id={case_id}, error={exc}"
                 ) from exc
-
-
-def _state_namespace_summary(state: JsonObject) -> JsonObject:
-    """生成状态 namespace 行数摘要，避免 raw summary 嵌入完整初始状态。"""
-    namespaces = state.get("namespaces")
-    if not isinstance(namespaces, dict):
-        return {"namespace_count": 0, "row_counts": {}}
-    row_counts = {
-        str(namespace): len(rows)
-        for namespace, rows in namespaces.items()
-        if isinstance(rows, list)
-    }
-    return {"namespace_count": len(namespaces), "row_counts": row_counts}
 
 
 def _append_replay_snapshots(

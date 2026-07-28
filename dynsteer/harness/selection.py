@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import TaskCase
@@ -18,15 +16,6 @@ def select_case_ids(config: HarnessRunConfig, harness: BaseBenchmarkHarness, run
     if run_all:
         return [case.case_id for case in cases]
     return [cases[0].case_id]
-
-
-def config_with_case_ids(config: HarnessRunConfig, case_ids: list[str]) -> HarnessRunConfig:
-    """返回写入本次展开 case_ids 的运行配置。"""
-    if config is None or case_ids is None:
-        raise ValueError("config 和 case_ids 不能为空")
-    if not case_ids:
-        raise ValueError("case_ids 不能为空")
-    return replace(config, case_ids=tuple(case_ids))
 
 
 def validate_loaded_task_cases(case_ids: list[str], task_cases: list[TaskCase]) -> None:

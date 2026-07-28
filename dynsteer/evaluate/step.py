@@ -1,11 +1,9 @@
 from collections.abc import Callable
 
-from dynsteer.evaluate.matching import (
-    analyze_milestone_step,
-    candidate_boundary_for_current_step,
-    evaluate_minefields_at_boundary,
-    ready_milestone_ids,
-)
+from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
+from dynsteer.evaluate.matching.frontier import ready_milestone_ids
+from dynsteer.evaluate.matching.milestone import analyze_milestone_step
+from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.runtime import (
     blocked_milestone_termination_reason,
     ready_frontier_no_progress_termination_reason,

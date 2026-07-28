@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
+from dynsteer.evaluate.state_summary import state_namespace_summary
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.paths import case_output_dir
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
@@ -25,7 +26,9 @@ from dynsteer.utils import as_number, json_safe, read_json_file
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """将 Trajectory 转换为 JSON 对象。"""
+    raw_fields = {str(key): json_safe(value) for key, value in trajectory.raw.items()}
     return {
+        **raw_fields,
         "run_id": trajectory.run_id,
         "task_id": trajectory.task_id,
         "steps": [trajectory_step_to_json(step) for step in trajectory.steps],
@@ -146,8 +149,16 @@ def write_default_case_outputs(
     metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
     trajectory = Trajectory(run_id=run_id, task_id=task_case.task_id, steps=[])
     tracker = AgentStepTracker()
+    runtime_initial_state_summary: JsonObject | None = None
     try:
         session = harness.start_case(config, case_id, raw_output_dir)
+        runtime_initial_state = harness.initial_state_from_session(session)
+        if isinstance(runtime_initial_state, dict):
+            task_case.initial_state = runtime_initial_state
+            task_case.metadata["runtime_initial_state_source"] = "harness_session"
+            runtime_initial_state_summary = state_namespace_summary(runtime_initial_state)
+            task_case.metadata["runtime_initial_state_summary"] = runtime_initial_state_summary
+            trajectory.raw["runtime_initial_state"] = runtime_initial_state
         while True:
             advance = harness.advance_case(session)
             _merge_snapshots(trajectory, advance.snapshots)
@@ -177,6 +188,9 @@ def write_default_case_outputs(
             agent_step_count=tracker.completed_count,
         )
         raw_summary = dict(harness.raw_summary_from_session(session))
+        if runtime_initial_state_summary is not None:
+            raw_summary["runtime_initial_state_source"] = "harness_session"
+            raw_summary["runtime_initial_state_summary"] = runtime_initial_state_summary
         raw_summary.update(
             {
                 "method": str(config.metadata.get("method") or "default"),

@@ -2,7 +2,7 @@ from dataclasses import asdict, is_dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
-from dynsteer.evaluate.matching import boundary_snapshot, boundary_step
+from dynsteer.evaluate.matching.boundary import boundary_snapshot, boundary_step
 from dynsteer.graph import START_NODE_ID
 from dynsteer.model import (
     Boundary,

@@ -25,17 +25,12 @@ def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
 
 def as_number(value: object, default: float | None = None) -> float | None:
     """读取 JSON 数字值，bool 或非数字返回默认值。"""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return default
-    return float(value)
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else default
 
 
 def clamped_number(value: object, default: float = 0.0, lower: float = 0.0, upper: float = 1.0) -> float:
     """读取 JSON 数字值并裁剪到指定范围。"""
-    number = as_number(value, default)
-    if number is None:
-        number = default
-    return clamp(float(number), lower, upper)
+    return clamp(as_number(value, default), lower, upper)
 
 
 def read_json_file(path: Path, label: str, expected_type: type) -> Any:
@@ -115,20 +110,15 @@ def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
 
 def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None:
     """从配置来源读取非空字符串并去除首尾空白。"""
-    value = source.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    return optional_str(source.get(key))
 
 
 def required_str(data: Mapping[str, Any], key: str, label: str = "配置") -> str:
     """从 JSON 映射读取必填非空字符串。"""
-    if data is None:
-        raise ValueError(f"{label} 不能为空")
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip():
+    value = optional_str(data.get(key))
+    if value is None:
         raise ValueError(f"{label} 必须提供非空字符串字段 {key}")
-    return value.strip()
+    return value
 
 
 def optional_str(value: object) -> str | None:
@@ -157,16 +147,12 @@ def compact_json_text(value: object, limit: int = 160) -> str:
 
 def first_text(values: list[str], limit: int = 160) -> str | None:
     """返回列表中的首条短文本。"""
-    if not values:
-        return None
-    return compact_text(values[0], limit)
+    return compact_text(values[0], limit) if values else None
 
 
 def string_list(value: object) -> list[str]:
     """将 list 值转换为字符串列表，非 list 返回空列表。"""
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 def clean_evidence_items(values: list[str], limit: int | None = None) -> list[str]:
@@ -204,9 +190,9 @@ def get_object(data: JsonObject, key: str, type: object = None, default: object 
             raise ValueError(f"缺少必要字段: {key}")
         return default
     value = data[key]
-    if type is not None and not isinstance(value, type):  # type: ignore[arg-type]
-        raise ValueError(f"字段 {key} 必须是 {type} 类型")
-    return value
+    if required and type is not None and not isinstance(value, type):
+        raise ValueError(f"字段 {key} 必须非空，且是 {type} 类型")
+    return type(value)
 
 
 def enum_value(enum_class: type[Enum], value: object, field_name: str) -> Enum:
@@ -236,8 +222,6 @@ def enum_name(value: object) -> str:
 
 def unknown_fields(data: JsonObject, known: set[str]) -> JsonObject:
     """返回 JSON 对象中不属于 known 集合的字段。"""
-    if data is None or known is None:
-        raise ValueError("data 和 known 不能为空")
     return {key: value for key, value in data.items() if key not in known}
 
 
