@@ -121,9 +121,9 @@ def required_str(data: Mapping[str, Any], key: str, label: str = "配置") -> st
     return value
 
 
-def optional_str(value: object) -> str | None:
+def optional_str(value: object, default: str | None = None) -> str | None:
     """读取可选非空字符串。"""
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    return value.strip() if isinstance(value, str) and value.strip() else default
 
 
 def compact_text(value: object, limit: int = 160) -> str:

@@ -2,13 +2,18 @@ import json
 
 from dynsteer.language import TaskLanguage
 from dynsteer.model import Constraint, JsonObject, JsonValue, Milestone, MilestoneGraph, TaskCase
-from dynsteer.prompt.template import PromptTemplate, load_prompt_text
+from dynsteer.prompt.template import load_prompt_template
+
+
+def build_stage_goal_system_prompt(language: TaskLanguage = TaskLanguage.ENGLISH) -> str:
+    """构造阶段目标生成器 system prompt。"""
+    return load_prompt_template("stage", "goal_system").render(language=language)
 
 
 def build_stage_goal_generation_prompt(
     task_case: TaskCase,
     required_keys: list[str],
-    language: TaskLanguage = TaskLanguage.CHINESE,
+    language: TaskLanguage = TaskLanguage.ENGLISH,
     *,
     graph: MilestoneGraph | None = None,
 ) -> str:
@@ -24,8 +29,10 @@ def build_stage_goal_generation_prompt(
         "required_stage_goal_keys": list(required_keys),
         "output_schema": {"stage_goals": {"milestone_id_1->milestone_id_2": "当前阶段自然语言目标"}},
     }
-    template = PromptTemplate(**{language.value: load_prompt_text("stage", "goal_generation", language)})
-    return template.render(language=language, context_json=json.dumps(payload, ensure_ascii=False, indent=2))
+    return load_prompt_template("stage", "goal_generation").render(
+        language=language,
+        context_json=json.dumps(payload, ensure_ascii=False, indent=2),
+    )
 
 
 def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
