@@ -1,9 +1,7 @@
 import math
-
 from dynsteer.config import TASK_TYPE_WEIGHTS
 from dynsteer.model import Dimension, DynamicWeightConfig, TaskCase
 from dynsteer.utils import clamp
-
 
 def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]:
     """归一化动态维度权重。
@@ -18,7 +16,6 @@ def normalize_weights(weights: dict[Dimension, float]) -> dict[Dimension, float]
     if total <= 0:
         return {dimension: 1 / len(Dimension) for dimension in Dimension}
     return {dimension: value / total for dimension, value in normalized_source.items()}
-
 
 def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
     """根据任务类型选择初始动态权重。
@@ -44,13 +41,7 @@ def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
         return normalize_weights(TASK_TYPE_WEIGHTS[next(iter(TASK_TYPE_WEIGHTS))])
     return normalize_weights({dimension: value / valid_count for dimension, value in merged.items()})
 
-
-def update_weights(
-    current: dict[Dimension, float],
-    scores: dict[Dimension, float],
-    dimension_uncertainty: dict[Dimension, float],
-    config: DynamicWeightConfig,
-) -> dict[Dimension, float]:
+def update_weights(current: dict[Dimension, float], scores: dict[Dimension, float], dimension_uncertainty: dict[Dimension, float], config: DynamicWeightConfig) -> dict[Dimension, float]:
     """根据阶段维度分数和不确定性更新动态权重。
 
     入参：
@@ -63,7 +54,7 @@ def update_weights(
     """
     next_weights: dict[Dimension, float] = {}
     for dimension in Dimension:
-        base = max(float(current.get(dimension, 0.0)), 1e-9)
+        base = max(float(current.get(dimension, 0.0)), 1e-09)
         if dimension not in scores:
             next_weights[dimension] = base
             continue

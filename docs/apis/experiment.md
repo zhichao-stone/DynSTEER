@@ -23,6 +23,28 @@ python main.py --exp data/experiments/double_benchmark_initial.json
 启动脚本 `scripts/start_experiment.sh` 与 `scripts/start_experiment_no_docker.sh` 会根据 `benchmarks[*].data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数；`--source`、`--workers` 仅作为覆盖项。`--force_adapt` 可以单独使用，用于在评估前强制重建 `data/<benchmark>/adapted_cases`。
 直接调用 `main.py --exp ...` 时，benchmark 源码仍需要已在当前环境中可导入；自动 bootstrap 逻辑只在 wrapper 脚本中执行。
 
+ToolSandbox 的 agent/user 连接参数应放在 `models[*].harness_metadata` 中，与 `agent`、`user` 角色类型同级：
+
+```json
+{
+    "model_id": "GPT_4_o_2024_05_13",
+    "harness_metadata": {
+        "agent": "GPT_4_o_2024_05_13",
+        "user": "GPT_4_o_2024_05_13",
+        "agent_client": {
+            "api_key_env": "DYNSTEER_AGENT_API_KEY",
+            "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+        },
+        "user_client": {
+            "api_key_env": "DYNSTEER_USER_API_KEY",
+            "base_url_env": "DYNSTEER_USER_BASE_URL"
+        }
+    }
+}
+```
+
+`judge_profiles` 只配置 DynSTEER Judge，不会影响 ToolSandbox 原生 agent/user role；不要把 agent/user 的 client 配置写到 `judge_profiles`。
+
 ## 执行流程
 
 `run_experiment(config_path, workers=1, force_adapt=False)` 会先展开实验矩阵，再按 benchmark 名称准备 `TaskCase` 模板。每个 benchmark 在同一次实验中只调用一次 `load_task_case(...)`；`model`、`method`、`judge_profile`、`threshold_profile` 和 `repeat` 不会触发 adapted case 重新加载或重建。

@@ -41,19 +41,27 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 }
 ```
 
-`data/toolsandbox/run_config.json`：
+`data/toolsandbox/run_configs.json`：
 
 ```json
 [
     {
         "scenarios": ["wifi_off"],
         "agent": "GPT_4_o_2024_05_13",
-        "user": "GPT_4_o_2024_05_13"
+        "user": "GPT_4_o_2024_05_13",
+        "agent_client": {
+            "api_key_env": "DYNSTEER_AGENT_API_KEY",
+            "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+        },
+        "user_client": {
+            "api_key_env": "DYNSTEER_USER_API_KEY",
+            "base_url_env": "DYNSTEER_USER_BASE_URL"
+        }
     }
 ]
 ```
 
-`run_config.json` 是运行配置列表。每项的 `scenarios` 是待评估场景 ID 列表；空列表表示运行全部场景。
+`run_configs.json` 是运行配置列表。每项的 `scenarios` 是待评估场景 ID 列表；空列表表示运行全部场景。`agent` 与 `user` 只表示 ToolSandbox 角色类型，连接参数通过同级的 `agent_client` 与 `user_client` 配置；未填写时继续使用 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等全局环境变量。
 
 `source_root` 相对于 DynSTEER 项目根目录解析，也就是 `main.py` 所在目录。通过 Docker 启动时，可以用 `--source` 指定原生 benchmark 源码目录，启动脚本会把该目录挂载进容器，并在容器内执行 editable 安装。例如 ToolSandbox：
 ```powershell
@@ -102,7 +110,7 @@ Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通�
 1. 在 `dynsteer/adapter/{benchmark}/` 下实现对应的 `adapter.py` 与 `harness.py`。
 2. 在 `dynsteer/adapter/registry.py` 的 `_ADAPTERS` 中注册新的 adapter。
 3. 在 `data/{benchmark}/benchmark.json` 中填写 `benchmark`、`source_root` 和 benchmark 需要的静态字段；若 benchmark 不支持 case 并行，可填写 `max_workers` 作为并发上限。
-4. 在 `data/{benchmark}/run_config.json` 中填写运行配置与待评估场景。
+4. 在 `data/{benchmark}/run_configs.json` 中填写运行配置与待评估场景。
 5. Docker 启动时传入 `--source {benchmark源码路径}`；本地非 Docker 运行时仍可手动执行 `uv add --editable {benchmark源码路径}` 和 `uv sync`。
 
 ```powershell

@@ -152,6 +152,23 @@ ToolSandbox 外部可选依赖由专门依赖边界工具函数加载，不通�
 
 `data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。`benchmark.json` 还支持可选 `max_workers` 整数字段，用于为不支持并行的 benchmark 设置 case 并发上限。
 
+`data/toolsandbox/run_configs.json` 每项配置中，`agent` 与 `user` 只表示 ToolSandbox 角色实现类型；角色 SDK client 的连接参数由同级的 `agent_client` 与 `user_client` 控制，并原样写入 `HarnessRunConfig.metadata`。支持字段包括 `api_key`、`api_key_env`、`base_url`、`base_url_env`、`timeout_seconds`，其中空字符串会被视为未配置。实际 client 初始化优先级为显式值、显式环境变量、旧全局环境变量；未设置新字段时继续读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`。
+
+```json
+{
+    "agent": "GPT_4_o_2024_05_13",
+    "user": "GPT_4_o_2024_05_13",
+    "agent_client": {
+        "api_key_env": "DYNSTEER_AGENT_API_KEY",
+        "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+    },
+    "user_client": {
+        "api_key_env": "DYNSTEER_USER_API_KEY",
+        "base_url_env": "DYNSTEER_USER_BASE_URL"
+    }
+}
+```
+
 ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
 
 ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息，并在初始化后把当前 context 的真实初始状态固化到 session。每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
