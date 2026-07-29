@@ -129,6 +129,24 @@ def _optional_object(data: JsonObject, key: str) -> JsonObject:
     return value if isinstance(value, dict) else {}
 
 
+def _optional_json_object(data: JsonObject, key: str) -> JsonObject | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} 必须是 JSON 对象")
+    return value
+
+
+def _optional_int(data: JsonObject, key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} 必须是整数")
+    return value
+
+
 def parse_constraint(data: JsonObject) -> Constraint:
     constraint_data = ensure_json_object(data)
     return Constraint(
@@ -260,32 +278,44 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     known = {
         "step_id", "index",
         "actor", "recipient", "event_type", "timestamp",
-        "content", "tool_call","tool_result", "state_delta_refs", 
+        "content", "tool_call", "tool_result", "state_delta_refs",
         "cost",
     }
     refs = get_object(data, "state_delta_refs", list, default=[], required=False)
     index = get_object(data, "index", int)
-    tool_call_data = ensure_json_object(data.get("tool_call"))
-    tool_result_data = ensure_json_object(data.get("tool_result"))
-    tool_call = ToolCall(
-        name=required_str(tool_call_data, "name", "tool_call"),
-        arguments=_optional_object(tool_call_data, "arguments"),
+    tool_call_data = _optional_json_object(data, "tool_call")
+    tool_result_data = _optional_json_object(data, "tool_result")
+    tool_call = (
+        ToolCall(
+            name=required_str(tool_call_data, "name", "tool_call"),
+            arguments=_optional_object(tool_call_data, "arguments"),
+        )
+        if tool_call_data is not None
+        else None
     )
-    tool_result = ToolResult(**tool_result_data)
+    tool_result = (
+        ToolResult(
+            success=bool(tool_result_data.get("success", False)),
+            content=tool_result_data.get("content"),
+            exception=tool_result_data.get("exception") if isinstance(tool_result_data.get("exception"), str) else None,
+        )
+        if tool_result_data is not None
+        else None
+    )
 
-    cost_data = data.get("cost")
+    cost_data = _optional_json_object(data, "cost")
     cost = StepCost()
     if cost_data is not None:
         cost = StepCost(
-            tokens=get_object(cost_data, "tokens", int, required=False),
-            latency_ms=get_object(cost_data, "latency_ms", int, required=False)
+            tokens=_optional_int(cost_data, "tokens"),
+            latency_ms=_optional_int(cost_data, "latency_ms"),
         )
 
     return TrajectoryStep(
         step_id=required_str(data, "step_id", "TrajectoryStep"),
         index=index,
-        actor=_load_actor(get_object(data, "actor"), "actor") or Actor.EVALUATOR,
-        event_type=enum_value(EventType, get_object(data, "event_type"), "event_type"),
+        actor=_load_actor(data.get("actor"), "actor") or Actor.EVALUATOR,
+        event_type=enum_value(EventType, data.get("event_type"), "event_type"),
         recipient=_load_actor(data.get("recipient"), "recipient", required=False),
         timestamp=data.get("timestamp"),
         content=data.get("content"),
@@ -311,14 +341,16 @@ def load_trajectory(data: JsonObject) -> Trajectory:
     trajectory_data = ensure_json_object(data)
     step_values = get_object(trajectory_data, "steps", list)
     snapshot_values = get_object(trajectory_data, "snapshots", list, default=[], required=False)
+    final_state = _optional_json_object(trajectory_data, "final_state")
+    metrics = _optional_json_object(trajectory_data, "metrics") or {}
     known = {"run_id", "task_id", "steps", "snapshots", "final_state", "metrics"}
     return Trajectory(
         run_id=required_str(trajectory_data, "run_id", "Trajectory"),
         task_id=required_str(trajectory_data, "task_id", "Trajectory"),
         steps=[_load_step(ensure_json_object(item)) for item in step_values],
         snapshots=[_load_snapshot(ensure_json_object(item)) for item in snapshot_values],
-        final_state=get_object(trajectory_data, "final_state", (dict, type(None)), default=None, required=False),
-        metrics=get_object(trajectory_data, "metrics", dict, default={}, required=False),
+        final_state=final_state,
+        metrics=metrics,
         raw=unknown_fields(trajectory_data, known),
     )
 

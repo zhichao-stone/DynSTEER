@@ -10,7 +10,7 @@ from dynsteer.model import (
     StageInterval,
     TaskCase,
 )
-from dynsteer.stage.goal import required_stage_goal_keys, stage_goal_key
+from dynsteer.stage.resolve import required_stage_goal_keys, stage_goal_key
 
 
 def generate_stage_evaluation_specs(task_case: TaskCase) -> dict[str, StageEvaluationSpec]:

@@ -22,7 +22,7 @@ class EvaluationStrategyConfig:
     policy_stop: bool = True
     guidance_enabled: bool = False
     fixed_judge_level: EvaluationLevel = EvaluationLevel.CHEAP
-    replay_continue_after_virtual_stop: bool = True
+    replay_continue_after_virtual_stop: bool = False
     metadata: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:

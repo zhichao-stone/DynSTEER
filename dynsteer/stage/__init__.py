@@ -1,11 +1,13 @@
 from dynsteer.stage.trajectory import stage_start_step_index, stage_trajectory_steps
 from dynsteer.stage.goal import (
-    DEFAULT_FINISH_STAGE_GOAL,
     generate_stage_goals,
+    validate_stage_goals,
+)
+from dynsteer.stage.resolve import (
+    DEFAULT_FINISH_STAGE_GOAL,
     required_stage_goal_keys,
     resolve_stage_goal,
     stage_goal_key,
-    validate_stage_goals,
 )
 from dynsteer.stage.spec import (
     generate_stage_evaluation_specs,

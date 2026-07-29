@@ -7,7 +7,7 @@ from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_exp
 from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageInterval, TaskCase, Trajectory
 from dynsteer.prompt.rubrics import rubrics_for_dimensions
 from dynsteer.prompt.template import load_prompt_template
-from dynsteer.stage.goal import resolve_stage_goal
+from dynsteer.stage.resolve import resolve_stage_goal
 from dynsteer.stage.trajectory import stage_trajectory_steps
 from dynsteer.utils import json_safe, validated_target_dimensions
 

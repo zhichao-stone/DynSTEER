@@ -2,11 +2,13 @@
 
 ## 目标
 
-`dynsteer.evaluate` 提供 DynSTEER 的运行期阶段式评估入口。主流程仍是 `DynSTEEREvaluator.evaluate(harness, config, task_case)`；实验层另提供 `DynSTEEREvaluator.evaluate_replay(task_case, trajectory, scorer, config)`，用于对同一条完整轨迹执行离线阶段式回放。两个入口的当前 case 身份都来自 `task_case.case_id`，不要求调用方把 `HarnessRunConfig.case_ids` 改写成单元素元组。
+`dynsteer.evaluate` 是轻量包标记，运行期阶段式评估入口从具体子模块显式导入。主流程仍是 `DynSTEEREvaluator.evaluate(harness, config, task_case)`；实验层另提供 `DynSTEEREvaluator.evaluate_replay(task_case, trajectory, scorer, config)`，用于对同一条完整轨迹执行离线阶段式回放。两个入口的当前 case 身份都来自 `task_case.case_id`，不要求调用方把 `HarnessRunConfig.case_ids` 改写成单元素元组。
 
 ## 主流程
 
 ```python
+from dynsteer.evaluate.evaluator import DynSTEEREvaluator
+
 result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 ```
 
@@ -28,7 +30,7 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 result = evaluator.evaluate_replay(task_case, trajectory, scorer, config)
 ```
 
-Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它把完整 `Trajectory` 按 step 顺序重新喂入 minefield、agent step closure、milestone matching 和 checkpoint 逻辑。若策略触发提前终止，结果写入 `termination` 与 stage metadata 的 `replay_virtual_stop`；默认继续扫描完整轨迹，并在 finish metadata 中标记 `finish_after_virtual_stop=true`。
+Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它把完整 `Trajectory` 按 step 顺序重新喂入 minefield、agent step closure、milestone matching 和 checkpoint 逻辑。若策略触发提前终止，结果写入 `termination` 与 stage metadata 的 `replay_virtual_stop`；默认在虚拟早停后停止扫描，并在继续配置为 `true` 时才完整扫描轨迹，finish metadata 中则标记 `finish_after_virtual_stop=true`。
 
 实验 runner 在调用 replay 前会读取 default `trajectory.json` 顶层 raw 字段中的 `runtime_initial_state`，并覆盖当前 replay `TaskCase.initial_state`。因此 replay 的 `ScoringContext["initial"]` 与 default session 使用同一份真实初始状态，避免 `preserve_state` 被 adapted JSON 中的空 expected 占位或过期动态值误导。
 
@@ -37,7 +39,7 @@ Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它
 - `dynamic_routing`: 关闭后固定使用 `fixed_judge_level`。
 - `dynamic_weighting`: 关闭后下一阶段权重保持不变。
 - `policy_stop`: 关闭后不产生在线 stop 或 replay 虚拟 stop。
-- `replay_continue_after_virtual_stop`: replay 虚拟早停后是否继续扫描完整轨迹。
+- `replay_continue_after_virtual_stop`: replay 虚拟早停后是否继续扫描完整轨迹，默认关闭。
 
 ## Milestone 语义
 

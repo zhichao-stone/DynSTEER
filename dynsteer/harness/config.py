@@ -79,7 +79,7 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None = None) -> E
         policy_stop=_bool_from_mapping(data, "policy_stop", True),
         guidance_enabled=_bool_from_mapping(data, "guidance_enabled", False),
         fixed_judge_level=fixed_level,
-        replay_continue_after_virtual_stop=_bool_from_mapping(data, "replay_continue_after_virtual_stop", True),
+        replay_continue_after_virtual_stop=_bool_from_mapping(data, "replay_continue_after_virtual_stop", False),
         metadata={str(key): value for key, value in dict(metadata or {}).items()},
     )
 
