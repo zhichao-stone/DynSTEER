@@ -47,7 +47,7 @@ Replay 不启动 benchmark session，也不会调用 `harness.stop_case()`。它
 
 - `Milestone.required` 已移除。
 - adapted case 中出现 `required` 字段会在 loader 解析时直接报错，要求重新生成。
-- coverage 规则：全部 milestone matched 为 `full`；至少一个真实 milestone matched 但不是全部为 `partial`；没有 milestone 或没有 matched 为 `none`。
+- coverage 规则：全部 milestone matched 为 `full`；至少一个真实 milestone matched 但不是全部为 `partial`；没有 matched 为 `none`。空 milestone graph 会退化为完整轨迹终态评估，coverage 依据见下文 `__finish__` 说明。
 - pending 规则：运行自然结束或策略提前终止后，所有未 matched milestone 都生成 `synthetic_pending_milestone` stage。
 
 ## Ready Frontier
@@ -148,7 +148,15 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 
 `stage_settlements[].metadata.stage_trace.state_snapshot_delta_summary` 提供轻量状态变化摘要，只包含命名空间行数、变化标记与 changed namespace 列表，不嵌入完整状态数据。
 
-`__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。空 milestone graph 且没有 whole-trajectory fallback 时不会默认通过：若已触发 fatal minefield，finish 为 `fail/0`；否则为 `invalid/0`。
+`__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。普通 milestone graph 下，它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。
+
+空 milestone graph 不再被直接解释为 invalid，也不会借用 ToolSandbox default 原生 evaluator 结论。此类 case 表示没有固定正向 milestone 可切分，replay 会把 `__start__->__finish__` 作为 whole-trajectory stage：先扫描完整轨迹上的 minefield；若命中 fatal minefield，finish 始终 `fail/0`；若未命中 fatal minefield，则由 DynSTEER 自己的 `StandardJudge` 根据任务描述、完整轨迹、工具结果、最终状态和 minefield 约束判断任务是否完成。
+
+空图 finish 的 `metadata.finish_stage_evaluation` 会写入 `empty_milestone_graph=true`、`fixed_milestones_applicable=false`、`whole_trajectory_evaluation=true`、`coverage_basis="whole_trajectory"`、`default_reference_used=false`、`judge_level="standard"` 和 `focus_dimensions`。若未配置 `StandardJudge` 或等价终态评估器，则保守返回 `invalid/0`，并写入 `whole_trajectory_evaluator_unavailable=true`。
+
+空图 `milestone_coverage` 在报告中表示完整轨迹完成度：whole-trajectory finish `pass` 为 `full`，`warn/ambiguous` 为 `partial`，`fail/invalid/missing` 或缺少 finish stage 为 `none`。
+
+实验层保留的 `metadata.default_reference` 只用于对照、溯源和审计差异，不参与 replay 的 `status`、`overall_score`、`milestone_coverage`、minefield 扫描、stage judge 或 finish 判定，也不会进入 judge prompt。
 
 finish payload 中的 `terminal_state_checks` 只包含 `set_state`、`preserve_state`、`STATE_DELTA` 和真实持久状态快照约束的最终边界重检。`emit_message`、`user_visible_required=true` 以及 ToolSandbox `SANDBOX` 用户可见消息约束不会在 `end_conversation` 后用最后的 `None` 重评；这些约束会进入 `terminal_message_checks`，表示它们已由原 terminal milestone 匹配结果确认。
 

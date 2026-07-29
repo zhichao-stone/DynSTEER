@@ -6,7 +6,7 @@
 
 - `stage_goal_key(anchor_milestone_id, milestone_id)`：生成稳定 stage goal key。
 - `required_stage_goal_keys(graph)`：返回真实 milestone 需要覆盖的全部 stage goal key。
-- `resolve_stage_goal(interval, task_case)`：读取当前阶段目标；finish 阶段返回语言相关的默认收尾目标。
+- `resolve_stage_goal(interval, task_case)`：读取当前阶段目标；普通 finish 阶段返回语言相关的默认收尾目标，空 milestone graph 的 finish 阶段返回完整轨迹终态评估目标。
 
 所有 milestone 都必须生成 stage_goal。DAG 并行只表示依赖关系，不表示 optional milestone；loader 读取到 milestone `required` 字段会报错并要求重新生成 adapted case。
 
@@ -40,7 +40,7 @@ ToolSandbox SANDBOX snapshot constraint 如果 target row 包含 `tool_trace`，
 
 ## Stage Evaluation Spec API
 
-`dynsteer.stage.generate_stage_evaluation_specs(task_case)` 是阶段聚焦评估维度的公共生成入口。输出 key 与真实 milestone 的 `stage_goals` key 保持一致，例如 `__start__->m0`、`m3->m4`；`__finish__` 不作为普通 milestone spec 生成。
+`dynsteer.stage.generate_stage_evaluation_specs(task_case)` 是阶段聚焦评估维度的公共生成入口。输出 key 与真实 milestone 的 `stage_goals` key 保持一致，例如 `__start__->m0`、`m3->m4`；`__finish__` 不作为普通 milestone spec 生成。空 milestone graph 的 `__finish__` 会在运行期解析为 whole-trajectory finish spec，聚焦 `progress`、`state_consistency`、`tool_quality`、`safety`、`interaction_quality`、`efficiency`、`recovery` 七个维度。
 
 每个 `StageEvaluationSpec` 包含：
 

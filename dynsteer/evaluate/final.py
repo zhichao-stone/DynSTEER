@@ -39,7 +39,7 @@ def build_finish_verification(
     graph = task_case.milestone_graph
     matched = state.matched_settlements
     if not graph.nodes:
-        return _empty_graph_finish_verification(state)
+        return _empty_graph_finish_verification(task_case, state)
 
     milestone_ids = [node.milestone_id for node in graph.nodes]
     matched_ids = set(matched)
@@ -95,27 +95,37 @@ def build_finish_verification(
     }
 
 
-def _empty_graph_finish_verification(state: RuntimeEvaluationState) -> JsonObject:
+def _empty_graph_finish_verification(task_case: TaskCase, state: RuntimeEvaluationState) -> JsonObject:
     fatal_minefield = bool(state.fatal_minefield)
+    graph = task_case.milestone_graph
     if fatal_minefield:
         status = StageStatus.FAIL
         evidence = ["finish 结算节点", "空 milestone graph 运行期触发 fatal minefield，finish 判定失败。"]
         diagnosis = ["finish final verification 失败：运行期触发 fatal minefield。"]
+        whole_trajectory_evaluation_required = False
     else:
-        status = StageStatus.INVALID
+        status = StageStatus.AMBIGUOUS
         evidence = [
             "finish 结算节点",
-            "空 milestone graph 未配置 whole-trajectory fallback，不能默认通过。",
+            "空 milestone graph 没有固定 milestone，需进入 DynSTEER 完整轨迹终态评估。",
         ]
-        diagnosis = ["finish final verification 无效：没有 milestone、minefield 命中或 terminal 约束提供完成证据。"]
+        diagnosis = ["finish final verification 预检通过：未触发 fatal minefield，但仍需要 whole-trajectory judge 判断任务完成度。"]
+        whole_trajectory_evaluation_required = True
     return {
-        "all_milestones_matched": False,
+        "all_milestones_matched": True,
         "unmatched_milestone_ids": [],
         "terminal_milestone_ids": [],
         "terminal_state_checks": [],
         "terminal_message_checks": [],
         "fatal_minefield": fatal_minefield,
         "empty_milestone_graph": True,
+        "fixed_milestones_applicable": False,
+        "whole_trajectory_evaluation": False,
+        "whole_trajectory_evaluation_required": whole_trajectory_evaluation_required,
+        "coverage_basis": "whole_trajectory",
+        "default_reference_used": False,
+        "minefield_count": len(graph.minefields) if graph is not None else 0,
+        "minefield_match_count": len(state.minefield_matches),
         "status": status.value,
         "score": 0.0,
         "evidence": evidence,

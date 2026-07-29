@@ -179,6 +179,8 @@ def finish_settlement(
     scorer: GeneralScorer,
     state: RuntimeEvaluationState,
     replay_termination: EvaluationTerminationState | None = None,
+    standard_judge: StandardJudge | None = None,
+    thresholds: ThresholdConfig | None = None,
 ) -> tuple[
     HarnessStageSettlement,
     StageEvaluationResult,
@@ -192,6 +194,8 @@ def finish_settlement(
         trajectory: 当前运行期轨迹。
         scorer: 当前 benchmark 约束评分器。
         state: 当前运行期评估状态。
+        standard_judge: 空 milestone graph 完整轨迹终态评估器。
+        thresholds: 完整轨迹终态评估使用的阶段阈值。
     输出：
         finish 结算、阶段报告、新权重和策略更新。
     """
@@ -232,50 +236,27 @@ def finish_settlement(
     )
 
     verification = build_finish_verification(task_case, trajectory, state, scorer)
-    status = StageStatus(str(verification.get("status") or StageStatus.FAIL.value))
-    score = as_number(verification.get("score"), 0.0)
-    terminal_checks = verification.get("terminal_state_checks")
-    has_terminal_checks = isinstance(terminal_checks, list) and len(terminal_checks) > 0
-    dimension_scores = {Dimension.PROGRESS: score}
-    if has_terminal_checks:
-        dimension_scores[Dimension.STATE_CONSISTENCY] = min(
-            (as_number(item.get("score"), score) for item in terminal_checks if isinstance(item, dict)), default=score
-        )
-    dimension_confidence = {dimension: 0.95 for dimension in dimension_scores}
-
-    evidence = (
-        clean_evidence_items([str(item) for item in verification.get("evidence", [])])
-        if isinstance(verification.get("evidence"), list)
-        else ["finish 结算节点"]
-    )
-    diagnosis = [str(item) for item in verification.get("diagnosis", [])] if isinstance(verification.get("diagnosis"), list) else []
-
     replay_metadata = replay_termination.to_dict() if replay_termination is not None else None
-    stage_result = StageEvaluationResult(
-        stage_id=interval.stage_id,
-        milestone_id=interval.milestone_id,
-        status=status,
-        stage_score=score,
-        dimension_scores=dimension_scores,
-        dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in dimension_scores},
-        dimension_confidence=dimension_confidence,
-        dimension_uncertainty={dimension: 1.0 - value for dimension, value in dimension_confidence.items()},
-        evidence=evidence,
-        diagnosis=diagnosis,
-        next_weights=dict(state.weights),
-        fatal=bool(verification.get("fatal_minefield")),
-        hard_constraints_all_pass=status != StageStatus.FAIL,
-        required_fields_missing_ratio=0.0 if bool(verification.get("all_milestones_matched")) else 1.0,
-        minefield_score=state.max_minefield_score,
-        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
-        metadata={
-            "finish_stage_evaluation": verification,
-            "next_evaluation_policy": evaluation_policy.to_dict(),
-            "evaluation_termination": EvaluationTerminationState().to_dict(),
-            "replay_virtual_stop": replay_metadata,
-            "finish_after_virtual_stop": replay_metadata is not None,
-        },
-    )
+    if bool(verification.get("whole_trajectory_evaluation_required")):
+        stage_result = _whole_trajectory_finish_stage_result(
+            interval=interval,
+            task_case=task_case,
+            trajectory=trajectory,
+            verification=verification,
+            state=state,
+            evaluation_policy=evaluation_policy,
+            replay_metadata=replay_metadata,
+            standard_judge=standard_judge,
+            thresholds=thresholds or ThresholdConfig(),
+        )
+    else:
+        stage_result = _deterministic_finish_stage_result(
+            interval=interval,
+            verification=verification,
+            state=state,
+            evaluation_policy=evaluation_policy,
+            replay_metadata=replay_metadata,
+        )
 
     settlement = HarnessStageSettlement(
         settlement_id=f"st{len(settlements)}",
@@ -292,12 +273,235 @@ def finish_settlement(
             "stage_start_boundary_step_index": interval.start_boundary_step_index,
             "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
             "milestone_matching": build_finish_matching_detail(graph=graph, matched=matched),
-            "finish_stage_evaluation": verification,
+            "finish_stage_evaluation": stage_result.metadata.get("finish_stage_evaluation", verification),
             "replay_virtual_stop": replay_metadata,
             "finish_after_virtual_stop": replay_metadata is not None,
         },
     )
     return settlement, stage_result, evaluation_policy
+
+
+def _deterministic_finish_stage_result(
+    interval: StageInterval,
+    verification: JsonObject,
+    state: RuntimeEvaluationState,
+    evaluation_policy: EvaluationPolicyState,
+    replay_metadata: JsonObject | None,
+) -> StageEvaluationResult:
+    """把确定性 final verification 转换为 finish 阶段报告。"""
+    status = StageStatus(str(verification.get("status") or StageStatus.FAIL.value))
+    score = float(as_number(verification.get("score"), 0.0) or 0.0)
+    terminal_checks = verification.get("terminal_state_checks")
+    has_terminal_checks = isinstance(terminal_checks, list) and len(terminal_checks) > 0
+    dimension_scores = {Dimension.PROGRESS: score}
+    if has_terminal_checks:
+        dimension_scores[Dimension.STATE_CONSISTENCY] = min(
+            (
+                float(as_number(item.get("score"), score) or 0.0)
+                for item in terminal_checks
+                if isinstance(item, dict)
+            ),
+            default=score,
+        )
+    dimension_confidence = {dimension: 0.95 for dimension in dimension_scores}
+    evidence = _verification_string_list(verification, "evidence", default=["finish 结算节点"])
+    diagnosis = _verification_string_list(verification, "diagnosis")
+    return StageEvaluationResult(
+        stage_id=interval.stage_id,
+        milestone_id=interval.milestone_id,
+        status=status,
+        stage_score=score,
+        dimension_scores=dimension_scores,
+        dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in dimension_scores},
+        dimension_confidence=dimension_confidence,
+        dimension_uncertainty={dimension: 1.0 - value for dimension, value in dimension_confidence.items()},
+        evidence=evidence,
+        diagnosis=diagnosis,
+        next_weights=dict(state.weights),
+        fatal=bool(verification.get("fatal_minefield")),
+        hard_constraints_all_pass=status in {StageStatus.PASS, StageStatus.WARN},
+        required_fields_missing_ratio=0.0 if bool(verification.get("all_milestones_matched")) else 1.0,
+        minefield_score=state.max_minefield_score,
+        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
+        metadata=_finish_stage_metadata(verification, evaluation_policy, replay_metadata),
+    )
+
+
+def _whole_trajectory_finish_stage_result(
+    interval: StageInterval,
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    verification: JsonObject,
+    state: RuntimeEvaluationState,
+    evaluation_policy: EvaluationPolicyState,
+    replay_metadata: JsonObject | None,
+    standard_judge: StandardJudge | None,
+    thresholds: ThresholdConfig,
+) -> StageEvaluationResult:
+    """为空 milestone graph 生成完整轨迹终态评估阶段报告。"""
+    spec = resolve_stage_evaluation_spec(interval, task_case)
+    focus_dimensions = list(dict.fromkeys(spec.focus_dimensions))
+    precheck_evidence = _verification_string_list(verification, "evidence", default=["finish 结算节点"])
+    precheck_diagnosis = _verification_string_list(verification, "diagnosis")
+
+    if standard_judge is None:
+        finish_evaluation = dict(verification)
+        finish_evaluation.update(
+            {
+                "status": StageStatus.INVALID.value,
+                "score": 0.0,
+                "whole_trajectory_evaluation": False,
+                "whole_trajectory_evaluator_unavailable": True,
+                "judge_level": None,
+                "focus_dimensions": [dimension.value for dimension in focus_dimensions],
+            }
+        )
+        evidence = clean_evidence_items(
+            [*precheck_evidence, "缺少 DynSTEER whole-trajectory evaluator，空 milestone graph 无法完成终态评估。"]
+        )
+        diagnosis = [
+            *precheck_diagnosis,
+            "finish whole-trajectory evaluation 无效：未配置 StandardJudge 或等价终态评估器。",
+        ]
+        finish_evaluation["evidence"] = evidence
+        finish_evaluation["diagnosis"] = diagnosis
+        return StageEvaluationResult(
+            stage_id=interval.stage_id,
+            milestone_id=interval.milestone_id,
+            status=StageStatus.INVALID,
+            stage_score=0.0,
+            dimension_scores={Dimension.PROGRESS: 0.0},
+            dimension_levels={Dimension.PROGRESS: EvaluationLevel.CHEAP},
+            dimension_confidence={Dimension.PROGRESS: 0.95},
+            dimension_uncertainty={Dimension.PROGRESS: 0.05},
+            evidence=evidence,
+            diagnosis=diagnosis,
+            next_weights=dict(state.weights),
+            fatal=False,
+            hard_constraints_all_pass=False,
+            required_fields_missing_ratio=1.0,
+            minefield_score=state.max_minefield_score,
+            fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
+            metadata=_finish_stage_metadata(
+                finish_evaluation,
+                evaluation_policy,
+                replay_metadata,
+                extra={
+                    "focus_dimensions": [dimension.value for dimension in focus_dimensions],
+                    "dimension_rationale": _dimension_rationale_json(spec.dimension_rationale, focus_dimensions),
+                    "structural_failure": True,
+                },
+            ),
+        )
+
+    judge_result = standard_judge.evaluate_stage(interval, task_case, trajectory, focus_dimensions)
+    score = stage_score_from_dimensions(judge_result.dimension_scores, state.weights)
+    status = _whole_trajectory_status(judge_result.status, score, thresholds)
+    evidence = clean_evidence_items([*precheck_evidence, *judge_result.evidence])
+    diagnosis = [*precheck_diagnosis, *judge_result.diagnosis]
+    hard_pass = status in {StageStatus.PASS, StageStatus.WARN}
+    finish_evaluation = dict(verification)
+    finish_evaluation.update(
+        {
+            "status": status.value,
+            "score": score,
+            "whole_trajectory_evaluation": True,
+            "whole_trajectory_evaluation_required": True,
+            "whole_trajectory_evaluator_unavailable": False,
+            "coverage_basis": "whole_trajectory",
+            "default_reference_used": False,
+            "judge_level": EvaluationLevel.STANDARD.value,
+            "judge_status": judge_result.status.value,
+            "judge_stage_score": score,
+            "focus_dimensions": [dimension.value for dimension in focus_dimensions],
+            "dimension_scores": {
+                dimension.value: value for dimension, value in judge_result.dimension_scores.items()
+            },
+            "evidence": evidence,
+            "diagnosis": diagnosis,
+        }
+    )
+    return StageEvaluationResult(
+        stage_id=interval.stage_id,
+        milestone_id=interval.milestone_id,
+        status=status,
+        stage_score=score,
+        dimension_scores=dict(judge_result.dimension_scores),
+        dimension_levels=dict(judge_result.dimension_levels),
+        dimension_confidence=dict(judge_result.dimension_confidence),
+        dimension_uncertainty=dict(judge_result.dimension_uncertainty),
+        evidence=evidence,
+        diagnosis=diagnosis,
+        next_weights=dict(state.weights),
+        fatal=False,
+        hard_constraints_all_pass=hard_pass,
+        required_fields_missing_ratio=0.0 if hard_pass else 1.0,
+        minefield_score=state.max_minefield_score,
+        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
+        metadata=_finish_stage_metadata(
+            finish_evaluation,
+            evaluation_policy,
+            replay_metadata,
+            extra={
+                "dimension_judge_results": [_judge_result_metadata(judge_result, focus_dimensions, state.weights)],
+                "focus_dimensions": [dimension.value for dimension in focus_dimensions],
+                "dimension_rationale": _dimension_rationale_json(spec.dimension_rationale, focus_dimensions),
+                "structural_failure": not hard_pass,
+            },
+        ),
+    )
+
+
+def _finish_stage_metadata(
+    finish_evaluation: JsonObject,
+    evaluation_policy: EvaluationPolicyState,
+    replay_metadata: JsonObject | None,
+    extra: JsonObject | None = None,
+) -> JsonObject:
+    """构造 finish 阶段报告通用 metadata。"""
+    metadata: JsonObject = {
+        "finish_stage_evaluation": finish_evaluation,
+        "next_evaluation_policy": evaluation_policy.to_dict(),
+        "evaluation_termination": EvaluationTerminationState().to_dict(),
+        "replay_virtual_stop": replay_metadata,
+        "finish_after_virtual_stop": replay_metadata is not None,
+    }
+    if extra is not None:
+        metadata.update(extra)
+    return metadata
+
+
+def _verification_string_list(
+    verification: JsonObject, key: str, default: list[str] | None = None
+) -> list[str]:
+    """从 verification 中读取字符串列表并清洗 evidence。"""
+    value = verification.get(key)
+    result = [str(item) for item in value] if isinstance(value, list) else list(default or [])
+    return clean_evidence_items(result) if key == "evidence" else result
+
+
+def _whole_trajectory_status(
+    judge_status: StageStatus,
+    score: float,
+    thresholds: ThresholdConfig,
+) -> StageStatus:
+    """结合 judge 原始状态和综合分生成完整轨迹 finish 状态。"""
+    if judge_status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}:
+        return judge_status
+    if score < thresholds.fail_threshold:
+        return StageStatus.FAIL
+    if score < thresholds.pass_threshold:
+        return StageStatus.WARN
+    if judge_status in {StageStatus.WARN, StageStatus.AMBIGUOUS}:
+        return judge_status
+    return StageStatus.PASS
+
+
+def _dimension_rationale_json(
+    rationale: dict[Dimension, str], dimensions: list[Dimension]
+) -> JsonObject:
+    """序列化当前 finish 聚焦维度原因。"""
+    return {dimension.value: rationale.get(dimension, "") for dimension in dimensions}
 
 
 def _evaluate_stage(

@@ -30,6 +30,7 @@ from dynsteer.evaluate.scoring import (
 from dynsteer.evaluate.state_summary import state_namespace_summary
 from dynsteer.evaluate.weights import select_initial_weights
 from dynsteer.experiment.model import EvaluationStrategyConfig
+from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.harness.config import (
     evaluation_strategy_from_mapping,
     load_judge_config_from_env,
@@ -520,6 +521,8 @@ class DynSTEEREvaluator:
             scorer,
             state,
             replay_termination=replay_termination,
+            standard_judge=self._standard_judge,
+            thresholds=self._thresholds,
         )
         state.settlements.append(settlement)
         state.stage_reports.append(stage_result)
@@ -674,7 +677,7 @@ class DynSTEEREvaluator:
             }
         milestone_ids = {node.milestone_id for node in graph.nodes}
         if not graph.nodes:
-            coverage = "none"
+            coverage = _empty_graph_whole_trajectory_coverage(stage_reports)
         elif milestone_ids.issubset(matched_ids):
             coverage = "full"
         elif matched_ids:
@@ -788,3 +791,21 @@ def _int_from_mapping(data: Mapping[str, Any], key: str, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{key} 必须是整数")
     return value
+
+
+def _empty_graph_whole_trajectory_coverage(stage_reports: list[StageEvaluationResult]) -> str:
+    """根据空图 whole-trajectory finish 阶段状态生成 coverage。"""
+    finish_stage = next(
+        (stage for stage in reversed(stage_reports) if stage.milestone_id == FINISH_NODE_ID),
+        None,
+    )
+    if finish_stage is None:
+        return "none"
+    evaluation = finish_stage.metadata.get("finish_stage_evaluation")
+    if not isinstance(evaluation, dict) or evaluation.get("coverage_basis") != "whole_trajectory":
+        return "none"
+    if finish_stage.status == StageStatus.PASS:
+        return "full"
+    if finish_stage.status in {StageStatus.WARN, StageStatus.AMBIGUOUS}:
+        return "partial"
+    return "none"

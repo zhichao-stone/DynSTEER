@@ -1,10 +1,11 @@
 import json
 from collections.abc import Iterable
 
+from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.language import TaskLanguage
 
 from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
-from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, StageInterval, TaskCase, Trajectory
+from dynsteer.model import Constraint, Dimension, JsonObject, Milestone, MilestoneGraph, StageInterval, TaskCase, Trajectory
 from dynsteer.prompt.rubrics import rubrics_for_dimensions
 from dynsteer.prompt.template import load_prompt_template
 from dynsteer.stage.resolve import resolve_stage_goal
@@ -92,8 +93,16 @@ def _context_json(
         ],
         "required_output": _output_schema(language, dimensions),
     }
+    if _is_whole_trajectory_finish(interval, task_case):
+        data["whole_trajectory_context"] = {
+            "coverage_basis": "whole_trajectory",
+            "initial_state_summary": task_case.metadata.get("runtime_initial_state_summary"),
+            "final_state": json_safe(trajectory.final_state),
+            "minefields": _minefield_prompt_json(task_case.milestone_graph),
+            "default_reference_used": False,
+        }
     if extra is not None:
-        data.update(extra)
+        data.update(_safe_extra_context(extra))
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
@@ -131,6 +140,47 @@ def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[Jso
             }
         )
     return checks
+
+
+def _is_whole_trajectory_finish(interval: StageInterval, task_case: TaskCase) -> bool:
+    """判断当前 judge prompt 是否为空图完整轨迹 finish。"""
+    graph = task_case.milestone_graph
+    return interval.milestone_id == FINISH_NODE_ID and graph is not None and not graph.nodes
+
+
+def _minefield_prompt_json(graph: MilestoneGraph | None) -> list[JsonObject]:
+    """生成用于 prompt 的 minefield 摘要，避免泄漏 default 对照结论。"""
+    if graph is None:
+        return []
+    return [
+        {
+            "minefield_id": minefield.minefield_id,
+            "name": minefield.name,
+            "description": minefield.description,
+            "severity": minefield.severity,
+            "penalty": json_safe(minefield.penalty),
+            "constraints": [
+                {
+                    "constraint_id": constraint.constraint_id,
+                    "target": constraint.target.value,
+                    "operator": constraint.operator.value,
+                    "namespace": constraint.namespace,
+                    "hard": constraint.hard,
+                    "evaluator_hint": constraint.evaluator_hint,
+                    "metadata": json_safe(constraint.metadata),
+                }
+                for constraint in minefield.constraints
+            ],
+        }
+        for minefield in graph.minefields
+        if minefield is not None
+    ]
+
+
+def _safe_extra_context(extra: JsonObject) -> JsonObject:
+    """过滤不应进入 judge prompt 的实验对照元数据。"""
+    blocked_keys = {"default_reference", "default_score"}
+    return {key: value for key, value in extra.items() if key not in blocked_keys}
 
 
 def _output_schema(language: TaskLanguage, dimensions: list[Dimension]) -> JsonObject:
