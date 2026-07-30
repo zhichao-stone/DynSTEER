@@ -29,7 +29,15 @@ def cheap_dimension_confidence(status: StageStatus, missing_ratio: float, diagno
     warning_count = _warning_count(diagnostics)
     weak_rule_penalty = min(warning_count, 5) * 0.03
     missing_penalty = 0.0 if status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID} else clamp(missing_ratio) * 0.12
-    base = {Dimension.PROGRESS: 0.92, Dimension.STATE_CONSISTENCY: 0.82, Dimension.TOOL_QUALITY: 0.78, Dimension.EFFICIENCY: 0.62, Dimension.SAFETY: 0.84, Dimension.INTERACTION_QUALITY: 0.48, Dimension.RECOVERY: 0.55}
+    base = {
+        Dimension.PROGRESS: 0.92,
+        Dimension.STATE_CONSISTENCY: 0.82,
+        Dimension.TOOL_QUALITY: 0.78,
+        Dimension.EFFICIENCY: 0.62,
+        Dimension.SAFETY: 0.84,
+        Dimension.INTERACTION_QUALITY: 0.48,
+        Dimension.RECOVERY: 0.55,
+    }
     if status in {StageStatus.MISSING, StageStatus.INVALID}:
         base[Dimension.PROGRESS] = 0.9
         base[Dimension.STATE_CONSISTENCY] = 0.78
@@ -47,7 +55,7 @@ def agreement_confidence(payloads: list[JsonObject], dimensions: Iterable[Dimens
     result: dict[Dimension, float] = {}
     dimension_scores = _dimension_scores(payloads, dimensions)
     for dimension in dimensions:
-        anchors = [f'{round(clamp(score) * 4) / 4:.2f}' for score in dimension_scores.get(dimension, []) if score is not None]
+        anchors = [f"{round(clamp(score) * 4) / 4:.2f}" for score in dimension_scores.get(dimension, []) if score is not None]
         if len(anchors) <= 1:
             result[dimension] = 0.62
             continue
@@ -56,38 +64,57 @@ def agreement_confidence(payloads: list[JsonObject], dimensions: Iterable[Dimens
 
 def aggregate_judge_payload(payloads: list[JsonObject], dimensions: Iterable[Dimension]) -> JsonObject:
     target_dimensions = list(dimensions)
-    return {'status': aggregate_status(payloads).value, 'dimension_scores': {dimension.value: score for dimension, score in aggregate_dimension_scores(payloads, target_dimensions).items()}, 'evidence': merge_text_items(payloads, 'evidence'), 'diagnosis': merge_text_items(payloads, 'diagnosis'), 'metadata': {'judge_pass_count': len(payloads)}}
+    return {
+        "status": aggregate_status(payloads).value,
+        "dimension_scores": {
+            dimension.value: score
+            for dimension, score in aggregate_dimension_scores(
+                payloads,
+                target_dimensions,
+            ).items()
+        },
+        "evidence": merge_text_items(payloads, "evidence"),
+        "diagnosis": merge_text_items(payloads, "diagnosis"),
+        "metadata": {"judge_pass_count": len(payloads)},
+    }
 
 def aggregate_dimension_scores(payloads: list[JsonObject], dimensions: Iterable[Dimension]) -> dict[Dimension, float]:
     """按维度聚合多次 judge 的分数，使用均值作为首版稳定规则。"""
     if payloads is None or dimensions is None:
-        raise ValueError('judge payloads 和 dimensions 不能为空')
+        raise ValueError("judge payloads 和 dimensions 不能为空")
     result: dict[Dimension, float] = {}
     dimension_scores = _dimension_scores(payloads, dimensions)
     for dimension in dimensions:
         values = [score for score in dimension_scores.get(dimension, []) if score is not None]
         if not values:
-            raise ValueError(f'缺少 {dimension.value} 维度分数')
+            raise ValueError(f"缺少 {dimension.value} 维度分数")
         result[dimension] = clamp(sum(values) / len(values))
     return result
 
 def aggregate_status(payloads: list[JsonObject]) -> StageStatus:
     """聚合多次 judge 的阶段状态，优先返回更严重的状态。"""
     if payloads is None or not payloads:
-        raise ValueError('judge payloads 不能为空')
+        raise ValueError("judge payloads 不能为空")
     statuses: list[StageStatus] = []
     for payload in payloads:
         try:
-            statuses.append(StageStatus(str(payload.get('status'))))
+            statuses.append(StageStatus(str(payload.get("status"))))
         except ValueError:
             statuses.append(StageStatus.INVALID)
-    severity = {StageStatus.INVALID: 5, StageStatus.MISSING: 4, StageStatus.FAIL: 3, StageStatus.AMBIGUOUS: 2, StageStatus.WARN: 1, StageStatus.PASS: 0}
+    severity = {
+        StageStatus.INVALID: 5,
+        StageStatus.MISSING: 4,
+        StageStatus.FAIL: 3,
+        StageStatus.AMBIGUOUS: 2,
+        StageStatus.WARN: 1,
+        StageStatus.PASS: 0,
+    }
     return max(statuses, key=lambda status: severity[status])
 
 def merge_text_items(payloads: list[JsonObject], key: str, limit: int=6) -> list[str]:
     """从多个 judge payload 中合并 evidence/diagnosis 文本。"""
     if payloads is None or key is None:
-        raise ValueError('payloads 和 key 不能为空')
+        raise ValueError("payloads 和 key 不能为空")
     items: list[str] = []
     for payload in payloads:
         value = payload.get(key)
@@ -98,13 +125,13 @@ def merge_text_items(payloads: list[JsonObject], key: str, limit: int=6) -> list
             if text and text not in items:
                 items.append(text)
             if len(items) >= limit:
-                return clean_evidence_items(items, limit) if key == 'evidence' else items
-    return clean_evidence_items(items, limit) if key == 'evidence' else items
+                return clean_evidence_items(items, limit) if key == "evidence" else items
+    return clean_evidence_items(items, limit) if key == "evidence" else items
 
 def _dimension_scores(payloads: list[JsonObject], dimensions: list[Dimension]) -> dict[Dimension, list[float]] | None:
     dimension_scores: dict[Dimension, list[float]] = {dimension: [] for dimension in dimensions}
     for payload in payloads:
-        scores = payload.get('dimension_scores')
+        scores = payload.get("dimension_scores")
         if not isinstance(scores, dict):
             for dimension in dimensions:
                 dimension_scores[dimension].append(None)
@@ -126,7 +153,7 @@ def _normalized_entropy(values: list[str]) -> float:
     return entropy / math.log(len(counts))
 
 def _warning_count(diagnostics: JsonObject) -> int:
-    value = diagnostics.get('warning_count')
+    value = diagnostics.get("warning_count")
     if not isinstance(value, int):
         return 0
     return max(value, 0)

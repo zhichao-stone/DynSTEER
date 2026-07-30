@@ -373,7 +373,7 @@ def _termination_stage_report(index: StageDefinitionIndex, termination: JsonObje
     detail = termination.get("termination_detail")
     evidence = clean_evidence_items(
         [
-            f"策略提前终止：{termination.get('termination_code') or 'unknown'}",
+            f"策略提前终止：{termination.get("termination_code") or "unknown"}",
             str(termination.get("termination_reason") or ""),
             *_termination_minefield_evidence(detail if isinstance(detail, dict) else {}),
         ]
@@ -459,10 +459,10 @@ def _minefield_definitions(adapted_case: JsonObject) -> list[JsonObject]:
 
 def _minefield_match_line(match: JsonObject) -> str:
     pieces = [
-        f"minefield 命中：{match.get('minefield_id') or 'unknown'}",
-        f"severity={match.get('severity') or 'unknown'}",
-        f"score={match.get('score')}",
-        f"fatal={match.get('fatal')}",
+        f"minefield 命中：{match.get("minefield_id") or "unknown"}",
+        f"severity={match.get("severity") or "unknown"}",
+        f"score={match.get("score")}",
+        f"fatal={match.get("fatal")}",
     ]
     summary = str(match.get("trigger_summary") or "")
     if summary:
@@ -738,7 +738,7 @@ def _expected_summary(expected: Any) -> str:
         if isinstance(rows, list):
             parts.append(f"rows={len(rows)}")
         if isinstance(columns, list):
-            parts.append(f"columns={','.join(str(item) for item in columns[:4])}")
+            parts.append(f"columns={",".join(str(item) for item in columns[:4])}")
         if parts:
             return "; ".join(parts)
     return _text(expected, 240)

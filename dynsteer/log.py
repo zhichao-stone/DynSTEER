@@ -11,7 +11,30 @@ _LOGGER_LOCK = threading.RLock()
 _LOG_BUFFER_LOCK = threading.RLock()
 _LOG_EXTRA_TEXT_LIMIT = 160
 _LOG_EXTRA_LIST_LIMIT = 12
-_LOG_RECORD_BUILTINS = {'args', 'asctime', 'created', 'exc_info', 'exc_text', 'filename', 'funcName', 'levelname', 'levelno', 'lineno', 'module', 'msecs', 'message', 'msg', 'name', 'pathname', 'process', 'processName', 'relativeCreated', 'stack_info', 'thread', 'threadName'}
+_LOG_RECORD_BUILTINS = {
+    "args",
+    "asctime",
+    "created",
+    "exc_info",
+    "exc_text",
+    "filename",
+    "funcName",
+    "levelname",
+    "levelno",
+    "lineno",
+    "module",
+    "msecs",
+    "message",
+    "msg",
+    "name",
+    "pathname",
+    "process",
+    "processName",
+    "relativeCreated",
+    "stack_info",
+    "thread",
+    "threadName",
+}
 
 class StructuredLogFormatter(logging.Formatter):
     """在日志消息后追加轻量 JSON extra 的 formatter。"""
@@ -22,7 +45,7 @@ class StructuredLogFormatter(logging.Formatter):
         extra = log_extra_from_record(record)
         if not extra:
             return message
-        return f'{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}'
+        return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
 
 class TerminalLogFormatter(logging.Formatter):
     """终端专用 formatter，仅展示少量摘要字段。"""
@@ -33,14 +56,19 @@ class TerminalLogFormatter(logging.Formatter):
         extra = terminal_log_extra_from_record(record)
         if not extra:
             return message
-        return f'{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}'
+        return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
 
 class BufferLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """将日志记录写入内存缓冲区。"""
         try:
-            entry: JsonObject = {'time': datetime.fromtimestamp(record.created).isoformat(timespec='seconds'), 'level': record.levelname, 'message': record.getMessage(), 'module': record.module}
+            entry: JsonObject = {
+                "time": datetime.fromtimestamp(record.created).isoformat(timespec="seconds"),
+                "level": record.levelname,
+                "message": record.getMessage(),
+                "module": record.module,
+            }
             entry.update(log_extra_from_record(record))
             with _LOG_BUFFER_LOCK:
                 _LOG_BUFFER.append(entry)
@@ -53,29 +81,29 @@ class BufferLogHandler(logging.Handler):
 def configure_logger(log_dir: str | Path) -> logging.Logger:
     """配置 DynSTEER 结构化中文日志。"""
     if log_dir is None:
-        raise ValueError('log_dir 不能为空')
+        raise ValueError("log_dir 不能为空")
     with _LOGGER_LOCK:
         directory = Path(log_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        logger = logging.getLogger('dynsteer')
+        logger = logging.getLogger("dynsteer")
         logger.setLevel(logging.INFO)
         logger.propagate = False
         for handler in list(logger.handlers):
             handler.close()
             logger.removeHandler(handler)
-        formatter = StructuredLogFormatter('%(asctime)s %(levelname)s %(message)s')
-        terminal_formatter = TerminalLogFormatter('%(asctime)s %(levelname)s %(message)s')
+        formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s")
+        terminal_formatter = TerminalLogFormatter("%(asctime)s %(levelname)s %(message)s")
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(terminal_formatter)
-        file_path = directory / f'{datetime.now().date().isoformat()}.log'
-        file_handler = logging.FileHandler(file_path, encoding='utf-8')
+        file_path = directory / f"{datetime.now().date().isoformat()}.log"
+        file_handler = logging.FileHandler(file_path, encoding="utf-8")
         file_handler.setFormatter(formatter)
         buffer_handler = BufferLogHandler()
         buffer_handler.setFormatter(formatter)
         logger.addHandler(stream_handler)
         logger.addHandler(file_handler)
         logger.addHandler(buffer_handler)
-        logger.info('DynSTEER 日志初始化完成', extra={'log_file': str(file_path)})
+        logger.info("DynSTEER 日志初始化完成", extra={"log_file": str(file_path)})
         return logger
 
 def get_log_buffer() -> list[JsonObject]:
@@ -91,10 +119,10 @@ def clear_log_buffer() -> None:
 def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
     """从 LogRecord 提取并清洗业务 extra。"""
     if record is None:
-        raise ValueError('record 不能为空')
+        raise ValueError("record 不能为空")
     extra: JsonObject = {}
     for key, value in record.__dict__.items():
-        if key.startswith('_') or key in _LOG_RECORD_BUILTINS:
+        if key.startswith("_") or key in _LOG_RECORD_BUILTINS:
             continue
         extra[key] = sanitize_log_value(value)
     return extra
@@ -102,7 +130,7 @@ def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
 def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
     """从 LogRecord 中提取终端展示用的精简 extra。"""
     if record is None:
-        raise ValueError('record 不能为空')
+        raise ValueError("record 不能为空")
     if record.levelno < logging.WARNING:
         return {}
     raw_extra = log_extra_from_record(record)
@@ -122,11 +150,11 @@ def sanitize_log_value(value: object) -> JsonValue:
 
 def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
     result: JsonObject = {}
-    for key in ('case_id', 'milestone_id', 'milestone_score', 'milestone_status'):
+    for key in ("case_id", "milestone_id", "milestone_score", "milestone_status"):
         value = extra.get(key)
         if value is not None:
             result[key] = value
-    for target, keys in (('diagnosis', ('diagnosis', 'stage_first_diagnosis', 'judge_first_diagnosis')), ('evidence', ('evidence', 'stage_first_evidence', 'judge_first_evidence'))):
+    for target, keys in (("diagnosis", ("diagnosis", "stage_first_diagnosis", "judge_first_diagnosis")), ("evidence", ("evidence", "stage_first_evidence", "judge_first_evidence"))):
         value = next((extra.get(key) for key in keys if extra.get(key) is not None), None)
         if value is not None:
             result[target] = value

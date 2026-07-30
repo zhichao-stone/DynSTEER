@@ -30,13 +30,16 @@ QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
 
 
 def build_stage_trace(trajectory: Trajectory, interval: StageInterval) -> JsonObject:
-    steps = [json_safe(step) for step in stage_trajectory_steps(interval, trajectory)]
+    empty_stage_interval = interval.start_boundary_step_index == interval.end_step_index
+    steps = [] if empty_stage_interval else [json_safe(step) for step in stage_trajectory_steps(interval, trajectory)]
     return {
         "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
         "start_boundary_step_index": interval.start_boundary_step_index,
         "start_step_index": interval.start_step_index,
         "end_step_index": interval.end_step_index,
         "interval_semantics": "(start_boundary_step_index, end_step_index]",
+        "empty_stage_interval": empty_stage_interval,
+        "empty_stage_interval_reason": "no_step_after_start_boundary" if empty_stage_interval else None,
         "step_count": len(steps),
         "steps": steps,
         "state_snapshot_delta_summary": _state_snapshot_delta_summary(trajectory, interval),
@@ -188,7 +191,9 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     threshold_text = _format_number(detail.get("threshold"))
     evidence_text = str(detail["evidence"][0]) if isinstance(detail.get("evidence"), list) and detail["evidence"] else ""
     actual_text = str(detail.get("actual_excerpt") or "")
-    parts = [f"{detail['constraint_id']} score {score_text}, below threshold {threshold_text}"]
+    parts = [
+        f"{detail['constraint_id']} score {score_text}, below threshold {threshold_text}"
+    ]
     if detail["semantic_kind"] == "preserve_state" and detail.get("expected_summary", {}).get("row_count") == 0:
         parts.append("expected_rows=0 is a serialized placeholder; preserve_state target is resolved from runtime reference baseline")
     if _excerpt_shows_matched_expected_rows(actual_text) and _score_value(detail.get("score")) < _score_value(detail.get("threshold")):
@@ -279,7 +284,11 @@ def _pending_failure_diagnostics(
         if semantic_review is not None and review_line is not None:
             summary = f"{summary} {review_line}"
             reasons.insert(1, review_line)
-        result: JsonObject = {"failure_summary": summary, "failure_reasons": reasons, "failed_constraints": failed_constraints}
+        result: JsonObject = {
+            "failure_summary": summary,
+            "failure_reasons": reasons,
+            "failed_constraints": failed_constraints,
+        }
         if semantic_review is not None:
             result["semantic_review"] = semantic_review
         return result
@@ -287,13 +296,21 @@ def _pending_failure_diagnostics(
     if blocker == "predecessor_not_matched":
         missing_text = ", ".join(pending_predecessors) if pending_predecessors else "unknown"
         summary = f"milestone {milestone.milestone_id} is not yet evaluable because predecessor milestones are incomplete: {missing_text}."
-        return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
+        return {
+            "failure_summary": summary,
+            "failure_reasons": [summary],
+            "failed_constraints": failed_constraints,
+        }
 
     if blocker == "ready_without_candidate":
         summary = f"milestone {milestone.milestone_id} was ready, but no candidate boundary appeared before the run ended."
     else:
         summary = f"milestone {milestone.milestone_id} has not become ready yet; the run may still lack the prerequisite evidence."
-    return {"failure_summary": summary, "failure_reasons": [summary], "failed_constraints": failed_constraints}
+    return {
+        "failure_summary": summary,
+        "failure_reasons": [summary],
+        "failed_constraints": failed_constraints,
+    }
 
 
 def _semantic_review_failure(*candidates: JsonObject | None) -> tuple[JsonObject | None, str | None]:
@@ -306,7 +323,8 @@ def _semantic_review_failure(*candidates: JsonObject | None) -> tuple[JsonObject
             rejected_ids = review.get("rejected_constraint_ids")
             id_text = ",".join(str(item) for item in rejected_ids) if isinstance(rejected_ids, list) else ""
             suffix = f"：{compact_text(reason, 220)}" if reason else ""
-            return review, f"消息语义复判 rejected{id_text and f'（{id_text}）'}{suffix}。"
+            id_suffix = f"（{id_text}）" if id_text else ""
+            return review, f"消息语义复判 rejected{id_suffix}{suffix}。"
     return None, None
 
 

@@ -802,6 +802,8 @@ def should_stop_after_stage(
                 should_stop=True,
                 termination_code=f"stage_score:{milestone_id}",
                 termination_reason=f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
-                termination_detail={"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value},
+                termination_detail = (
+                    {"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value},
+                )
             )
     return EvaluationTerminationState()

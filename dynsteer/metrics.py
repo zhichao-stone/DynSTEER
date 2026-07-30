@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator
 from dynsteer.model import EventType, JsonObject, LLMCallMetrics, RuntimeMetricsRecorder, Trajectory
-_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar('dynsteer_runtime_metrics', default=None)
+_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar("dynsteer_runtime_metrics", default=None)
 
 @contextmanager
 def record_runtime_metrics() -> Iterator[RuntimeMetricsRecorder]:
@@ -29,7 +29,7 @@ def current_runtime_metrics_recorder() -> RuntimeMetricsRecorder | None:
 def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float, started_at: str, finished_at: str, trajectory: Trajectory, llm_calls: list[LLMCallMetrics], agent_step_count: int) -> JsonObject:
     """聚合 trajectory 与 LLM 调用，生成运行统计 JSON。"""
     if agent_step_count < 0:
-        raise ValueError('agent_step_count 不能为负数')
+        raise ValueError("agent_step_count 不能为负数")
     elapsed_seconds = max(float(finished_monotonic) - float(started_monotonic), 0.0)
     raw_step_count = len(trajectory.steps)
     snapshot_count = len(trajectory.snapshots)
@@ -41,7 +41,25 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     llm_prompt_tokens = _sum_optional_int([call.prompt_tokens for call in llm_calls])
     llm_completion_tokens = _sum_optional_int([call.completion_tokens for call in llm_calls])
     llm_total_tokens = _sum_optional_int([call.total_tokens for call in llm_calls])
-    return {'started_at': started_at, 'finished_at': finished_at, 'elapsed_seconds': elapsed_seconds, 'step_count': agent_step_count, 'raw_step_count': raw_step_count, 'snapshot_count': snapshot_count, 'tool_call_count': tool_call_count, 'trajectory_total_tokens': _sum_optional_int(trajectory_tokens) or 0, 'trajectory_total_latency_ms': _sum_optional_int(trajectory_latency) or 0, 'trajectory_cost_available': trajectory_cost_available, 'trajectory_latency_available': trajectory_latency_available, 'llm_call_count': len(llm_calls), 'llm_failed_call_count': sum((1 for call in llm_calls if not call.success)), 'llm_prompt_tokens': llm_prompt_tokens, 'llm_completion_tokens': llm_completion_tokens, 'llm_total_tokens': llm_total_tokens, 'llm_calls': [call.to_dict() for call in llm_calls]}
+    return {
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed_seconds": elapsed_seconds,
+        "step_count": agent_step_count,
+        "raw_step_count": raw_step_count,
+        "snapshot_count": snapshot_count,
+        "tool_call_count": tool_call_count,
+        "trajectory_total_tokens": _sum_optional_int(trajectory_tokens) or 0,
+        "trajectory_total_latency_ms": _sum_optional_int(trajectory_latency) or 0,
+        "trajectory_cost_available": trajectory_cost_available,
+        "trajectory_latency_available": trajectory_latency_available,
+        "llm_call_count": len(llm_calls),
+        "llm_failed_call_count": sum((1 for call in llm_calls if not call.success)),
+        "llm_prompt_tokens": llm_prompt_tokens,
+        "llm_completion_tokens": llm_completion_tokens,
+        "llm_total_tokens": llm_total_tokens,
+        "llm_calls": [call.to_dict() for call in llm_calls],
+    }
 
 def _sum_optional_int(values: list[int | None]) -> int | None:
     total = 0

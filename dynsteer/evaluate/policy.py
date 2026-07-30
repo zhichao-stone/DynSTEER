@@ -4,20 +4,20 @@ def update_evaluation_policy(policy: EvaluationPolicyState, result: StageEvaluat
     """根据当前阶段结果生成下一阶段评估策略。"""
     stop_reason = None
     if allow_stop:
-        if result.metadata.get('structural_failure') is True:
-            stop_reason = '阶段存在结构性失败，触发策略终止'
-        elif result.metadata.get('missing_required_milestone') is True:
-            stop_reason = '阶段缺少必要 milestone，触发策略终止'
+        if result.metadata.get("structural_failure") is True:
+            stop_reason = "阶段存在结构性失败，触发策略终止"
+        elif result.metadata.get("missing_required_milestone") is True:
+            stop_reason = "阶段缺少必要 milestone，触发策略终止"
         elif result.fatal_minefield_score >= thresholds.fatal_minefield_threshold:
-            stop_reason = f'fatal minefield score={result.fatal_minefield_score:.3f}，触发策略终止'
+            stop_reason = f"fatal minefield score={result.fatal_minefield_score:.3f}，触发策略终止"
         elif result.stage_score < thresholds.fail_threshold:
-            stop_reason = f'阶段分数 {result.stage_score:.3f} 低于失败阈值 {thresholds.fail_threshold:.3f}，触发策略终止'
+            stop_reason = f"阶段分数 {result.stage_score:.3f} 低于失败阈值 {thresholds.fail_threshold:.3f}，触发策略终止"
     if stop_reason:
-        return (EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=stop_reason), EvaluationTerminationState(should_stop=True, termination_code='evaluation_policy_stop', termination_reason=stop_reason))
+        return (EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=stop_reason), EvaluationTerminationState(should_stop=True, termination_code="evaluation_policy_stop", termination_reason=stop_reason))
     max_uncertainty = max(result.dimension_uncertainty.values(), default=0.0)
     base_level = EvaluationLevel.CHEAP if result.stage_score >= thresholds.pass_threshold + thresholds.threshold_margin and max_uncertainty <= thresholds.low_dimension_uncertainty and (result.fatal_minefield_score == 0) else EvaluationLevel.STANDARD
-    reason = '高分低不确定，下一阶段使用 cheap' if base_level == EvaluationLevel.CHEAP else '阶段结果处于合理区间，下一阶段使用 standard'
-    reason = f'stage_score={result.stage_score:.3f}, max_dimension_uncertainty={max_uncertainty:.3f}, reason={reason}'
+    reason = "高分低不确定，下一阶段使用 cheap" if base_level == EvaluationLevel.CHEAP else "阶段结果处于合理区间，下一阶段使用 standard"
+    reason = f"stage_score={result.stage_score:.3f}, max_dimension_uncertainty={max_uncertainty:.3f}, reason={reason}"
     next_policy = EvaluationPolicyState(base_level=base_level, dimension_levels=_next_dimension_levels(base_level, policy.base_level, policy.dimension_levels, result, thresholds), reason=reason)
     return (next_policy, EvaluationTerminationState())
 

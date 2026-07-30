@@ -8,8 +8,8 @@ class HarnessRunConfig:
     benchmark: str
     data_root: Path
     case_ids: tuple[str, ...] | None = None
-    runs_dir: Path = Path('runs')
-    results_dir: Path = Path('results')
+    runs_dir: Path = Path("runs")
+    results_dir: Path = Path("results")
     stop_on_stage_failure: bool = True
     stop_on_minefield: bool = True
     stop_on_ready_frontier_no_progress: bool = True
@@ -19,28 +19,28 @@ class HarnessRunConfig:
 
     def __post_init__(self) -> None:
         if not self.benchmark or not self.benchmark.strip():
-            raise ValueError('benchmark 不能为空')
+            raise ValueError("benchmark 不能为空")
         if self.data_root is None:
-            raise ValueError('data_root 不能为空')
+            raise ValueError("data_root 不能为空")
         if self.case_ids is not None:
             if not self.case_ids:
-                object.__setattr__(self, 'case_ids', None)
+                object.__setattr__(self, "case_ids", None)
             elif any((not isinstance(case_id, str) or not case_id.strip() for case_id in self.case_ids)):
-                raise ValueError('case_ids 不能包含空 case ID')
+                raise ValueError("case_ids 不能包含空 case ID")
         if self.runs_dir is None:
-            raise ValueError('runs_dir 不能为空')
+            raise ValueError("runs_dir 不能为空")
         if self.results_dir is None:
-            raise ValueError('results_dir 不能为空')
+            raise ValueError("results_dir 不能为空")
         if not isinstance(self.stop_on_ready_frontier_no_progress, bool):
-            raise TypeError('stop_on_ready_frontier_no_progress 必须是 bool')
+            raise TypeError("stop_on_ready_frontier_no_progress 必须是 bool")
         if not isinstance(self.ready_frontier_patience, int):
-            raise TypeError('ready_frontier_patience 必须是整数')
+            raise TypeError("ready_frontier_patience 必须是整数")
         if self.ready_frontier_patience < 1:
-            raise ValueError('ready_frontier_patience 必须大于 0')
+            raise ValueError("ready_frontier_patience 必须大于 0")
         if not isinstance(self.ready_frontier_min_delta, (int, float)):
-            raise TypeError('ready_frontier_min_delta 必须是数字')
+            raise TypeError("ready_frontier_min_delta 必须是数字")
         if self.ready_frontier_min_delta < 0:
-            raise ValueError('ready_frontier_min_delta 不能为负数')
+            raise ValueError("ready_frontier_min_delta 不能为负数")
 
 @dataclass(frozen=True)
 class BenchmarkCase:
@@ -52,13 +52,18 @@ class BenchmarkCase:
 
     def __post_init__(self) -> None:
         if not self.benchmark or not self.benchmark.strip():
-            raise ValueError('benchmark 不能为空')
+            raise ValueError("benchmark 不能为空")
         if not self.case_id or not self.case_id.strip():
-            raise ValueError('case_id 不能为空')
+            raise ValueError("case_id 不能为空")
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化字典。"""
-        return {'benchmark': self.benchmark, 'case_id': self.case_id, 'categories': list(self.categories), 'metadata': dict(self.metadata)}
+        return {
+            "benchmark": self.benchmark,
+            "case_id": self.case_id,
+            "categories": list(self.categories),
+            "metadata": dict(self.metadata),
+        }
 
 @dataclass(frozen=True)
 class HarnessAdvanceResult:
@@ -70,13 +75,13 @@ class HarnessAdvanceResult:
 
     def __post_init__(self) -> None:
         if self.steps is None:
-            raise ValueError('steps 不能为空')
+            raise ValueError("steps 不能为空")
         if self.snapshots is None:
-            raise ValueError('snapshots 不能为空')
+            raise ValueError("snapshots 不能为空")
         if not isinstance(self.continue_running, bool):
-            raise TypeError('continue_running 必须是 bool')
+            raise TypeError("continue_running 必须是 bool")
         if self.reason is not None and (not self.reason.strip()):
-            raise ValueError('reason 不能是空字符串')
+            raise ValueError("reason 不能是空字符串")
 
 @dataclass(frozen=True)
 class HarnessStageSettlement:
@@ -96,19 +101,32 @@ class HarnessStageSettlement:
 
     def __post_init__(self) -> None:
         if not self.settlement_id or not self.settlement_id.strip():
-            raise ValueError('settlement_id 不能为空')
-        if self.kind not in {'start', 'milestone', 'finish'}:
-            raise ValueError('kind 必须是 start、milestone 或 finish')
-        if self.kind == 'milestone' and (self.milestone_id is None or not self.milestone_id.strip()):
-            raise ValueError('milestone 结算必须包含 milestone_id')
+            raise ValueError("settlement_id 不能为空")
+        if self.kind not in {"start", "milestone", "finish"}:
+            raise ValueError("kind 必须是 start、milestone 或 finish")
+        if self.kind == "milestone" and (self.milestone_id is None or not self.milestone_id.strip()):
+            raise ValueError("milestone 结算必须包含 milestone_id")
         if self.start_step_index < 0 or self.end_step_index < 0:
-            raise ValueError('阶段 step index 不能为负数')
+            raise ValueError("阶段 step index 不能为负数")
         if self.end_step_index < self.start_step_index:
-            raise ValueError('end_step_index 不能小于 start_step_index')
+            raise ValueError("end_step_index 不能小于 start_step_index")
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化字典。"""
-        return {'settlement_id': self.settlement_id, 'kind': self.kind, 'milestone_id': self.milestone_id, 'start_step_index': self.start_step_index, 'end_step_index': self.end_step_index, 'boundary_id': self.boundary_id, 'boundary_step_index': self.boundary_step_index, 'score': self.score, 'status': self.status, 'checkpointed': self.checkpointed, 'evidence': list(self.evidence), 'metadata': dict(self.metadata)}
+        return {
+            "settlement_id": self.settlement_id,
+            "kind": self.kind,
+            "milestone_id": self.milestone_id,
+            "start_step_index": self.start_step_index,
+            "end_step_index": self.end_step_index,
+            "boundary_id": self.boundary_id,
+            "boundary_step_index": self.boundary_step_index,
+            "score": self.score,
+            "status": self.status,
+            "checkpointed": self.checkpointed,
+            "evidence": list(self.evidence),
+            "metadata": dict(self.metadata),
+        }
 
 @dataclass(frozen=True)
 class HarnessRunResult:
@@ -126,12 +144,12 @@ class HarnessRunResult:
 
     def __post_init__(self) -> None:
         if not self.benchmark or not self.benchmark.strip():
-            raise ValueError('benchmark 不能为空')
+            raise ValueError("benchmark 不能为空")
         if not self.case_id or not self.case_id.strip():
-            raise ValueError('case_id 不能为空')
+            raise ValueError("case_id 不能为空")
         if not self.run_id or not self.run_id.strip():
-            raise ValueError('run_id 不能为空')
+            raise ValueError("run_id 不能为空")
         if self.task_case is None or self.trajectory is None:
-            raise ValueError('task_case 和 trajectory 不能为空')
+            raise ValueError("task_case 和 trajectory 不能为空")
         if self.raw_output_dir is None:
-            raise ValueError('raw_output_dir 不能为空')
+            raise ValueError("raw_output_dir 不能为空")

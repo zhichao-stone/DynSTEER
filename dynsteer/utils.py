@@ -12,7 +12,7 @@ def validated_target_dimensions(dimensions: Iterable[Dimension] | None) -> list[
         return list(Dimension)
     result = list(dict.fromkeys(dimensions))
     if not result:
-        raise ValueError('target dimensions 不能为空')
+        raise ValueError("target dimensions 不能为空")
     return result
 
 def clamp(value: float, lower: float=0.0, upper: float=1.0) -> float:
@@ -38,16 +38,16 @@ def read_json_file(path: Path, label: str, expected_type: type) -> Any:
         已解析且通过类型校验的 JSON 值。
     """
     if path is None:
-        raise ValueError(f'{label} 路径不能为空')
+        raise ValueError(f"{label} 路径不能为空")
     if not path.exists():
-        raise ValueError(f'{label} 不存在: {path}')
+        raise ValueError(f"{label} 不存在: {path}")
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ValueError(f'{label} 不是合法 JSON: {path}') from exc
+        raise ValueError(f"{label} 不是合法 JSON: {path}") from exc
     if not isinstance(data, expected_type):
-        expected = 'JSON 对象' if expected_type is dict else 'JSON 数组'
-        raise ValueError(f'{label} 必须是 {expected}')
+        expected = "JSON 对象" if expected_type is dict else "JSON 数组"
+        raise ValueError(f"{label} 必须是 {expected}")
     return data
 
 def read_token(current: Any, token: str) -> Any:
@@ -55,13 +55,13 @@ def read_token(current: Any, token: str) -> Any:
     value = current
     rest = token
     while rest:
-        if '[' in rest:
-            name, tail = rest.split('[', 1)
+        if "[" in rest:
+            name, tail = rest.split("[", 1)
             if name:
                 if not isinstance(value, dict) or name not in value:
                     return MISSING
                 value = value[name]
-            index_text, after = tail.split(']', 1)
+            index_text, after = tail.split("]", 1)
             if not isinstance(value, list):
                 return MISSING
             try:
@@ -71,17 +71,17 @@ def read_token(current: Any, token: str) -> Any:
             if index < 0 or index >= len(value):
                 return MISSING
             value = value[index]
-            rest = after.lstrip('.')
-            if rest and '[' not in rest:
+            rest = after.lstrip(".")
+            if rest and "[" not in rest:
                 if not isinstance(value, dict) or rest not in value:
                     return MISSING
                 value = value[rest]
-                rest = ''
+                rest = ""
         else:
             if not isinstance(value, dict) or rest not in value:
                 return MISSING
             value = value[rest]
-            rest = ''
+            rest = ""
     return value
 
 def json_subsumes(actual: JsonValue, expected: JsonValue) -> bool:
@@ -103,20 +103,21 @@ def normalize_str_from_source(source: Mapping[str, str], key: str) -> str | None
     """从配置来源读取非空字符串并去除首尾空白。"""
     return optional_str(source.get(key))
 
-def required_str(data: Mapping[str, Any], key: str, label: str='配置') -> str:
+def required_str(data: Mapping[str, Any], key: str, label: str="配置") -> str:
     """从 JSON 映射读取必填非空字符串。"""
     value = optional_str(data.get(key))
     if value is None:
-        raise ValueError(f'{label} 必须提供非空字符串字段 {key}')
+        raise ValueError(f"{label} 必须提供非空字符串字段 {key}")
     return value
 
 def optional_str(value: object, default: str | None=None) -> str | None:
     """读取可选非空字符串。"""
     return value.strip() if isinstance(value, str) and value.strip() else default
-_CLIENT_CONFIG_FIELDS = {'api_key', 'api_key_env', 'base_url', 'base_url_env', 'timeout_seconds'}
-_CLIENT_CONFIG_TEXT_FIELDS = {'api_key', 'api_key_env', 'base_url', 'base_url_env'}
 
-def normalize_client_config(value: object, label: str='client_config') -> JsonObject:
+_CLIENT_CONFIG_FIELDS = {"api_key", "api_key_env", "base_url", "base_url_env", "timeout_seconds"}
+_CLIENT_CONFIG_TEXT_FIELDS = {"api_key", "api_key_env", "base_url", "base_url_env"}
+
+def normalize_client_config(value: object, label: str="client_config") -> JsonObject:
     """校验并归一化 client_config 对象。
 
     入参：
@@ -128,14 +129,14 @@ def normalize_client_config(value: object, label: str='client_config') -> JsonOb
     if value is None:
         return {}
     if not isinstance(value, Mapping):
-        raise ValueError(f'{label} 必须是 JSON 对象')
+        raise ValueError(f"{label} 必须是 JSON 对象")
     config: JsonObject = {}
     for raw_key, raw_value in value.items():
         if not isinstance(raw_key, str) or not raw_key.strip():
-            raise ValueError(f'{label} 字段名必须是非空字符串')
+            raise ValueError(f"{label} 字段名必须是非空字符串")
         key = raw_key.strip()
         if key not in _CLIENT_CONFIG_FIELDS:
-            raise ValueError(f'{label} 不支持的字段: {key}')
+            raise ValueError(f"{label} 不支持的字段: {key}")
         normalized_value = _normalize_client_config_value(key, raw_value, label)
         if normalized_value is not None:
             config[key] = normalized_value
@@ -144,13 +145,13 @@ def normalize_client_config(value: object, label: str='client_config') -> JsonOb
 def compact_text(value: object, limit: int=160) -> str:
     """压缩任意值为单行短文本。"""
     if value is None:
-        raise ValueError('摘要文本不能为空')
+        raise ValueError("摘要文本不能为空")
     if limit < 0:
-        raise ValueError('摘要长度不能为负数')
-    text = ' '.join(str(value).split())
+        raise ValueError("摘要长度不能为负数")
+    text = " ".join(str(value).split())
     if len(text) <= limit:
         return text
-    return text[:max(limit - 3, 0)] + '...'
+    return text[:max(limit - 3, 0)] + "..."
 
 def compact_json_text(value: object, limit: int=160) -> str:
     """将 JSON 安全值压缩为单行短文本。"""
@@ -176,7 +177,7 @@ def clean_evidence_items(values: list[str], limit: int | None=None) -> list[str]
         保序去重后的 evidence；当存在 `step N: ...` 具体证据时，删除裸 `step N`。
     """
     if limit is not None and limit < 0:
-        raise ValueError('evidence limit 不能为负数')
+        raise ValueError("evidence limit 不能为负数")
     deduped: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -192,37 +193,37 @@ def clean_evidence_items(values: list[str], limit: int | None=None) -> list[str]
 def get_object(data: JsonObject, key: str, type: object=None, default: object=None, required: bool=True) -> object:
     """从 JSON 对象读取字段，并按需校验存在性和类型。"""
     if data is None:
-        raise ValueError('待读取字段的 JSON 对象不能为空')
+        raise ValueError("待读取字段的 JSON 对象不能为空")
     if key not in data:
         if required:
-            raise ValueError(f'缺少必要字段: {key}')
+            raise ValueError(f"缺少必要字段: {key}")
         return default
     value = data[key]
     if required and type is not None and (not isinstance(value, type)):
-        raise ValueError(f'字段 {key} 必须非空，且是 {type} 类型')
+        raise ValueError(f"字段 {key} 必须非空，且是 {type} 类型")
     return type(value)
 
 def enum_value(enum_class: type[Enum], value: object, field_name: str) -> Enum:
     """将 JSON 枚举值转换为指定 Enum 成员。"""
     if enum_class is None or field_name is None:
-        raise ValueError('enum_class 和 field_name 不能为空')
+        raise ValueError("enum_class 和 field_name 不能为空")
     if value is None:
-        raise ValueError(f'缺少枚举字段: {field_name}')
+        raise ValueError(f"缺少枚举字段: {field_name}")
     try:
         return enum_class(value)
     except ValueError as exc:
-        raise ValueError(f'字段 {field_name} 的枚举值非法: {value}') from exc
+        raise ValueError(f"字段 {field_name} 的枚举值非法: {value}") from exc
 
 def enum_name(value: object) -> str:
     """读取枚举或类枚举对象的稳定大写名称。"""
     if value is None:
-        return ''
-    name = getattr(value, 'name', None)
+        return ""
+    name = getattr(value, "name", None)
     if isinstance(name, str):
         return name.upper()
     raw = str(value)
-    if '.' in raw:
-        raw = raw.rsplit('.', 1)[-1]
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[-1]
     return raw.upper()
 
 def unknown_fields(data: JsonObject, known: set[str]) -> JsonObject:
@@ -237,11 +238,11 @@ def json_safe(value: object) -> JsonValue:
         return str(value)
     if is_dataclass(value) and (not isinstance(value, type)):
         return {field.name: json_safe(getattr(value, field.name)) for field in fields(value)}
-    enum_raw_value = getattr(value, 'value', None)
+    enum_raw_value = getattr(value, "value", None)
     if isinstance(enum_raw_value, (str, int, float, bool)) or (enum_raw_value is None and isinstance(value, Enum)):
         return enum_raw_value
     if isinstance(value, dict):
-        return {raw if isinstance((raw := getattr(key, 'value', None)), str) else str(key): json_safe(item) for key, item in value.items()}
+        return {raw if isinstance((raw := getattr(key, "value", None)), str) else str(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     return str(value)
@@ -250,17 +251,17 @@ def _detailed_step_indexes(values: list[str]) -> set[int]:
     """提取形如 `step N: ...` 的具体 step 证据编号。"""
     indexes: set[int] = set()
     for value in values:
-        match = re.match('^\\s*step\\s+(\\d+)\\s*:', value, flags=re.IGNORECASE)
+        match = re.match("^\\s*step\\s+(\\d+)\\s*:", value, flags=re.IGNORECASE)
         if match is not None:
             indexes.add(int(match.group(1)))
     return indexes
 
 def _is_redundant_bare_step_reference(value: str, detailed_steps: set[int]) -> bool:
     """判断裸 step 或 step 区间是否已被具体证据覆盖。"""
-    single = re.match('^\\s*step\\s+(\\d+)\\s*$', value, flags=re.IGNORECASE)
+    single = re.match("^\\s*step\\s+(\\d+)\\s*$", value, flags=re.IGNORECASE)
     if single is not None:
         return int(single.group(1)) in detailed_steps
-    step_range = re.match('^\\s*step\\s+(\\d+)\\s*[-~]\\s*(\\d+)\\s*$', value, flags=re.IGNORECASE)
+    step_range = re.match("^\\s*step\\s+(\\d+)\\s*[-~]\\s*(\\d+)\\s*$", value, flags=re.IGNORECASE)
     if step_range is None:
         return False
     start = int(step_range.group(1))
@@ -275,7 +276,7 @@ def _normalize_client_config_value(key: str, value: object, label: str) -> str |
         return None
     if key in _CLIENT_CONFIG_TEXT_FIELDS:
         if not isinstance(value, str):
-            raise ValueError(f'{label}.{key} 必须是字符串')
+            raise ValueError(f"{label}.{key} 必须是字符串")
         value = value.strip()
         return value or None
     if isinstance(value, str):
@@ -284,10 +285,10 @@ def _normalize_client_config_value(key: str, value: object, label: str) -> str |
         try:
             value = float(value.strip())
         except ValueError as exc:
-            raise ValueError(f'{label}.timeout_seconds 必须是正数') from exc
+            raise ValueError(f"{label}.timeout_seconds 必须是正数") from exc
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f'{label}.timeout_seconds 必须是正数')
+        raise ValueError(f"{label}.timeout_seconds 必须是正数")
     timeout_seconds = float(value)
     if timeout_seconds <= 0:
-        raise ValueError(f'{label}.timeout_seconds 必须大于 0')
+        raise ValueError(f"{label}.timeout_seconds 必须大于 0")
     return timeout_seconds

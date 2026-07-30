@@ -25,8 +25,18 @@ def evaluate_minefields_at_boundary(graph: MilestoneGraph, trajectory: Trajector
         minefield_score = clamp(weighted_sum / weight_sum if weight_sum > 0 else 0.0)
         if minefield_score <= 0.0:
             continue
-        matches.append({'minefield_id': minefield.minefield_id, 'boundary_id': boundary.boundary_id, 'boundary_step_index': boundary.step_index, 'score': minefield_score, 'severity': minefield.severity, 'evidence': evidence, 'penalty': asdict(minefield.penalty)})
+        matches.append(
+            {
+                "minefield_id": minefield.minefield_id,
+                "boundary_id": boundary.boundary_id,
+                "boundary_step_index": boundary.step_index,
+                "score": minefield_score,
+                "severity": minefield.severity,
+                "evidence": evidence,
+                "penalty": asdict(minefield.penalty),
+            }
+        )
         max_score = max(max_score, minefield_score)
-        if minefield.severity == 'fatal' and minefield_score >= 1.0:
+        if minefield.severity == "fatal" and minefield_score >= 1.0:
             fatal = True
     return (matches, max_score, fatal)

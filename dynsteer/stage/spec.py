@@ -77,7 +77,10 @@ def resolve_stage_evaluation_spec(interval: StageInterval, task_case: TaskCase) 
 
 def _spec_for_milestone(milestone: Milestone, stage_goal: str) -> StageEvaluationSpec:
     dimensions: list[Dimension] = [Dimension.PROGRESS, Dimension.EFFICIENCY]
-    rationale: dict[Dimension, str] = {Dimension.PROGRESS: "阶段目标完成度必须评估", Dimension.EFFICIENCY: "所有阶段都需要评估步骤成本、冗余与拖延"}
+    rationale: dict[Dimension, str] = {
+        Dimension.PROGRESS: "阶段目标完成度必须评估",
+        Dimension.EFFICIENCY: "所有阶段都需要评估步骤成本、冗余与拖延",
+    }
     for constraint in milestone.constraints:
         _extend_by_constraint(dimensions, rationale, constraint)
     if any(

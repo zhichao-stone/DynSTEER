@@ -146,7 +146,7 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 
 自然结束时的 pending stage 使用 `metadata.synthetic_pending_milestone=true`，并通过 `metadata.blocker`、`metadata.pending_predecessor_ids`、`failure_summary`、`failure_reasons` 解释未完成原因。若最后一次专用消息语义复判 rejected，`metadata.semantic_review` 会保留复判目标、expected/actual 内容、置信度和原因。
 
-`stage_settlements[].metadata.stage_trace.state_snapshot_delta_summary` 提供轻量状态变化摘要，只包含命名空间行数、变化标记与 changed namespace 列表，不嵌入完整状态数据。
+`stage_settlements[].metadata.stage_trace.state_snapshot_delta_summary` 提供轻量状态变化摘要，只包含命名空间行数、变化标记与 changed namespace 列表，不嵌入完整状态数据。若 finish 区间没有新增 step，`stage_trace` 会写入 `empty_stage_interval=true`、`empty_stage_interval_reason="no_step_after_start_boundary"`、`step_count=0` 和 `steps=[]`；这表示合法的空收尾阶段，finish final verification 仍会正常写入。
 
 `__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。普通 milestone graph 下，它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。
 

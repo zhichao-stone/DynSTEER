@@ -7,82 +7,82 @@ import time
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, Union
 if TYPE_CHECKING:
     from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
-JsonValue = Union[str, int, float, bool, None, dict[str, 'JsonValue'], list['JsonValue']]
+JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
 JsonObject = dict[str, JsonValue]
 MISSING = object()
 
 class Actor(str, Enum):
-    SYSTEM = 'system'
-    USER = 'user'
-    AGENT = 'agent'
-    ENVIRONMENT = 'environment'
-    EVALUATOR = 'evaluator'
+    SYSTEM = "system"
+    USER = "user"
+    AGENT = "agent"
+    ENVIRONMENT = "environment"
+    EVALUATOR = "evaluator"
 
 class EventType(str, Enum):
-    MESSAGE = 'message'
-    TOOL_CALL = 'tool_call'
-    TOOL_RESULT = 'tool_result'
-    STATE_UPDATE = 'state_update'
-    ARTIFACT_UPDATE = 'artifact_update'
-    FINAL = 'final'
-    ERROR = 'error'
+    MESSAGE = "message"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    STATE_UPDATE = "state_update"
+    ARTIFACT_UPDATE = "artifact_update"
+    FINAL = "final"
+    ERROR = "error"
 
 class ConstraintTarget(str, Enum):
-    STEP = 'step'
-    TOOL_CALL = 'tool_call'
-    TOOL_RESULT = 'tool_result'
-    STATE_SNAPSHOT = 'state_snapshot'
-    STATE_DELTA = 'state_delta'
-    ARTIFACT = 'artifact'
-    METRIC = 'metric'
-    SEMANTIC = 'semantic'
+    STEP = "step"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    STATE_SNAPSHOT = "state_snapshot"
+    STATE_DELTA = "state_delta"
+    ARTIFACT = "artifact"
+    METRIC = "metric"
+    SEMANTIC = "semantic"
 
 class Operator(str, Enum):
-    EQUALS = 'equals'
-    CONTAINS = 'contains'
-    ONE_OF = 'one_of'
-    FUZZY_MATCH = 'fuzzy_match'
-    JSON_SUBSUMES = 'json_subsumes'
-    ADDED = 'added'
-    UPDATED = 'updated'
-    REMOVED = 'removed'
-    UNCHANGED_SINCE = 'unchanged_since'
-    CUSTOM = 'custom'
+    EQUALS = "equals"
+    CONTAINS = "contains"
+    ONE_OF = "one_of"
+    FUZZY_MATCH = "fuzzy_match"
+    JSON_SUBSUMES = "json_subsumes"
+    ADDED = "added"
+    UPDATED = "updated"
+    REMOVED = "removed"
+    UNCHANGED_SINCE = "unchanged_since"
+    CUSTOM = "custom"
 
 class Dimension(str, Enum):
-    PROGRESS = 'progress'
-    STATE_CONSISTENCY = 'state_consistency'
-    TOOL_QUALITY = 'tool_quality'
-    EFFICIENCY = 'efficiency'
-    SAFETY = 'safety'
-    INTERACTION_QUALITY = 'interaction_quality'
-    RECOVERY = 'recovery'
+    PROGRESS = "progress"
+    STATE_CONSISTENCY = "state_consistency"
+    TOOL_QUALITY = "tool_quality"
+    EFFICIENCY = "efficiency"
+    SAFETY = "safety"
+    INTERACTION_QUALITY = "interaction_quality"
+    RECOVERY = "recovery"
 
 class TaskType(str, Enum):
-    GENERAL = 'general_task'
-    STATEFUL_TOOL = 'stateful_tool_task'
-    DIALOGUE_INTERACTION = 'dialogue_interaction_task'
-    ARTIFACT = 'artifact_task'
-    SAFETY_SENSITIVE = 'safety_sensitive_task'
+    GENERAL = "general_task"
+    STATEFUL_TOOL = "stateful_tool_task"
+    DIALOGUE_INTERACTION = "dialogue_interaction_task"
+    ARTIFACT = "artifact_task"
+    SAFETY_SENSITIVE = "safety_sensitive_task"
 
 class EvaluationLevel(str, Enum):
-    CHEAP = 'cheap'
-    STANDARD = 'standard'
-    EXPENSIVE = 'expensive'
+    CHEAP = "cheap"
+    STANDARD = "standard"
+    EXPENSIVE = "expensive"
 
 class StageStatus(str, Enum):
-    PASS = 'pass'
-    WARN = 'warn'
-    FAIL = 'fail'
-    MISSING = 'missing'
-    AMBIGUOUS = 'ambiguous'
-    INVALID = 'invalid'
+    PASS = "pass"
+    WARN = "warn"
+    FAIL = "fail"
+    MISSING = "missing"
+    AMBIGUOUS = "ambiguous"
+    INVALID = "invalid"
 
 class StageGoalSemanticKind(str, Enum):
-    SET_STATE = 'set_state'
-    PRESERVE_STATE = 'preserve_state'
-    EMIT_MESSAGE = 'emit_message'
-    TOOL_CALL = 'tool_call'
+    SET_STATE = "set_state"
+    PRESERVE_STATE = "preserve_state"
+    EMIT_MESSAGE = "emit_message"
+    TOOL_CALL = "tool_call"
 
 @dataclass(frozen=True)
 class ThresholdConfig:
@@ -106,11 +106,26 @@ class ToolCall:
     name: str
     arguments: JsonObject = field(default_factory=dict)
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "ToolCall":
+        return cls(
+            name=str(d["name"]), 
+            arguments=dict(d.get("arguments", {}))
+        ) if isinstance(d, dict) else None
+
 @dataclass
 class ToolResult:
     success: bool = False
     content: JsonValue = None
     exception: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ToolResult":
+        return cls(
+            success=bool(d.get("success")),
+            content=d.get("content"),
+            exception=d.get("exception")
+        ) if isinstance(d, dict) else None
 
 @dataclass
 class StepCost:
@@ -121,8 +136,8 @@ class StepCost:
 class TrajectoryStep:
     step_id: str
     index: int
-    actor: Actor
     event_type: EventType
+    actor: Actor
     recipient: Optional[Actor] = None
     timestamp: Optional[str] = None
     content: Optional[str] = None
@@ -147,7 +162,7 @@ class AgentStepClosure:
     def end_step(self) -> TrajectoryStep:
         """返回闭包终点 step。"""
         if not self.steps:
-            raise ValueError('agent step closure 不能为空')
+            raise ValueError("agent step closure 不能为空")
         return self.steps[-1]
 
 class AgentStepProtocolError(RuntimeError):
@@ -172,7 +187,7 @@ class AgentStepTracker:
         """摄入一条 raw step，并在闭合 agent step 时返回完整闭包。"""
         if self._is_agent_outbound(raw_step):
             if self.pending_outbound is not None:
-                raise AgentStepProtocolError(f'上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound: pending_step_id={self.pending_outbound.step_id}, current_step_id={raw_step.step_id}')
+                raise AgentStepProtocolError(f"上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound: pending_step_id={self.pending_outbound.step_id}, current_step_id={raw_step.step_id}")
             self.pending_outbound = raw_step
             self.pending_steps = [raw_step]
             return None
@@ -197,7 +212,7 @@ class AgentStepTracker:
         """完成当前 pending closure，并重置 tracker 状态。"""
         steps = tuple(self.pending_steps)
         if not steps:
-            raise AgentStepProtocolError('agent step closure 缺少 pending steps')
+            raise AgentStepProtocolError("agent step closure 缺少 pending steps")
         self.pending_outbound = None
         self.pending_steps = []
         self.completed_count += 1
@@ -227,7 +242,7 @@ class Constraint:
     weight: float = 1.0
     threshold: float = 1.0
     hard: bool = False
-    evaluator_hint: str = 'rule'
+    evaluator_hint: str = "rule"
     stage_goal_semantics: JsonObject | None = None
     metadata: JsonObject = field(default_factory=dict)
 
@@ -244,8 +259,12 @@ class Milestone:
 
 @dataclass
 class MinefieldPenalty:
-    mode: str = 'fixed'
+    mode: str = "fixed"
     value: float = 0.0
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MinefieldPenalty":
+        return cls(**{k:v for k, v in d.items() if k in ["mode", "value"]}) if isinstance(d, dict) else None
 
 @dataclass
 class Minefield:
@@ -297,7 +316,7 @@ class TaskCase:
     initial_state: Optional[JsonObject] = None
     milestone_graph: Optional[MilestoneGraph] = None
     stage_goals: dict[str, str] = field(default_factory=dict)
-    stage_evaluation_specs: dict[str, 'StageEvaluationSpec'] = field(default_factory=dict)
+    stage_evaluation_specs: dict[str, "StageEvaluationSpec"] = field(default_factory=dict)
     task_types: list[TaskType] = field(default_factory=list)
     metadata: JsonObject = field(default_factory=dict)
 
@@ -334,14 +353,14 @@ class Trajectory:
         self.latest_step_index: int | None = None
         for step in self.steps:
             if step is None:
-                raise ValueError('trajectory.steps 不能包含空 step')
+                raise ValueError("trajectory.steps 不能包含空 step")
             self._append_step_index(step.index)
 
     def _append_step_index(self, step_index: int) -> None:
         """仅追加 step index，用于维护阶段边界后继表。"""
         previous_index = self.latest_step_index
         if previous_index is not None and step_index <= previous_index:
-            raise ValueError('trajectory step index 必须递增')
+            raise ValueError("trajectory step index 必须递增")
         if previous_index is None:
             self.first_step_index = step_index
             self.successor_by_boundary[step_index - 1] = step_index
@@ -357,7 +376,7 @@ class Trajectory:
     def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
         """返回指定 step index 区间内的轨迹步骤。"""
         if min_index >= max_index:
-            raise ValueError('min_index 必须小于 max_index')
+            raise ValueError("min_index 必须小于 max_index")
         if self.latest_step_index is None:
             return []
         if max_index < self.first_step_index or min_index >= self.latest_step_index:
@@ -446,7 +465,25 @@ class StageEvaluationResult:
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化字典。"""
-        return {'stage_id': self.stage_id, 'milestone_id': self.milestone_id, 'status': self.status.value, 'stage_score': self.stage_score, 'dimension_scores': _enum_key_dict(self.dimension_scores), 'dimension_levels': _enum_key_dict(self.dimension_levels), 'dimension_confidence': _enum_key_dict(self.dimension_confidence), 'dimension_uncertainty': _enum_key_dict(self.dimension_uncertainty), 'evidence': list(self.evidence), 'diagnosis': list(self.diagnosis), 'next_weights': _enum_key_dict(self.next_weights), 'fatal': self.fatal, 'hard_constraints_all_pass': self.hard_constraints_all_pass, 'required_fields_missing_ratio': self.required_fields_missing_ratio, 'minefield_score': self.minefield_score, 'fatal_minefield_score': self.fatal_minefield_score, 'metadata': dict(self.metadata)}
+        return {
+            "stage_id": self.stage_id,
+            "milestone_id": self.milestone_id,
+            "status": self.status.value,
+            "stage_score": self.stage_score,
+            "dimension_scores": _enum_key_dict(self.dimension_scores),
+            "dimension_levels": _enum_key_dict(self.dimension_levels),
+            "dimension_confidence": _enum_key_dict(self.dimension_confidence),
+            "dimension_uncertainty": _enum_key_dict(self.dimension_uncertainty),
+            "evidence": list(self.evidence),
+            "diagnosis": list(self.diagnosis),
+            "next_weights": _enum_key_dict(self.next_weights),
+            "fatal": self.fatal,
+            "hard_constraints_all_pass": self.hard_constraints_all_pass,
+            "required_fields_missing_ratio": self.required_fields_missing_ratio,
+            "minefield_score": self.minefield_score,
+            "fatal_minefield_score": self.fatal_minefield_score,
+            "metadata": dict(self.metadata),
+        }
 
 @dataclass
 class TrajectoryEvaluationReport:
@@ -462,17 +499,46 @@ class TrajectoryEvaluationReport:
 
     def to_dict(self) -> JsonObject:
         """转换为完整 JSON 可序列化报告。"""
-        return {'run_id': self.run_id, 'task_id': self.task_id, 'milestone_coverage': self.milestone_coverage, 'overall_score': self.overall_score, 'stage_reports': [stage.to_dict() for stage in self.stage_reports], 'minefield_matches': list(self.minefield_matches), 'first_failure_stage_id': self.first_failure_stage_id, 'runtime_metrics': dict(self.runtime_metrics), 'metadata': dict(self.metadata)}
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "milestone_coverage": self.milestone_coverage,
+            "overall_score": self.overall_score,
+            "stage_reports": [stage.to_dict() for stage in self.stage_reports],
+            "minefield_matches": list(self.minefield_matches),
+            "first_failure_stage_id": self.first_failure_stage_id,
+            "runtime_metrics": dict(self.runtime_metrics),
+            "metadata": dict(self.metadata),
+        }
 
     def to_summary_dict(self) -> JsonObject:
         """转换为主实验摘要报告。"""
-        return {'run_id': self.run_id, 'task_id': self.task_id, 'milestone_coverage': self.milestone_coverage, 'overall_score': self.overall_score, 'stage_count': sum((1 for stage in self.stage_reports if _is_matched_milestone_stage(stage))), 'first_failure_stage_id': self.first_failure_stage_id, 'runtime_metrics': dict(self.runtime_metrics), 'elapsed_seconds': self.runtime_metrics.get('elapsed_seconds'), 'step_count': self.runtime_metrics.get('step_count'), 'tool_call_count': self.runtime_metrics.get('tool_call_count'), 'llm_call_count': self.runtime_metrics.get('llm_call_count'), 'llm_total_tokens': self.runtime_metrics.get('llm_total_tokens'), 'trajectory_total_tokens': self.runtime_metrics.get('trajectory_total_tokens'), 'trajectory_cost_available': self.runtime_metrics.get('trajectory_cost_available'), 'trajectory_latency_available': self.runtime_metrics.get('trajectory_latency_available'), 'metadata': dict(self.metadata)}
+        return {
+            "run_id": self.run_id,
+            "task_id": self.task_id,
+            "milestone_coverage": self.milestone_coverage,
+            "overall_score": self.overall_score,
+            "stage_count": sum(
+                (1 for stage in self.stage_reports if _is_matched_milestone_stage(stage))
+            ),
+            "first_failure_stage_id": self.first_failure_stage_id,
+            "runtime_metrics": dict(self.runtime_metrics),
+            "elapsed_seconds": self.runtime_metrics.get("elapsed_seconds"),
+            "step_count": self.runtime_metrics.get("step_count"),
+            "tool_call_count": self.runtime_metrics.get("tool_call_count"),
+            "llm_call_count": self.runtime_metrics.get("llm_call_count"),
+            "llm_total_tokens": self.runtime_metrics.get("llm_total_tokens"),
+            "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
+            "trajectory_cost_available": self.runtime_metrics.get("trajectory_cost_available"),
+            "trajectory_latency_available": self.runtime_metrics.get("trajectory_latency_available"),
+            "metadata": dict(self.metadata),
+        }
 
 def _is_matched_milestone_stage(stage: StageEvaluationResult) -> bool:
     """判断阶段是否来自已匹配 milestone 的动态评估。"""
     if stage is None or stage.milestone_id is None:
         return False
-    if stage.metadata.get('synthetic_pending_milestone') is True:
+    if stage.metadata.get("synthetic_pending_milestone") is True:
         return False
     if stage.status == StageStatus.MISSING:
         return False
@@ -483,11 +549,15 @@ class EvaluationPolicyState:
     """保存当前阶段采用的跨阶段评估粒度策略。"""
     base_level: EvaluationLevel
     dimension_levels: dict[Dimension, EvaluationLevel]
-    reason: str = 'initial'
+    reason: str = "initial"
 
     def to_dict(self) -> JsonObject:
         """转换为可序列化策略字典。"""
-        return {'base_level': self.base_level.value, 'dimension_levels': _enum_key_dict(self.dimension_levels), 'reason': self.reason}
+        return {
+            "base_level": self.base_level.value,
+            "dimension_levels": _enum_key_dict(self.dimension_levels),
+            "reason": self.reason,
+        }
 
 @dataclass
 class EvaluationTerminationState:
@@ -499,11 +569,16 @@ class EvaluationTerminationState:
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化终止状态。"""
-        return {'should_stop': self.should_stop, 'termination_code': self.termination_code, 'termination_reason': self.termination_reason, 'termination_detail': self.termination_detail}
+        return {
+            "should_stop": self.should_stop,
+            "termination_code": self.termination_code,
+            "termination_reason": self.termination_reason,
+            "termination_detail": self.termination_detail,
+        }
 
 def initial_evaluation_policy() -> EvaluationPolicyState:
     """创建默认初始评估策略。"""
-    return EvaluationPolicyState(base_level=EvaluationLevel.CHEAP, dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in Dimension}, reason='initial')
+    return EvaluationPolicyState(base_level=EvaluationLevel.CHEAP, dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in Dimension}, reason="initial")
 
 @dataclass
 class ReadyMilestoneProgress:
@@ -564,7 +639,16 @@ class LLMCallMetrics:
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化字典。"""
-        return {'provider': self.provider, 'model': self.model, 'elapsed_seconds': self.elapsed_seconds, 'prompt_tokens': self.prompt_tokens, 'completion_tokens': self.completion_tokens, 'total_tokens': self.total_tokens, 'success': self.success, 'error': self.error}
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "elapsed_seconds": self.elapsed_seconds,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "success": self.success,
+            "error": self.error,
+        }
 
 @dataclass
 class RuntimeMetricsRecorder:
@@ -580,7 +664,7 @@ class RuntimeMetricsRecorder:
 @dataclass(frozen=True)
 class CaseProgressEvent:
     """跨线程传递的 case 进度事件。"""
-    kind: Literal['case_started', 'case_advanced', 'case_finished']
+    kind: Literal["case_started", "case_advanced", "case_finished"]
     case_id: str
     step_count: int = 0
     message: str | None = None
@@ -682,5 +766,5 @@ class ToolSandboxSession:
 def ensure_json_object(value: Any) -> JsonObject:
     """校验输入是否为 JSON 对象。"""
     if value is None or not isinstance(value, dict):
-        raise ValueError('输入必须是 JSON 对象')
+        raise ValueError("输入必须是 JSON 对象")
     return value

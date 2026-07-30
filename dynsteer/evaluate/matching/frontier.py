@@ -16,6 +16,7 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
         milestone_by_id[milestone.milestone_id] = milestone
         order_by_id[milestone.milestone_id] = index
         dependents.setdefault(milestone.milestone_id, [])
+
     remaining_predecessor_count: dict[str, int] = {}
     for milestone in graph.nodes:
         remaining_count = 0
@@ -23,12 +24,20 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
             dependents.setdefault(predecessor_id, []).append(milestone.milestone_id)
             remaining_count += 1
         remaining_predecessor_count[milestone.milestone_id] = remaining_count
+
     ready_ids: list[str] = []
     for milestone in graph.nodes:
         milestone_id = milestone.milestone_id
         if remaining_predecessor_count[milestone_id] == 0:
             ready_ids.append(milestone_id)
-    return MilestoneFrontierState(milestone_by_id=milestone_by_id, dependents_by_id={milestone_id: tuple(successors) for milestone_id, successors in dependents.items()}, remaining_predecessor_count=remaining_predecessor_count, ready_ids=ready_ids, blocked_candidate_ids=[], order_by_id=order_by_id)
+
+    return MilestoneFrontierState(
+        milestone_by_id=milestone_by_id, 
+        dependents_by_id={milestone_id: tuple(successors) for milestone_id, successors in dependents.items()},
+        remaining_predecessor_count=remaining_predecessor_count, 
+        ready_ids=ready_ids, blocked_candidate_ids=[], 
+        order_by_id=order_by_id
+    )
 
 def advance_milestone_frontier(frontier: MilestoneFrontierState, matched_milestone_id: str, matched: dict[str, HarnessStageSettlement]) -> None:
     """在 milestone matched 后原地推进 frontier。

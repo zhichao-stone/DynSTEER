@@ -9,9 +9,9 @@ def state_namespace_summary(state: JsonObject) -> JsonObject:
         每个 namespace 的行数摘要。
     """
     if state is None:
-        raise ValueError('state 不能为空')
-    namespaces = state.get('namespaces')
+        raise ValueError("state 不能为空")
+    namespaces = state.get("namespaces")
     if not isinstance(namespaces, dict):
-        return {'namespace_count': 0, 'row_counts': {}}
+        return {"namespace_count": 0, "row_counts": {}}
     row_counts = {str(namespace): len(rows) for namespace, rows in namespaces.items() if isinstance(rows, list)}
-    return {'namespace_count': len(namespaces), 'row_counts': row_counts}
+    return {"namespace_count": len(namespaces), "row_counts": row_counts}

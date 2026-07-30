@@ -1,7 +1,7 @@
 from collections import deque
 from dynsteer.model import MilestoneGraph
-START_NODE_ID = '__start__'
-FINISH_NODE_ID = '__finish__'
+START_NODE_ID = "__start__"
+FINISH_NODE_ID = "__finish__"
 
 def _augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
     ids = {node.milestone_id for node in graph.nodes}
@@ -42,7 +42,7 @@ def topological_order(predecessors: dict[str, list[str]], successors: dict[str, 
                 depths[target] = depths[node_id] + 1
                 queue.append(target)
     if len(order) != len(predecessors):
-        raise ValueError('milestone graph 存在环')
+        raise ValueError("milestone graph 存在环")
     return (order, depths)
 
 def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) -> str:
@@ -58,7 +58,7 @@ def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) ->
 def _lca_all(nodes: list[str], idom: dict[str, str], depths: dict[str, int]) -> str:
     """基于直接支配关系和深度信息，获取多个节点的最近公共祖先（LCA）。"""
     if not nodes:
-        raise ValueError('lca 节点列表不能为空')
+        raise ValueError("lca 节点列表不能为空")
     current_lca = nodes[0]
     for node_id in nodes[1:]:
         current_lca = _lca(current_lca, node_id, idom, depths)
@@ -74,7 +74,7 @@ def _immediate_dominators(order: list[str], predecessors: dict[str, list[str]], 
 def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
     """为 milestone graph 写入直接前驱、阶段锚点和增强图分析元数据。"""
     if graph is None:
-        raise ValueError('graph 不能为空')
+        raise ValueError("graph 不能为空")
     actualnode_ids = {node.milestone_id for node in graph.nodes}
     augmented = _augmented_edges(graph)
     node_ids = actualnode_ids | {START_NODE_ID, FINISH_NODE_ID}
@@ -86,5 +86,12 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
         anchor_id = idom.get(node.milestone_id)
         node.stage_anchor_predecessor_id = anchor_id if isinstance(anchor_id, str) else START_NODE_ID
     finish_anchor = idom.get(FINISH_NODE_ID)
-    graph.metadata['graph_analysis'] = {'start_node_id': START_NODE_ID, 'finish_node_id': FINISH_NODE_ID, 'augmented_edges': [[source, target] for source, target in augmented], 'finish_stage_anchor_predecessor_id': finish_anchor if isinstance(finish_anchor, str) else START_NODE_ID}
+    graph.metadata["graph_analysis"] = {
+        "start_node_id": START_NODE_ID,
+        "finish_node_id": FINISH_NODE_ID,
+        "augmented_edges": [[source, target] for source, target in augmented],
+        "finish_stage_anchor_predecessor_id": finish_anchor
+        if isinstance(finish_anchor, str)
+        else START_NODE_ID,
+    }
     return graph

@@ -9,15 +9,15 @@ from dynsteer.utils import clamp, json_subsumes, read_token
 class GeneralScorer:
 
     def select_value(self, source: JsonValue, selector: str) -> JsonValue:
-        if selector is None or selector == '' or source is None:
+        if selector is None or selector == "" or source is None:
             return None
-        if selector == '$':
+        if selector == "$":
             return source
-        if not selector.startswith('$.'):
+        if not selector.startswith("$."):
             return None
         current: Any = source
-        for token in selector[2:].split('.'):
-            if token == '':
+        for token in selector[2:].split("."):
+            if token == "":
                 return None
             current = read_token(current, token)
             if current is MISSING:
@@ -26,7 +26,7 @@ class GeneralScorer:
 
     def score_operator(self, actual: JsonValue, operator: Operator, expected: JsonValue) -> float:
         if operator == Operator.CUSTOM:
-            raise ValueError('Operator.CUSTOM 必须由 score_custom_constraint() 或 benchmark scorer 处理')
+            raise ValueError("Operator.CUSTOM 必须由 score_custom_constraint() 或 benchmark scorer 处理")
         if operator == Operator.EQUALS:
             return 1.0 if actual == expected else 0.0
         if operator == Operator.CONTAINS:
@@ -58,7 +58,7 @@ class GeneralScorer:
         return 0.0
 
     def score_custom_constraint(self, constraint: Constraint, source: object, reference_source: object | None, actual: JsonValue, reference_value: JsonValue, context: ScoringContext | None=None) -> ConstraintScore:
-        evidence = f'约束 {constraint.constraint_id} 使用 Operator.CUSTOM，但当前评分器 {self.__class__.__name__} 不支持 evaluator_hint={constraint.evaluator_hint}'
+        evidence = f"约束 {constraint.constraint_id} 使用 Operator.CUSTOM，但当前评分器 {self.__class__.__name__} 不支持 evaluator_hint={constraint.evaluator_hint}"
         return ConstraintScore(constraint_id=constraint.constraint_id, score=0.0, missing=actual is None, evidence=[evidence], actual=actual)
 
     def score_constraint(self, constraint: Constraint, source: object, reference_source: object | None=None, context: ScoringContext | None=None) -> ConstraintScore:
@@ -68,20 +68,20 @@ class GeneralScorer:
         reference_value = constraint.expected
         if constraint.operator in {Operator.ADDED, Operator.UPDATED, Operator.REMOVED, Operator.UNCHANGED_SINCE}:
             if constraint.reference_milestone_id is not None and reference_source is None:
-                return ConstraintScore(constraint_id=constraint.constraint_id, score=0.0, missing=True, evidence=[f'reference milestone 未命中: {constraint.reference_milestone_id}'], actual=actual)
+                return ConstraintScore(constraint_id=constraint.constraint_id, score=0.0, missing=True, evidence=[f"reference milestone 未命中: {constraint.reference_milestone_id}"], actual=actual)
             reference_data = self._resolve_source(constraint, reference_source)
             reference_value = self.select_value(reference_data, constraint.selector)
         if constraint.operator == Operator.CUSTOM:
             return self.score_custom_constraint(constraint, source, reference_source, actual, reference_value, context=context)
         score = 0.0 if missing and constraint.operator != Operator.REMOVED else self.score_operator(actual, constraint.operator, reference_value)
-        evidence = [f'约束 {constraint.constraint_id} 得分 {score:.3f}']
+        evidence = [f"约束 {constraint.constraint_id} 得分 {score:.3f}"]
         if missing:
-            evidence.append(f'selector 未命中: {constraint.selector}')
+            evidence.append(f"selector 未命中: {constraint.selector}")
         return ConstraintScore(constraint_id=constraint.constraint_id, score=score, missing=missing, evidence=evidence, actual=actual)
 
     def score_milestone(self, milestone: Milestone, boundary: Boundary, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
         if len(milestone.constraints) == 0:
-            return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary.boundary_id, score=0.0, status=StageStatus.INVALID, evidence=['milestone 缺少 constraints'], missing_ratio=1.0, hard_constraints_all_pass=False)
+            return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary.boundary_id, score=0.0, status=StageStatus.INVALID, evidence=["milestone 缺少 constraints"], missing_ratio=1.0, hard_constraints_all_pass=False)
         constraint_scores: list[ConstraintScore] = []
         weighted_sum = 0.0
         weight_sum = 0.0
@@ -114,19 +114,28 @@ class GeneralScorer:
         if source is None:
             return None
         if isinstance(source, StateSnapshot):
-            selected_namespace = constraint.namespace or 'default'
+            selected_namespace = constraint.namespace or "default"
             return source.namespaces.get(selected_namespace, source.namespaces)
         if isinstance(source, TrajectoryStep):
-            data: dict[str, JsonValue] = {'step_id': source.step_id, 'index': source.index, 'actor': source.actor.value, 'recipient': source.recipient.value if source.recipient is not None else None, 'event_type': source.event_type.value, 'timestamp': source.timestamp, 'content': source.content, 'state_delta_refs': list(source.state_delta_refs)}
+            data: dict[str, JsonValue] = {
+                "step_id": source.step_id,
+                "index": source.index,
+                "actor": source.actor.value,
+                "recipient": source.recipient.value if source.recipient is not None else None,
+                "event_type": source.event_type.value,
+                "timestamp": source.timestamp,
+                "content": source.content,
+                "state_delta_refs": list(source.state_delta_refs),
+            }
             if source.tool_call is not None:
-                data['tool_call'] = asdict(source.tool_call)
+                data["tool_call"] = asdict(source.tool_call)
             if source.tool_result is not None:
-                data['tool_result'] = asdict(source.tool_result)
+                data["tool_result"] = asdict(source.tool_result)
             data.update(source.raw)
             if constraint.target == ConstraintTarget.TOOL_CALL:
-                return data.get('tool_call')
+                return data.get("tool_call")
             if constraint.target == ConstraintTarget.TOOL_RESULT:
-                return data.get('tool_result')
+                return data.get("tool_result")
             return data
         if is_dataclass(source):
             return asdict(source)
@@ -216,11 +225,11 @@ def minefield_penalty_score(matches: list[JsonObject]) -> float:
     for match in matches:
         if not isinstance(match, dict):
             continue
-        raw_score = match.get('score', 0.0)
+        raw_score = match.get("score", 0.0)
         score = float(raw_score) if isinstance(raw_score, int | float) else 0.0
-        penalty = match.get('penalty')
-        if isinstance(penalty, dict) and penalty.get('mode') == 'fixed':
-            raw_value = penalty.get('value', 0.0)
+        penalty = match.get("penalty")
+        if isinstance(penalty, dict) and penalty.get("mode") == "fixed":
+            raw_value = penalty.get("value", 0.0)
             value = float(raw_value) if isinstance(raw_value, int | float) else 0.0
             max_penalty = max(max_penalty, score * value)
         else:
