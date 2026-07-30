@@ -5,8 +5,11 @@ from enum import Enum
 from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, Union
+
 if TYPE_CHECKING:
     from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
+
+
 JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
 JsonObject = dict[str, JsonValue]
 MISSING = object()
@@ -106,12 +109,6 @@ class ToolCall:
     name: str
     arguments: JsonObject = field(default_factory=dict)
 
-    @classmethod
-    def from_dict(cls, d: dict) -> "ToolCall":
-        return cls(
-            name=str(d["name"]), 
-            arguments=dict(d.get("arguments", {}))
-        ) if isinstance(d, dict) else None
 
 @dataclass
 class ToolResult:
@@ -119,13 +116,6 @@ class ToolResult:
     content: JsonValue = None
     exception: Optional[str] = None
 
-    @classmethod
-    def from_dict(cls, d: dict) -> "ToolResult":
-        return cls(
-            success=bool(d.get("success")),
-            content=d.get("content"),
-            exception=d.get("exception")
-        ) if isinstance(d, dict) else None
 
 @dataclass
 class StepCost:
@@ -262,9 +252,6 @@ class MinefieldPenalty:
     mode: str = "fixed"
     value: float = 0.0
 
-    @classmethod
-    def from_dict(cls, d: dict) -> "MinefieldPenalty":
-        return cls(**{k:v for k, v in d.items() if k in ["mode", "value"]}) if isinstance(d, dict) else None
 
 @dataclass
 class Minefield:
@@ -371,6 +358,15 @@ class Trajectory:
         """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
         self.steps.append(step)
         self._append_step_index(step.index)
+
+    def extend_snapshots(self, snapshots: list[StateSnapshot]) -> None:
+        """按 snapshot_id 去重追加状态快照。"""
+        if not snapshots:
+            return
+        snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in self.snapshots}
+        for snapshot in snapshots:
+            snapshot_by_id[snapshot.snapshot_id] = snapshot
+        self.snapshots = sorted(snapshot_by_id.values(), key=lambda item: (item.after_step_index, item.snapshot_id))
 
     def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
         """返回指定 step index 区间内的轨迹步骤。"""
@@ -676,29 +672,11 @@ class CaseProgressState:
     avg_step_seconds: float | None = None
     finished: bool = False
 
-@dataclass
-class CaseProgressBars:
-    """单个 case 在终端中占用的标题行与进度条行。"""
-    title_bar: Any
-    progress_bar: Any
-
 @dataclass(frozen=True)
 class LLMMessage:
     """单条对话消息。"""
     role: str
     content: str
-
-@dataclass(frozen=True)
-class LLMTokenLogprob:
-    """单个输出 token 的对数概率。"""
-    token: str
-    logprob: float
-
-@dataclass(frozen=True)
-class LLMResponse:
-    """LLM 文本响应及可选 token logprob。"""
-    text: str
-    token_logprobs: list[LLMTokenLogprob] = field(default_factory=list)
 
 @dataclass(frozen=True)
 class LLMConfig:

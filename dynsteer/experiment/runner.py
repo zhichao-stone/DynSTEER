@@ -10,7 +10,7 @@ from tqdm import tqdm
 from dynsteer.adapter import BaseBenchmarkHarness, get_harness
 from dynsteer.adapter.loader import load_trajectory
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
-from dynsteer.evaluate.state_summary import state_namespace_summary
+from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
 from dynsteer.experiment.metrics import write_metric_tables
 from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod, ExperimentRunSpec
@@ -61,9 +61,6 @@ def run_experiment(
                     results.append(_case_result_from_output(spec, task_case, output, default_reference))
             elif spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
                 output = run_evaluate_case(spec, task_case, force_eval=effective_force_eval)
-                results.append(_case_result_from_output(spec, task_case, output))
-            elif spec.method == ExperimentMethod.DYNSTEER_GUIDANCE:
-                output = run_guidance_case(spec, task_case)
                 results.append(_case_result_from_output(spec, task_case, output))
     if results and not no_sum:
         output_dir = specs[0].results_dir
@@ -131,9 +128,7 @@ def run_replay_case(
     trajectory = load_trajectory(trajectory_data)
     runtime_initial_state = trajectory.raw.get("runtime_initial_state")
     if isinstance(runtime_initial_state, dict):
-        task_case.initial_state = runtime_initial_state
-        task_case.metadata["runtime_initial_state_source"] = "default_trajectory"
-        task_case.metadata["runtime_initial_state_summary"] = state_namespace_summary(runtime_initial_state)
+        apply_runtime_initial_state(task_case, runtime_initial_state, "default_trajectory")
     evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
     return write_replay_case_outputs(
         config=config,
@@ -163,11 +158,6 @@ def run_evaluate_case(
     )
 
 
-def run_guidance_case(spec: ExperimentRunSpec, task_case: TaskCase) -> HarnessEvaluationOutput:
-    """动态 guidance 分支实验入口。"""
-    raise NotImplementedError("DynSTEER guidance 注入 hook 尚未实现，请等待分实验阶段补齐")
-
-
 def write_experiment_index(results: list[ExperimentCaseResult], output_dir: Path) -> None:
     """写出所有 case 的结构化索引。"""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,45 +170,23 @@ def _build_experiment_index_payload(results: list[ExperimentCaseResult]) -> Json
     if not results:
         return {"experiment_id": None, "case_count": 0, "results": {}}
     experiment_id = results[0].experiment_id
-    grouped: dict[str, dict[str, dict[str, JsonObject]]] = {}
+    grouped: JsonObject = {}
     for result in sorted(results, key=lambda item: (item.benchmark, item.method.value, item.model_id, item.repeat_index, item.case_id)):
         if result.experiment_id != experiment_id:
             raise ValueError("results 不能同时包含不同 experiment_id")
-        benchmark_bucket = grouped.setdefault(result.benchmark, {})
-        method_bucket = benchmark_bucket.setdefault(result.method.value, {})
-        model_bucket = method_bucket.setdefault(result.model_id, {"repeats": {}})
-        repeats = model_bucket.setdefault("repeats", {})
-        if not isinstance(repeats, dict):
-            raise ValueError("repeats 类型异常")
-
-        repeat_key = str(result.repeat_index)
-        repeat_node = repeats.setdefault(repeat_key, {"cases": {}})
-        cases = repeat_node.setdefault("cases", {})
-        if not isinstance(cases, dict):
-            raise ValueError("cases 类型异常")
+        cases = _result_bucket(grouped, result)
         if result.case_id in cases:
             raise ValueError("同一 repeat 和 case_id 下的结果不能重复写入")
         cases[result.case_id] = result.to_index_dict()
+    return {"experiment_id": experiment_id, "case_count": len(results), "results": grouped}
 
-    ordered_results: JsonObject = {}
-    for benchmark, benchmark_bucket in grouped.items():
-        ordered_methods: JsonObject = {}
-        for method, method_bucket in benchmark_bucket.items():
-            ordered_models: JsonObject = {}
-            for model_id, model_bucket in method_bucket.items():
-                repeats = model_bucket.get("repeats") if isinstance(model_bucket, dict) else {}
-                ordered_repeats: JsonObject = {}
-                if isinstance(repeats, dict):
-                    for repeat_index, repeat_node in sorted(repeats.items(), key=lambda item: int(item[0])):
-                        cases = repeat_node.get("cases") if isinstance(repeat_node, dict) else {}
-                        ordered_repeats[repeat_index] = {
-                            "cases": dict(cases.items()) if isinstance(cases, dict) else {}
-                        }
-                ordered_models[model_id] = {"repeats": ordered_repeats}
-            ordered_methods[method] = ordered_models
-        ordered_results[benchmark] = ordered_methods
 
-    return {"experiment_id": experiment_id, "case_count": len(results), "results": ordered_results}
+def _result_bucket(root: JsonObject, result: ExperimentCaseResult) -> JsonObject:
+    benchmark = root.setdefault(result.benchmark, {})
+    method = benchmark.setdefault(result.method.value, {})
+    model = method.setdefault(result.model_id, {"repeats": {}})
+    repeat = model["repeats"].setdefault(str(result.repeat_index), {"cases": {}})
+    return repeat["cases"]
 
 
 def _case_result_from_output(

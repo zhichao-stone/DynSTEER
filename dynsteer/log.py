@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from dynsteer.model import JsonObject, JsonValue
 from dynsteer.utils import compact_text
+
+
 _LOG_BUFFER: list[JsonObject] = []
 LOG_BUFFER_LIMIT = 2000
 _LOGGER_LOCK = threading.RLock()

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dynsteer.model import Actor, Constraint, JsonObject, Milestone, MilestoneGraph
-from dynsteer.utils import get_object
+from dynsteer.utils import get_object, normalize_actor
 MILESTONE_MATCHING_METADATA_KEY = "milestone_matching"
 
 def enrich_milestone_routes(graph: MilestoneGraph) -> MilestoneGraph:
@@ -31,7 +31,6 @@ def _enrich_milestone_route_groups(milestone: Milestone) -> None:
         {"route": {"sender": sender, "recipient": recipient}, "constraint_ids": list(constraint_ids)}
         for (sender, recipient), constraint_ids in route_groups.items()
     ]
-    matching["route_group_count"] = len(route_groups)
     milestone.metadata[MILESTONE_MATCHING_METADATA_KEY] = matching
 
 def _constraint_route(constraint: Constraint) -> tuple[tuple[str, str] | None, str | None]:
@@ -81,21 +80,7 @@ def _route_from_mapping(data: Mapping[str, object]) -> tuple[str, str] | None:
 def _actor_from_aliases(data: Mapping[str, object], aliases: tuple[str, ...]) -> Actor | None:
     """按字段别名读取并规范化 Actor。"""
     for alias in aliases:
-        actor = _normalize_actor(data.get(alias))
+        actor = normalize_actor(data.get(alias))
         if actor is not None:
             return actor
     return None
-
-def _normalize_actor(value: object) -> Actor | None:
-    """将外部 actor 名称统一为内部 Actor 枚举。"""
-    if value is None:
-        return None
-    aliases = {
-        "system": Actor.SYSTEM,
-        "user": Actor.USER,
-        "agent": Actor.AGENT,
-        "environment": Actor.ENVIRONMENT,
-        "execution_environment": Actor.ENVIRONMENT,
-        "evaluator": Actor.EVALUATOR,
-    }
-    return aliases.get(str(value).strip().lower())

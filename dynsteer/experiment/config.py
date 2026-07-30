@@ -99,8 +99,6 @@ def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
     for spec in specs:
         if spec is None:
             raise ValueError("specs 不能包含空规格")
-        if spec.method == ExperimentMethod.DYNSTEER_GUIDANCE and (not spec.strategy.guidance_enabled):
-            raise ValueError("dynsteer_guidance 方法必须启用 guidance_enabled")
 
 def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None=None) -> list[object]:
     raw_value = config.get(key, default)
@@ -148,8 +146,6 @@ def _strategy_for_method(method: ExperimentMethod, raw_strategy: object) -> Eval
         return replace(strategy, policy_stop=False)
     if method == ExperimentMethod.DYNSTEER_REPLAY_STATIC:
         return replace(strategy, dynamic_routing=False, dynamic_weighting=False)
-    if method == ExperimentMethod.DYNSTEER_GUIDANCE:
-        return replace(strategy, guidance_enabled=True)
     return strategy
 
 def _judge_config(profiles: dict[str, JsonObject], profile_name: str | None) -> JsonObject:

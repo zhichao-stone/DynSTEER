@@ -1,7 +1,9 @@
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.runtime import selected_candidate_from_attempt
 from dynsteer.model import JsonObject, JsonValue, RuntimeEvaluationDecision, StageEvaluationResult, TaskCase
-from dynsteer.utils import compact_text, first_text, optional_str
+from dynsteer.utils import as_number, compact_text, first_text, optional_str
+
+
 _TEXT_LIMIT = 160
 _LIST_LIMIT = 8
 
@@ -54,12 +56,7 @@ def _milestone_layer(source: StageEvaluationResult | HarnessStageSettlement | No
     score = matching.get("score")
     if not isinstance(score, dict):
         return (None, None)
-    return (_optional_float(score.get("score")), optional_str(score.get("status")))
-
-def _optional_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
+    return (as_number(score.get("score")), optional_str(score.get("status")))
 
 def _sanitize_extra(value: JsonValue | JsonObject) -> JsonObject:
     if not isinstance(value, dict):

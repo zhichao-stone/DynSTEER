@@ -15,7 +15,7 @@ python main.py --exp data/experiments/double_benchmark_initial.json
 - `experiment_id`: 实验 ID。
 - `benchmarks`: benchmark 数组，每项包含 `benchmark`、`data_root`，可选 `case_ids/scenarios` 和 `metadata`。
 - `models`: 模型数组，每项包含 `model_id`，可选 `metadata`、`harness_metadata`。
-- `methods`: 方法数组，支持 `default`、`dynsteer_evaluate`、`dynsteer_replay`、`dynsteer_replay_static`、`dynsteer_guidance`。
+- `methods`: 方法数组，支持 `default`、`dynsteer_evaluate`、`dynsteer_replay`、`dynsteer_replay_static`。
 - `judge_profiles`: Judge 的 provider、model、base_url、temperature、max_tokens、max_retries 等配置；API key 只从环境变量读取。
 - `threshold_profiles`: `ThresholdConfig` 字段集合。
 - `threshold_matrix`: 需要展开的阈值档位。

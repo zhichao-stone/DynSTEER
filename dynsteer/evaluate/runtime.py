@@ -51,9 +51,7 @@ def update_ready_frontier_progress_watch(state: RuntimeEvaluationState, ready_id
     }
     if not observed_candidates:
         return None
-    step_index = attempt_detail.get("step_index")
-    if not isinstance(step_index, int):
-        raise ValueError("attempt_detail.step_index 必须是整数")
+    step_index = attempt_detail["step_index"]
     watch = state.ready_frontier_progress_watch
     if watch is None or watch.frontier_key != normalized_ready_ids:
         state.ready_frontier_progress_watch = ReadyFrontierProgressWatch(
@@ -270,9 +268,7 @@ def task_case_snapshot(task_case: TaskCase) -> JsonObject:
     }
 
 def _ready_milestone_progress_from_candidate(milestone_id: str, candidate: JsonObject, step_index: int) -> ReadyMilestoneProgress:
-    score_payload = candidate.get("score")
-    if not isinstance(score_payload, dict):
-        raise ValueError("candidate score 必须是 JSON 对象")
+    score_payload = candidate["score"]
     boundary = candidate.get("boundary")
     boundary_step_index = None
     if isinstance(boundary, dict):

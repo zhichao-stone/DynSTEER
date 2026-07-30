@@ -5,7 +5,72 @@ from collections.abc import Iterable, Mapping
 from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Any
-from dynsteer.model import JsonObject, JsonValue, MISSING, Dimension
+from dynsteer.model import Actor, JsonObject, JsonValue, MISSING, Dimension
+
+
+_ACTOR_ALIASES = {
+    "SYSTEM": Actor.SYSTEM,
+    "USER": Actor.USER,
+    "AGENT": Actor.AGENT,
+    "EXECUTION_ENVIRONMENT": Actor.ENVIRONMENT,
+    "ENVIRONMENT": Actor.ENVIRONMENT,
+    "EVALUATOR": Actor.EVALUATOR,
+}
+
+def normalize_actor(value: object, field_name: str = "actor", required: bool = False) -> Actor | None:
+    if value is None:
+        if required:
+            raise ValueError(f"缺少枚举字段: {field_name}")
+        return None
+    key = str(value).strip()
+    actor = _ACTOR_ALIASES.get(key.upper())
+    if actor is not None:
+        return actor
+    try:
+        return Actor(key.lower())
+    except ValueError as exc:
+        raise ValueError(f"{field_name} 角色非法: {value}") from exc
+
+def parse_int_value(
+    value: object,
+    label: str,
+    *,
+    default: int | None = None,
+    min_value: int | None = None,
+    error_type: type[Exception] = ValueError,
+) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        parsed = int(value.strip()) if isinstance(value, str) else value
+    except ValueError as exc:
+        raise error_type(f"{label} 必须是整数") from exc
+    if isinstance(parsed, bool) or not isinstance(parsed, int):
+        raise error_type(f"{label} 必须是整数")
+    if min_value is not None and parsed < min_value:
+        raise error_type(f"{label} 必须大于等于 {min_value}")
+    return parsed
+
+def parse_float_value(
+    value: object,
+    label: str,
+    *,
+    default: float | None = None,
+    min_value: float | None = None,
+    error_type: type[Exception] = ValueError,
+) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        parsed = float(value.strip()) if isinstance(value, str) else value
+    except ValueError as exc:
+        raise error_type(f"{label} 必须是数字") from exc
+    if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
+        raise error_type(f"{label} 必须是数字")
+    parsed_float = float(parsed)
+    if min_value is not None and parsed_float < min_value:
+        raise error_type(f"{label} 必须大于等于 {min_value}")
+    return parsed_float
 
 def validated_target_dimensions(dimensions: Iterable[Dimension] | None) -> list[Dimension]:
     if dimensions is None:

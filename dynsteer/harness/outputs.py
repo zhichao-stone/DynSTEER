@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
-from dynsteer.evaluate.state_summary import state_namespace_summary
+from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.paths import case_output_dir
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
@@ -79,6 +79,18 @@ def snapshot_to_json(snapshot: StateSnapshot) -> JsonObject:
     }
 
 
+def trajectory_output_summary(trajectory: Trajectory, runtime_metrics: JsonObject | None = None) -> JsonObject:
+    """构造 trajectory.json 的轻量索引摘要。"""
+    metrics = runtime_metrics or {}
+    return {
+        "path": "trajectory.json",
+        "step_count": metrics.get("step_count"),
+        "raw_step_count": len(trajectory.steps),
+        "snapshot_count": len(trajectory.snapshots),
+        "final_state_present": trajectory.final_state is not None,
+    }
+
+
 def existing_case_output(
     config: HarnessRunConfig,
     case_id: str,
@@ -135,13 +147,7 @@ def write_case_outputs(
     if runtime_metrics and not isinstance(raw_summary.get("runtime_metrics"), dict):
         raw_summary["runtime_metrics"] = runtime_metrics
     trajectory = harness_result.trajectory
-    raw_summary["trajectory_output"] = {
-        "path": "trajectory.json",
-        "step_count": runtime_metrics.get("step_count"),
-        "raw_step_count": len(trajectory.steps),
-        "snapshot_count": len(trajectory.snapshots),
-        "final_state_present": trajectory.final_state is not None,
-    }
+    raw_summary["trajectory_output"] = trajectory_output_summary(trajectory, runtime_metrics)
     raw_summary.update(
         {
             "terminated_by_policy": harness_result.termination.should_stop,
@@ -191,18 +197,13 @@ def write_default_case_outputs(
         session = harness.start_case(config, case_id, raw_output_dir)
         runtime_initial_state = harness.initial_state_from_session(session)
         if isinstance(runtime_initial_state, dict):
-            task_case.initial_state = runtime_initial_state
-            task_case.metadata["runtime_initial_state_source"] = "harness_session"
-            runtime_initial_state_summary = state_namespace_summary(runtime_initial_state)
-            task_case.metadata["runtime_initial_state_summary"] = runtime_initial_state_summary
+            runtime_initial_state_summary = apply_runtime_initial_state(
+                task_case, runtime_initial_state, "harness_session"
+            )
             trajectory.raw["runtime_initial_state"] = runtime_initial_state
         while True:
             advance = harness.advance_case(session)
-            if advance.snapshots:
-                snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in trajectory.snapshots}
-                for snapshot in advance.snapshots:
-                    snapshot_by_id[snapshot.snapshot_id] = snapshot
-                trajectory.snapshots = sorted(snapshot_by_id.values(), key=lambda item: (item.after_step_index, item.snapshot_id))
+            trajectory.extend_snapshots(advance.snapshots)
             completed_agent_steps = 0
             for step in advance.steps:
                 trajectory.append_step(step)
@@ -238,13 +239,7 @@ def write_default_case_outputs(
                 "case_id": case_id,
                 "default_result": default_result.to_dict(),
                 "runtime_metrics": runtime_metrics,
-                "trajectory_output": {
-                    "path": "trajectory.json",
-                    "step_count": runtime_metrics.get("step_count"),
-                    "raw_step_count": len(trajectory.steps),
-                    "snapshot_count": len(trajectory.snapshots),
-                    "final_state_present": trajectory.final_state is not None,
-                },
+                "trajectory_output": trajectory_output_summary(trajectory, runtime_metrics),
             }
         )
         summary = {
@@ -324,13 +319,7 @@ def write_replay_case_outputs(
     raw_summary = dict(harness_result.raw_summary)
     if default_reference is not None:
         raw_summary["default_reference"] = dict(default_reference)
-    raw_summary["trajectory_output"] = {
-        "path": "trajectory.json",
-        "step_count": report.runtime_metrics.get("step_count"),
-        "raw_step_count": len(harness_result.trajectory.steps),
-        "snapshot_count": len(harness_result.trajectory.snapshots),
-        "final_state_present": harness_result.trajectory.final_state is not None,
-    }
+    raw_summary["trajectory_output"] = trajectory_output_summary(harness_result.trajectory, report.runtime_metrics)
     return _write_output_payloads(
         raw_run_dir=raw_run_dir,
         result_dir=result_dir,

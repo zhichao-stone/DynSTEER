@@ -203,8 +203,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _named_scenarios(self, config: HarnessRunConfig) -> dict[str, Any]:
         """获取 ToolSandbox 原生场景字典。"""
-        if config is None:
-            raise ValueError("config 不能为空")
         backend = tool_backend(config, load_toolsandbox_module)
         cache_key = (str(config.data_root.resolve()), enum_name(backend))
         with _NAMED_SCENARIOS_CACHE_LOCK:
@@ -220,9 +218,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     def _role_impl_type(self, role_name: object, role_label: str) -> object:
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
         role_impl_type = getattr(cli_utils, "RoleImplType")
-        if not isinstance(role_name, str) or not role_name.strip():
-            raise ValueError(f"ToolSandbox run_configs.json 必须提供 {role_label}")
-        effective_name = role_name.strip()
+        effective_name = str(role_name).strip()
         try:
             return role_impl_type[effective_name]
         except KeyError:
@@ -262,8 +258,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _prepare_system_environment_messages(self, session: ToolSandboxSession) -> None:
         """执行 ToolSandbox system -> execution environment 初始化消息。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         if session.system_environment_messages_prepared:
             return
         if session.context is None:
@@ -289,8 +283,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _advance_native_session(self, session: ToolSandboxSession) -> None:
         """恢复当前 context 并只推进当前 recipient 一次 respond。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         if session.finished:
             return
         if not session.system_environment_messages_prepared:

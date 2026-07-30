@@ -3,7 +3,7 @@ from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, TaskCase, Trajectory
+from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, TaskCase, Trajectory
 from dynsteer.utils import clean_evidence_items, compact_text, json_safe
 
 def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, scorer: GeneralScorer) -> JsonObject:
@@ -21,50 +21,7 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
     graph = task_case.milestone_graph
     matched = state.matched_settlements
     if not graph.nodes:
-        fatal_minefield = bool(state.fatal_minefield)
-        if fatal_minefield:
-            return {
-                "all_milestones_matched": True,
-                "unmatched_milestone_ids": [],
-                "terminal_milestone_ids": [],
-                "terminal_state_checks": [],
-                "terminal_message_checks": [],
-                "fatal_minefield": True,
-                "empty_milestone_graph": True,
-                "fixed_milestones_applicable": False,
-                "whole_trajectory_evaluation": False,
-                "whole_trajectory_evaluation_required": False,
-                "coverage_basis": "whole_trajectory",
-                "default_reference_used": False,
-                "minefield_count": len(graph.minefields) if graph is not None else 0,
-                "minefield_match_count": len(state.minefield_matches),
-                "status": StageStatus.FAIL.value,
-                "score": 0.0,
-                "evidence": ["finish ????", "empty graph triggered fatal minefield"],
-                "diagnosis": ["finish final verification failed: fatal minefield."],
-            }
-        return {
-            "all_milestones_matched": True,
-            "unmatched_milestone_ids": [],
-            "terminal_milestone_ids": [],
-            "terminal_state_checks": [],
-            "terminal_message_checks": [],
-            "fatal_minefield": False,
-            "empty_milestone_graph": True,
-            "fixed_milestones_applicable": False,
-            "whole_trajectory_evaluation": False,
-            "whole_trajectory_evaluation_required": True,
-            "coverage_basis": "whole_trajectory",
-            "default_reference_used": False,
-            "minefield_count": len(graph.minefields) if graph is not None else 0,
-            "minefield_match_count": len(state.minefield_matches),
-            "status": StageStatus.AMBIGUOUS.value,
-            "score": 0.0,
-            "evidence": ["finish ????", "empty graph requires whole-trajectory evaluation"],
-            "diagnosis": [
-                "finish final verification precheck passed: whole-trajectory judge still required."
-            ],
-        }
+        return _empty_graph_finish_verification(graph, state)
     milestone_ids = [node.milestone_id for node in graph.nodes]
     matched_ids = set(matched)
     unmatched_ids = [milestone_id for milestone_id in milestone_ids if milestone_id not in matched_ids]
@@ -139,6 +96,37 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
         "score": score,
         "evidence": evidence,
         "diagnosis": diagnosis,
+    }
+
+
+def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvaluationState) -> JsonObject:
+    fatal_minefield = bool(state.fatal_minefield)
+    return {
+        "all_milestones_matched": True,
+        "unmatched_milestone_ids": [],
+        "terminal_milestone_ids": [],
+        "terminal_state_checks": [],
+        "terminal_message_checks": [],
+        "fatal_minefield": fatal_minefield,
+        "empty_milestone_graph": True,
+        "fixed_milestones_applicable": False,
+        "whole_trajectory_evaluation": False,
+        "whole_trajectory_evaluation_required": not fatal_minefield,
+        "coverage_basis": "whole_trajectory",
+        "default_reference_used": False,
+        "minefield_count": len(graph.minefields) if graph is not None else 0,
+        "minefield_match_count": len(state.minefield_matches),
+        "status": StageStatus.FAIL.value if fatal_minefield else StageStatus.AMBIGUOUS.value,
+        "score": 0.0,
+        "evidence": [
+            "finish 结算节点",
+            "empty graph triggered fatal minefield" if fatal_minefield
+            else "empty graph requires whole-trajectory evaluation",
+        ],
+        "diagnosis": [
+            "finish final verification failed: fatal minefield." if fatal_minefield
+            else "finish final verification precheck passed: whole-trajectory judge still required."
+        ],
     }
 
 def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], terminal_ids: list[str], scorer: GeneralScorer) -> list[JsonObject]:

@@ -4,7 +4,9 @@ from dynsteer.llm.base import BaseLLM, LLMConfigurationError
 from dynsteer.llm.anthropic import AnthropicLLM
 from dynsteer.llm.openai import OpenaiLLM
 from dynsteer.model import LLMConfig
-from dynsteer.utils import normalize_str_from_source, optional_str
+from dynsteer.utils import normalize_str_from_source, optional_str, parse_float_value, parse_int_value
+
+
 _OPENAI_PROVIDERS = {"openai_compatible", "openai", "qwen"}
 _ANTHROPIC_PROVIDERS = {"anthropic", "claude"}
 
@@ -29,7 +31,18 @@ def build_llm_from_env(env: Mapping[str, str] | None=None) -> BaseLLM | None:
     model = normalize_str_from_source(source, "DYNSTEER_JUDGE_MODEL")
     if model is None:
         raise LLMConfigurationError("DYNSTEER_JUDGE_MODEL 不能为空")
-    config = LLMConfig(provider=provider, model=model.strip(), api_key=_read_api_key(source, provider), base_url=_read_base_url(source, provider), timeout_seconds=float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")), temperature=float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")), max_tokens=_read_positive_int(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS", 0) or None, max_retries=_read_positive_int(source.get("DYNSTEER_JUDGE_MAX_RETRIES"), "DYNSTEER_JUDGE_MAX_RETRIES", 3), retry_base_seconds=_read_non_negative_float(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"), "DYNSTEER_JUDGE_RETRY_BASE_SECONDS", 1.0), retry_max_seconds=_read_non_negative_float(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS"), "DYNSTEER_JUDGE_RETRY_MAX_SECONDS", 8.0))
+    config = LLMConfig(
+        provider=provider,
+        model=model.strip(),
+        api_key=_read_api_key(source, provider),
+        base_url=_read_base_url(source, provider),
+        timeout_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS"), "DYNSTEER_JUDGE_TIMEOUT_SECONDS", default=60.0, error_type=LLMConfigurationError),
+        temperature=parse_float_value(source.get("DYNSTEER_JUDGE_TEMPERATURE"), "DYNSTEER_JUDGE_TEMPERATURE", default=0.0, error_type=LLMConfigurationError),
+        max_tokens=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS", default=None, min_value=1, error_type=LLMConfigurationError),
+        max_retries=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_RETRIES"), "DYNSTEER_JUDGE_MAX_RETRIES", default=3, min_value=1, error_type=LLMConfigurationError),
+        retry_base_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"), "DYNSTEER_JUDGE_RETRY_BASE_SECONDS", default=1.0, min_value=0.0, error_type=LLMConfigurationError),
+        retry_max_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS"), "DYNSTEER_JUDGE_RETRY_MAX_SECONDS", default=8.0, min_value=0.0, error_type=LLMConfigurationError),
+    )
     return build_llm(config)
 
 def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Mapping[str, str] | None=None) -> BaseLLM | None:
@@ -55,57 +68,30 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
     if model is None or not str(model).strip():
         raise LLMConfigurationError("Judge profile 中 model 不能为空")
     source = env if env is not None else os.environ
-    llm_config = LLMConfig(provider=provider, model=str(model).strip(), api_key=_read_api_key(source, provider), base_url=optional_str(config.get("base_url")) or _read_base_url(source, provider), timeout_seconds=float(config.get("timeout_seconds", 60.0)), temperature=float(config.get("temperature", 0.0)), max_tokens=_config_positive_int(config.get("max_tokens"), "max_tokens"), max_retries=_config_positive_int(config.get("max_retries"), "max_retries") or 3, retry_base_seconds=_config_non_negative_float(config.get("retry_base_seconds"), "retry_base_seconds", 1.0), retry_max_seconds=_config_non_negative_float(config.get("retry_max_seconds"), "retry_max_seconds", 8.0))
+    llm_config = LLMConfig(
+        provider=provider,
+        model=str(model).strip(),
+        api_key=_read_api_key(source, provider),
+        base_url=optional_str(config.get("base_url")) or _read_base_url(source, provider),
+        timeout_seconds=parse_float_value(config.get("timeout_seconds"), "timeout_seconds", default=60.0, error_type=LLMConfigurationError),
+        temperature=parse_float_value(config.get("temperature"), "temperature", default=0.0, error_type=LLMConfigurationError),
+        max_tokens=parse_int_value(config.get("max_tokens"), "max_tokens", default=None, min_value=1, error_type=LLMConfigurationError),
+        max_retries=parse_int_value(config.get("max_retries"), "max_retries", default=3, min_value=1, error_type=LLMConfigurationError),
+        retry_base_seconds=parse_float_value(config.get("retry_base_seconds"), "retry_base_seconds", default=1.0, min_value=0.0, error_type=LLMConfigurationError),
+        retry_max_seconds=parse_float_value(config.get("retry_max_seconds"), "retry_max_seconds", default=8.0, min_value=0.0, error_type=LLMConfigurationError),
+    )
     return build_llm(llm_config)
-
-def _read_positive_int(value: str | None, label: str, default: int) -> int:
-    """读取正整数环境变量。"""
-    if value is None or not value.strip():
-        return default
-    parsed = int(value)
-    if parsed <= 0:
-        raise LLMConfigurationError(f"{label} 必须是正整数")
-    return parsed
-
-def _read_non_negative_float(value: str | None, label: str, default: float) -> float:
-    """读取非负浮点环境变量。"""
-    if value is None or not value.strip():
-        return default
-    parsed = float(value)
-    if parsed < 0:
-        raise LLMConfigurationError(f"{label} 不能为负数")
-    return parsed
 
 def _read_api_key(source: Mapping[str, str], provider: str) -> str | None:
     api_key = normalize_str_from_source(source, "DYNSTEER_JUDGE_API_KEY")
-    if api_key is None:
-        fallback_key = "ANTHROPIC_API_KEY" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_API_KEY"
-        api_key = normalize_str_from_source(source, fallback_key)
-    return api_key
+    if api_key is not None:
+        return api_key
+    fallback_key = "ANTHROPIC_API_KEY" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_API_KEY"
+    return normalize_str_from_source(source, fallback_key)
 
 def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:
     base_url = normalize_str_from_source(source, "DYNSTEER_JUDGE_BASE_URL")
-    if base_url is None:
-        fallback_key = "ANTHROPIC_BASE_URL" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_BASE_URL"
-        base_url = normalize_str_from_source(source, fallback_key)
-    return base_url
-
-def _config_positive_int(value: object, label: str) -> int | None:
-    """读取配置中的可选正整数。"""
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise LLMConfigurationError(f"{label} 必须是正整数")
-    if value <= 0:
-        raise LLMConfigurationError(f"{label} 必须是正整数")
-    return value
-
-def _config_non_negative_float(value: object, label: str, default: float) -> float:
-    """读取配置中的非负浮点数。"""
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise LLMConfigurationError(f"{label} 必须是非负数字")
-    if value < 0:
-        raise LLMConfigurationError(f"{label} 必须是非负数字")
-    return float(value)
+    if base_url is not None:
+        return base_url
+    fallback_key = "ANTHROPIC_BASE_URL" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_BASE_URL"
+    return normalize_str_from_source(source, fallback_key)

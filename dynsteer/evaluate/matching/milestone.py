@@ -109,21 +109,13 @@ def _analyze_ready_candidates(ready: list[Milestone], boundary: Boundary, closur
             ready_candidate_details.append(detail)
             candidate_by_milestone[milestone_id] = detail
             continue
-        scoring_step = milestone_scoring_step(milestone, closure_steps, _default_step_from_closure(closure_steps, boundary))
-        scoring_boundary = candidate_boundary_for_current_step(trajectory, scoring_step)
-        score = scorer.score_milestone(milestone, scoring_boundary, trajectory, trajectory.snapshots, context=context)
+        scoring_boundary, score, detail = _score_candidate(
+            milestone, closure_steps, trajectory, scorer, context
+        )
         needs_llm_review = _is_llm_semantic_review_candidate(milestone, score)
-        detail = {
-            "milestone_id": milestone.milestone_id,
-            "boundary": json_safe(scoring_boundary),
-            "score": json_safe(score),
-            "selected": False,
-            "reject_reason": None
-            if score.status == StageStatus.PASS
-            else "needs_llm_semantic_review"
-            if needs_llm_review
-            else "status_not_pass",
-        }
+        detail["reject_reason"] = None if score.status == StageStatus.PASS else (
+            "needs_llm_semantic_review" if needs_llm_review else "status_not_pass"
+        )
         ready_candidate_details.append(detail)
         candidate_by_milestone[milestone_id] = detail
         if score.status == StageStatus.PASS and (ready_hit is None or score.score > ready_hit[2].score):
@@ -141,39 +133,53 @@ def _analyze_blocked_candidates(frontier: MilestoneFrontierState, boundary: Boun
         missing_predecessors = [predecessor_id for predecessor_id in milestone.dependency_predecessor_ids if predecessor_id not in matched_ids]
         if not missing_predecessors:
             continue
-        scoring_step = milestone_scoring_step(milestone, closure_steps, _default_step_from_closure(closure_steps, boundary))
-        scoring_boundary = candidate_boundary_for_current_step(trajectory, scoring_step)
-        score = scorer.score_milestone(milestone, scoring_boundary, trajectory, trajectory.snapshots, context=context)
-        detail = {
-            "milestone_id": milestone.milestone_id,
-            "boundary": json_safe(scoring_boundary),
-            "score": json_safe(score),
-            "selected": False,
-            "reject_reason": None if score.status == StageStatus.PASS else "status_not_pass",
-        }
+        scoring_boundary, score, detail = _score_candidate(
+            milestone, closure_steps, trajectory, scorer, context
+        )
+        detail["reject_reason"] = None if score.status == StageStatus.PASS else "status_not_pass"
         blocked_candidate_details.append(detail)
         candidate_by_milestone[milestone.milestone_id] = detail
         if score.status == StageStatus.PASS and (blocked_best is None or score.score > blocked_best[2].score):
             blocked_best = (milestone, scoring_boundary, score, missing_predecessors)
     return (blocked_candidate_details, blocked_best)
 
-def milestone_scoring_step(milestone: Milestone, closure_steps: list[TrajectoryStep], default_step: TrajectoryStep) -> TrajectoryStep:
+def _score_candidate(
+    milestone: Milestone,
+    closure_steps: list[TrajectoryStep],
+    trajectory: Trajectory,
+    scorer: GeneralScorer,
+    context: ScoringContext | None,
+) -> tuple[Boundary, MilestoneScore, JsonObject]:
+    scoring_step = milestone_scoring_step(milestone, closure_steps)
+    scoring_boundary = candidate_boundary_for_current_step(trajectory, scoring_step)
+    score = scorer.score_milestone(milestone, scoring_boundary, trajectory, trajectory.snapshots, context=context)
+    return (
+        scoring_boundary,
+        score,
+        {
+            "milestone_id": milestone.milestone_id,
+            "boundary": json_safe(scoring_boundary),
+            "score": json_safe(score),
+            "selected": False,
+            "reject_reason": None,
+        },
+    )
+
+def milestone_scoring_step(milestone: Milestone, closure_steps: list[TrajectoryStep]) -> TrajectoryStep:
     """基于预计算 route metadata 从闭包中选择 milestone 评分 step。
 
     入参：
         milestone: 当前待匹配 milestone。
         closure_steps: 当前已闭合 agent step 的完整 raw steps。
-        default_step: 无 route 或找不到匹配 route 时使用的闭包终点 step。
     输出：
         用于构造评分 boundary 的 raw step。
     """
-    if milestone is None or default_step is None:
-        raise ValueError("milestone 和 default_step 不能为空")
+    if milestone is None or not closure_steps:
+        raise ValueError("milestone 和 closure_steps 不能为空")
+    default_step = closure_steps[-1]
     route_groups = _milestone_route_groups(milestone)
     if not route_groups:
         return default_step
-    if len(route_groups) > 1:
-        raise ValueError(f"当前实现只支持单个 milestone 至多一个显式 route；milestone={milestone.milestone_id}, route_group_count={len(route_groups)}")
     route = route_groups[0].get("route")
     if not isinstance(route, dict):
         return default_step
@@ -186,27 +192,15 @@ def milestone_scoring_step(milestone: Milestone, closure_steps: list[TrajectoryS
             return step
     return default_step
 
-def _default_step_from_closure(closure_steps: list[TrajectoryStep], boundary: Boundary) -> TrajectoryStep:
-    """从 closure steps 中读取默认闭包终点 step。"""
-    if closure_steps:
-        return closure_steps[-1]
-    raise ValueError(f"闭包 steps 不能为空: boundary={boundary.boundary_id}")
-
 def _milestone_route_groups(milestone: Milestone) -> list[JsonObject]:
     """读取 milestone 级预计算 route groups。"""
     matching = milestone.metadata.get("milestone_matching")
     if not isinstance(matching, dict):
         return []
-    count = matching.get("route_group_count")
-    if isinstance(count, int) and count > 1:
-        raise ValueError(f"当前实现只支持单个 milestone 至多一个显式 route；milestone={milestone.milestone_id}, route_group_count={count}")
     route_groups = matching.get("route_groups")
     if not isinstance(route_groups, list):
         return []
-    groups = [dict(item) for item in route_groups if isinstance(item, dict)]
-    if len(groups) > 1:
-        raise ValueError(f"当前实现只支持单个 milestone 至多一个显式 route；milestone={milestone.milestone_id}, route_group_count={len(groups)}")
-    return groups
+    return [dict(item) for item in route_groups if isinstance(item, dict)]
 
 def _build_predecessor_diagnostics(frontier: MilestoneFrontierState, missing_predecessors: list[str], candidate_by_milestone: dict[str, JsonObject]) -> list[JsonObject]:
     predecessor_diagnostics: list[JsonObject] = []

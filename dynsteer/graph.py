@@ -1,5 +1,7 @@
 from collections import deque
 from dynsteer.model import MilestoneGraph
+
+
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 

@@ -38,6 +38,10 @@ def run_case_tasks(
     """按最大并发数执行已加载的 case 任务。"""
     if tasks is None or logger is None:
         raise ValueError("tasks 和 logger 不能为空")
+    if max_workers < 1:
+        raise ValueError("max_workers 必须大于 0")
+    if any((task is None for task in tasks)):
+        raise ValueError("tasks 不能包含空任务")
     if not tasks:
         return []
     if max_workers == 1:
@@ -47,8 +51,6 @@ def run_case_tasks(
 
 def _progress_visible_bars(max_workers: int) -> int:
     """根据并发数计算终端可见进度条数量。"""
-    if max_workers < 1:
-        raise ValueError("max_workers 必须大于 0")
     return max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers)
 
 
@@ -58,8 +60,6 @@ def _run_case(
     force_eval: bool = False,
 ) -> HarnessEvaluationOutput:
     """构造单个 case 的 harness / evaluator 并执行。"""
-    if task is None:
-        raise ValueError("task 不能为空")
     harness: BaseBenchmarkHarness | None = None
     try:
         harness = get_harness(task.config.benchmark)
@@ -80,8 +80,6 @@ def _run_case(
 
 def _progress_total_from_tasks(tasks: list[HarnessCaseTask]) -> int:
     """估算本批任务的进度条总步数。"""
-    if tasks is None or not tasks:
-        return DEFAULT_PROGRESS_TOTAL
     value = tasks[0].config.metadata.get("max_messages")
     if isinstance(value, bool) or not isinstance(value, int):
         return DEFAULT_PROGRESS_TOTAL
@@ -171,8 +169,6 @@ def _run_tasks_parallel(
 
 def _drain_progress_events(events: Queue[CaseProgressEvent], manager: TqdmCaseProgressManager) -> None:
     """处理 worker 上报的进度事件。"""
-    if events is None or manager is None:
-        raise ValueError("events 和 manager 不能为空")
     while True:
         try:
             event = events.get_nowait()
@@ -183,8 +179,6 @@ def _drain_progress_events(events: Queue[CaseProgressEvent], manager: TqdmCasePr
 
 def _apply_progress_event(event: CaseProgressEvent, manager: TqdmCaseProgressManager) -> None:
     """把单个进度事件应用到 progress manager。"""
-    if event is None or manager is None:
-        raise ValueError("event 和 manager 不能为空")
     if event.kind == "case_advanced":
         manager.case_advanced(event.case_id, event.step_count)
     elif event.kind == "case_started":

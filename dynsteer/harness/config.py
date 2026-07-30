@@ -6,6 +6,8 @@ from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
 from dynsteer.utils import normalize_client_config, optional_str, read_json_file, required_str
+
+
 DEFAULT_READY_FRONTIER_PATIENCE = 8
 _CLIENT_CONFIG_KEYS = ("agent_client", "user_client")
 _RUN_CONFIG_CONTROL_FIELDS = {
@@ -83,7 +85,6 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None=None) -> Eva
         dynamic_routing=_bool_from_mapping(data, "dynamic_routing", True),
         dynamic_weighting=_bool_from_mapping(data, "dynamic_weighting", True),
         policy_stop=_bool_from_mapping(data, "policy_stop", True),
-        guidance_enabled=_bool_from_mapping(data, "guidance_enabled", False),
         fixed_judge_level=fixed_level,
         replay_continue_after_virtual_stop=_bool_from_mapping(
             data,
@@ -159,8 +160,8 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         metadata["language"] = language
         metadata["benchmark_max_workers"] = manifest_max_workers
         if normalized_benchmark == "toolsandbox":
-            required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
-            required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
+            metadata["agent"] = required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
+            metadata["user"] = required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
         metadata.setdefault("tool_backend", tool_backend)
         metadata["run_config_index"] = index
         name = optional_str(raw_spec.get("name"))

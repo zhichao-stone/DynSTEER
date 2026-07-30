@@ -1,18 +1,8 @@
-from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator
 from dynsteer.model import EventType, JsonObject, LLMCallMetrics, RuntimeMetricsRecorder, Trajectory
-_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar("dynsteer_runtime_metrics", default=None)
 
-@contextmanager
-def record_runtime_metrics() -> Iterator[RuntimeMetricsRecorder]:
-    """创建并激活当前上下文的运行统计 recorder。"""
-    recorder = RuntimeMetricsRecorder()
-    token = activate_runtime_metrics_recorder(recorder)
-    try:
-        yield recorder
-    finally:
-        reset_runtime_metrics_recorder(token)
+
+_CURRENT_RECORDER: ContextVar[RuntimeMetricsRecorder | None] = ContextVar("dynsteer_runtime_metrics", default=None)
 
 def activate_runtime_metrics_recorder(recorder: RuntimeMetricsRecorder) -> Token[RuntimeMetricsRecorder | None]:
     """激活指定 recorder，并返回用于恢复上下文的 token。"""

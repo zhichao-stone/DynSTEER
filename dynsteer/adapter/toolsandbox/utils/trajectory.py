@@ -23,8 +23,15 @@ def _trajectory_step_from_dict(step: dict[str, JsonValue]) -> TrajectoryStep:
         actor=_actor_from_step(step_dict.pop("actor"), "actor"),
         recipient=_actor_from_step(step_dict.pop("recipient", None), "recipient"),
         content=content if isinstance(content, str) else None,
-        tool_call=ToolCall.from_dict(tool_call),
-        tool_result=ToolResult.from_dict(tool_result),
+        tool_call=ToolCall(
+            name=str(tool_call["name"]),
+            arguments=dict(tool_call.get("arguments", {})),
+        ) if isinstance(tool_call, dict) else None,
+        tool_result=ToolResult(
+            success=bool(tool_result.get("success", False)),
+            content=tool_result.get("content"),
+            exception=tool_result.get("exception") if isinstance(tool_result.get("exception"), str) else None,
+        ) if isinstance(tool_result, dict) else None,
         raw={k: v for k, v in step_dict.items()},
     )
 

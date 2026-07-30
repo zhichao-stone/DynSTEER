@@ -5,11 +5,9 @@ _T = TypeVar("_T")
 _RegisteredType = type[_T] | str
 _ADAPTERS: dict[str, _RegisteredType[BaseBenchmarkAdapter]] = {
     "toolsandbox": "dynsteer.adapter.toolsandbox.adapter:ToolSandboxAdapter",
-    "swebench_pro": "dynsteer.adapter.swebench.adapter:SwebenchProAdapter",
 }
 _HARNESSES: dict[str, _RegisteredType[BaseBenchmarkHarness]] = {
     "toolsandbox": "dynsteer.adapter.toolsandbox.harness:ToolSandboxHarness",
-    "swebench_pro": "dynsteer.adapter.swebench.harness:SwebenchProHarness",
 }
 
 def get_adapter(benchmark: str) -> BaseBenchmarkAdapter:

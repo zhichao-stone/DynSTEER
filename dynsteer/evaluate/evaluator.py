@@ -18,16 +18,14 @@ from dynsteer.evaluate.runtime import (
 )
 from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement
 from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
-from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
 from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
-from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
     GeneralScorer,
     minefield_penalty_score,
     overall_score,
 )
-from dynsteer.evaluate.state_summary import state_namespace_summary
+from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.evaluate.weights import select_initial_weights
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.graph import FINISH_NODE_ID
@@ -44,11 +42,9 @@ from dynsteer.model import (
     AgentStepClosure,
     DynamicWeightConfig,
     JsonObject,
-    MilestoneGraph,
     RuntimeEvaluationDecision,
     RuntimeEvaluationState,
     RuntimeMetricsRecorder,
-    ScoringContext,
     StageEvaluationResult,
     StageStatus,
     TaskCase,
@@ -58,6 +54,7 @@ from dynsteer.model import (
     TrajectoryEvaluationReport,
 )
 from dynsteer.progress import CaseProgressReporter
+from dynsteer.utils import parse_int_value
 
 if TYPE_CHECKING:
     from dynsteer.adapter.base import BaseBenchmarkHarness
@@ -124,11 +121,17 @@ class DynSTEEREvaluator:
         if llm is None:
             return cls(cheap_judge=CheapJudge(), thresholds=thresholds, strategy=active_strategy)
         judge_mapping = raw_judge if isinstance(raw_judge, Mapping) else {}
-        standard_passes = _int_from_mapping(
-            judge_mapping, "standard_passes", int(source.get("DYNSTEER_STANDARD_JUDGE_PASSES", "3"))
+        standard_passes = parse_int_value(
+            judge_mapping.get("standard_passes", source.get("DYNSTEER_STANDARD_JUDGE_PASSES")),
+            "standard_passes",
+            default=3,
+            min_value=1,
         )
-        expensive_passes = _int_from_mapping(
-            judge_mapping, "expensive_passes", int(source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES", "3"))
+        expensive_passes = parse_int_value(
+            judge_mapping.get("expensive_passes", source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES")),
+            "expensive_passes",
+            default=3,
+            min_value=1,
         )
         return cls(
             cheap_judge=CheapJudge(),
@@ -137,33 +140,6 @@ class DynSTEEREvaluator:
             thresholds=thresholds,
             strategy=active_strategy,
         )
-
-    def evaluate_minefields(
-        self,
-        graph: MilestoneGraph,
-        trajectory: Trajectory,
-        scorer: GeneralScorer | None = None,
-        context: ScoringContext | None = None,
-    ) -> tuple[list[JsonObject], float, bool]:
-        """评估轨迹是否触发 minefield。"""
-        matches: list[JsonObject] = []
-        seen: set[tuple[str, str]] = set()
-        max_score = 0.0
-        fatal = False
-        for step in trajectory.steps:
-            boundary = candidate_boundary_for_current_step(trajectory, step)
-            (boundary_matches, boundary_score, boundary_fatal) = evaluate_minefields_at_boundary(
-                graph, trajectory, boundary, scorer, context
-            )
-            for match in boundary_matches:
-                key = (str(match.get("minefield_id")), str(match.get("boundary_id")))
-                if key in seen:
-                    continue
-                seen.add(key)
-                matches.append(match)
-            max_score = max(max_score, boundary_score)
-            fatal = fatal or boundary_fatal
-        return matches, max_score, fatal
 
     def evaluate(
         self,
@@ -185,13 +161,7 @@ class DynSTEEREvaluator:
 
         try:
             session = harness.start_case(config, case_id, raw_output_dir)
-            runtime_initial_state = harness.initial_state_from_session(session)
-            if runtime_initial_state is not None:
-                task_case.initial_state = runtime_initial_state
-                task_case.metadata["runtime_initial_state_source"] = "harness_session"
-                task_case.metadata["runtime_initial_state_summary"] = state_namespace_summary(runtime_initial_state)
-            else:
-                task_case.metadata.setdefault("runtime_initial_state_source", "adapted_case")
+            apply_runtime_initial_state(task_case, harness.initial_state_from_session(session), "harness_session")
             language = config.metadata.get("language")
             if isinstance(language, str) and language.strip():
                 task_case.metadata["language"] = language.strip()
@@ -207,11 +177,7 @@ class DynSTEEREvaluator:
 
             while True:
                 advance = harness.advance_case(session)
-                if advance.snapshots:
-                    snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in trajectory.snapshots}
-                    for snapshot in advance.snapshots:
-                        snapshot_by_id[snapshot.snapshot_id] = snapshot
-                    trajectory.snapshots = sorted(snapshot_by_id.values(), key=lambda item: (item.after_step_index, item.snapshot_id))
+                trajectory.extend_snapshots(advance.snapshots)
                 trajectory.final_state = harness.final_state_from_session(session)
                 trajectory.metrics = harness.metrics_from_session(session)
 
@@ -739,18 +705,16 @@ def _append_replay_snapshots(
     step_index: int,
 ) -> int:
     """追加当前 step 可见的 replay snapshot。"""
-    seen = {snapshot.snapshot_id for snapshot in trajectory.snapshots}
+    visible_snapshots = []
     index = start_index
     while index < len(snapshots):
         snapshot = snapshots[index]
         after_step_index = getattr(snapshot, "after_step_index", None)
         if not isinstance(after_step_index, int) or after_step_index > step_index:
             break
-        snapshot_id = getattr(snapshot, "snapshot_id", None)
-        if isinstance(snapshot_id, str) and snapshot_id not in seen:
-            trajectory.snapshots.append(snapshot)
-            seen.add(snapshot_id)
+        visible_snapshots.append(snapshot)
         index += 1
+    trajectory.extend_snapshots(visible_snapshots)
     return index
 
 
@@ -763,14 +727,6 @@ def _metadata_from_config(config: HarnessRunConfig | Mapping[str, Any] | None) -
     if isinstance(config, Mapping):
         return config
     raise ValueError("config 必须是 HarnessRunConfig 或 JSON 对象")
-
-
-def _int_from_mapping(data: Mapping[str, Any], key: str, default: int) -> int:
-    """从映射读取整数配置。"""
-    value = data.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{key} 必须是整数")
-    return value
 
 
 def _empty_graph_whole_trajectory_coverage(stage_reports: list[StageEvaluationResult]) -> str:

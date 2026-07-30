@@ -9,7 +9,7 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.llm import build_llm_from_env
 from dynsteer.model import Actor, Constraint, ConstraintTarget, EventType, JsonObject, Milestone, MilestoneGraph, Minefield, MinefieldPenalty, Operator, Dimension, StageEvaluationSpec, StateSnapshot, StepCost, TaskCase, TaskType, ToolCall, ToolResult, Trajectory, TrajectoryStep, ensure_json_object
 from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goals, validate_stage_evaluation_specs
-from dynsteer.utils import enum_value, get_object, json_safe, read_json_file, required_str, unknown_fields
+from dynsteer.utils import enum_value, get_object, json_safe, normalize_actor, read_json_file, required_str, unknown_fields
 
 def safe_case_file_name(case_id: str) -> str:
     normalized = re.sub("[^A-Za-z0-9_.-]+", "_", str(case_id)).strip("._")
@@ -123,7 +123,7 @@ def parse_minefield(data: JsonObject) -> Minefield:
         description=required_str(minefield_data, "description", "Minefield"), 
         severity=str(minefield_data.get("severity", "warning")), 
         constraints=[parse_constraint(ensure_json_object(item)) for item in minefield_data.get("constraints", [])], 
-        penalty=MinefieldPenalty.from_dict(penalty_data), 
+        penalty=MinefieldPenalty(**{k: penalty_data[k] for k in ("mode", "value") if k in penalty_data}),
         metadata=_optional_object(minefield_data, "metadata")
     )
 
@@ -194,23 +194,6 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
     return task_case
 
-def _load_actor(value: object, field_name: str, required: bool=True) -> Actor | None:
-    if value is None:
-        if required:
-            raise ValueError(f"缺少枚举字段: {field_name}")
-        return None
-    role_aliases = {
-        "SYSTEM": Actor.SYSTEM,
-        "USER": Actor.USER,
-        "AGENT": Actor.AGENT,
-        "EXECUTION_ENVIRONMENT": Actor.ENVIRONMENT,
-        "ENVIRONMENT": Actor.ENVIRONMENT,
-        "EVALUATOR": Actor.EVALUATOR,
-    }
-    alias = role_aliases.get(str(value).upper())
-    if alias is not None:
-        return alias
-    return enum_value(Actor, value, field_name)
 
 def _load_step(data: JsonObject) -> TrajectoryStep:
     known = {"step_id", "index", "actor", "recipient", "event_type", "timestamp", "content", "tool_call", "tool_result", "state_delta_refs", "cost"}
@@ -224,7 +207,7 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     cost = StepCost()
     if cost_data is not None:
         cost = StepCost(tokens=_optional_int(cost_data, "tokens"), latency_ms=_optional_int(cost_data, "latency_ms"))
-    return TrajectoryStep(step_id=required_str(data, "step_id", "TrajectoryStep"), index=index, actor=_load_actor(data.get("actor"), "actor") or Actor.EVALUATOR, event_type=enum_value(EventType, data.get("event_type"), "event_type"), recipient=_load_actor(data.get("recipient"), "recipient", required=False), timestamp=data.get("timestamp"), content=data.get("content"), tool_call=tool_call, tool_result=tool_result, state_delta_refs=[str(item) for item in refs], cost=cost, raw=unknown_fields(data, known))
+    return TrajectoryStep(step_id=required_str(data, "step_id", "TrajectoryStep"), index=index, actor=normalize_actor(data.get("actor"), "actor", required=True) or Actor.EVALUATOR, event_type=enum_value(EventType, data.get("event_type"), "event_type"), recipient=normalize_actor(data.get("recipient"), "recipient", required=False), timestamp=data.get("timestamp"), content=data.get("content"), tool_call=tool_call, tool_result=tool_result, state_delta_refs=[str(item) for item in refs], cost=cost, raw=unknown_fields(data, known))
 
 def _load_snapshot(data: JsonObject) -> StateSnapshot:
     return StateSnapshot(

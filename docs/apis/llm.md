@@ -64,7 +64,7 @@ class BaseLLM(ABC):
 
 `_normalize_infer_params(...)` 基类默认做恒等映射并过滤 `None` 值。provider 有特定参数转换时由子类覆盖。`BaseLLM` 不持有 `self.client` 成员，provider 子类必须通过 `_normalize_infer_params` 和 `_get_response_from_client` 的 `client` 入参使用本次局部 client。`chat` 支持通过 `**infer_params` 传入本次请求参数，例如 `temperature`、`top_p`、`top_k`、`max_tokens`、`response_format`、`json_schema`。
 
-当调用发生在 `dynsteer.metrics.record_runtime_metrics()` 上下文内时，`BaseLLM.chat(...)` 会记录每次 provider attempt 的耗时、成功/失败状态和 usage tokens。OpenAI-compatible provider 读取 `prompt_tokens`、`completion_tokens`、`total_tokens`；Anthropic provider 读取 `input_tokens`、`output_tokens` 并聚合为 total。
+当评估器或 harness writer 通过 `activate_runtime_metrics_recorder(...)` 激活 recorder 后，`BaseLLM.chat(...)` 会记录每次 provider attempt 的耗时、成功/失败状态和 usage tokens。OpenAI-compatible provider 读取 `prompt_tokens`、`completion_tokens`、`total_tokens`；Anthropic provider 读取 `input_tokens`、`output_tokens` 并聚合为 total。
 
 ## Client 生命周期
 

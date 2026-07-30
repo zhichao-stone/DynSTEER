@@ -9,14 +9,12 @@ class ExperimentMethod(str, Enum):
     DYNSTEER_EVALUATE = "dynsteer_evaluate"
     DYNSTEER_REPLAY = "dynsteer_replay"
     DYNSTEER_REPLAY_STATIC = "dynsteer_replay_static"
-    DYNSTEER_GUIDANCE = "dynsteer_guidance"
 
 @dataclass(frozen=True)
 class EvaluationStrategyConfig:
     dynamic_routing: bool = True
     dynamic_weighting: bool = True
     policy_stop: bool = True
-    guidance_enabled: bool = False
     fixed_judge_level: EvaluationLevel = EvaluationLevel.CHEAP
     replay_continue_after_virtual_stop: bool = False
     metadata: JsonObject = field(default_factory=dict)
@@ -28,8 +26,6 @@ class EvaluationStrategyConfig:
             raise TypeError("dynamic_weighting 必须是 bool")
         if not isinstance(self.policy_stop, bool):
             raise TypeError("policy_stop 必须是 bool")
-        if not isinstance(self.guidance_enabled, bool):
-            raise TypeError("guidance_enabled 必须是 bool")
         if not isinstance(self.fixed_judge_level, EvaluationLevel):
             raise TypeError("fixed_judge_level 必须是 EvaluationLevel")
         if not isinstance(self.replay_continue_after_virtual_stop, bool):

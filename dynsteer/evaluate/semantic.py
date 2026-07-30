@@ -1,8 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
-from dynsteer.model import Boundary, Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, StageGoalSemanticKind, StageStatus, Trajectory, TrajectoryStep
+from dynsteer.model import Boundary, Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, StageGoalSemanticKind, StageStatus, Trajectory
 from dynsteer.utils import clamp, compact_text, json_safe
+
+
 SEMANTIC_MESSAGE_CONFIDENCE_THRESHOLD = 0.7
 SEMANTIC_MESSAGE_CONTEXT_STEP_LIMIT = 12
 SEMANTIC_MESSAGE_CONTEXT_SNAPSHOT_LIMIT = 4

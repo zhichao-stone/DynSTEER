@@ -1,10 +1,12 @@
 from enum import Enum
 from typing import Mapping
 
+
 class TaskLanguage(str, Enum):
     """任务 prompt 支持的语言。"""
     ENGLISH = "en"
     CHINESE = "zh"
+
 _LANGUAGE_ALIASES: dict[str, TaskLanguage] = {
     "en": TaskLanguage.ENGLISH,
     "eng": TaskLanguage.ENGLISH,

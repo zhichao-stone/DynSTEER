@@ -1,4 +1,3 @@
-import json
 import re
 
 from dynsteer.evaluate.semantic import (
@@ -23,7 +22,7 @@ from dynsteer.model import (
     TrajectoryStep,
 )
 from dynsteer.stage import stage_trajectory_steps
-from dynsteer.utils import as_number, compact_text, json_safe
+from dynsteer.utils import as_number, compact_json_text, compact_text, json_safe
 
 STATE_MUTATION_TOOL_PREFIXES = ("set_", "modify_", "remove_", "add_", "create_", "delete_", "send_")
 QUERY_TOOL_PREFIXES = ("search_", "get_", "find_", "list_")
@@ -122,14 +121,6 @@ def _latest_snapshot_at_or_before(trajectory: Trajectory, step_index: int) -> St
     return max(snapshots, key=lambda snapshot: (snapshot.after_step_index, snapshot.snapshot_id))
 
 
-def _compact_json(value: object, limit: int = 360) -> str | None:
-    if value is None:
-        return None
-    safe_value = json_safe(value)
-    text = safe_value if isinstance(safe_value, str) else json.dumps(safe_value, ensure_ascii=False)
-    return compact_text(text, limit)
-
-
 def _constraint_goal_hint(constraint: Constraint | None) -> str:
     if constraint is None:
         return ""
@@ -164,7 +155,7 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     toolsandbox_measure = str(metadata.get("snapshot_constraint") or "") if isinstance(metadata, dict) else ""
     actual_excerpt = constraint_actual_excerpt(constraint, score) if "actual" in score else None
     if actual_excerpt is None and "actual" in score:
-        actual_excerpt = _compact_json(score.get("actual"), 420)
+        actual_excerpt = compact_json_text(score.get("actual"), 420)
     detail: JsonObject = {
         "constraint_id": str(score.get("constraint_id") or (constraint.constraint_id if constraint else "constraint")),
         "score": score.get("score"),
@@ -340,22 +331,6 @@ def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
             }
             for node in graph.nodes
         ],
-    }
-
-
-def build_milestone_candidate_detail(
-    milestone: Milestone,
-    boundary: Boundary | None,
-    score: MilestoneScore | None,
-    selected: bool,
-    reject_reason: str | None,
-) -> JsonObject:
-    return {
-        "milestone_id": milestone.milestone_id,
-        "boundary": json_safe(boundary) if boundary is not None else None,
-        "score": json_safe(score) if score is not None else None,
-        "selected": selected,
-        "reject_reason": reject_reason,
     }
 
 

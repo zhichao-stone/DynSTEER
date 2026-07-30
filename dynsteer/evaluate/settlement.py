@@ -73,9 +73,6 @@ def evaluate_checkpoint(
     输出：
         本 checkpoint 的结算结果和可能的策略终止决策。
     """
-    if state.milestone_frontier is None:
-        raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
-
     anchor_id, boundary_index = stage_start_for_ready_milestone(milestone, state.matched_settlements, trajectory)
     start_step_index = stage_start_step_index(trajectory.successor_by_boundary, boundary_index, boundary.step_index)
     ready_milestone_ids_before_match = [item.milestone_id for item in ready_milestones(state.milestone_frontier)]
@@ -306,23 +303,19 @@ def _deterministic_finish_stage_result(
     dimension_confidence = {dimension: 0.95 for dimension in dimension_scores}
     evidence = _verification_string_list(verification, "evidence", default=["finish 结算节点"])
     diagnosis = _verification_string_list(verification, "diagnosis")
-    return StageEvaluationResult(
-        stage_id=interval.stage_id,
-        milestone_id=interval.milestone_id,
+    return _finish_result(
+        interval=interval,
+        state=state,
         status=status,
-        stage_score=score,
+        score=score,
         dimension_scores=dimension_scores,
         dimension_levels={dimension: EvaluationLevel.CHEAP for dimension in dimension_scores},
         dimension_confidence=dimension_confidence,
-        dimension_uncertainty={dimension: 1.0 - value for dimension, value in dimension_confidence.items()},
         evidence=evidence,
         diagnosis=diagnosis,
-        next_weights=dict(state.weights),
         fatal=bool(verification.get("fatal_minefield")),
-        hard_constraints_all_pass=status in {StageStatus.PASS, StageStatus.WARN},
+        hard_pass=status in {StageStatus.PASS, StageStatus.WARN},
         required_fields_missing_ratio=0.0 if bool(verification.get("all_milestones_matched")) else 1.0,
-        minefield_score=state.max_minefield_score,
-        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
         metadata=_finish_stage_metadata(verification, evaluation_policy, replay_metadata),
     )
 
@@ -365,23 +358,19 @@ def _whole_trajectory_finish_stage_result(
         ]
         finish_evaluation["evidence"] = evidence
         finish_evaluation["diagnosis"] = diagnosis
-        return StageEvaluationResult(
-            stage_id=interval.stage_id,
-            milestone_id=interval.milestone_id,
+        return _finish_result(
+            interval=interval,
+            state=state,
             status=StageStatus.INVALID,
-            stage_score=0.0,
+            score=0.0,
             dimension_scores={Dimension.PROGRESS: 0.0},
             dimension_levels={Dimension.PROGRESS: EvaluationLevel.CHEAP},
             dimension_confidence={Dimension.PROGRESS: 0.95},
-            dimension_uncertainty={Dimension.PROGRESS: 0.05},
             evidence=evidence,
             diagnosis=diagnosis,
-            next_weights=dict(state.weights),
             fatal=False,
-            hard_constraints_all_pass=False,
+            hard_pass=False,
             required_fields_missing_ratio=1.0,
-            minefield_score=state.max_minefield_score,
-            fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
             metadata=_finish_stage_metadata(
                 finish_evaluation,
                 evaluation_policy,
@@ -421,23 +410,20 @@ def _whole_trajectory_finish_stage_result(
             "diagnosis": diagnosis,
         }
     )
-    return StageEvaluationResult(
-        stage_id=interval.stage_id,
-        milestone_id=interval.milestone_id,
+    return _finish_result(
+        interval=interval,
+        state=state,
         status=status,
-        stage_score=score,
+        score=score,
         dimension_scores=dict(judge_result.dimension_scores),
         dimension_levels=dict(judge_result.dimension_levels),
         dimension_confidence=dict(judge_result.dimension_confidence),
         dimension_uncertainty=dict(judge_result.dimension_uncertainty),
         evidence=evidence,
         diagnosis=diagnosis,
-        next_weights=dict(state.weights),
         fatal=False,
-        hard_constraints_all_pass=hard_pass,
+        hard_pass=hard_pass,
         required_fields_missing_ratio=0.0 if hard_pass else 1.0,
-        minefield_score=state.max_minefield_score,
-        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
         metadata=_finish_stage_metadata(
             finish_evaluation,
             evaluation_policy,
@@ -449,6 +435,46 @@ def _whole_trajectory_finish_stage_result(
                 "structural_failure": not hard_pass,
             },
         ),
+    )
+
+
+def _finish_result(
+    *,
+    interval: StageInterval,
+    state: RuntimeEvaluationState,
+    status: StageStatus,
+    score: float,
+    dimension_scores: dict[Dimension, float],
+    dimension_levels: dict[Dimension, EvaluationLevel],
+    dimension_confidence: dict[Dimension, float],
+    evidence: list[str],
+    diagnosis: list[str],
+    fatal: bool,
+    hard_pass: bool,
+    required_fields_missing_ratio: float,
+    metadata: JsonObject,
+    dimension_uncertainty: dict[Dimension, float] | None = None,
+) -> StageEvaluationResult:
+    return StageEvaluationResult(
+        stage_id=interval.stage_id,
+        milestone_id=interval.milestone_id,
+        status=status,
+        stage_score=score,
+        dimension_scores=dimension_scores,
+        dimension_levels=dimension_levels,
+        dimension_confidence=dimension_confidence,
+        dimension_uncertainty=dimension_uncertainty or {
+            dimension: 1.0 - value for dimension, value in dimension_confidence.items()
+        },
+        evidence=evidence,
+        diagnosis=diagnosis,
+        next_weights=dict(state.weights),
+        fatal=fatal,
+        hard_constraints_all_pass=hard_pass,
+        required_fields_missing_ratio=required_fields_missing_ratio,
+        minefield_score=state.max_minefield_score,
+        fatal_minefield_score=state.max_minefield_score if state.fatal_minefield else 0.0,
+        metadata=metadata,
     )
 
 

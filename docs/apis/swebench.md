@@ -2,16 +2,10 @@
 
 ## 当前状态
 
-`dynsteer.adapter.swebench` 已提供继承框架并注册 `swebench_pro`。真实 dataset 加载、repo checkout、agent 运行、patch 验证、resolved rate 提取和 pseudo-stage 生成等待 SWE-bench Pro 仓库到项目同级目录后补实现。
+当前代码包不再暴露 `swebench_pro` registry scaffold。SWE-bench 接入需要在真实 dataset schema、runner、adapter 和 harness 均可运行后重新新增。
 
-## 占位接口
+## 重新接入要求
 
-- `SwebenchProAdapter.adapt_task_case(config, case_id) -> TaskCase`
-- `SwebenchProHarness.list_cases(config) -> list[BenchmarkCase]`
-- `SwebenchProHarness.start_case(config, case_id, raw_output_dir) -> object`
-- `SwebenchProHarness.advance_case(session) -> HarnessAdvanceResult`
-- `SwebenchProHarness.case_finished(session) -> bool`
-- `SwebenchProHarness.default_result_from_session(session) -> BenchmarkDefaultResult`
-- `SwebenchProHarness.metrics_from_session(session) -> JsonObject`
-
-当前这些需要真实 SWE-bench Pro 仓库的接口都会抛出明确的 `NotImplementedError`。
+- 在 `dynsteer.adapter.registry` 中注册真实 adapter 与 harness。
+- 提供可运行的 dataset 加载、repo checkout、agent 运行、patch 验证和 resolved rate 提取。
+- 生成可被 DynSTEER 评估链路消费的 `TaskCase`、trajectory 与 pseudo-stage 数据。
