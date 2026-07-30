@@ -1,12 +1,15 @@
 from pathlib import Path
+
 from dynsteer.harness.model import HarnessRunConfig
 
-def case_output_dir(base_dir: Path, config: HarnessRunConfig, run_id: str, case_id: str, method_fallback: str) -> Path:
-    """构造单个 benchmark case 的输出目录。"""
-    if base_dir is None or config is None or (not run_id.strip()) or (not case_id.strip()):
-        raise ValueError("base_dir, config, run_id 和 case_id 不能为空")
+
+def case_output_dir(base_dir: Path, config: HarnessRunConfig, case_id: str, method_fallback: str) -> Path:
+    """构建单个 benchmark case 的输出目录。"""
+    if base_dir is None or config is None or not case_id.strip():
+        raise ValueError("base_dir, config 和 case_id 不能为空")
     method = output_method(config, method_fallback)
-    return base_dir / config.benchmark / method / run_id / case_id
+    return base_dir / config.benchmark / method / case_id
+
 
 def output_method(config: HarnessRunConfig, fallback: str) -> str:
     """从 metadata 读取输出 method 目录名。"""

@@ -22,7 +22,9 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
     parser.add_argument("--workers", type=int, default=3, help="benchmark case 最大并行 worker 数，默认 3")
     parser.add_argument("--only_adapt", "--only-adapt", action="store_true", help="仅适配 benchmark 数据并写入 data-root，不执行评估")
-    parser.add_argument("--force_adapt", "--force-adapt", action="store_true", help="强制重建已有 adapted case，可与评估流程独立使用")
+    parser.add_argument("--force_adapt", "--force-adapt", action="store_true", help="强制重建已有 adapted case，并自动重新执行评估流程")
+    parser.add_argument("--force_eval", "--force-eval", action="store_true", help="强制重新执行评估流程并覆盖已有 case 产物")
+    parser.add_argument("--no_sum", "--no-sum", action="store_true", help="统一实验入口下只写 case 级结果，不写 index/scores/metrics 汇总文件")
     return parser.parse_args(argv)
 
 def _adapted_case_files_exist(config: HarnessRunConfig) -> bool:
@@ -76,7 +78,13 @@ def main(argv: Optional[list[str]]=None) -> int:
         if args.experiment_config is not None:
             if int(args.workers) < 1:
                 raise ValueError("--workers 必须大于 0")
-            results = run_experiment(Path(args.experiment_config), workers=int(args.workers), force_adapt=bool(args.force_adapt))
+            results = run_experiment(
+                Path(args.experiment_config),
+                workers=int(args.workers),
+                force_adapt=bool(args.force_adapt),
+                force_eval=bool(args.force_eval),
+                no_sum=bool(args.no_sum),
+            )
             logger.info("统一实验完成，case结果数量: %s", len(results), extra={"case_count": len(results)})
             for result in results:
                 print(f"{result.benchmark}/{result.method.value}/{result.model_id}/{result.case_id}")
@@ -95,7 +103,12 @@ def main(argv: Optional[list[str]]=None) -> int:
             for path in adapted_paths:
                 print(str(path))
             return 0
-        outputs: list[HarnessEvaluationOutput] = run_harness_configs(configs=configs, max_workers=int(args.workers), force_adapt=bool(args.force_adapt))
+        outputs: list[HarnessEvaluationOutput] = run_harness_configs(
+            configs=configs,
+            max_workers=int(args.workers),
+            force_adapt=bool(args.force_adapt),
+            force_eval=bool(args.force_eval),
+        )
         logger.info("评估完成，输出报告数量: %s", len(outputs), extra={"report_count": len(outputs)})
         for output in outputs:
             print(str(output.report_path))

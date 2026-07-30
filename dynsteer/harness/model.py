@@ -133,7 +133,6 @@ class HarnessRunResult:
     """benchmark harness 运行结果。"""
     benchmark: str
     case_id: str
-    run_id: str
     task_case: TaskCase | None
     trajectory: Trajectory | None
     raw_output_dir: Path
@@ -147,8 +146,6 @@ class HarnessRunResult:
             raise ValueError("benchmark 不能为空")
         if not self.case_id or not self.case_id.strip():
             raise ValueError("case_id 不能为空")
-        if not self.run_id or not self.run_id.strip():
-            raise ValueError("run_id 不能为空")
         if self.task_case is None or self.trajectory is None:
             raise ValueError("task_case 和 trajectory 不能为空")
         if self.raw_output_dir is None:

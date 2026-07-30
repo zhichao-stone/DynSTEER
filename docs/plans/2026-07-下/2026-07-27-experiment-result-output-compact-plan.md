@@ -17,7 +17,6 @@
 
 ```json
 {
-    "schema_version": 2,
     "experiment_id": "double_benchmark_initial",
     "case_count": 4,
     "results": {
@@ -60,9 +59,8 @@
 
 1. `write_experiment_index()` 不再直接写 `results: [result.to_dict() ...]`。
 2. 新增一个分组构建逻辑，按 `benchmark -> method -> model_id -> repeat_index -> case_id` 聚合结果。
-3. 顶层补 `schema_version: 2`，方便后续读取方识别新格式。
-4. 分组时校验同一组内 `run_id` 一致，否则直接抛错，避免把脏数据悄悄写进索引。
-5. 保持输出排序稳定，保证相同输入下 JSON 顺序可回归。
+3. 分组时校验同一组内 `run_id` 一致，否则直接抛错，避免把脏数据悄悄写进索引。
+4. 保持输出排序稳定，保证相同输入下 JSON 顺序可回归。
 
 ### 4.2 `dynsteer/experiment/model.py`
 
@@ -84,7 +82,6 @@
 1. 更新 `tests/experiment/test_runner.py`，断言 `index.json` 变成分层字典。
 2. 增加一个最小 fixture，确认同一组结果只写一次 `run_id`，case 名称由字典 key 承载。
 3. 保留 `tests/experiment/test_metrics.py` 现有断言，确认 `scores.json` / `metrics.json` 的数值口径没有变。
-4. 如有必要，补一条对 `schema_version` 的断言，防止后续回退到旧格式。
 
 ## 5. `scores.json` 和 `metrics.json` 的说明方式
 

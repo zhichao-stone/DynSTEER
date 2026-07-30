@@ -41,7 +41,6 @@ class EvaluationStrategyConfig:
 @dataclass(frozen=True)
 class ExperimentRunSpec:
     experiment_id: str
-    run_id: str
     benchmark: str
     data_root: Path
     runs_dir: Path
@@ -60,8 +59,6 @@ class ExperimentRunSpec:
     def __post_init__(self) -> None:
         if not self.experiment_id.strip():
             raise ValueError("experiment_id 不能为空")
-        if not self.run_id.strip():
-            raise ValueError("run_id 不能为空")
         if not self.benchmark.strip():
             raise ValueError("benchmark 不能为空")
         if self.data_root is None or self.runs_dir is None or self.results_dir is None:
@@ -76,15 +73,14 @@ class ExperimentRunSpec:
     def to_metadata(self) -> JsonObject:
         metadata: JsonObject = dict(self.metadata)
         metadata.update({
-            "experiment_id": self.experiment_id, 
-            "method": self.method.value, 
-            "model_id": self.model_id, 
-            "repeat_index": self.repeat_index, 
-            "run_id": self.run_id, 
-            "judge_profile": self.judge_profile, 
-            "judge": dict(self.judge_config), 
-            "threshold_profile": self.threshold_profile, 
-            "thresholds": asdict(self.thresholds), 
+            "experiment_id": self.experiment_id,
+            "method": self.method.value,
+            "model_id": self.model_id,
+            "repeat_index": self.repeat_index,
+            "judge_profile": self.judge_profile,
+            "judge": dict(self.judge_config),
+            "threshold_profile": self.threshold_profile,
+            "thresholds": asdict(self.thresholds),
             "strategy": self.strategy.to_dict()
         })
         return metadata
@@ -92,7 +88,6 @@ class ExperimentRunSpec:
 @dataclass(frozen=True)
 class ExperimentCaseResult:
     experiment_id: str
-    run_id: str
     benchmark: str
     case_id: str
     model_id: str
@@ -116,7 +111,7 @@ class ExperimentCaseResult:
         return self._base_payload(False)
 
     def _base_payload(self, include_identity: bool) -> JsonObject:
-        EXCLUDE_FIELDS = [] if include_identity else ["experiment_id", "run_id", "benchmark", "case_id", "model_id", "repeat_index", "method"]
+        EXCLUDE_FIELDS = [] if include_identity else ["experiment_id", "benchmark", "case_id", "model_id", "repeat_index", "method"]
         payload: JsonObject = {"score": self.score}
         payload.update({k: v for k, v in asdict(self).items() if k not in EXCLUDE_FIELDS})
         return payload

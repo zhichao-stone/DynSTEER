@@ -335,7 +335,6 @@ class StageEvaluationSpec:
 
 @dataclass
 class Trajectory:
-    run_id: str
     task_id: str
     steps: list[TrajectoryStep]
     snapshots: list[StateSnapshot] = field(default_factory=list)
@@ -487,7 +486,6 @@ class StageEvaluationResult:
 
 @dataclass
 class TrajectoryEvaluationReport:
-    run_id: str
     task_id: str
     milestone_coverage: str
     overall_score: float
@@ -500,7 +498,6 @@ class TrajectoryEvaluationReport:
     def to_dict(self) -> JsonObject:
         """转换为完整 JSON 可序列化报告。"""
         return {
-            "run_id": self.run_id,
             "task_id": self.task_id,
             "milestone_coverage": self.milestone_coverage,
             "overall_score": self.overall_score,
@@ -514,7 +511,6 @@ class TrajectoryEvaluationReport:
     def to_summary_dict(self) -> JsonObject:
         """转换为主实验摘要报告。"""
         return {
-            "run_id": self.run_id,
             "task_id": self.task_id,
             "milestone_coverage": self.milestone_coverage,
             "overall_score": self.overall_score,
@@ -754,7 +750,6 @@ class ToolSandboxSession:
     context: object | None
     initial_state: JsonObject | None
     case_id: str
-    run_id: str
     raw_output_dir: Path
     initial_max_sandbox_message_index: int
     last_sandbox_message_index: int

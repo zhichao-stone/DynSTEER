@@ -175,8 +175,7 @@ class DynSTEEREvaluator:
         """执行 benchmark case，并进行阶段式动态评估。"""
         case_id = task_case.case_id
         harness.prepare_config(config)
-        run_id = harness.build_run_id(config, case_id)
-        raw_output_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "dynsteer_evaluate") / "raw"
+        raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_evaluate") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
 
         session: object | None = None
@@ -198,7 +197,6 @@ class DynSTEEREvaluator:
                 task_case.metadata["language"] = language.strip()
             scorer = harness.constraint_scorer()
             trajectory = Trajectory(
-                run_id=run_id,
                 task_id=task_case.task_id,
                 steps=[],
                 snapshots=[],
@@ -299,7 +297,6 @@ class DynSTEEREvaluator:
             return self._build_runtime_result(
                 benchmark=config.benchmark,
                 case_id=case_id,
-                run_id=run_id,
                 task_case=task_case,
                 trajectory=trajectory,
                 raw_output_dir=raw_output_dir,
@@ -311,7 +308,7 @@ class DynSTEEREvaluator:
             )
         finally:
             try:
-                self._teardown_session_safely(harness, session, config.benchmark, run_id, case_id)
+                self._teardown_session_safely(harness, session, config.benchmark, case_id)
             finally:
                 reset_runtime_metrics_recorder(metrics_token)
 
@@ -335,11 +332,9 @@ class DynSTEEREvaluator:
         if task_case is None or trajectory is None or scorer is None or config is None:
             raise ValueError("task_case、trajectory、scorer 和 config 不能为空")
         case_id = task_case.case_id
-        run_id = self._replay_run_id(config, trajectory, case_id)
-        raw_output_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "dynsteer_replay") / "raw"
+        raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_replay") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
         replay_trajectory = Trajectory(
-            run_id=run_id,
             task_id=trajectory.task_id,
             steps=[],
             snapshots=[],
@@ -421,14 +416,12 @@ class DynSTEEREvaluator:
             return self._build_runtime_result(
                 benchmark=config.benchmark,
                 case_id=case_id,
-                run_id=run_id,
                 task_case=task_case,
                 trajectory=replay_trajectory,
                 raw_output_dir=raw_output_dir,
                 raw_summary={
                     "case_id": case_id,
                     "method": str(config.metadata.get("method") or "dynsteer_replay"),
-                    "source_run_id": trajectory.run_id,
                 },
                 state=state,
                 termination=virtual_termination,
@@ -549,7 +542,6 @@ class DynSTEEREvaluator:
         self,
         benchmark: str,
         case_id: str,
-        run_id: str,
         task_case: TaskCase,
         trajectory: Trajectory,
         raw_output_dir: Path,
@@ -579,7 +571,6 @@ class DynSTEEREvaluator:
         return HarnessRunResult(
             benchmark=benchmark,
             case_id=case_id,
-            run_id=run_id,
             task_case=task_case,
             trajectory=trajectory,
             raw_output_dir=raw_output_dir,
@@ -650,8 +641,7 @@ class DynSTEEREvaluator:
             if stage.metadata.get("synthetic_pending_milestone") is True and stage.milestone_id is not None
         }
         return [
-            stage
-            for stage in pending_milestone_stage_results(task_case, state)
+            stage for stage in pending_milestone_stage_results(task_case, state)
             if stage.milestone_id not in existing_pending_ids
         ]
 
@@ -685,7 +675,6 @@ class DynSTEEREvaluator:
         else:
             coverage = "none"
         return TrajectoryEvaluationReport(
-            run_id=trajectory.run_id,
             task_id=trajectory.task_id,
             milestone_coverage=coverage,
             overall_score=overall_score(stage_reports, minefield_penalty_score(minefield_matches)),
@@ -701,13 +690,6 @@ class DynSTEEREvaluator:
             ),
             metadata=metadata or {},
         )
-
-    def _replay_run_id(self, config: HarnessRunConfig, trajectory: Trajectory, case_id: str) -> str:
-        """构造 replay run_id。"""
-        raw_run_id = config.metadata.get("run_id")
-        if isinstance(raw_run_id, str) and raw_run_id.strip():
-            return raw_run_id.strip()
-        return f"{trajectory.run_id}_replay_{case_id}"
 
     def _report_metadata(self, config: HarnessRunConfig, method_fallback: str) -> JsonObject:
         """构造评估报告实验元数据。"""
@@ -726,7 +708,7 @@ class DynSTEEREvaluator:
         }
 
     def _teardown_session_safely(
-        self, harness: BaseBenchmarkHarness, session: object | None, benchmark: str, run_id: str, case_id: str
+        self, harness: BaseBenchmarkHarness, session: object | None, benchmark: str, case_id: str
     ) -> None:
         """安全释放 benchmark session，避免清理异常遮蔽主流程异常。"""
         if session is None:
@@ -740,15 +722,13 @@ class DynSTEEREvaluator:
                 extra={
                     "事件": "benchmark资源释放失败",
                     "benchmark": benchmark,
-                    "run_id": run_id,
                     "case_id": case_id,
                     "error": str(exc),
                 },
             )
             if not active_exception:
                 raise HarnessTeardownError(
-                    f"benchmark session 资源释放失败: benchmark={benchmark}, run_id={run_id}, "
-                    f"case_id={case_id}, error={exc}"
+                    f"benchmark session 资源释放失败: benchmark={benchmark}, case_id={case_id}, error={exc}"
                 ) from exc
 
 

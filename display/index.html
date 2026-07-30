@@ -1233,7 +1233,7 @@
 
     function runId(run) {
       if (!run) return "未命名 run";
-      const parts = [run.run_id || "未命名 run", run.method || ""].filter(Boolean);
+      const parts = [run.benchmark || "benchmark", run.method || ""].filter(Boolean);
       return parts.join(" / ");
     }
 

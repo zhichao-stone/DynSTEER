@@ -3,14 +3,14 @@ from dynsteer.adapter.toolsandbox.utils.roles import actor_value_from_role_name
 from dynsteer.model import Actor, EventType, JsonValue, StateSnapshot, ToolCall, ToolResult, Trajectory, TrajectoryStep
 
 def trajectory_from_sandbox_rows(
-    run_id: str, task_id: str, 
-    steps: list[dict[str, JsonValue]], 
-    snapshots: list[dict[str, JsonValue]] | None=None
+    task_id: str,
+    steps: list[dict[str, JsonValue]],
+    snapshots: list[dict[str, JsonValue]] | None = None,
 ) -> Trajectory:
     return Trajectory(
-        run_id=run_id, task_id=task_id, 
-        steps=[_trajectory_step_from_dict(step) for step in steps], 
-        snapshots=[_snapshot_from_dict(snapshot) for snapshot in snapshots or []]
+        task_id=task_id,
+        steps=[_trajectory_step_from_dict(step) for step in steps],
+        snapshots=[_snapshot_from_dict(snapshot) for snapshot in snapshots or []],
     )
 
 def _trajectory_step_from_dict(step: dict[str, JsonValue]) -> TrajectoryStep:

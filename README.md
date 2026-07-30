@@ -16,7 +16,7 @@ uv run python main.py --input examples/minimal_experiment.json --results-dir res
 uv run python display/build.py --runs-dir runs --results-dir results --output display/data.js
 ```
 
-然后直接打开 `display/index.html` 查看中文评估看板。页面会展示 run/scenario 切换、执行轨迹、milestone graph、阶段评估与点击联动。
+然后直接打开 `display/index.html` 查看中文评估看板。页面会展示 benchmark/method/case 切换、执行轨迹、milestone graph、阶段评估与点击联动。
 
 ## 运行测试
 
@@ -84,15 +84,15 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 ./scripts/start_experiment_no_docker.sh --exp data/experiments/double_benchmark_initial.json
 ```
 
-如需强制重建 `data/<benchmark>/adapted_cases`，在命令后追加 `--force_adapt`。
+如需强制重建 `data/<benchmark>/adapted_cases`，在命令后追加 `--force_adapt`；它会自动连带强制重跑评估 case。只想覆盖已有 case 产物时用 `--force_eval`，只想跳过 `index.json`、`scores.json` 和 `metrics.json` 时用 `--no_sum`。
 
 实验脚本会按实验配置中的 benchmark `data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数。`--source` 与 `--workers` 仍可作为临时覆盖项。
 
 脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text
-runs/experiments/double_benchmark_initial/<benchmark>/<method>/<run_id>/<case_id>
-results/experiments/double_benchmark_initial/<benchmark>/<method>/<run_id>/<case_id>
+runs/experiments/double_benchmark_initial/<benchmark>/<method>/<case_id>
+results/experiments/double_benchmark_initial/<benchmark>/<method>/<case_id>
 ```
 
 也可以绕过脚本直接调用主入口：

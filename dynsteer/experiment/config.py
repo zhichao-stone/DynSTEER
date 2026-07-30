@@ -41,7 +41,6 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
     threshold_names = _threshold_names(config, threshold_profiles, default_threshold_profile)
 
     specs: list[ExperimentRunSpec] = []
-    run_sequences: dict[tuple[str, str], int] = {}
     for benchmark_spec in benchmarks:
         benchmark_data = _spec_mapping(benchmark_spec, "benchmark")
         benchmark = required_str(benchmark_data, "benchmark", "实验配置").lower()
@@ -70,10 +69,9 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
 
                     for repeat_index in range(repeats):
                         metadata = _merge_metadata(config.get("metadata"), benchmark_metadata, model_metadata, method_metadata, model_data.get("harness_metadata"), method_data.get("harness_metadata"))
-                        run_id = _next_run_id(run_sequences, benchmark, method.value)
                         specs.append(
                             ExperimentRunSpec(
-                                experiment_id=experiment_id, run_id=run_id, benchmark=benchmark, 
+                                experiment_id=experiment_id, benchmark=benchmark,
                                 data_root=data_root, runs_dir=runs_dir, results_dir=results_dir, 
                                 case_ids=case_ids, model_id=model_id, repeat_index=repeat_index, method=method, 
                                 judge_profile=judge_profile, judge_config=judge_config, 
@@ -98,14 +96,9 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
 
 def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
     """检查实验矩阵输出路径唯一性与基础字段合法性。"""
-    seen: set[tuple[str, str, str]] = set()
     for spec in specs:
         if spec is None:
             raise ValueError("specs 不能包含空规格")
-        key = (spec.benchmark, spec.method.value, spec.run_id)
-        if key in seen:
-            raise ValueError(f"实验输出路径重复: benchmark={key[0]}, method={key[1]}, run_id={key[2]}")
-        seen.add(key)
         if spec.method == ExperimentMethod.DYNSTEER_GUIDANCE and (not spec.strategy.guidance_enabled):
             raise ValueError("dynsteer_guidance 方法必须启用 guidance_enabled")
 
@@ -203,9 +196,3 @@ def _resolve_input_path(value: object, config_dir: Path) -> Path:
     if candidate.exists():
         return candidate
     return Path.cwd() / path
-
-def _next_run_id(run_sequences: dict[tuple[str, str], int], benchmark: str, method: str) -> str:
-    key = (benchmark, method)
-    index = run_sequences.get(key, 0)
-    run_sequences[key] = index + 1
-    return f"run_{index}"

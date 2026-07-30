@@ -3,22 +3,32 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+
 from dynsteer.adapter.base import BaseBenchmarkHarness
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import state_namespace_summary
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.paths import case_output_dir
 from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
-from dynsteer.model import AgentStepTracker, HarnessEvaluationOutput, JsonObject, RuntimeMetricsRecorder, StateSnapshot, TaskCase, Trajectory, TrajectoryStep
+from dynsteer.model import (
+    AgentStepTracker,
+    HarnessEvaluationOutput,
+    JsonObject,
+    RuntimeMetricsRecorder,
+    StateSnapshot,
+    TaskCase,
+    Trajectory,
+    TrajectoryStep,
+)
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import as_number, json_safe, read_json_file
 
+
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
-    """将 Trajectory 转换为 JSON 对象。"""
+    """把 Trajectory 转成 JSON 对象。"""
     raw_fields = {str(key): json_safe(value) for key, value in trajectory.raw.items()}
     return {
         **raw_fields,
-        "run_id": trajectory.run_id,
         "task_id": trajectory.task_id,
         "steps": [trajectory_step_to_json(step) for step in trajectory.steps],
         "snapshots": [snapshot_to_json(snapshot) for snapshot in trajectory.snapshots],
@@ -26,8 +36,9 @@ def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
         "metrics": json_safe(trajectory.metrics),
     }
 
+
 def trajectory_step_to_json(step: TrajectoryStep) -> JsonObject:
-    """将 TrajectoryStep 转换为 JSON 对象。"""
+    """把 TrajectoryStep 转成 JSON 对象。"""
     tool_call: JsonObject | None = None
     if step.tool_call is not None:
         tool_call = {"name": step.tool_call.name, "arguments": dict(step.tool_call.arguments)}
@@ -56,8 +67,9 @@ def trajectory_step_to_json(step: TrajectoryStep) -> JsonObject:
     )
     return raw_fields
 
+
 def snapshot_to_json(snapshot: StateSnapshot) -> JsonObject:
-    """将 StateSnapshot 转换为 JSON 对象。"""
+    """把 StateSnapshot 转成 JSON 对象。"""
     return {
         "snapshot_id": snapshot.snapshot_id,
         "after_step_id": snapshot.after_step_id,
@@ -66,8 +78,53 @@ def snapshot_to_json(snapshot: StateSnapshot) -> JsonObject:
         **{str(key): json_safe(value) for key, value in snapshot.raw.items()},
     }
 
-def write_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkHarness, evaluator: DynSTEEREvaluator, task_case: TaskCase, progress_reporter: CaseProgressReporter | None=None) -> HarnessEvaluationOutput:
-    """执行单个 case 并分别写入中间产物和最终结果。"""
+
+def existing_case_output(
+    config: HarnessRunConfig,
+    case_id: str,
+    method_fallback: str,
+    report_name: str,
+) -> HarnessEvaluationOutput | None:
+    """如果 case 输出已完整存在，则返回现有输出。"""
+    if config is None or not case_id.strip() or not method_fallback.strip() or not report_name.strip():
+        raise ValueError("config、case_id、method_fallback 和 report_name 不能为空")
+    raw_case_dir = case_output_dir(config.runs_dir, config, case_id, method_fallback)
+    result_dir = case_output_dir(config.results_dir, config, case_id, method_fallback)
+    raw_summary_path = raw_case_dir / "raw_summary.json"
+    trajectory_path = raw_case_dir / "trajectory.json"
+    summary_path = result_dir / "summary.json"
+    report_path = result_dir / report_name
+    if not (
+        raw_summary_path.exists()
+        and trajectory_path.exists()
+        and summary_path.exists()
+        and report_path.exists()
+    ):
+        return None
+    return HarnessEvaluationOutput(
+        run_dir=result_dir,
+        raw_run_dir=raw_case_dir,
+        result_dir=result_dir,
+        report_path=report_path,
+        summary_path=summary_path,
+        raw_summary_path=raw_summary_path,
+        trajectory_path=trajectory_path,
+    )
+
+
+def write_case_outputs(
+    config: HarnessRunConfig,
+    harness: BaseBenchmarkHarness,
+    evaluator: DynSTEEREvaluator,
+    task_case: TaskCase,
+    progress_reporter: CaseProgressReporter | None = None,
+    force_eval: bool = False,
+) -> HarnessEvaluationOutput:
+    """执行单个 case，并写入中间产物与最终结果。"""
+    if not force_eval:
+        cached = existing_case_output(config, task_case.case_id, "dynsteer_evaluate", "report.json")
+        if cached is not None:
+            return cached
     harness_result = evaluator.evaluate(harness, config, task_case, progress_reporter=progress_reporter)
     case_id = task_case.case_id
     report = harness_result.evaluation_report
@@ -75,7 +132,7 @@ def write_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkHarness, 
         raise ValueError("evaluator.evaluate 必须返回 evaluation_report")
     raw_summary = dict(harness_result.raw_summary)
     runtime_metrics = dict(report.runtime_metrics)
-    if runtime_metrics and (not isinstance(raw_summary.get("runtime_metrics"), dict)):
+    if runtime_metrics and not isinstance(raw_summary.get("runtime_metrics"), dict):
         raw_summary["runtime_metrics"] = runtime_metrics
     trajectory = harness_result.trajectory
     raw_summary["trajectory_output"] = {
@@ -90,38 +147,44 @@ def write_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkHarness, 
             "terminated_by_policy": harness_result.termination.should_stop,
             "termination_code": harness_result.termination.termination_code,
             "termination_reason": harness_result.termination.termination_reason,
-            "stage_settlements": [
-                settlement.to_dict()
-                for settlement in harness_result.stage_settlements
-            ],
+            "stage_settlements": [settlement.to_dict() for settlement in harness_result.stage_settlements],
         }
     )
-    return _write_output_payloads(raw_run_dir=case_output_dir(config.runs_dir, config, harness_result.run_id, case_id, "dynsteer_evaluate"), result_dir=case_output_dir(config.results_dir, config, harness_result.run_id, case_id, "dynsteer_evaluate"), report_name="report.json", summary=report.to_summary_dict(), report=report.to_dict(), raw_summary=raw_summary, trajectory=trajectory)
+    return _write_output_payloads(
+        raw_run_dir=case_output_dir(config.runs_dir, config, case_id, "dynsteer_evaluate"),
+        result_dir=case_output_dir(config.results_dir, config, case_id, "dynsteer_evaluate"),
+        report_name="report.json",
+        summary=report.to_summary_dict(),
+        report=report.to_dict(),
+        raw_summary=raw_summary,
+        trajectory=trajectory,
+    )
 
-def write_default_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkHarness, task_case: TaskCase, progress_reporter: CaseProgressReporter | None=None) -> HarnessEvaluationOutput:
-    """执行完整 benchmark case，并写入原生 Default 结果。
 
-    入参：
-        config: 当前 harness 配置。
-        harness: benchmark 原生运行期 harness。
-        task_case: 已适配的 DynSTEER case，用于输出索引。
-        progress_reporter: 可选进度上报器。
-    输出：
-        Default 产物路径集合。
-    """
+def write_default_case_outputs(
+    config: HarnessRunConfig,
+    harness: BaseBenchmarkHarness,
+    task_case: TaskCase,
+    progress_reporter: CaseProgressReporter | None = None,
+    force_eval: bool = False,
+) -> HarnessEvaluationOutput:
+    """执行原生 benchmark case，并写入 Default 结果。"""
     if config is None or harness is None or task_case is None:
         raise ValueError("config、harness 和 task_case 不能为空")
     case_id = task_case.case_id
+    if not force_eval:
+        cached = existing_case_output(config, case_id, "default", "default_report.json")
+        if cached is not None:
+            return cached
     harness.prepare_config(config)
-    run_id = harness.build_run_id(config, case_id)
-    raw_run_dir = case_output_dir(config.runs_dir, config, run_id, case_id, "default")
+    raw_run_dir = case_output_dir(config.runs_dir, config, case_id, "default")
     raw_output_dir = raw_run_dir / "raw"
-    result_dir = case_output_dir(config.results_dir, config, run_id, case_id, "default")
+    result_dir = case_output_dir(config.results_dir, config, case_id, "default")
     raw_output_dir.mkdir(parents=True, exist_ok=True)
     session: object | None = None
     metrics_recorder = RuntimeMetricsRecorder()
     metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
-    trajectory = Trajectory(run_id=run_id, task_id=task_case.task_id, steps=[])
+    trajectory = Trajectory(task_id=task_case.task_id, steps=[])
     tracker = AgentStepTracker()
     runtime_initial_state_summary: JsonObject | None = None
     try:
@@ -156,7 +219,15 @@ def write_default_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkH
                     completed_agent_steps += 1
                 break
         default_result = harness.default_result_from_session(session)
-        runtime_metrics = build_runtime_metrics(started_monotonic=metrics_recorder.started_monotonic, finished_monotonic=time.perf_counter(), started_at=metrics_recorder.started_at, finished_at=datetime.now(timezone.utc).isoformat(), trajectory=trajectory, llm_calls=metrics_recorder.llm_calls, agent_step_count=tracker.completed_count)
+        runtime_metrics = build_runtime_metrics(
+            started_monotonic=metrics_recorder.started_monotonic,
+            finished_monotonic=time.perf_counter(),
+            started_at=metrics_recorder.started_at,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            trajectory=trajectory,
+            llm_calls=metrics_recorder.llm_calls,
+            agent_step_count=tracker.completed_count,
+        )
         raw_summary = dict(harness.raw_summary_from_session(session))
         if runtime_initial_state_summary is not None:
             raw_summary["runtime_initial_state_source"] = "harness_session"
@@ -177,7 +248,6 @@ def write_default_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkH
             }
         )
         summary = {
-            "run_id": run_id,
             "task_id": task_case.task_id,
             "method": str(config.metadata.get("method") or "default"),
             "overall_score": default_result.score,
@@ -194,14 +264,21 @@ def write_default_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkH
         report = {
             **summary,
             "trajectory": {
-                "run_id": trajectory.run_id,
                 "task_id": trajectory.task_id,
                 "step_count": len(trajectory.steps),
                 "snapshot_count": len(trajectory.snapshots),
             },
             "raw": dict(default_result.raw),
         }
-        return _write_output_payloads(raw_run_dir=raw_run_dir, result_dir=result_dir, report_name="default_report.json", summary=summary, report=report, raw_summary=raw_summary, trajectory=trajectory)
+        return _write_output_payloads(
+            raw_run_dir=raw_run_dir,
+            result_dir=result_dir,
+            report_name="default_report.json",
+            summary=summary,
+            report=report,
+            raw_summary=raw_summary,
+            trajectory=trajectory,
+        )
     finally:
         try:
             if session is not None:
@@ -209,9 +286,18 @@ def write_default_case_outputs(config: HarnessRunConfig, harness: BaseBenchmarkH
         finally:
             reset_runtime_metrics_recorder(metrics_token)
 
-def write_replay_case_outputs(config: HarnessRunConfig, evaluator: DynSTEEREvaluator, task_case: TaskCase, trajectory: Trajectory, harness: BaseBenchmarkHarness, default_reference: JsonObject | None=None) -> HarnessEvaluationOutput:
-    """对完整轨迹执行 DynSTEER-Replay 并写入结果。"""
-    if config is None or evaluator is None or task_case is None or (trajectory is None) or (harness is None):
+
+def write_replay_case_outputs(
+    config: HarnessRunConfig,
+    evaluator: DynSTEEREvaluator,
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    harness: BaseBenchmarkHarness,
+    default_reference: JsonObject | None = None,
+    force_eval: bool = False,
+) -> HarnessEvaluationOutput:
+    """对完整轨迹执行 replay，并写入结果。"""
+    if config is None or evaluator is None or task_case is None or trajectory is None or harness is None:
         raise ValueError("config、evaluator、task_case、trajectory 和 harness 不能为空")
     metadata = dict(config.metadata)
     if default_reference is not None:
@@ -220,12 +306,21 @@ def write_replay_case_outputs(config: HarnessRunConfig, evaluator: DynSTEEREvalu
         if isinstance(default_score, (int, float)):
             metadata["default_score"] = float(default_score)
     replay_config = replace(config, metadata=metadata)
-    harness_result = evaluator.evaluate_replay(task_case=task_case, trajectory=trajectory, scorer=harness.constraint_scorer(), config=replay_config)
+    if not force_eval:
+        cached = existing_case_output(replay_config, task_case.case_id, "dynsteer_replay", "report.json")
+        if cached is not None:
+            return cached
+    harness_result = evaluator.evaluate_replay(
+        task_case=task_case,
+        trajectory=trajectory,
+        scorer=harness.constraint_scorer(),
+        config=replay_config,
+    )
     report = harness_result.evaluation_report
     if report is None:
         raise ValueError("evaluate_replay 必须返回 evaluation_report")
-    raw_run_dir = case_output_dir(replay_config.runs_dir, replay_config, harness_result.run_id, task_case.case_id, "dynsteer_replay")
-    result_dir = case_output_dir(replay_config.results_dir, replay_config, harness_result.run_id, task_case.case_id, "dynsteer_replay")
+    raw_run_dir = case_output_dir(replay_config.runs_dir, replay_config, task_case.case_id, "dynsteer_replay")
+    result_dir = case_output_dir(replay_config.results_dir, replay_config, task_case.case_id, "dynsteer_replay")
     raw_summary = dict(harness_result.raw_summary)
     if default_reference is not None:
         raw_summary["default_reference"] = dict(default_reference)
@@ -236,10 +331,28 @@ def write_replay_case_outputs(config: HarnessRunConfig, evaluator: DynSTEEREvalu
         "snapshot_count": len(harness_result.trajectory.snapshots),
         "final_state_present": harness_result.trajectory.final_state is not None,
     }
-    return _write_output_payloads(raw_run_dir=raw_run_dir, result_dir=result_dir, report_name="report.json", summary=report.to_summary_dict(), report=report.to_dict(), raw_summary=raw_summary, trajectory=harness_result.trajectory)
+    return _write_output_payloads(
+        raw_run_dir=raw_run_dir,
+        result_dir=result_dir,
+        report_name="report.json",
+        summary=report.to_summary_dict(),
+        report=report.to_dict(),
+        raw_summary=raw_summary,
+        trajectory=harness_result.trajectory,
+    )
 
-def _write_output_payloads(*, raw_run_dir: Path, result_dir: Path, report_name: str, summary: JsonObject, report: JsonObject, raw_summary: JsonObject, trajectory: Trajectory) -> HarnessEvaluationOutput:
-    """写入通用 case 产物。"""
+
+def _write_output_payloads(
+    *,
+    raw_run_dir: Path,
+    result_dir: Path,
+    report_name: str,
+    summary: JsonObject,
+    report: JsonObject,
+    raw_summary: JsonObject,
+    trajectory: Trajectory,
+) -> HarnessEvaluationOutput:
+    """写出通用 case 产物。"""
     report_path = result_dir / report_name
     summary_path = result_dir / "summary.json"
     raw_summary_path = raw_run_dir / "raw_summary.json"
@@ -250,21 +363,34 @@ def _write_output_payloads(*, raw_run_dir: Path, result_dir: Path, report_name: 
     summary_path.write_text(json.dumps(json_safe(summary), ensure_ascii=False, indent=4), encoding="utf-8")
     raw_summary_path.write_text(json.dumps(json_safe(raw_summary), ensure_ascii=False, indent=4), encoding="utf-8")
     trajectory_path.write_text(json.dumps(trajectory_to_json(trajectory), ensure_ascii=False, indent=4), encoding="utf-8")
-    return HarnessEvaluationOutput(run_dir=result_dir, raw_run_dir=raw_run_dir, result_dir=result_dir, report_path=report_path, summary_path=summary_path, raw_summary_path=raw_summary_path, trajectory_path=trajectory_path)
+    return HarnessEvaluationOutput(
+        run_dir=result_dir,
+        raw_run_dir=raw_run_dir,
+        result_dir=result_dir,
+        report_path=report_path,
+        summary_path=summary_path,
+        raw_summary_path=raw_summary_path,
+        trajectory_path=trajectory_path,
+    )
 
-def write_run_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
-    """按 benchmark/method/run_id 目录写出所有场景的汇总摘要。"""
-    outputs_by_run_dir: dict[Path, list[HarnessEvaluationOutput]] = {}
+
+def write_method_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:
+    """按 benchmark/method 写出方法级汇总。"""
+    outputs_by_method_dir: dict[Path, list[HarnessEvaluationOutput]] = {}
     for output in outputs:
         if output is None:
-            raise ValueError("outputs 不能包含空输出")
-        outputs_by_run_dir.setdefault(output.result_dir.parent, []).append(output)
-    for run_dir, run_outputs in outputs_by_run_dir.items():
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "summary.json").write_text(json.dumps(_build_run_level_summary(run_dir, run_outputs), ensure_ascii=False, indent=4), encoding="utf-8")
+            raise ValueError("outputs 不能包含空值")
+        outputs_by_method_dir.setdefault(output.result_dir.parent, []).append(output)
+    for method_dir, method_outputs in outputs_by_method_dir.items():
+        method_dir.mkdir(parents=True, exist_ok=True)
+        (method_dir / "summary.json").write_text(
+            json.dumps(_build_method_level_summary(method_dir, method_outputs), ensure_ascii=False, indent=4),
+            encoding="utf-8",
+        )
 
-def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutput]) -> dict[str, object]:
-    """构造单个 benchmark/method/run_id 下所有场景的汇总摘要。"""
+
+def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluationOutput]) -> dict[str, object]:
+    """构造单个 benchmark/method 下的汇总摘要。"""
     cases: list[dict[str, object]] = []
     coverage_counts: dict[str, int] = {}
     score_sum = 0.0
@@ -297,19 +423,16 @@ def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutpu
                 "repeat_index": metadata.get("repeat_index"),
                 "default_score": default_score,
                 "dynsteer_score": None if method == "default" else dynsteer_score,
-                "agent_cost_available": bool(metrics.get("trajectory_cost_available"))
-                if isinstance(metrics, dict)
-                else False,
-                "summary_path": output.summary_path.relative_to(run_dir).as_posix(),
-                "report_path": output.report_path.relative_to(run_dir).as_posix(),
+                "agent_cost_available": bool(metrics.get("trajectory_cost_available")) if isinstance(metrics, dict) else False,
+                "summary_path": output.summary_path.relative_to(method_dir).as_posix(),
+                "report_path": output.report_path.relative_to(method_dir).as_posix(),
             }
         )
         cases.append(case_summary)
     case_count = len(cases)
     return {
-        "benchmark": run_dir.parent.parent.name,
-        "method": run_dir.parent.name,
-        "run_id": run_dir.name,
+        "benchmark": method_dir.parent.name,
+        "method": method_dir.name,
         "case_count": case_count,
         "average_overall_score": score_sum / case_count if case_count else 0.0,
         "milestone_coverage_counts": coverage_counts,
@@ -320,8 +443,9 @@ def _build_run_level_summary(run_dir: Path, outputs: list[HarnessEvaluationOutpu
         "cases": cases,
     }
 
+
 def _score_from_summary(summary_data: dict[str, object], metadata: dict[str, object], key: str) -> float | None:
-    """从 case summary 或 metadata 中读取分数。"""
+    """从 summary 或 metadata 中读取分数。"""
     value = as_number(summary_data.get(key))
     if value is not None:
         return value

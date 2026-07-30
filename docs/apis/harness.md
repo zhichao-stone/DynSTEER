@@ -51,7 +51,6 @@ def case_finished(self, session: object) -> bool: ...
 
 ```python
 def prepare_config(self, config: HarnessRunConfig) -> None: ...
-def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str: ...
 def metrics_from_session(self, session: object) -> JsonObject: ...
 def initial_state_from_session(self, session: object) -> JsonObject | None: ...
 def final_state_from_session(self, session: object) -> JsonObject | None: ...
@@ -105,13 +104,13 @@ ToolSandbox 当前通过 `scenario.evaluation.evaluate(execution_context=session
 - 若主执行过程已经抛出异常，teardown 失败只记录结构化错误日志，不遮蔽主异常。
 - 若主执行过程成功但 teardown 失败，evaluator 抛出 `HarnessTeardownError`，避免资源释放失败被静默吞掉。
 - harness 子类的 `teardown_case()` 应尽力释放全部外部资源，并断开 session 中对大型上下文、轨迹步骤、快照、SDK client 或原生 role 的引用。
-- runner 对单个 case 的执行失败统一包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id。
+- runner 对单个 case 的执行失败统一包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark 和 case_id。
 
 ## Runner
 
 `dynsteer.harness.runner` 提供：
 
-- `run_harness_configs(configs, max_workers=1, force_adapt=False)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。若 `benchmark.json` 配置了 `max_workers`，实际 worker 数取命令行 workers 与该字段的较小值，且最小为 1。`force_adapt=True` 时会在运行前重建缓存的 adapted case。
+- `run_harness_configs(configs, max_workers=1, force_adapt=False, force_eval=False)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。若 `benchmark.json` 配置了 `max_workers`，实际 worker 数取命令行 workers 与该字段的较小值，且最小为 1。`force_adapt=True` 时会在运行前重建缓存的 adapted case，并自动强制 `force_eval=True`；`force_eval=True` 时忽略已有 case 级 `runs/results` 产物并覆盖写出。
 
 Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。单 case 输出路径、summary 和 report 都以 `task_case.case_id` 为准，不要求把 `HarnessRunConfig.case_ids` 改写成单元素元组。
 
@@ -119,20 +118,20 @@ Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.eval
 
 Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)` 加载本组 `TaskCase` 列表，然后输出日志：`基于配置XXX，开始基于 {benchmark} 展开评估，Cases数量: N`。单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
 
-`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark、run_id 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
+`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
 
 Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。进度条的 `steps` 单位是完整闭合的 agent step，不是 raw step。实际同时运行的 case 数量仍不超过 `max_workers`；可见窗口大小按 case 计算为 `max(5, 实际 worker 数)`，每个 case 占用两行终端输出：第一行显示 `# Test Case {idx}: {case_id}`，其中 `idx` 是当前配置内从 1 开始的原始 case 顺序，第二行显示 desc 为 `Case {idx}执行进度（最多N步）` 的 tqdm 进度条，因此默认可见窗口为 5 个 case、10 个终端行。进度条后缀由 DynSTEER 自行维护 `elapsed`、`steps` 和 `avg_step`，避免 tqdm 重建或关闭时丢失真实耗时。case 完成前会把进度条 total 收敛到实际 step 数，完成后满进度条会继续保留在可见窗口中，直到被后续 case 挤出；窗口变化时会重建可见进度条位置，让剩余 case 从第一组两行开始连续显示。运行结束时 Runner 会先清理动态进度条，再按可见 case 顺序输出稳定的最终静态快照，避免多行 tqdm `leave=True` 留存导致终端内容上移或挤压。进度条运行期间终端日志与第三方 stdout/stderr 会被静默，文件日志和内存日志仍保留 INFO 结构化内容。
 
 Harness 模式输出：
 
-- `runs/<benchmark>/<method>/<run_id>/<case_id>/raw/`
-- `runs/<benchmark>/<method>/<run_id>/<case_id>/raw_summary.json`
-- `runs/<benchmark>/<method>/<run_id>/<case_id>/trajectory.json`
-- `results/<benchmark>/<method>/<run_id>/summary.json`
-- `results/<benchmark>/<method>/<run_id>/<case_id>/report.json`
-- `results/<benchmark>/<method>/<run_id>/<case_id>/summary.json`
+- `runs/<benchmark>/<method>/<case_id>/raw/`
+- `runs/<benchmark>/<method>/<case_id>/raw_summary.json`
+- `runs/<benchmark>/<method>/<case_id>/trajectory.json`
+- `results/<benchmark>/<method>/summary.json`
+- `results/<benchmark>/<method>/<case_id>/report.json`
+- `results/<benchmark>/<method>/<case_id>/summary.json`
 
-`results/<benchmark>/<method>/<run_id>/summary.json` 是 run 级汇总摘要，聚合同一 `benchmark/method/run_id` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`method`、`run_id`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
+`results/<benchmark>/<method>/summary.json` 是方法级汇总摘要，聚合同一 `benchmark/method` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`method`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
 
 `trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。Default 轨迹会在顶层 raw 字段中写入 `runtime_initial_state`，供 replay 复用本次 session 的真实初始状态。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
 

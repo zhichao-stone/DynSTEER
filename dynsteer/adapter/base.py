@@ -1,4 +1,3 @@
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,20 +76,6 @@ class BaseBenchmarkHarness(ABC):
         """校验配置并准备 benchmark source_root。"""
         self._validate_config(config)
         ensure_source_root(config.data_root, self._project_root(), self.benchmark)
-
-    def build_run_id(self, config: HarnessRunConfig, case_id: str) -> str:
-        """构造安全的运行 ID。"""
-        if config is None or case_id is None:
-            raise ValueError("config 和 case_id 不能为空")
-        raw_run_id = config.metadata.get("run_id")
-        if isinstance(raw_run_id, str) and raw_run_id.strip():
-            candidate = raw_run_id.strip()
-        else:
-            candidate = f"{self.benchmark}_{case_id}_run"
-        safe = re.sub("[^A-Za-z0-9_.-]+", "_", candidate).strip("._")
-        if not safe:
-            raise ValueError("run_id 不能为空")
-        return safe
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """从 session 提取运行期 metrics。"""

@@ -15,6 +15,7 @@ Options:
   --workers NUM         Max parallel benchmark workers. Defaults to main.py default.
   --only_adapt          Only adapt benchmark data into data-root, do not run evaluation.
   --force_adapt         Rebuild adapted cases even if cached data already exists.
+  --force_eval          Re-run evaluation and overwrite existing case outputs.
   --env-file PATH       Env file to source before running. Defaults to .env.
   --no-env-file         Do not source an env file.
   -h, --help            Show this help.
@@ -259,6 +260,7 @@ main() {
     local workers=""
     local only_adapt="0"
     local force_adapt="0"
+    local force_eval="0"
     local env_file="${DYNSTEER_ENV_FILE:-.env}"
     local load_env_file="1"
     local extra_args=()
@@ -333,6 +335,10 @@ main() {
                 force_adapt="1"
                 shift
                 ;;
+            --force_eval|--force-eval)
+                force_eval="1"
+                shift
+                ;;
             --env-file)
                 require_value "$1" "${2:-}"
                 env_file="$2"
@@ -397,6 +403,10 @@ main() {
     if [[ "$force_adapt" == "1" ]]; then
         force_adapt_args=(--force_adapt)
     fi
+    local force_eval_args=()
+    if [[ "$force_eval" == "1" ]]; then
+        force_eval_args=(--force_eval)
+    fi
 
     exec python main.py \
         --benchmark "$benchmark" \
@@ -405,6 +415,7 @@ main() {
         --results-dir "$results_dir" \
         "${worker_args[@]}" \
         "${force_adapt_args[@]}" \
+        "${force_eval_args[@]}" \
         "${only_adapt_args[@]}" \
         "${extra_args[@]}"
 }

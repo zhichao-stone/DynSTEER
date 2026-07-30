@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  ./scripts/exp_main.sh [--benchmarks a,b,c] [--benchmark NAME ...] [--only_adapt] [--force_adapt] [-- start.sh args]
+  ./scripts/exp_main.sh [--benchmarks a,b,c] [--benchmark NAME ...] [--only_adapt] [--force_adapt] [--force_eval] [-- start.sh args]
 
 Examples:
   ./scripts/exp_main.sh --benchmarks toolsandbox
@@ -98,6 +98,10 @@ main() {
                 ;;
             --force_adapt|--force-adapt)
                 start_args+=(--force_adapt)
+                shift
+                ;;
+            --force_eval|--force-eval)
+                start_args+=(--force_eval)
                 shift
                 ;;
             -h|--help)

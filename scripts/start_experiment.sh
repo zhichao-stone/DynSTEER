@@ -12,6 +12,8 @@ Options:
   --source PATH              Optional source tree override. Defaults to benchmark.json source_root.
   --workers NUM              Optional worker override. Defaults to benchmark.json max_workers or 1.
   --force_adapt              Rebuild adapted cases even if cached data already exists.
+  --force_eval               Re-run evaluation and overwrite existing case outputs.
+  --no_sum                   Skip experiment-level index/scores/metrics files.
   --env-file PATH            Env file to source before running. Defaults to .env.
   --no-env-file              Do not source an env file.
   -h, --help                 Show this help.
@@ -270,6 +272,8 @@ main() {
     local source_path=""
     local workers=""
     local force_adapt="0"
+    local force_eval="0"
+    local no_sum="0"
     local env_file="${DYNSTEER_ENV_FILE:-.env}"
     local load_env_file="1"
 
@@ -312,6 +316,14 @@ main() {
                 ;;
             --force_adapt|--force-adapt)
                 force_adapt="1"
+                shift
+                ;;
+            --force_eval|--force-eval)
+                force_eval="1"
+                shift
+                ;;
+            --no_sum|--no-sum)
+                no_sum="1"
                 shift
                 ;;
             --env-file)
@@ -410,11 +422,21 @@ main() {
     if [[ "$force_adapt" == "1" ]]; then
         force_adapt_args=(--force_adapt)
     fi
+    local force_eval_args=()
+    if [[ "$force_eval" == "1" ]]; then
+        force_eval_args=(--force_eval)
+    fi
+    local no_sum_args=()
+    if [[ "$no_sum" == "1" ]]; then
+        no_sum_args=(--no_sum)
+    fi
 
     exec python main.py \
         --exp "$experiment_config" \
-        "${worker_args[@]}"
-        "${force_adapt_args[@]}"
+        "${worker_args[@]}" \
+        "${force_adapt_args[@]}" \
+        "${force_eval_args[@]}" \
+        "${no_sum_args[@]}"
 }
 
 main "$@"

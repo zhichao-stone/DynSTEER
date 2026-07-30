@@ -52,8 +52,17 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         max_messages = int(config.metadata.get("max_messages", 100))
         if max_messages <= 0:
             raise ValueError("ToolSandbox max_messages 必须大于 0")
-        run_id = raw_output_dir.parent.parent.name
-        session = ToolSandboxSession(scenario=scenario, roles=roles, context=context, initial_state=None, case_id=case_id, run_id=run_id, raw_output_dir=raw_output_dir, initial_max_sandbox_message_index=initial_max, last_sandbox_message_index=initial_max, max_messages=max_messages)
+        session = ToolSandboxSession(
+            scenario=scenario,
+            roles=roles,
+            context=context,
+            initial_state=None,
+            case_id=case_id,
+            raw_output_dir=raw_output_dir,
+            initial_max_sandbox_message_index=initial_max,
+            last_sandbox_message_index=initial_max,
+            max_messages=max_messages,
+        )
         self._prepare_system_environment_messages(session)
         session.initial_state = initial_state_from_context(session.context, load_toolsandbox_module)
         return session
@@ -70,7 +79,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         steps = sandbox_rows_to_step_dicts(rows)
         snapshot_data = snapshots_from_context(session.context, steps, load_toolsandbox_module) if session.context is not None else []
         trajectory = trajectory_from_sandbox_rows(
-            run_id=session.run_id,
             task_id=f"toolsandbox::{session.case_id}",
             steps=steps,
             snapshots=snapshot_data,

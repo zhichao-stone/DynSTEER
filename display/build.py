@@ -16,7 +16,7 @@ from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file
 
 JsonObject = dict[str, Any]
-CaseKey = tuple[str, str, str, str]
+CaseKey = tuple[str, str, str]
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
@@ -62,29 +62,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _discover_runs(runs_dir: Path, results_dir: Path, data_dir: Path) -> list[JsonObject]:
-    grouped: dict[tuple[str, str, str], list[str]] = {}
-    for benchmark, method, run_id, scenario_id in sorted(_collect_case_keys(runs_dir) | _collect_case_keys(results_dir)):
-        grouped.setdefault((benchmark, method, run_id), []).append(scenario_id)
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for benchmark, method, scenario_id in sorted(_collect_case_keys(runs_dir) | _collect_case_keys(results_dir)):
+        grouped.setdefault((benchmark, method), []).append(scenario_id)
     return [
         {
             "benchmark": benchmark,
             "method": method,
-            "run_id": run_id,
             "summary": _run_summary(scenarios),
             "scenarios": scenarios,
         }
-        for (benchmark, method, run_id), scenario_ids in grouped.items()
+        for (benchmark, method), scenario_ids in grouped.items()
         for scenarios in [
-            [_scenario(runs_dir, results_dir, data_dir, benchmark, method, run_id, item) for item in scenario_ids]
+            [_scenario(runs_dir, results_dir, data_dir, benchmark, method, item) for item in scenario_ids]
         ]
     ]
 
 
 def _scenario(
-    runs_dir: Path, results_dir: Path, data_dir: Path, benchmark: str, method: str, run_id: str, scenario_id: str
+    runs_dir: Path, results_dir: Path, data_dir: Path, benchmark: str, method: str, scenario_id: str
 ) -> JsonObject:
-    run_case_dir = runs_dir / benchmark / method / run_id / scenario_id
-    result_case_dir = results_dir / benchmark / method / run_id / scenario_id
+    run_case_dir = runs_dir / benchmark / method / scenario_id
+    result_case_dir = results_dir / benchmark / method / scenario_id
     trajectory = _load_json(run_case_dir / "trajectory.json")
     raw_summary = _load_json(run_case_dir / "raw_summary.json")
     summary = _load_json(result_case_dir / "summary.json")
@@ -134,14 +133,11 @@ def _collect_case_keys(base_dir: Path) -> set[CaseKey]:
         for method_dir in benchmark_dir.iterdir():
             if not method_dir.is_dir():
                 continue
-            for run_dir in method_dir.iterdir():
-                if not run_dir.is_dir():
-                    continue
-                keys.update(
-                    (benchmark_dir.name, method_dir.name, run_dir.name, scenario_dir.name)
-                    for scenario_dir in run_dir.iterdir()
-                    if scenario_dir.is_dir()
-                )
+            keys.update(
+                (benchmark_dir.name, method_dir.name, scenario_dir.name)
+                for scenario_dir in method_dir.iterdir()
+                if scenario_dir.is_dir()
+            )
     return keys
 
 
@@ -193,7 +189,6 @@ def _run_summary(scenarios: list[JsonObject]) -> JsonObject:
 def _summary_payload(summary: JsonObject) -> JsonObject:
     metrics = summary.get("runtime_metrics", {})
     keys = (
-        "run_id",
         "task_id",
         "milestone_coverage",
         "overall_score",
@@ -373,7 +368,7 @@ def _termination_stage_report(index: StageDefinitionIndex, termination: JsonObje
     detail = termination.get("termination_detail")
     evidence = clean_evidence_items(
         [
-            f"策略提前终止：{termination.get("termination_code") or "unknown"}",
+            f"策略提前终止：{termination.get('termination_code') or 'unknown'}",
             str(termination.get("termination_reason") or ""),
             *_termination_minefield_evidence(detail if isinstance(detail, dict) else {}),
         ]
@@ -459,10 +454,10 @@ def _minefield_definitions(adapted_case: JsonObject) -> list[JsonObject]:
 
 def _minefield_match_line(match: JsonObject) -> str:
     pieces = [
-        f"minefield 命中：{match.get("minefield_id") or "unknown"}",
-        f"severity={match.get("severity") or "unknown"}",
-        f"score={match.get("score")}",
-        f"fatal={match.get("fatal")}",
+        f"minefield 命中：{match.get('minefield_id') or 'unknown'}",
+        f"severity={match.get('severity') or 'unknown'}",
+        f"score={match.get('score')}",
+        f"fatal={match.get('fatal')}",
     ]
     summary = str(match.get("trigger_summary") or "")
     if summary:
@@ -738,7 +733,7 @@ def _expected_summary(expected: Any) -> str:
         if isinstance(rows, list):
             parts.append(f"rows={len(rows)}")
         if isinstance(columns, list):
-            parts.append(f"columns={",".join(str(item) for item in columns[:4])}")
+            parts.append(f"columns={','.join(str(item) for item in columns[:4])}")
         if parts:
             return "; ".join(parts)
     return _text(expected, 240)

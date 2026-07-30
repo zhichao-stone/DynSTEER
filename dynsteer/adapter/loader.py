@@ -244,5 +244,12 @@ def load_trajectory(data: JsonObject) -> Trajectory:
     snapshot_values = get_object(trajectory_data, "snapshots", list, default=[], required=False)
     final_state = _optional_json_object(trajectory_data, "final_state")
     metrics = _optional_json_object(trajectory_data, "metrics") or {}
-    known = {"run_id", "task_id", "steps", "snapshots", "final_state", "metrics"}
-    return Trajectory(run_id=required_str(trajectory_data, "run_id", "Trajectory"), task_id=required_str(trajectory_data, "task_id", "Trajectory"), steps=[_load_step(ensure_json_object(item)) for item in step_values], snapshots=[_load_snapshot(ensure_json_object(item)) for item in snapshot_values], final_state=final_state, metrics=metrics, raw=unknown_fields(trajectory_data, known))
+    known = {"task_id", "steps", "snapshots", "final_state", "metrics"}
+    return Trajectory(
+        task_id=required_str(trajectory_data, "task_id", "Trajectory"),
+        steps=[_load_step(ensure_json_object(item)) for item in step_values],
+        snapshots=[_load_snapshot(ensure_json_object(item)) for item in snapshot_values],
+        final_state=final_state,
+        metrics=metrics,
+        raw=unknown_fields(trajectory_data, known),
+    )

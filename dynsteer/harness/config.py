@@ -8,7 +8,14 @@ from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
 from dynsteer.utils import normalize_client_config, optional_str, read_json_file, required_str
 DEFAULT_READY_FRONTIER_PATIENCE = 8
 _CLIENT_CONFIG_KEYS = ("agent_client", "user_client")
-_RUN_CONFIG_CONTROL_FIELDS = {"scenarios", "ready_frontier_patience", "thresholds", "strategy", *_CLIENT_CONFIG_KEYS}
+_RUN_CONFIG_CONTROL_FIELDS = {
+    "scenarios",
+    "ready_frontier_patience",
+    "thresholds",
+    "strategy",
+    "name",
+    *_CLIENT_CONFIG_KEYS,
+}
 
 def load_judge_config_from_env(env: Mapping[str, str] | None=None) -> JsonObject:
     """从环境变量读取 LLMJudge 配置。"""
@@ -140,7 +147,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
     if not raw_specs:
         raise ValueError("run_configs.json 至少需要包含一组运行配置")
     configs: list[HarnessRunConfig] = []
-    seen_run_ids: set[str] = set()
     judge_config = load_judge_config_from_env()
     ready_frontier_patience = load_ready_frontier_patience_from_env()
     for index, raw_spec in enumerate(raw_specs):
@@ -156,19 +162,7 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
             required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
             required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
         metadata.setdefault("tool_backend", tool_backend)
-        run_id = optional_str(raw_spec.get("run_id")) or optional_str(raw_spec.get("name"))
-        if run_id is None:
-            agent = optional_str(raw_spec.get("agent"))
-            user = optional_str(raw_spec.get("user"))
-            if agent is not None and user is not None:
-                run_id = f"run_{index}_{agent}_user_{user}"
-            else:
-                run_id = f"run_{index}"
-        if run_id in seen_run_ids:
-            raise ValueError(f"run_configs.json 中 run_id 重复: {run_id}")
-        seen_run_ids.add(run_id)
         metadata["run_config_index"] = index
-        metadata["run_id"] = run_id
         name = optional_str(raw_spec.get("name"))
         if name is not None:
             metadata["run_config_name"] = name
