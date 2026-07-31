@@ -39,10 +39,10 @@ ToolSandbox 鐨?agent/user 杩炴帴鍙傛暟搴旀斁鍦?`models[*].harness_met
 Default 杈撳嚭鐨?`trajectory.json` 浼氭惡甯︽湰娆?session 鐨?`runtime_initial_state`銆俁eplay 璇诲彇 default trajectory 鍚庯紝浼氫紭鍏堟妸杩欎釜 runtime initial state 娉ㄥ叆褰撳墠 `TaskCase.initial_state`锛岀‘淇?`preserve_state`銆乣reference_milestone_node_index=-1` 绛夌姸鎬佺害鏉熶娇鐢?default 鐪熷疄鍒濆鐘舵€侊紝鑰屼笉鏄?adapted JSON 涓彲鑳借繃鏈熺殑闈欐€佸崰浣嶃€?
 ## 杈撳嚭
 
-瀹為獙灞傝緭鍑哄埌 `results/experiments/<experiment_id>/` 鎴栭厤缃寚瀹氱殑 `results_dir`锛沜ase 浜х墿鎸?`<benchmark>/<method>/<case_id>/` 鍒嗗眰鍐欏叆銆傜粺涓€瀹為獙榛樿鐩綍涓猴細
+瀹為獙灞傝緭鍑哄埌 `results/exp/<experiment_id>/` 鎴栭厤缃寚瀹氱殑 `results_dir`锛沜ase 浜х墿鎸?`<benchmark>/<model_id>/<method>/<case_id>/` 鍒嗗眰鍐欏叆锛岄潪瀹為獙 harness 浠嶇戶缁繚鎸?`<benchmark>/<method>/<case_id>/`銆傜粺涓€瀹為獙榛樿鐩綍涓猴細
 
-- `runs/experiments/<experiment_id>/<benchmark>/<method>/<case_id>/`
-- `results/experiments/<experiment_id>/<benchmark>/<method>/<case_id>/`
+- `runs/exp/<experiment_id>/<benchmark>/<model_id>/<method>/<case_id>/`
+- `results/exp/<experiment_id>/<benchmark>/<model_id>/<method>/<case_id>/`
 
 - `index.json`: 鍒嗗眰 case 绱㈠紩锛屾寜 `benchmark -> method -> model_id -> repeats -> repeat_index -> cases -> case_id` 缁勭粐銆?- `scores.json`: `method -> benchmark -> model_id -> average_score`銆?- `metrics.json`: PSEP銆乣rank_tau`銆佽€楁椂銆佹楠ゆ暟銆丄gent/Judge token 姹囨€汇€?
 `index.json` 鐨?repeat 鑺傜偣鍙繚鐣?`cases`锛宑ase 鍙跺瓙鍙繚鐣欑粨鏋滄湰韬紝涓嶅啀閲嶅鍐?`experiment_id`銆乣benchmark`銆乣case_id`銆乣model_id`銆?

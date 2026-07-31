@@ -663,6 +663,8 @@ class DynSTEEREvaluator:
         default_reference = metadata.get("default_reference")
         default_score = metadata.get("default_score")
         return {
+            "benchmark": config.benchmark,
+            "experiment_id": metadata.get("experiment_id"),
             "method": str(metadata.get("method") or method_fallback),
             "strategy": self._strategy.to_dict(),
             "judge_profile": metadata.get("judge_profile"),

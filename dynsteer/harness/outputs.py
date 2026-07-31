@@ -235,6 +235,8 @@ def write_default_case_outputs(
             raw_summary["runtime_initial_state_summary"] = runtime_initial_state_summary
         raw_summary.update(
             {
+                "benchmark": config.benchmark,
+                "experiment_id": config.metadata.get("experiment_id"),
                 "method": str(config.metadata.get("method") or "default"),
                 "case_id": case_id,
                 "default_result": default_result.to_dict(),
@@ -244,12 +246,16 @@ def write_default_case_outputs(
         )
         summary = {
             "task_id": task_case.task_id,
+            "benchmark": config.benchmark,
+            "experiment_id": config.metadata.get("experiment_id"),
             "method": str(config.metadata.get("method") or "default"),
             "overall_score": default_result.score,
             "default_score": default_result.score,
             "resolved": default_result.resolved,
             "runtime_metrics": runtime_metrics,
             "metadata": {
+                "benchmark": config.benchmark,
+                "experiment_id": config.metadata.get("experiment_id"),
                 "method": str(config.metadata.get("method") or "default"),
                 "model_id": config.metadata.get("model_id"),
                 "repeat_index": config.metadata.get("repeat_index"),
@@ -319,6 +325,8 @@ def write_replay_case_outputs(
     raw_summary = dict(harness_result.raw_summary)
     if default_reference is not None:
         raw_summary["default_reference"] = dict(default_reference)
+    raw_summary["benchmark"] = config.benchmark
+    raw_summary["experiment_id"] = config.metadata.get("experiment_id")
     raw_summary["trajectory_output"] = trajectory_output_summary(harness_result.trajectory, report.runtime_metrics)
     return _write_output_payloads(
         raw_run_dir=raw_run_dir,
@@ -400,15 +408,20 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
             elapsed_values.append(float(metrics.get("elapsed_seconds", 0.0) or 0.0))
         metadata = summary_data.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        method = str(summary_data.get("method") or metadata.get("method") or "dynsteer_evaluate")
+        method = str(summary_data.get("method") or metadata.get("method") or method_dir.name)
+        benchmark = _summary_benchmark(method_dir, metadata)
+        model_id = _summary_model_id(metadata)
+        experiment_id = _summary_experiment_id(metadata)
         default_score = _score_from_summary(summary_data, metadata, "default_score")
         dynsteer_score = _score_from_summary(summary_data, metadata, "overall_score")
         case_summary: dict[str, object] = dict(summary_data)
         case_summary.update(
             {
                 "case_id": output.result_dir.name,
+                "benchmark": benchmark,
+                "experiment_id": experiment_id,
                 "method": method,
-                "model_id": metadata.get("model_id"),
+                "model_id": model_id,
                 "repeat_index": metadata.get("repeat_index"),
                 "default_score": default_score,
                 "dynsteer_score": None if method == "default" else dynsteer_score,
@@ -420,7 +433,9 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
         cases.append(case_summary)
     case_count = len(cases)
     return {
-        "benchmark": method_dir.parent.name,
+        "experiment_id": cases[0].get("experiment_id") if cases else _summary_experiment_id({}),
+        "benchmark": cases[0].get("benchmark") if cases else _summary_benchmark(method_dir, {}),
+        "model_id": cases[0].get("model_id") if cases else _summary_model_id({}),
         "method": method_dir.name,
         "case_count": case_count,
         "average_overall_score": score_sum / case_count if case_count else 0.0,
@@ -431,6 +446,33 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
         "average_elapsed_seconds": sum(elapsed_values) / len(elapsed_values) if elapsed_values else 0.0,
         "cases": cases,
     }
+
+
+def _summary_benchmark(method_dir: Path, metadata: dict[str, object]) -> str:
+    """从 summary 元数据或路径中推断 benchmark。"""
+    benchmark = str(metadata.get("benchmark") or "").strip()
+    if benchmark:
+        return benchmark
+    model_id = _summary_model_id(metadata)
+    if model_id and method_dir.parent.name == model_id:
+        parent = method_dir.parent.parent.name.strip()
+        if parent:
+            return parent
+    if method_dir.parent.name:
+        return method_dir.parent.name
+    return method_dir.name
+
+
+def _summary_model_id(metadata: dict[str, object]) -> str | None:
+    """从 summary 元数据中提取 model_id。"""
+    model_id = str(metadata.get("model_id") or "").strip()
+    return model_id or None
+
+
+def _summary_experiment_id(metadata: dict[str, object]) -> str | None:
+    """从 summary 元数据中提取 experiment_id。"""
+    experiment_id = str(metadata.get("experiment_id") or "").strip()
+    return experiment_id or None
 
 
 def _score_from_summary(summary_data: dict[str, object], metadata: dict[str, object], key: str) -> float | None:

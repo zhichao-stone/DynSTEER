@@ -91,8 +91,8 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text
-runs/experiments/double_benchmark_initial/<benchmark>/<method>/<case_id>
-results/experiments/double_benchmark_initial/<benchmark>/<method>/<case_id>
+runs/exp/double_benchmark_initial/<benchmark>/<model_id>/<method>/<case_id>
+results/exp/double_benchmark_initial/<benchmark>/<model_id>/<method>/<case_id>
 ```
 
 也可以绕过脚本直接调用主入口：

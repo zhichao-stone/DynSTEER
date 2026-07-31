@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DynSTEER 评估看板</title>
+  <title>DynSTEER 璇勪及鐪嬫澘</title>
   <script defer src="./data.js"></script>
   <style>
     :root {
@@ -852,20 +852,20 @@
   </style>
 </head>
 <body>
-  <aside class="sidebar" aria-label="主导航">
+  <aside class="sidebar" aria-label="涓诲鑸?>
     <div class="brand-mark">D</div>
   </aside>
   <main class="app">
     <header class="topbar">
-      <section class="run-row" aria-label="运行记录切换"></section>
-      <section class="scenario-row" aria-label="场景切换"></section>
+      <section class="run-row" aria-label="杩愯璁板綍鍒囨崲"></section>
+      <section class="scenario-row" aria-label="鍦烘櫙鍒囨崲"></section>
     </header>
     <section class="workspace">
-      <section class="panel trajectory-panel" aria-label="执行轨迹"></section>
-      <div class="panel-splitter trajectory-graph-splitter" role="separator" aria-label="调整执行轨迹和里程碑图宽度" data-left="trajectory" data-right="graph" tabindex="0"></div>
-      <section class="panel graph-panel" aria-label="里程碑图"></section>
-      <div class="panel-splitter graph-stage-splitter" role="separator" aria-label="调整里程碑图和评估阶段宽度" data-left="graph" data-right="stage" tabindex="0"></div>
-      <section class="panel stage-panel" aria-label="评估阶段"></section>
+      <section class="panel trajectory-panel" aria-label="鎵ц杞ㄨ抗"></section>
+      <div class="panel-splitter trajectory-graph-splitter" role="separator" aria-label="璋冩暣鎵ц杞ㄨ抗鍜岄噷绋嬬鍥惧搴? data-left="trajectory" data-right="graph" tabindex="0"></div>
+      <section class="panel graph-panel" aria-label="閲岀▼纰戝浘"></section>
+      <div class="panel-splitter graph-stage-splitter" role="separator" aria-label="璋冩暣閲岀▼纰戝浘鍜岃瘎浼伴樁娈靛搴? data-left="graph" data-right="stage" tabindex="0"></div>
+      <section class="panel stage-panel" aria-label="璇勪及闃舵"></section>
     </section>
   </main>
   <script>
@@ -1022,7 +1022,7 @@
       clear(container);
       const runs = state.data.runs || [];
       if (!runs.length) {
-        appendEmptyInline(container, "暂无可展示的运行记录");
+        appendEmptyInline(container, "鏆傛棤鍙睍绀虹殑杩愯璁板綍");
         return;
       }
 
@@ -1034,7 +1034,7 @@
         optionListClassName: "run-option-list",
         optionClassName: "run-option",
         emptyClassName: "run-empty",
-        emptyText: "无匹配 run",
+        emptyText: "鏃犲尮閰?run",
         labelForItem: runId,
         onSelect: (match) => {
           state.runIndex = match.index;
@@ -1047,14 +1047,18 @@
       const metrics = el("div", "metric-list");
       const run = currentRun();
       const summary = run ? run.summary || {} : {};
-      metrics.append(
-        metric("benchmark", run ? run.benchmark : ""),
-        metric("得分", formatScore(summary.overall_score)),
-        metric("覆盖", summary.milestone_coverage || "unknown"),
-        metric("耗时", formatSeconds(summary.elapsed_seconds)),
-        metric("步骤", formatValue(summary.step_count)),
-        metric("场景", formatValue(summary.scenario_count))
+      const metricNodes = [metric("benchmark", run ? run.benchmark : "")];
+      if (run && run.model_id) {
+        metricNodes.push(metric("model", run.model_id));
+      }
+      metricNodes.push(
+        metric("寰楀垎", formatScore(summary.overall_score)),
+        metric("瑕嗙洊", summary.milestone_coverage || "unknown"),
+        metric("鑰楁椂", formatSeconds(summary.elapsed_seconds)),
+        metric("姝ラ", formatValue(summary.step_count)),
+        metric("鍦烘櫙", formatValue(summary.scenario_count))
       );
+      metrics.append(...metricNodes);
       container.append(selector, metrics);
     }
 
@@ -1064,7 +1068,7 @@
       const run = currentRun();
       const scenarios = run ? run.scenarios || [] : [];
       if (!scenarios.length) {
-        appendEmptyInline(container, "当前 run 没有 scenario 数据");
+        appendEmptyInline(container, "褰撳墠 run 娌℃湁 scenario 鏁版嵁");
         return;
       }
 
@@ -1076,7 +1080,7 @@
         optionListClassName: "case-option-list",
         optionClassName: "case-option",
         emptyClassName: "case-empty",
-        emptyText: "无匹配 case",
+        emptyText: "鏃犲尮閰?case",
         labelForItem: scenarioCaseId,
         onSelect: (match) => {
           state.scenarioIndex = match.index;
@@ -1232,13 +1236,17 @@
     }
 
     function runId(run) {
-      if (!run) return "未命名 run";
-      const parts = [run.benchmark || "benchmark", run.method || ""].filter(Boolean);
+      if (!run) return "鏈懡鍚?run";
+      const parts = [];
+      if (run.experiment_id) parts.push(run.experiment_id);
+      parts.push(run.benchmark || "benchmark");
+      if (run.model_id) parts.push(run.model_id);
+      if (run.method) parts.push(run.method);
       return parts.join(" / ");
     }
 
     function scenarioCaseId(scenario) {
-      return scenario ? scenario.scenario_id || "未命名 case" : "未命名 case";
+      return scenario ? scenario.scenario_id || "鏈懡鍚?case" : "鏈懡鍚?case";
     }
 
     function renderTrajectory() {
@@ -1252,19 +1260,19 @@
       ));
       appendPanelTitle(
         container,
-        "执行轨迹",
-        scenario ? `${scenario.task_id} · 显示 ${filteredSteps.length} / 共 ${steps.length} 步` : "等待选择 scenario",
+        "鎵ц杞ㄨ抗",
+        scenario ? `${scenario.task_id} 路 鏄剧ず ${filteredSteps.length} / 鍏?${steps.length} 姝 : "绛夊緟閫夋嫨 scenario",
         trajectoryFilterControls()
       );
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
-        appendEmpty(body, "没有可展示的执行轨迹");
+        appendEmpty(body, "娌℃湁鍙睍绀虹殑鎵ц杞ㄨ抗");
         return;
       }
 
       if (!steps.length) {
-        appendEmpty(body, "当前 scenario 没有轨迹步骤");
+        appendEmpty(body, "褰撳墠 scenario 娌℃湁杞ㄨ抗姝ラ");
         return;
       }
 
@@ -1274,7 +1282,7 @@
       }
 
       if (!filteredSteps.length) {
-        appendEmpty(body, "当前筛选没有匹配的轨迹步骤");
+        appendEmpty(body, "褰撳墠绛涢€夋病鏈夊尮閰嶇殑杞ㄨ抗姝ラ");
         return;
       }
 
@@ -1288,8 +1296,8 @@
     function trajectoryFilterControls() {
       const controls = el("div", "trajectory-filter-controls");
       controls.append(
-        trajectoryFilterSelect("actor", "发起方", [
-          ["all", "全部发起"],
+        trajectoryFilterSelect("actor", "鍙戣捣鏂?, [
+          ["all", "鍏ㄩ儴鍙戣捣"],
           ["agent", "agent"],
           ["user", "user"],
           ["environment", "environment"],
@@ -1297,8 +1305,8 @@
           ["evaluator", "evaluator"],
           ["unknown", "unknown"]
         ]),
-        trajectoryFilterSelect("recipient", "接收方", [
-          ["all", "全部接收"],
+        trajectoryFilterSelect("recipient", "鎺ユ敹鏂?, [
+          ["all", "鍏ㄩ儴鎺ユ敹"],
           ["agent", "agent"],
           ["user", "user"],
           ["environment", "environment"],
@@ -1380,10 +1388,10 @@
     function trajectoryFilterNotice(stepIndex) {
       const notice = el("div", "filter-notice");
       const text = el("span");
-      text.textContent = `当前筛选隐藏了选中步骤 #${stepIndex}`;
+      text.textContent = `褰撳墠绛涢€夐殣钘忎簡閫変腑姝ラ #${stepIndex}`;
       const button = el("button", "text-button");
       button.type = "button";
-      button.textContent = "清除筛选";
+      button.textContent = "娓呴櫎绛涢€?;
       button.addEventListener("click", () => {
         state.trajectoryFilters = { actor: "all", recipient: "all" };
         state.hiddenTrajectoryStepIndex = null;
@@ -1400,18 +1408,18 @@
       const scenario = currentScenario();
       const container = document.querySelector(".graph-panel");
       clear(container);
-      appendPanelTitle(container, "里程碑图", "milestone 拓扑与命中状态", graphLegend());
+      appendPanelTitle(container, "閲岀▼纰戝浘", "milestone 鎷撴墤涓庡懡涓姸鎬?, graphLegend());
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
-        appendEmpty(body, "没有可展示的里程碑图");
+        appendEmpty(body, "娌℃湁鍙睍绀虹殑閲岀▼纰戝浘");
         return;
       }
 
       const graph = scenario.milestone_graph || {};
       const nodes = graph.nodes || [];
       if (!nodes.length) {
-        appendEmpty(body, "当前 scenario 没有里程碑节点");
+        appendEmpty(body, "褰撳墠 scenario 娌℃湁閲岀▼纰戣妭鐐?);
         return;
       }
 
@@ -1430,11 +1438,11 @@
       const scenario = currentScenario();
       const container = document.querySelector(".stage-panel");
       clear(container);
-      appendPanelTitle(container, "评估阶段", "阶段覆盖范围与评估证据");
+      appendPanelTitle(container, "璇勪及闃舵", "闃舵瑕嗙洊鑼冨洿涓庤瘎浼拌瘉鎹?);
       const body = el("div", "panel-body");
       container.append(body);
       if (!scenario) {
-        appendEmpty(body, "没有可展示的评估阶段");
+        appendEmpty(body, "娌℃湁鍙睍绀虹殑璇勪及闃舵");
         return;
       }
 
@@ -1442,7 +1450,7 @@
       const reports = scenario.stage_reports || [];
       const settlements = scenario.stage_settlements || [];
       if (!definitions.length && !reports.length && !settlements.length) {
-        appendEmpty(body, "当前 scenario 没有阶段评估数据");
+        appendEmpty(body, "褰撳墠 scenario 娌℃湁闃舵璇勪及鏁版嵁");
         return;
       }
 
@@ -1463,8 +1471,8 @@
 
     function graphLegend() {
       const legend = el("div", "panel-legend");
-      legend.append(legendRow([["pass", "通过"], ["warn", "警告"], ["fail", "失败或 fatal"]]));
-      legend.append(legendRow([["pending", "未开始/缺失"], ["selected", "当前选中/阶段路径"], ["virtual", "虚拟节点"]]));
+      legend.append(legendRow([["pass", "閫氳繃"], ["warn", "璀﹀憡"], ["fail", "澶辫触鎴?fatal"]]));
+      legend.append(legendRow([["pending", "鏈紑濮?缂哄け"], ["selected", "褰撳墠閫変腑/闃舵璺緞"], ["virtual", "铏氭嫙鑺傜偣"]]));
       return legend;
     }
 
@@ -1484,7 +1492,7 @@
     }
 
     function constraintDetailText(constraint) {
-      if (!constraint) return "无";
+      if (!constraint) return "鏃?;
       return [
         `constraint_id: ${formatValue(constraint.constraint_id)}`,
         `target: ${formatValue(constraint.target)}`,
@@ -1553,7 +1561,7 @@
     }
 
     function milestoneAttemptDetailText(best) {
-      if (!best) return "无";
+      if (!best) return "鏃?;
       const attempt = best.attempt || {};
       const candidate = best.candidate || {};
       const score = candidate.score || {};
@@ -1567,8 +1575,8 @@
         `status: ${formatValue(score.status)}`,
         `reject_reason: ${formatValue(candidate.reject_reason)}`,
         `selected: ${formatValue(candidate.selected)}`,
-        `ready_before: ${(attempt.ready_before || []).join(", ") || "无"}`,
-        `matched_before: ${(attempt.matched_before || []).join(", ") || "无"}`
+        `ready_before: ${(attempt.ready_before || []).join(", ") || "鏃?}`,
+        `matched_before: ${(attempt.matched_before || []).join(", ") || "鏃?}`
       ];
       const constraintScores = Array.isArray(score.constraint_scores) ? score.constraint_scores : [];
       if (constraintScores.length) {
@@ -1666,14 +1674,14 @@
       head.append(meta, badges);
 
       const content = el("pre", "content");
-      content.textContent = step.content || "（无内容）";
+      content.textContent = step.content || "锛堟棤鍐呭锛?;
       card.append(head, content);
 
       if (step.tool_call) {
-        card.append(detailBlock(`工具调用：${toolName || step.tool_call.name || "unknown"}`, toolCallText(step.tool_call)));
+        card.append(detailBlock(`宸ュ叿璋冪敤锛?{toolName || step.tool_call.name || "unknown"}`, toolCallText(step.tool_call)));
       }
       if (step.tool_result) {
-        card.append(detailBlock(`工具结果：${toolName || "unknown"}`, toolResultText(step.tool_result, toolName)));
+        card.append(detailBlock(`宸ュ叿缁撴灉锛?{toolName || "unknown"}`, toolResultText(step.tool_result, toolName)));
       }
       return card;
     }
@@ -1700,12 +1708,12 @@
 
       const meta = el("div", "stage-meta");
       meta.append(
-        metric("级别", dimensionLevelSummary(report.dimension_levels)),
-        metric("总分", formatScore(report.stage_score)),
-        metric("置信", formatScore(averageScore(report.dimension_confidence))),
-        metric("不确定", formatScore(averageScore(report.dimension_uncertainty))),
-        metric("milestone", report.milestone_id || (definition && definition.milestone_id) || "无"),
-        metric("范围", settlement ? stepRangeText(settlement) : "未匹配")
+        metric("绾у埆", dimensionLevelSummary(report.dimension_levels)),
+        metric("鎬诲垎", formatScore(report.stage_score)),
+        metric("缃俊", formatScore(averageScore(report.dimension_confidence))),
+        metric("涓嶇‘瀹?, formatScore(averageScore(report.dimension_uncertainty))),
+        metric("milestone", report.milestone_id || (definition && definition.milestone_id) || "鏃?),
+        metric("鑼冨洿", settlement ? stepRangeText(settlement) : "鏈尮閰?)
       );
       summary.append(head, meta);
       card.append(summary);
@@ -1713,13 +1721,13 @@
       const dimensions = dimensionRows(report);
       const weights = weightRows(report);
       const stageGoal = (definition && definition.stage_goal) || ((report.metadata || {}).stage_goal) || "";
-      if (stageGoal) body.append(detailBlock("阶段目标", stageGoal));
-      if (dimensions) body.append(stageScoreSection("维度分数", dimensions));
-      if (weights) body.append(stageScoreSection("动态权重", weights));
+      if (stageGoal) body.append(detailBlock("闃舵鐩爣", stageGoal));
+      if (dimensions) body.append(stageScoreSection("缁村害鍒嗘暟", dimensions));
+      if (weights) body.append(stageScoreSection("鍔ㄦ€佹潈閲?, weights));
       const warning = warningSummarySection(report);
       if (warning) body.append(warning);
-      const diagnosis = arrayDetailBlock("诊断", report.diagnosis);
-      const evidence = arrayDetailBlock("证据", report.evidence);
+      const diagnosis = arrayDetailBlock("璇婃柇", report.diagnosis);
+      const evidence = arrayDetailBlock("璇佹嵁", report.evidence);
       if (diagnosis) body.append(diagnosis);
       if (evidence) body.append(evidence);
       const failure = failureSummarySection(report);
@@ -1761,13 +1769,13 @@
       card.addEventListener("click", () => focusStage(stageId));
       const head = el("div", "stage-head");
       const title = el("div", "stage-title");
-      title.textContent = settlement.settlement_id || "未命名结算";
+      title.textContent = settlement.settlement_id || "鏈懡鍚嶇粨绠?;
       head.append(title, statusBadge(settlement.status));
       const meta = el("div", "stage-meta");
       meta.append(
-        metric("类型", settlement.kind || "unknown"),
-        metric("milestone", settlement.milestone_id || "无"),
-        metric("范围", stepRangeText(settlement))
+        metric("绫诲瀷", settlement.kind || "unknown"),
+        metric("milestone", settlement.milestone_id || "鏃?),
+        metric("鑼冨洿", stepRangeText(settlement))
       );
       card.append(head, meta);
       return card;
@@ -2038,12 +2046,12 @@
       const finalDiagnostic = matching ? null : milestoneFinalDiagnosticFor(milestoneId, scenario);
       const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
 
-      appendInlineDetailSection(detail, "阶段目标", definition ? definition.stage_goal || "无" : "无");
-      appendInlineDetailSection(detail, "milestone 描述", node ? node.description || node.name || "无" : "无");
+      appendInlineDetailSection(detail, "闃舵鐩爣", definition ? definition.stage_goal || "鏃? : "鏃?);
+      appendInlineDetailSection(detail, "milestone 鎻忚堪", node ? node.description || node.name || "鏃? : "鏃?);
       appendConstraintDetailSection(detail, constraints);
       appendInlineDetailSection(
         detail,
-        "匹配诊断",
+        "鍖归厤璇婃柇",
         matching ? matchingDetailText(matching) : milestoneFailureDetailText(finalDiagnostic, bestAttempt)
       );
 
@@ -2064,12 +2072,12 @@
     function appendConstraintDetailSection(container, constraints) {
       const section = el("details", "constraint-list");
       const heading = el("summary", "detail-summary");
-      heading.textContent = "约束定义";
+      heading.textContent = "绾︽潫瀹氫箟";
       section.append(heading);
 
       if (!constraints.length) {
         const empty = el("pre");
-        empty.textContent = "无";
+        empty.textContent = "鏃?;
         section.append(empty);
         container.append(section);
         return;
@@ -2090,7 +2098,7 @@
     function constraintItemTitle(constraint, index) {
       if (!constraint) return `constraint ${index + 1}`;
       const id = constraint.constraint_id || `constraint ${index + 1}`;
-      const target = constraint.target ? ` · ${constraint.target}` : "";
+      const target = constraint.target ? ` 路 ${constraint.target}` : "";
       return `${id}${target}`;
     }
 
@@ -2406,7 +2414,7 @@
       const next = metadata.next_evaluation_policy;
       const termination = metadata.evaluation_termination;
       if (!next && !termination) return null;
-      return detailBlock("评估策略", JSON.stringify({
+      return detailBlock("璇勪及绛栫暐", JSON.stringify({
         next_evaluation_policy: next || null,
         evaluation_termination: termination || null
       }, null, 2));
@@ -2421,14 +2429,14 @@
           payload[key] = metadata[key];
         }
       });
-      return Object.keys(payload).length ? detailBlock("pending 诊断", JSON.stringify(payload, null, 2)) : null;
+      return Object.keys(payload).length ? detailBlock("pending 璇婃柇", JSON.stringify(payload, null, 2)) : null;
     }
 
     function terminationSection(report) {
       const metadata = report.metadata || {};
       if (metadata.finish_unsettled_due_to_termination !== true) return null;
       const termination = metadata.termination || {};
-      return detailBlock("finish 未结算", terminationDetailText(termination), true);
+      return detailBlock("finish 鏈粨绠?, terminationDetailText(termination), true);
     }
 
     function terminationDetailText(termination) {
@@ -2449,7 +2457,7 @@
     }
 
     function minefieldMatchLine(match) {
-      if (!match) return "- minefield: 无";
+      if (!match) return "- minefield: 鏃?;
       const pieces = [
         match.minefield_id || "unknown",
         `severity=${formatValue(match.severity)}`,
@@ -2472,7 +2480,7 @@
 
     function warningSummarySection(report) {
       const text = warningSummaryText(report);
-      return text ? detailBlock("警告原因", text, normalizeStageStatus(report.status) === "warn") : null;
+      return text ? detailBlock("璀﹀憡鍘熷洜", text, normalizeStageStatus(report.status) === "warn") : null;
     }
 
     function warningSummaryText(report) {
@@ -2480,7 +2488,7 @@
       const metadata = report.metadata;
       const lines = [];
       if (Array.isArray(metadata.low_score_dimensions) && metadata.low_score_dimensions.length) {
-        lines.push("低分维度:");
+        lines.push("浣庡垎缁村害:");
         metadata.low_score_dimensions.forEach((item) => {
           const dimension = dimensionLabel(item.dimension || "unknown");
           lines.push(`- ${dimension}=${formatScore(item.score)} severity=${formatValue(item.severity)}`);
@@ -2488,20 +2496,20 @@
       }
       const diagnostics = metadata.stage_quality_diagnostics || {};
       if (Number(diagnostics.warning_count) > 0) {
-        lines.push(`质量诊断 warning_count=${diagnostics.warning_count}`);
+        lines.push(`璐ㄩ噺璇婃柇 warning_count=${diagnostics.warning_count}`);
       }
-      appendDiagnosticLines(lines, "工具参数", diagnostics.tool_argument_warnings, toolArgumentWarningLine);
-      appendDiagnosticLines(lines, "工具失败", diagnostics.failed_tool_results, failedToolResultLine);
+      appendDiagnosticLines(lines, "宸ュ叿鍙傛暟", diagnostics.tool_argument_warnings, toolArgumentWarningLine);
+      appendDiagnosticLines(lines, "宸ュ叿澶辫触", diagnostics.failed_tool_results, failedToolResultLine);
       appendDiagnosticLines(
         lines,
-        "空工具结果",
+        "绌哄伐鍏风粨鏋?,
         (diagnostics.empty_tool_results || []).filter((item) => item && item.severity !== "info"),
         emptyToolResultLine
       );
-      appendDiagnosticLines(lines, "证据风险", diagnostics.grounding_warnings, groundingWarningLine);
+      appendDiagnosticLines(lines, "璇佹嵁椋庨櫓", diagnostics.grounding_warnings, groundingWarningLine);
       const efficiency = diagnostics.efficiency || {};
       if (Number(efficiency.extra_user_turns_before_first_tool_call) > 0) {
-        lines.push(`- 效率：首次工具调用前额外用户轮次 ${efficiency.extra_user_turns_before_first_tool_call}`);
+        lines.push(`- 鏁堢巼锛氶娆″伐鍏疯皟鐢ㄥ墠棰濆鐢ㄦ埛杞 ${efficiency.extra_user_turns_before_first_tool_call}`);
       }
       return lines.join("\n").trim();
     }
@@ -2510,7 +2518,7 @@
       if (!Array.isArray(items) || !items.length) return;
       lines.push(`${title}:`);
       items.slice(0, 4).forEach((item) => lines.push(`- ${formatter(item)}`));
-      if (items.length > 4) lines.push(`- 另有 ${items.length - 4} 条`);
+      if (items.length > 4) lines.push(`- 鍙︽湁 ${items.length - 4} 鏉);
     }
 
     function toolArgumentWarningLine(item) {
@@ -2536,7 +2544,7 @@
         bestMilestoneAttempt(report.milestone_id, currentScenario()),
         false
       );
-      return text ? detailBlock("匹配失败摘要", text, true) : null;
+      return text ? detailBlock("鍖归厤澶辫触鎽樿", text, true) : null;
     }
 
     function milestoneFinalDiagnosticFor(milestoneId, scenario) {
@@ -2569,7 +2577,7 @@
       if (bestAttempt && includeBestAttemptDetail !== false) {
         parts.push("", "best_attempt:", milestoneAttemptDetailText(bestAttempt));
       }
-      return parts.join("\n").trim() || "无";
+      return parts.join("\n").trim() || "鏃?;
     }
 
     function attemptFailureSummary(bestAttempt) {
@@ -2583,19 +2591,19 @@
             .sort((left, right) => Number(left.score || 0) - Number(right.score || 0))
         : [];
       let summary = (
-        `milestone ${candidate.milestone_id || "unknown"} 未匹配；最佳候选位于 step=${formatValue(boundary.step_index || attempt.step_index)}，` +
-        `得分 ${formatScore(score.score)}（status=${formatValue(score.status)}，reject_reason=${formatValue(candidate.reject_reason)}）。`
+        `milestone ${candidate.milestone_id || "unknown"} 鏈尮閰嶏紱鏈€浣冲€欓€変綅浜?step=${formatValue(boundary.step_index || attempt.step_index)}锛宍 +
+        `寰楀垎 ${formatScore(score.score)}锛坰tatus=${formatValue(score.status)}锛宺eject_reason=${formatValue(candidate.reject_reason)}锛夈€俙
       );
       if (failed.length) {
         const lead = failed[0];
-        const evidence = Array.isArray(lead.evidence) && lead.evidence.length ? `；证据：${lead.evidence[0]}` : "";
-        summary += ` 主要低分约束：${lead.constraint_id || "constraint"} score=${formatScore(lead.score)}${evidence}。`;
+        const evidence = Array.isArray(lead.evidence) && lead.evidence.length ? `锛涜瘉鎹細${lead.evidence[0]}` : "";
+        summary += ` 涓昏浣庡垎绾︽潫锛?{lead.constraint_id || "constraint"} score=${formatScore(lead.score)}${evidence}銆俙;
       }
       return summary;
     }
 
     function failedConstraintLine(item) {
-      if (!item) return "- constraint: 无";
+      if (!item) return "- constraint: 鏃?;
       const pieces = [
         item.constraint_id || "constraint",
         `score=${formatScore(item.score)}`,
@@ -2609,7 +2617,7 @@
     }
 
     function semanticReviewText(review) {
-      if (!review) return "无";
+      if (!review) return "鏃?;
       const lines = [
         `status: ${formatValue(review.status)}`,
         `reason: ${formatValue(review.reason)}`,
@@ -2627,7 +2635,7 @@
       if (!report || !["fail", "missing"].includes(report.status)) return null;
       const scenario = currentScenario();
       const best = bestMilestoneAttempt(report.milestone_id, scenario);
-      return best ? detailBlock("最佳匹配尝试", milestoneAttemptDetailText(best), true) : null;
+      return best ? detailBlock("鏈€浣冲尮閰嶅皾璇?, milestoneAttemptDetailText(best), true) : null;
     }
 
     function arrayDetailBlock(title, values) {
@@ -2671,13 +2679,13 @@
 
     function dimensionLabel(key) {
       const labels = {
-        progress: "进展",
-        state_consistency: "状态一致",
-        tool_quality: "工具质量",
-        efficiency: "效率",
-        safety: "安全",
-        interaction_quality: "交互质量",
-        recovery: "恢复"
+        progress: "杩涘睍",
+        state_consistency: "鐘舵€佷竴鑷?,
+        tool_quality: "宸ュ叿璐ㄩ噺",
+        efficiency: "鏁堢巼",
+        safety: "瀹夊叏",
+        interaction_quality: "浜や簰璐ㄩ噺",
+        recovery: "鎭㈠"
       };
       return labels[key] || key;
     }
@@ -2714,7 +2722,7 @@
       const summary = el("summary", "detail-summary");
       summary.textContent = title;
       const body = el("pre", "detail-text");
-      body.textContent = text || "无";
+      body.textContent = text || "鏃?;
       block.open = Boolean(open);
       block.append(summary, body);
       return block;
@@ -2724,7 +2732,7 @@
       const chip = el("span", "metric-chip");
       const name = document.createTextNode(label);
       const strong = el("strong");
-      strong.textContent = value === null || value === undefined || value === "" ? "无" : String(value);
+      strong.textContent = value === null || value === undefined || value === "" ? "鏃? : String(value);
       chip.append(name, strong);
       return chip;
     }
@@ -2784,18 +2792,18 @@
 
     function formatScore(value) {
       const number = Number(value);
-      if (!Number.isFinite(number)) return "无";
+      if (!Number.isFinite(number)) return "鏃?;
       return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
     }
 
     function formatSeconds(value) {
       const number = Number(value);
-      if (!Number.isFinite(number)) return "无";
+      if (!Number.isFinite(number)) return "鏃?;
       return `${number.toFixed(1)}s`;
     }
 
     function formatValue(value) {
-      if (value === null || value === undefined || value === "") return "无";
+      if (value === null || value === undefined || value === "") return "鏃?;
       return String(value);
     }
 

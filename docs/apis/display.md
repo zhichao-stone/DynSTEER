@@ -10,7 +10,7 @@
 - `results_dir: Path`：评估结果目录。
 - `data_dir: Path | None`：benchmark 数据目录；为 `None` 时默认使用 `runs_dir` 同级的 `data` 目录。
 
-`runs_dir` 与 `results_dir` 下的 case 产物按 `<benchmark>/<method>/<case_id>` 扫描；看板数据中的 run 节点代表一个 `benchmark/method` 组合，并保留 `benchmark` 与 `method`。
+`runs_dir` 与 `results_dir` 下的 case 产物按 `<benchmark>/<method>/<case_id>` 或实验态 `exp/<experiment_id>/<benchmark>/<model_id>/<method>/<case_id>` 扫描，旧的 `experiments/...` 目录也仍然兼容；看板数据中的 run 节点会保留 `experiment_id`（如有）、`benchmark`、`model_id` 与 `method`，并按这几个维度区分不同 run。
 
 输出：
 

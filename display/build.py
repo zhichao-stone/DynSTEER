@@ -16,7 +16,8 @@ from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file
 
 JsonObject = dict[str, Any]
-CaseKey = tuple[str, str, str]
+CaseKey = tuple[str, str, str, str, str]
+EXPERIMENT_ROOT_DIRS = {"exp", "experiments"}
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 DEFAULT_FINISH_STAGE_GOAL = "完成收尾检查：确认已达成的阶段目标没有被后续证据推翻。"
@@ -62,28 +63,51 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _discover_runs(runs_dir: Path, results_dir: Path, data_dir: Path) -> list[JsonObject]:
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for benchmark, method, scenario_id in sorted(_collect_case_keys(runs_dir) | _collect_case_keys(results_dir)):
-        grouped.setdefault((benchmark, method), []).append(scenario_id)
+    grouped: dict[tuple[str, str, str, str], list[str]] = {}
+    for experiment_id, benchmark, model_id, method, scenario_id in sorted(
+        _collect_case_keys(runs_dir) | _collect_case_keys(results_dir)
+    ):
+        grouped.setdefault((experiment_id, benchmark, model_id, method), []).append(scenario_id)
     return [
         {
+            "experiment_id": experiment_id or None,
             "benchmark": benchmark,
+            "model_id": model_id or None,
             "method": method,
             "summary": _run_summary(scenarios),
             "scenarios": scenarios,
         }
-        for (benchmark, method), scenario_ids in grouped.items()
+        for (experiment_id, benchmark, model_id, method), scenario_ids in grouped.items()
         for scenarios in [
-            [_scenario(runs_dir, results_dir, data_dir, benchmark, method, item) for item in scenario_ids]
+            [
+                _scenario(
+                    runs_dir,
+                    results_dir,
+                    data_dir,
+                    experiment_id,
+                    benchmark,
+                    model_id,
+                    method,
+                    item,
+                )
+                for item in scenario_ids
+            ]
         ]
     ]
 
 
 def _scenario(
-    runs_dir: Path, results_dir: Path, data_dir: Path, benchmark: str, method: str, scenario_id: str
+    runs_dir: Path,
+    results_dir: Path,
+    data_dir: Path,
+    experiment_id: str,
+    benchmark: str,
+    model_id: str,
+    method: str,
+    scenario_id: str,
 ) -> JsonObject:
-    run_case_dir = runs_dir / benchmark / method / scenario_id
-    result_case_dir = results_dir / benchmark / method / scenario_id
+    run_case_dir = _case_output_dir(runs_dir, experiment_id, benchmark, model_id, method, scenario_id)
+    result_case_dir = _case_output_dir(results_dir, experiment_id, benchmark, model_id, method, scenario_id)
     trajectory = _load_json(run_case_dir / "trajectory.json")
     raw_summary = _load_json(run_case_dir / "raw_summary.json")
     summary = _load_json(result_case_dir / "summary.json")
@@ -110,6 +134,7 @@ def _scenario(
     minefield_matches = _scenario_minefield_matches(report, termination, adapted_case)
     return {
         "scenario_id": scenario_id,
+        "experiment_id": experiment_id or None,
         "task_id": str(summary.get("task_id") or trajectory.get("task_id") or f"{benchmark}::{scenario_id}"),
         "summary": _normalize_summary_stage_ids(_summary_payload(summary), stage_id_map, definition_index),
         "trajectory": {"steps": trajectory.get("steps", [])},
@@ -120,25 +145,79 @@ def _scenario(
         "match_attempts": raw_summary.get("milestone_match_attempts", []),
         "minefield_matches": minefield_matches,
         "termination": termination,
-    }
+}
 
 
 def _collect_case_keys(base_dir: Path) -> set[CaseKey]:
     if not base_dir.exists():
         return set()
     keys: set[CaseKey] = set()
-    for benchmark_dir in base_dir.iterdir():
-        if not benchmark_dir.is_dir():
+    for case_dir in base_dir.rglob("*"):
+        if not case_dir.is_dir() or not _is_case_output_dir(case_dir):
             continue
-        for method_dir in benchmark_dir.iterdir():
-            if not method_dir.is_dir():
-                continue
-            keys.update(
-                (benchmark_dir.name, method_dir.name, scenario_dir.name)
-                for scenario_dir in method_dir.iterdir()
-                if scenario_dir.is_dir()
-            )
+        key = _case_key_from_dir(case_dir, base_dir)
+        if key is not None:
+            keys.add(key)
     return keys
+
+
+def _is_case_output_dir(case_dir: Path) -> bool:
+    return (
+        (case_dir / "trajectory.json").exists()
+        and (case_dir / "raw_summary.json").exists()
+    ) or (
+        (case_dir / "summary.json").exists()
+        and (case_dir / "report.json").exists()
+    )
+
+
+def _case_key_from_dir(case_dir: Path, base_dir: Path) -> CaseKey | None:
+    try:
+        rel_parts = case_dir.relative_to(base_dir).parts
+    except ValueError:
+        return None
+    experiment_id = ""
+    tail_parts = rel_parts
+    if len(tail_parts) >= 4 and tail_parts[0] in EXPERIMENT_ROOT_DIRS:
+        experiment_id = tail_parts[1]
+        tail_parts = tail_parts[2:]
+    elif base_dir.name in EXPERIMENT_ROOT_DIRS and len(tail_parts) >= 1:
+        experiment_id = tail_parts[0]
+        tail_parts = tail_parts[1:]
+    elif base_dir.parent.name in EXPERIMENT_ROOT_DIRS and base_dir.name:
+        experiment_id = base_dir.name
+    if len(tail_parts) == 3:
+        benchmark, method, scenario_id = tail_parts
+        model_id = ""
+    elif len(tail_parts) == 4:
+        benchmark, model_id, method, scenario_id = tail_parts
+    else:
+        return None
+    return experiment_id, benchmark, model_id, method, scenario_id
+
+
+def _case_output_dir(
+    base_dir: Path, experiment_id: str, benchmark: str, model_id: str, method: str, scenario_id: str
+) -> Path:
+    case_dir = _experiment_case_root(base_dir, experiment_id)
+    case_dir = case_dir / benchmark
+    if model_id:
+        case_dir = case_dir / model_id
+    return case_dir / method / scenario_id
+
+
+def _experiment_case_root(base_dir: Path, experiment_id: str) -> Path:
+    if not experiment_id:
+        return base_dir
+    if base_dir.name == experiment_id and base_dir.parent.name in EXPERIMENT_ROOT_DIRS:
+        return base_dir
+    if base_dir.name in EXPERIMENT_ROOT_DIRS:
+        return base_dir / experiment_id
+    exp_root = base_dir / "exp" / experiment_id
+    legacy_root = base_dir / "experiments" / experiment_id
+    if legacy_root.exists() and not exp_root.exists():
+        return legacy_root
+    return exp_root
 
 
 def _scenario_minefield_matches(report: JsonObject, termination: JsonObject, adapted_case: JsonObject) -> list[JsonObject]:

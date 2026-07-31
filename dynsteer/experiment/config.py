@@ -29,8 +29,8 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
         raise ValueError("config 不能为空")
     config_path = Path(str(config.get("_config_path", "experiment.json"))).resolve()
     experiment_id = required_str(config, "experiment_id", "实验配置")
-    runs_dir = Path(str(config.get("runs_dir", f"runs/experiments/{experiment_id}")))
-    results_dir = Path(str(config.get("results_dir", f"results/experiments/{experiment_id}")))
+    runs_dir = Path(str(config.get("runs_dir", Path("runs") / "exp" / experiment_id)))
+    results_dir = Path(str(config.get("results_dir", Path("results") / "exp" / experiment_id)))
 
     benchmarks = _list_specs(config, "benchmarks")
     models = _list_specs(config, "models", default=[{"model_id": "default"}])
