@@ -134,6 +134,17 @@ def get_user_factory(role_impl_type: object, client_config: Mapping[str, Any] | 
     """按 ToolSandbox user 角色类型创建可选独立 client 配置的工厂。"""
     return _role_factory(role_impl_type, _USER_FACTORY_SPECS, _TOOL_SANDBOX_USER_FALLBACK_NAMES, _GENERIC_USER_SPEC, client_config)
 
+def role_client_config(role: object) -> dict[str, object]:
+    """读取 role 绑定的 client_config。"""
+    if role is None:
+        raise ValueError("role 不能为空")
+    client_config = getattr(role, _DYNSTEER_CLIENT_CONFIG_KWARG, None)
+    if client_config is None:
+        return {}
+    if not isinstance(client_config, Mapping):
+        raise ValueError("role client_config 必须是 JSON 对象")
+    return normalize_client_config(client_config, "client_config")
+
 def _role_factory(role_impl_type: object, specs: dict[str, RoleFactorySpec], fallback_names: set[str], generic_spec: RoleFactorySpec, client_config: Mapping[str, Any] | None) -> Callable[[], object] | None:
     if role_impl_type is None:
         raise ValueError("role_impl_type 不能为空")
@@ -226,9 +237,11 @@ def _environment_role_type(module_name: str, parent_class_name: str, mode: str, 
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             client_config = kwargs.pop(_DYNSTEER_CLIENT_CONFIG_KWARG, None)
+            normalized_client_config = normalize_client_config(client_config, _DYNSTEER_CLIENT_CONFIG_KWARG)
+            setattr(self, _DYNSTEER_CLIENT_CONFIG_KWARG, normalized_client_config)
             if mode == "openai_server":
                 super().__init__(*args, **kwargs)
-                setattr(self, client_attr, _openai_client_from_config(client_config, default_api_key="EMPTY"))
+                setattr(self, client_attr, _openai_client_from_config(normalized_client_config, default_api_key="EMPTY"))
                 return
             if mode == "pass":
                 super().__init__(*args, **kwargs)
@@ -236,10 +249,10 @@ def _environment_role_type(module_name: str, parent_class_name: str, mode: str, 
             if needs_model_name:
                 self.model_name = str(kwargs.get("model_name") if "model_name" in kwargs else args[0])
             if mode == "anthropic":
-                self.client = _anthropic_client_from_config(client_config)
+                self.client = _anthropic_client_from_config(normalized_client_config)
                 logging.getLogger("httpx").setLevel(logging.WARNING)
             else:
-                self.openai_client = _openai_client_from_config(client_config)
+                self.openai_client = _openai_client_from_config(normalized_client_config)
     DynsteerEnvironmentRole.__name__ = f"DynSTEER{parent_type.__name__}"
     DynsteerEnvironmentRole.__qualname__ = DynsteerEnvironmentRole.__name__
     return DynsteerEnvironmentRole

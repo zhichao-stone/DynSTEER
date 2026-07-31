@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import argparse
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
-from dataclasses import replace
+
 from dynsteer.adapter.loader import adapted_case_path, load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.experiment.runner import run_experiment
@@ -11,8 +13,9 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
 from dynsteer.log import configure_logger
 
+
 def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
-    """解析 benchmark-only 命令行参数。"""
+    """解析 benchmark-only 和统一实验命令行参数。"""
     parser = argparse.ArgumentParser(description="运行 DynSTEER benchmark 阶段式动态评估实验")
     parser.add_argument("--benchmark", default=None, help="benchmark harness 名称，例如 toolsandbox")
     parser.add_argument("--exp", "--experiment-config", dest="experiment_config", default=None, help="统一实验矩阵 JSON 配置路径")
@@ -27,15 +30,17 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--no_sum", "--no-sum", action="store_true", help="统一实验入口下只写 case 级结果，不写 index/scores/metrics 汇总文件")
     return parser.parse_args(argv)
 
+
 def _adapted_case_files_exist(config: HarnessRunConfig) -> bool:
     """判断当前配置指定的 adapted case 文件是否都已存在。"""
     if config is None:
         raise ValueError("config 不能为空")
     if config.case_ids is None:
         return False
-    return all((adapted_case_path(config.data_root, case_id).exists() for case_id in config.case_ids))
+    return all(adapted_case_path(config.data_root, case_id).exists() for case_id in config.case_ids)
 
-def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool=False) -> list[Path]:
+
+def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = False) -> list[Path]:
     """仅执行 benchmark TaskCase 适配，并返回 adapted case 文件路径。"""
     if configs is None:
         raise ValueError("configs 不能为空")
@@ -65,19 +70,22 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool=False
         loaded_case_ids = [task_case.case_id for task_case in task_cases]
         if loaded_case_ids != case_ids:
             raise ValueError(f"加载的 TaskCase 顺序与配置不一致: {loaded_case_ids}")
-        adapted_paths.extend((adapted_case_path(run_config.data_root, case_id) for case_id in case_ids))
+        adapted_paths.extend(adapted_case_path(run_config.data_root, case_id) for case_id in case_ids)
     return adapted_paths
 
-def main(argv: Optional[list[str]]=None) -> int:
+
+def main(argv: Optional[list[str]] = None) -> int:
     """主实验入口：加载 benchmark 配置列表并执行评估。"""
     args = _parse_args(argv)
     logger = configure_logger(args.log_dir)
     runs_dir = Path(args.runs_dir)
     results_dir = Path(args.results_dir)
+
     try:
+        if int(args.workers) < 1:
+            raise ValueError("--workers 必须大于 0")
+
         if args.experiment_config is not None:
-            if int(args.workers) < 1:
-                raise ValueError("--workers 必须大于 0")
             results = run_experiment(
                 Path(args.experiment_config),
                 workers=int(args.workers),
@@ -89,13 +97,14 @@ def main(argv: Optional[list[str]]=None) -> int:
             for result in results:
                 print(f"{result.benchmark}/{result.method.value}/{result.model_id}/{result.case_id}")
             return 0
+
         if args.benchmark is None:
             raise ValueError("运行单 benchmark harness 时必须提供 --benchmark；统一实验请提供 --exp")
+
         data_root = Path(args.data_root) if args.data_root is not None else Path(__file__).parent / "data" / args.benchmark
         if not data_root.exists():
             raise ValueError("运行 benchmark harness 时需要提供可靠的 data-root，通过 --data-root 提供或者使用 data/{benchmark}")
-        if int(args.workers) < 1:
-            raise ValueError("--workers 必须大于 0")
+
         configs = load_harness_run_configs(benchmark=str(args.benchmark), data_root=data_root, runs_dir=runs_dir, results_dir=results_dir)
         if args.only_adapt:
             adapted_paths = _adapt_only_configs(configs, force_adapt=bool(args.force_adapt))
@@ -103,6 +112,7 @@ def main(argv: Optional[list[str]]=None) -> int:
             for path in adapted_paths:
                 print(str(path))
             return 0
+
         outputs: list[HarnessEvaluationOutput] = run_harness_configs(
             configs=configs,
             max_workers=int(args.workers),
@@ -119,5 +129,7 @@ def main(argv: Optional[list[str]]=None) -> int:
     except Exception as exc:
         logger.exception("benchmark 执行失败", extra={"error": str(exc)})
         return 2
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

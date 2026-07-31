@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -32,7 +34,7 @@ def run_harness_configs(
         outputs.extend(
             _run_config(
                 config,
-                max_workers=_effective_max_workers(max_workers, config),
+                max_workers=effective_max_workers(max_workers, config),
                 logger=logger,
                 force_adapt=force_adapt,
                 force_eval=effective_force_eval,
@@ -82,7 +84,7 @@ def _run_config(
     return outputs
 
 
-def _effective_max_workers(max_workers: int, config: HarnessRunConfig) -> int:
+def effective_max_workers(max_workers: int, config: HarnessRunConfig) -> int:
     """计算当前配置允许的最大 worker 数。"""
     if config is None:
         raise ValueError("config 不能为空")
@@ -126,4 +128,4 @@ def _get_or_configure_harness_logger(log_dir: Path) -> logging.Logger:
     return configure_logger(log_dir)
 
 
-__all__ = ["HarnessEvaluationOutput", "run_harness_configs"]
+__all__ = ["HarnessEvaluationOutput", "effective_max_workers", "run_harness_configs"]

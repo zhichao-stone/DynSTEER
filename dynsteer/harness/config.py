@@ -2,6 +2,7 @@ import os
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Mapping
+
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
@@ -19,7 +20,40 @@ _RUN_CONFIG_CONTROL_FIELDS = {
     *_CLIENT_CONFIG_KEYS,
 }
 
-def load_judge_config_from_env(env: Mapping[str, str] | None=None) -> JsonObject:
+
+def load_benchmark_manifest_metadata(benchmark: str, data_root: Path) -> JsonObject:
+    """读取 benchmark.json 中 harness/experiment 通用的 manifest 元数据。"""
+    if benchmark is None or not benchmark.strip():
+        raise ValueError("benchmark 不能为空")
+    if data_root is None:
+        raise ValueError("data_root 不能为空")
+    normalized_benchmark = benchmark.strip().lower()
+    manifest: dict[str, Any] = read_json_file(data_root / "benchmark.json", "benchmark.json", dict)
+    manifest_benchmark = required_str(manifest, "benchmark", "benchmark.json").lower()
+    if manifest_benchmark != normalized_benchmark:
+        raise ValueError(f"benchmark.json 中的 benchmark 必须是 {normalized_benchmark}")
+    source_root = required_str(manifest, "source_root", "benchmark.json")
+    tool_backend = required_str(manifest, "tool_backend", "benchmark.json")
+    language = manifest.get("language", "en")
+    if not isinstance(language, str) or not language.strip():
+        raise ValueError("benchmark.json language 必须是非空字符串")
+    metadata: JsonObject = {
+        "benchmark": manifest_benchmark,
+        "source_root": source_root,
+        "tool_backend": tool_backend,
+        "language": language.strip(),
+    }
+    manifest_max_workers = manifest.get("max_workers")
+    if manifest_max_workers is not None:
+        if isinstance(manifest_max_workers, bool) or not isinstance(manifest_max_workers, int):
+            raise ValueError("benchmark.json max_workers 必须是正整数")
+        if manifest_max_workers < 1:
+            raise ValueError("benchmark.json max_workers 必须是正整数")
+        metadata["benchmark_max_workers"] = manifest_max_workers
+    return metadata
+
+
+def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObject:
     """从环境变量读取 LLMJudge 配置。"""
     source = env or os.environ
     provider = source.get("DYNSTEER_JUDGE_PROVIDER")
@@ -34,9 +68,7 @@ def load_judge_config_from_env(env: Mapping[str, str] | None=None) -> JsonObject
         "base_url": source.get("DYNSTEER_JUDGE_BASE_URL"),
         "timeout_seconds": float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
         "temperature": float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
-        "max_tokens": _optional_positive_int(
-            source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS"
-        ),
+        "max_tokens": _optional_positive_int(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS"),
         "max_retries": int(source.get("DYNSTEER_JUDGE_MAX_RETRIES", "3")),
         "retry_base_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS", "1.0")),
         "retry_max_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS", "8.0")),
@@ -45,14 +77,9 @@ def load_judge_config_from_env(env: Mapping[str, str] | None=None) -> JsonObject
         "api_key_configured": bool(source.get("DYNSTEER_JUDGE_API_KEY")),
     }
 
-def threshold_config_from_mapping(data: Mapping[str, Any] | None=None) -> ThresholdConfig:
-    """从 JSON 映射生成 ThresholdConfig。
 
-    入参：
-        data: 阈值字段映射；缺失字段使用默认值。
-    输出：
-        可传入 evaluator 的 ThresholdConfig。
-    """
+def threshold_config_from_mapping(data: Mapping[str, Any] | None = None) -> ThresholdConfig:
+    """从 JSON 映射生成 ThresholdConfig。"""
     if data is None:
         return ThresholdConfig()
     if not isinstance(data, Mapping):
@@ -71,7 +98,8 @@ def threshold_config_from_mapping(data: Mapping[str, Any] | None=None) -> Thresh
         raise ValueError("threshold 必须满足 fail <= warn <= pass")
     return config
 
-def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None=None) -> EvaluationStrategyConfig:
+
+def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None = None) -> EvaluationStrategyConfig:
     """从 JSON 映射生成 EvaluationStrategyConfig。"""
     if data is None:
         return EvaluationStrategyConfig()
@@ -79,22 +107,19 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None=None) -> Eva
         raise ValueError("evaluation strategy 必须是 JSON 对象")
     fixed_level = _evaluation_level(data.get("fixed_judge_level"), default=EvaluationLevel.CHEAP)
     metadata = data.get("metadata")
-    if metadata is not None and (not isinstance(metadata, dict)):
+    if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("strategy.metadata 必须是 JSON 对象")
     return EvaluationStrategyConfig(
         dynamic_routing=_bool_from_mapping(data, "dynamic_routing", True),
         dynamic_weighting=_bool_from_mapping(data, "dynamic_weighting", True),
         policy_stop=_bool_from_mapping(data, "policy_stop", True),
         fixed_judge_level=fixed_level,
-        replay_continue_after_virtual_stop=_bool_from_mapping(
-            data,
-            "replay_continue_after_virtual_stop",
-            False,
-        ),
+        replay_continue_after_virtual_stop=_bool_from_mapping(data, "replay_continue_after_virtual_stop", False),
         metadata={str(key): value for key, value in dict(metadata or {}).items()},
     )
 
-def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None=None) -> int:
+
+def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) -> int:
     """从环境变量读取 ready frontier 无进展 patience。"""
     source = env if env is not None else os.environ
     raw_value = source.get("DYNSTEER_READY_FRONTIER_PATIENCE")
@@ -107,6 +132,7 @@ def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None=None) ->
     if patience < 1:
         raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须大于 0")
     return patience
+
 
 def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | None:
     scenarios = spec.get("scenarios", [])
@@ -123,27 +149,17 @@ def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | N
         case_ids.append(scenario.strip())
     return tuple(case_ids)
 
+
 def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, results_dir: Path) -> list[HarnessRunConfig]:
     """从 benchmark data-root 加载多组 harness 运行配置。"""
     if benchmark is None or not benchmark.strip():
         raise ValueError("benchmark 不能为空")
     if data_root is None:
         raise ValueError("data_root 不能为空")
-    normalized_benchmark = benchmark.strip().lower()
-    manifest: dict = read_json_file(data_root / "benchmark.json", "benchmark.json", dict)
-    manifest_benchmark = required_str(manifest, "benchmark", "benchmark.json").lower()
-    if manifest_benchmark != normalized_benchmark:
-        raise ValueError(f"benchmark.json 中的 benchmark 必须是 {normalized_benchmark}")
-    required_str(manifest, "source_root", "benchmark.json")
-    tool_backend = required_str(manifest, "tool_backend", "benchmark.json")
-    language = manifest.get("language", "en")
-    if not isinstance(language, str) or not language.strip():
-        raise ValueError("benchmark.json language 必须是非空字符串")
-    language = language.strip()
-    manifest_max_workers = manifest.get("max_workers")
-    if manifest_max_workers is None or not isinstance(manifest_max_workers, int):
-        raise ValueError("benchmark.json max_workers 必须是整数")
-    manifest_max_workers = max(manifest_max_workers, 1)
+    manifest_metadata = load_benchmark_manifest_metadata(benchmark, data_root)
+    tool_backend = required_str(manifest_metadata, "tool_backend", "benchmark metadata")
+    language = required_str(manifest_metadata, "language", "benchmark metadata")
+    manifest_max_workers = manifest_metadata.get("benchmark_max_workers")
     raw_specs = read_json_file(data_root / "run_configs.json", "run_configs.json", list)
     if not raw_specs:
         raise ValueError("run_configs.json 至少需要包含一组运行配置")
@@ -157,9 +173,11 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         strategy = evaluation_strategy_from_mapping(raw_spec.get("strategy") if isinstance(raw_spec.get("strategy"), dict) else None)
         metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key not in _RUN_CONFIG_CONTROL_FIELDS}
         metadata.update({key: normalize_client_config(raw_spec.get(key), f"run_configs.json 第 {index} 项的 {key}") for key in _CLIENT_CONFIG_KEYS if key in raw_spec})
+        metadata.update(manifest_metadata)
         metadata["language"] = language
-        metadata["benchmark_max_workers"] = manifest_max_workers
-        if normalized_benchmark == "toolsandbox":
+        if manifest_max_workers is not None:
+            metadata["benchmark_max_workers"] = manifest_max_workers
+        if required_str(manifest_metadata, "benchmark", "benchmark metadata") == "toolsandbox":
             metadata["agent"] = required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
             metadata["user"] = required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
         metadata.setdefault("tool_backend", tool_backend)
@@ -180,14 +198,21 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         ready_min_delta = float(ready_min_delta)
         if ready_min_delta < 0:
             raise ValueError("run_configs.json 字段 ready_frontier_min_delta 不能为负数")
-        configs.append(HarnessRunConfig(
-            benchmark=normalized_benchmark, data_root=data_root,
-            case_ids=_case_ids_from_spec(raw_spec, index), runs_dir=runs_dir, results_dir=results_dir,
-            stop_on_ready_frontier_no_progress=stop_on_ready,
-            ready_frontier_patience=ready_frontier_patience, ready_frontier_min_delta=ready_min_delta,
-            metadata=metadata
-        ))
+        configs.append(
+            HarnessRunConfig(
+                benchmark=benchmark.strip().lower(),
+                data_root=data_root,
+                case_ids=_case_ids_from_spec(raw_spec, index),
+                runs_dir=runs_dir,
+                results_dir=results_dir,
+                stop_on_ready_frontier_no_progress=stop_on_ready,
+                ready_frontier_patience=ready_frontier_patience,
+                ready_frontier_min_delta=ready_min_delta,
+                metadata=metadata,
+            )
+        )
     return configs
+
 
 def _optional_positive_int(value: str | None, label: str) -> int | None:
     """读取可选正整数。"""
@@ -198,12 +223,14 @@ def _optional_positive_int(value: str | None, label: str) -> int | None:
         raise ValueError(f"{label} 必须是正整数")
     return parsed
 
+
 def _bool_from_mapping(data: Mapping[str, Any], key: str, default: bool) -> bool:
     """从 JSON 映射读取 bool 字段。"""
     value = data.get(key, default)
     if not isinstance(value, bool):
         raise ValueError(f"strategy.{key} 必须是 bool")
     return value
+
 
 def _evaluation_level(value: object, default: EvaluationLevel) -> EvaluationLevel:
     """读取 EvaluationLevel。"""

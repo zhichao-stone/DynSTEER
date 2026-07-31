@@ -1,17 +1,21 @@
 from abc import ABC, abstractmethod
 import logging
 import time
+
 from dynsteer.metrics import current_runtime_metrics_recorder
 from dynsteer.model import LLMCallMetrics, LLMConfig, LLMMessage
 
 
 logger = logging.getLogger(__name__)
 
+
 class LLMConfigurationError(ValueError):
     """LLM 配置缺失或不合法时抛出。"""
 
+
 class LLMResponseError(ValueError):
     """LLM 返回内容无法解析时抛出。"""
+
 
 class BaseLLM(ABC):
     """对外只暴露交互响应接口的 LLM 抽象基类。"""
@@ -33,12 +37,12 @@ class BaseLLM(ABC):
     def chat(self, messages: list[LLMMessage], **infer_params: object) -> str:
         """与 LLM 交互并返回回复文本。"""
         self._validate_messages(messages)
-        client = self._create_client()
-        request_params = self._normalize_infer_params(infer_params, client)
         last_error: Exception | None = None
         for attempt in range(1, self._config.max_retries + 1):
             started = time.perf_counter()
             try:
+                client = self._create_client()
+                request_params = self._normalize_infer_params(infer_params, client)
                 response = self._get_response_from_client(client, messages, request_params)
                 elapsed_seconds = time.perf_counter() - started
                 text = self._response_text(response)
@@ -69,7 +73,9 @@ class BaseLLM(ABC):
                 if delay > 0:
                     time.sleep(delay)
         error_text = str(last_error) if last_error is not None else "未知错误"
-        raise LLMResponseError(f"LLM 调用失败: provider={self._config.provider}, model={self._config.model}, attempts={self._config.max_retries}, error={error_text}") from last_error
+        raise LLMResponseError(
+            f"LLM 调用失败: provider={self._config.provider}, model={self._config.model}, attempts={self._config.max_retries}, error={error_text}"
+        ) from last_error
 
     def _record_llm_success(self, response: object, elapsed_seconds: float) -> None:
         """记录一次成功的 provider 调用统计。"""
@@ -77,14 +83,32 @@ class BaseLLM(ABC):
         if recorder is None:
             return
         usage = self._response_usage(response)
-        recorder.record_llm_call(LLMCallMetrics(provider=self._config.provider, model=self._config.model, elapsed_seconds=elapsed_seconds, prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"), total_tokens=usage.get("total_tokens"), success=True))
+        recorder.record_llm_call(
+            LLMCallMetrics(
+                provider=self._config.provider,
+                model=self._config.model,
+                elapsed_seconds=elapsed_seconds,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                success=True,
+            )
+        )
 
     def _record_llm_failure(self, elapsed_seconds: float, exc: Exception) -> None:
         """记录一次失败的 provider 调用统计。"""
         recorder = current_runtime_metrics_recorder()
         if recorder is None:
             return
-        recorder.record_llm_call(LLMCallMetrics(provider=self._config.provider, model=self._config.model, elapsed_seconds=elapsed_seconds, success=False, error=str(exc)))
+        recorder.record_llm_call(
+            LLMCallMetrics(
+                provider=self._config.provider,
+                model=self._config.model,
+                elapsed_seconds=elapsed_seconds,
+                success=False,
+                error=str(exc),
+            )
+        )
 
     def _validate_messages(self, messages: list[LLMMessage]) -> None:
         """校验对话消息列表。"""

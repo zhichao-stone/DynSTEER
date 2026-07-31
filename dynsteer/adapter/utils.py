@@ -1,9 +1,12 @@
 import functools
 import importlib
+import logging
 import os
 import sys
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from dynsteer.model import JsonValue
 from dynsteer.utils import json_safe, read_json_file
 
@@ -27,6 +30,60 @@ def callable_spec(value: object) -> JsonValue:
             },
         }
     return callable_name(value) if callable(value) else json_safe(value)
+
+T = TypeVar("T")
+
+
+def retry_call(
+    operation: Callable[[], T],
+    *,
+    max_retries: int,
+    retry_base_seconds: float,
+    retry_max_seconds: float,
+    logger: logging.Logger,
+    warning_message: str,
+    extra: Mapping[str, object],
+    non_retry_errors: tuple[type[Exception], ...] = (),
+) -> T:
+    """按指数退避重复执行 operation。"""
+    if operation is None:
+        raise ValueError("操作不能为空")
+    if logger is None:
+        raise ValueError("logger 不能为空")
+    if extra is None:
+        raise ValueError("extra 不能为空")
+    if isinstance(max_retries, bool) or max_retries < 1:
+        raise ValueError("max_retries 必须大于 0")
+    if retry_base_seconds < 0 or retry_max_seconds < 0:
+        raise ValueError("重试等待时间不能为负数")
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return operation()
+        except non_retry_errors:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            delay_seconds = min(retry_base_seconds * 2 ** max(attempt - 1, 0), retry_max_seconds)
+            logger.warning(
+                warning_message,
+                extra={
+                    **dict(extra),
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "delay_seconds": delay_seconds,
+                    "error": str(exc),
+                },
+            )
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+    if last_error is None:
+        raise RuntimeError("retry_call 未捕获到异常")
+    raise last_error
 
 def rows_from_dataframe(dataframe: object | None) -> list[dict[str, object]]:
     """将第三方 dataframe 或 list[dict] 转为普通行字典。"""

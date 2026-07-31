@@ -1,45 +1,29 @@
-# Harness API
+﻿# Harness API
 
-## 目标
+## 鐩爣
 
-Harness API 用于把 benchmark 原生执行过程接入 DynSTEER。当前职责边界是：
+Harness API 鐢ㄤ簬鎶?benchmark 鍘熺敓鎵ц杩囩▼鎺ュ叆 DynSTEER銆傚綋鍓嶈亴璐ｈ竟鐣屾槸锛?
+- `BaseBenchmarkAdapter`: 璐熻矗鎸?case 閫傞厤 `TaskCase`銆佸啓鍏?澶嶇敤 adapted JSON 缂撳瓨銆?- `BaseBenchmarkHarness`: 鍙礋璐?benchmark 鍘熺敓 session 鐢熷懡鍛ㄦ湡銆佸閲忚娴嬫壒娆￠噰闆嗐€佸師鐢熸憳瑕佸拰璧勬簮娓呯悊锛屼笉鍐嶆瀯閫?`TaskCase`銆?- `DynSTEEREvaluator`: 璐熻矗鎵ц缂栨帓銆乵ilestone checkpoint銆侀樁娈靛紡鍔ㄦ€佽瘎浼般€丩LMJudge 璋冨害鍜?fail-fast銆?
+Harness 涓嶅啀鎷ユ湁 `run_case()` 涓荤紪鎺掑叆鍙ｏ紝涔熶笉璐熻矗闃舵璇勫垎銆佸姩鎬佹潈閲嶆洿鏂版垨 minefield 绛栫暐缁堟銆?
+## 鏍稿績鏁版嵁缁撴瀯
 
-- `BaseBenchmarkAdapter`: 负责按 case 适配 `TaskCase`、写入/复用 adapted JSON 缓存。
-- `BaseBenchmarkHarness`: 只负责 benchmark 原生 session 生命周期、增量观测批次采集、原生摘要和资源清理，不再构造 `TaskCase`。
-- `DynSTEEREvaluator`: 负责执行编排、milestone checkpoint、阶段式动态评估、LLMJudge 调度和 fail-fast。
-
-Harness 不再拥有 `run_case()` 主编排入口，也不负责阶段评分、动态权重更新或 minefield 策略终止。
-
-## 核心数据结构
-
-- `HarnessRunConfig`: 单次 harness 运行配置，包含 benchmark、data root、case_ids、runs_dir、results_dir、fail-fast 策略和 metadata。`case_ids` 只用于 adapter/loader 阶段选择本次要加载的 case；进入单 case 执行后，当前 case 身份统一来自 `TaskCase.case_id`。
-- `BenchmarkCase`: benchmark 内单个可运行测试任务。
-- `HarnessAdvanceResult`: `advance_case()` 的结构化返回值，包含 raw `steps`、`snapshots`、`continue_running` 和可选 `reason`。`snapshots` 是必填字段，表示本批推进后可见的状态快照，必须与 `steps` 使用同一时间坐标。
-- `HarnessStageSettlement`: evaluator 在运行期生成的 start/milestone/finish 阶段结算节点。
-- `HarnessRunResult`: evaluator 返回的 benchmark 运行结果，包含 `TaskCase`、`Trajectory`、阶段结算、策略终止字段和 `evaluation_report`。
-
-## BaseBenchmarkAdapter 接口
+- `HarnessRunConfig`: 鍗曟 harness 杩愯閰嶇疆锛屽寘鍚?benchmark銆乨ata root銆乧ase_ids銆乺uns_dir銆乺esults_dir銆乫ail-fast 绛栫暐鍜?metadata銆俙case_ids` 鍙敤浜?adapter/loader 闃舵閫夋嫨鏈瑕佸姞杞界殑 case锛涜繘鍏ュ崟 case 鎵ц鍚庯紝褰撳墠 case 韬唤缁熶竴鏉ヨ嚜 `TaskCase.case_id`銆?- `BenchmarkCase`: benchmark 鍐呭崟涓彲杩愯娴嬭瘯浠诲姟銆?- `HarnessAdvanceResult`: `advance_case()` 鐨勭粨鏋勫寲杩斿洖鍊硷紝鍖呭惈 raw `steps`銆乣snapshots`銆乣continue_running` 鍜屽彲閫?`reason`銆俙snapshots` 鏄繀濉瓧娈碉紝琛ㄧず鏈壒鎺ㄨ繘鍚庡彲瑙佺殑鐘舵€佸揩鐓э紝蹇呴』涓?`steps` 浣跨敤鍚屼竴鏃堕棿鍧愭爣銆?- `HarnessStageSettlement`: evaluator 鍦ㄨ繍琛屾湡鐢熸垚鐨?start/milestone/finish 闃舵缁撶畻鑺傜偣銆?- `HarnessRunResult`: evaluator 杩斿洖鐨?benchmark 杩愯缁撴灉锛屽寘鍚?`TaskCase`銆乣Trajectory`銆侀樁娈电粨绠椼€佺瓥鐣ョ粓姝㈠瓧娈靛拰 `evaluation_report`銆?
+## BaseBenchmarkAdapter 鎺ュ彛
 
 ```python
 def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase: ...
 ```
 
-adapter 负责把原生 benchmark case 转换为 DynSTEER `TaskCase`。runner 通过 `dynsteer.adapter.loader.load_task_case(config, adapter, force_adapt=False)` 按 `data/{benchmark}/adapted_cases/<case_id>.json` 读取缓存；缺失或结构不完整时只触发当前 case 的 `adapt_task_case()` 并保存单 case JSON。`force_adapt=True` 是 adapted case 重建的唯一显式开关，会在加载阶段忽略缓存并重建对应 case。
+adapter 璐熻矗鎶婂師鐢?benchmark case 杞崲涓?DynSTEER `TaskCase`銆俽unner 閫氳繃 `dynsteer.adapter.loader.load_task_case(config, adapter, force_adapt=False)` 鎸?`data/{benchmark}/adapted_cases/<case_id>.json` 璇诲彇缂撳瓨锛涚己澶辨垨缁撴瀯涓嶅畬鏁存椂鍙Е鍙戝綋鍓?case 鐨?`adapt_task_case()` 骞朵繚瀛樺崟 case JSON銆俙force_adapt=True` 鏄?adapted case 閲嶅缓鐨勫敮涓€鏄惧紡寮€鍏筹紝浼氬湪鍔犺浇闃舵蹇界暐缂撳瓨骞堕噸寤哄搴?case銆?
+杩愯鏈?harness 鐢?`dynsteer.adapter.registry.get_harness(benchmark)` 鐩存帴鍒涘缓锛屼笉鍐嶉€氳繃 adapter 闂存帴鍒涘缓銆傝繖鏍峰崟 case 杩愯鏈熸墽琛岀瓑鍙渶瑕?harness 鐨勮矾寰勪笉浼氬疄渚嬪寲 adapter锛宎dapter 涔熶笉鍐嶆壙鎷?harness 宸ュ巶鑱岃矗銆?
+## Adapter 涓?Stage Goal 璇箟杈圭晫
 
-运行期 harness 由 `dynsteer.adapter.registry.get_harness(benchmark)` 直接创建，不再通过 adapter 间接创建。这样单 case 运行期执行等只需要 harness 的路径不会实例化 adapter，adapter 也不再承担 harness 工厂职责。
+Adapter 鍙互鐞嗚В benchmark 绉佹湁鏍煎紡锛屽苟鎶婄鏈夌害鏉熻В閲婁负 DynSTEER 閫氱敤 `Constraint.stage_goal_semantics`銆備緥濡傛煇 benchmark 鐨勨€滀繚鎸佸弬鑰冪姸鎬佷笉鍙樷€濈害鏉熷簲鍦?Python 浠ｇ爜涓槧灏勪负 `{"kind": StageGoalSemanticKind.PRESERVE_STATE.value}`锛岃惤鐩樺悗琛ㄧ幇涓?`{"kind":"preserve_state"}`銆?
+Adapter 涓嶅簲鐩存帴鐢熸垚 `TaskCase.stage_goals`锛屼篃涓嶅簲鎻愪緵 benchmark 涓撶敤 stage_goal hook銆俙TaskCase.stage_goals` 鐢?`dynsteer.stage.generate_stage_goals(...)` 缁熶竴鐢熸垚銆?
+绉佹湁璇勫垎瀛楁浠嶄繚鐣欏湪 benchmark 鑷繁鐨?metadata key 涓嬶紝渚涗笓鐢?scorer 浣跨敤锛涘叕鍏?stage_goal 鍜?judge prompt 涓嶈鍙栬繖浜涚鏈夊瓧娈点€?
+## BaseBenchmarkHarness 鎺ュ彛
 
-## Adapter 与 Stage Goal 语义边界
-
-Adapter 可以理解 benchmark 私有格式，并把私有约束解释为 DynSTEER 通用 `Constraint.stage_goal_semantics`。例如某 benchmark 的“保持参考状态不变”约束应在 Python 代码中映射为 `{"kind": StageGoalSemanticKind.PRESERVE_STATE.value}`，落盘后表现为 `{"kind":"preserve_state"}`。
-
-Adapter 不应直接生成 `TaskCase.stage_goals`，也不应提供 benchmark 专用 stage_goal hook。`TaskCase.stage_goals` 由 `dynsteer.stage.generate_stage_goals(...)` 统一生成。
-
-私有评分字段仍保留在 benchmark 自己的 metadata key 下，供专用 scorer 使用；公共 stage_goal 和 judge prompt 不读取这些私有字段。
-
-## BaseBenchmarkHarness 接口
-
-子类需要实现以下公开接口：
-
+瀛愮被闇€瑕佸疄鐜颁互涓嬪叕寮€鎺ュ彛锛?
 ```python
 def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]: ...
 def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object: ...
@@ -47,8 +31,7 @@ def advance_case(self, session: object) -> HarnessAdvanceResult: ...
 def case_finished(self, session: object) -> bool: ...
 ```
 
-基类提供以下默认接口：
-
+鍩虹被鎻愪緵浠ヤ笅榛樿鎺ュ彛锛?
 ```python
 def prepare_config(self, config: HarnessRunConfig) -> None: ...
 def metrics_from_session(self, session: object) -> JsonObject: ...
@@ -63,9 +46,7 @@ def constraint_scorer(self) -> BaseBenchmarkConstraintScorer: ...
 
 ### `BaseBenchmarkHarness.constraint_scorer()`
 
-返回当前 benchmark 的约束评分器。默认返回 `BaseBenchmarkConstraintScorer()`，其行为等同 `GeneralScorer`。
-需要解释 `Operator.CUSTOM` 或 benchmark 原生约束的 harness 应覆写该方法。
-
+杩斿洖褰撳墠 benchmark 鐨勭害鏉熻瘎鍒嗗櫒銆傞粯璁よ繑鍥?`BaseBenchmarkConstraintScorer()`锛屽叾琛屼负绛夊悓 `GeneralScorer`銆?闇€瑕佽В閲?`Operator.CUSTOM` 鎴?benchmark 鍘熺敓绾︽潫鐨?harness 搴旇鍐欒鏂规硶銆?
 ```python
 class MyHarness(BaseBenchmarkHarness):
     def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
@@ -74,56 +55,25 @@ class MyHarness(BaseBenchmarkHarness):
 
 ### `BaseBenchmarkHarness.default_result_from_session()`
 
-完整 Default 实验会在 benchmark 自然结束后调用该接口，提取原生 benchmark 分数。正式实验 benchmark 必须显式实现，返回：
+瀹屾暣 Default 瀹為獙浼氬湪 benchmark 鑷劧缁撴潫鍚庤皟鐢ㄨ鎺ュ彛锛屾彁鍙栧師鐢?benchmark 鍒嗘暟銆傛寮忓疄楠?benchmark 蹇呴』鏄惧紡瀹炵幇锛岃繑鍥烇細
 
-- `score`: `[0, 1]` 主分数。
-- `resolved`: benchmark 原生 resolved 布尔值；不可用时为 `None`。
-- `raw`: 原生映射、相似度等审计信息。
-- `metrics`: 原生 turn count、耗时或其他可用指标。
+- `score`: `[0, 1]` 涓诲垎鏁般€?- `resolved`: benchmark 鍘熺敓 resolved 甯冨皵鍊硷紱涓嶅彲鐢ㄦ椂涓?`None`銆?- `raw`: 鍘熺敓鏄犲皠銆佺浉浼煎害绛夊璁′俊鎭€?- `metrics`: 鍘熺敓 turn count銆佽€楁椂鎴栧叾浠栧彲鐢ㄦ寚鏍囥€?
+ToolSandbox 褰撳墠閫氳繃 `scenario.evaluation.evaluate(execution_context=session.context, max_turn_count=session.max_messages)` 鎻愬彇 `similarity`锛屽苟鎶?`milestone_mapping`銆乣minefield_mapping` 鍜?`turn_count` 鍐欏叆 raw銆?
+## 杩斿洖濂戠害
 
-ToolSandbox 当前通过 `scenario.evaluation.evaluate(execution_context=session.context, max_turn_count=session.max_messages)` 提取 `similarity`，并把 `milestone_mapping`、`minefield_mapping` 和 `turn_count` 写入 raw。
-
-## 返回契约
-
-- `TaskCase` 必须在 adapter/loader 阶段完成适配，harness 运行期不提供 `task_case_from_session()`。
-- `advance_case()` 必须返回 `HarnessAdvanceResult`，不能返回 `None`。
-- `advance_case()` 负责判断空步骤是否合理。自然完成时返回 `HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")`。
-- 如果 session 未完成但没有新增步骤，`advance_case()` 应在 harness 内部抛出异常。
-- 所有 harness 必须通过 `HarnessAdvanceResult.snapshots` 返回本批推进后可见快照；没有状态快照的 benchmark 必须显式返回空数组。
-- `snapshots_from_session()` 不再属于 `BaseBenchmarkHarness` 公开运行期接口。
-- 对带原生全局消息索引的 benchmark，`steps[].index` 与 `snapshots[].after_step_index` 必须使用同一坐标系。
-- `steps[]` 必须提供规范化 `actor` 与 `recipient`。DynSTEER 用它们组装串行 agent step 闭包：`Agent -> X` 后必须由对应 `X -> Agent` feedback 闭合；未闭合 outbound 不会触发 milestone matching 或 no-progress 观察。
-- `metrics_from_session()`、`raw_summary_from_session()` 应把可缺省结果归一为空字典。
-- `initial_state_from_session()` 返回当前 session 的真实初始状态；默认返回 `None`。带动态初始状态的 benchmark 应在 `start_case()` 后固化该状态，供 `reference_milestone_node_index=-1` 等 guardrail 引用。
-- `final_state_from_session()` 返回当前或最终状态；默认返回 `None`。状态不可用时不要伪造空对象。
-- `case_finished()` 只作为查询接口或子类内部辅助能力；`DynSTEEREvaluator.evaluate()` 不用它控制主循环。
-
-## 资源释放与异常处理契约
-
-- `DynSTEEREvaluator.evaluate()` 在成功、策略终止和异常路径中都会调用 `harness.teardown_case(session)`。
-- 若主执行过程已经抛出异常，teardown 失败只记录结构化错误日志，不遮蔽主异常。
-- 若主执行过程成功但 teardown 失败，evaluator 抛出 `HarnessTeardownError`，避免资源释放失败被静默吞掉。
-- harness 子类的 `teardown_case()` 应尽力释放全部外部资源，并断开 session 中对大型上下文、轨迹步骤、快照、SDK client 或原生 role 的引用。
-- runner 对单个 case 的执行失败统一包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark 和 case_id。
-
+- `TaskCase` 蹇呴』鍦?adapter/loader 闃舵瀹屾垚閫傞厤锛宧arness 杩愯鏈熶笉鎻愪緵 `task_case_from_session()`銆?- `advance_case()` 蹇呴』杩斿洖 `HarnessAdvanceResult`锛屼笉鑳借繑鍥?`None`銆?- `advance_case()` 璐熻矗鍒ゆ柇绌烘楠ゆ槸鍚﹀悎鐞嗐€傝嚜鐒跺畬鎴愭椂杩斿洖 `HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 宸茶嚜鐒跺畬鎴?)`銆?- 濡傛灉 session 鏈畬鎴愪絾娌℃湁鏂板姝ラ锛宍advance_case()` 搴斿湪 harness 鍐呴儴鎶涘嚭寮傚父銆?- 鎵€鏈?harness 蹇呴』閫氳繃 `HarnessAdvanceResult.snapshots` 杩斿洖鏈壒鎺ㄨ繘鍚庡彲瑙佸揩鐓э紱娌℃湁鐘舵€佸揩鐓х殑 benchmark 蹇呴』鏄惧紡杩斿洖绌烘暟缁勩€?- `snapshots_from_session()` 涓嶅啀灞炰簬 `BaseBenchmarkHarness` 鍏紑杩愯鏈熸帴鍙ｃ€?- 瀵瑰甫鍘熺敓鍏ㄥ眬娑堟伅绱㈠紩鐨?benchmark锛宍steps[].index` 涓?`snapshots[].after_step_index` 蹇呴』浣跨敤鍚屼竴鍧愭爣绯汇€?- `steps[]` 蹇呴』鎻愪緵瑙勮寖鍖?`actor` 涓?`recipient`銆侱ynSTEER 鐢ㄥ畠浠粍瑁呬覆琛?agent step 闂寘锛歚Agent -> X` 鍚庡繀椤荤敱瀵瑰簲 `X -> Agent` feedback 闂悎锛涙湭闂悎 outbound 涓嶄細瑙﹀彂 milestone matching 鎴?no-progress 瑙傚療銆?- `metrics_from_session()`銆乣raw_summary_from_session()` 搴旀妸鍙己鐪佺粨鏋滃綊涓€涓虹┖瀛楀吀銆?- `initial_state_from_session()` 杩斿洖褰撳墠 session 鐨勭湡瀹炲垵濮嬬姸鎬侊紱榛樿杩斿洖 `None`銆傚甫鍔ㄦ€佸垵濮嬬姸鎬佺殑 benchmark 搴斿湪 `start_case()` 鍚庡浐鍖栬鐘舵€侊紝渚?`reference_milestone_node_index=-1` 绛?guardrail 寮曠敤銆?- `final_state_from_session()` 杩斿洖褰撳墠鎴栨渶缁堢姸鎬侊紱榛樿杩斿洖 `None`銆傜姸鎬佷笉鍙敤鏃朵笉瑕佷吉閫犵┖瀵硅薄銆?- `case_finished()` 鍙綔涓烘煡璇㈡帴鍙ｆ垨瀛愮被鍐呴儴杈呭姪鑳藉姏锛沗DynSTEEREvaluator.evaluate()` 涓嶇敤瀹冩帶鍒朵富寰幆銆?
+## 璧勬簮閲婃斁涓庡紓甯稿鐞嗗绾?
+- `DynSTEEREvaluator.evaluate()` 鍦ㄦ垚鍔熴€佺瓥鐣ョ粓姝㈠拰寮傚父璺緞涓兘浼氳皟鐢?`harness.teardown_case(session)`銆?- 鑻ヤ富鎵ц杩囩▼宸茬粡鎶涘嚭寮傚父锛宼eardown 澶辫触鍙褰曠粨鏋勫寲閿欒鏃ュ織锛屼笉閬斀涓诲紓甯搞€?- 鑻ヤ富鎵ц杩囩▼鎴愬姛浣?teardown 澶辫触锛宔valuator 鎶涘嚭 `HarnessTeardownError`锛岄伩鍏嶈祫婧愰噴鏀惧け璐ヨ闈欓粯鍚炴帀銆?- harness 瀛愮被鐨?`teardown_case()` 搴斿敖鍔涢噴鏀惧叏閮ㄥ閮ㄨ祫婧愶紝骞舵柇寮€ session 涓澶у瀷涓婁笅鏂囥€佽建杩规楠ゃ€佸揩鐓с€丼DK client 鎴栧師鐢?role 鐨勫紩鐢ㄣ€?- runner 瀵瑰崟涓?case 鐨勬墽琛屽け璐ョ粺涓€鍖呰涓?`HarnessCaseExecutionError`锛岄敊璇俊鎭寘鍚?benchmark 鍜?case_id銆?
 ## Runner
 
-`dynsteer.harness.runner` 提供：
-
-- `run_harness_configs(configs, max_workers=1, force_adapt=False, force_eval=False)`: 唯一公开运行入口，按 `run_configs.json` 中的配置顺序逐组加载 `TaskCase` 列表；同一配置内按 case 顺序串行或并行执行，返回值按配置和 case 的原始顺序排列。若 `benchmark.json` 配置了 `max_workers`，实际 worker 数取命令行 workers 与该字段的较小值，且最小为 1。`force_adapt=True` 时会在运行前重建缓存的 adapted case，并自动强制 `force_eval=True`；`force_eval=True` 时忽略已有 case 级 `runs/results` 产物并覆盖写出。
-
-Runner 只负责选择 case、加载 adapted `TaskCase`、调用 `evaluator.evaluate(harness, config, task_case)` 和写出文件。它不调用 `harness.run_case()`，也不调用整轨迹评估作为主实验流程。单 case 输出路径、summary 和 report 都以 `task_case.case_id` 为准，不要求把 `HarnessRunConfig.case_ids` 改写成单元素元组。
-
-当 `run_configs.json` 已通过 `scenarios` 显式指定 case 时，Runner 直接使用该顺序，不再调用 `list_cases()` 全量枚举 benchmark；未指定 `scenarios` 时才通过 `list_cases()` 展开可运行 case。这样已有 adapted cache 的指定 case 运行不会被 benchmark 原生全量场景构造拖慢。
-
-Runner 对每个 config 会先调用一次 `load_task_case(run_config, adapter)` 加载本组 `TaskCase` 列表，然后输出日志：`基于配置XXX，开始基于 {benchmark} 展开评估，Cases数量: N`。单 case 执行只负责 evaluator 调用和结果文件写入，避免多场景运行时反复初始化日志或刷屏。
-
-`run_harness_configs(...)` 会把单个 case 的异常包装为 `HarnessCaseExecutionError`，错误信息包含 benchmark 和 case_id，便于串行或并行运行时定位失败样本。并行模式下日志缓冲和 logger 初始化使用锁保护；provider client 不在 worker 之间共享，由每次 `BaseLLM.chat(...)` 调用创建一次，并在该次调用的重试循环中复用。
-
-Runner 使用 `dynsteer.progress.TqdmCaseProgressManager` 显示估算总步数进度条。进度条的 `steps` 单位是完整闭合的 agent step，不是 raw step；实际同时运行的 case 数量仍不超过 `max_workers`。每个活动 case 使用一条 tqdm 进度条，后缀包含 `elapsed`、`steps` 和 `avg_step`。case 完成后对应进度条关闭，运行期间终端日志 handler 会临时静默，文件日志和内存日志仍保留 INFO 结构化内容。
-
-Harness 模式输出：
-
+`dynsteer.harness.runner` 鎻愪緵锛?
+- `run_harness_configs(configs, max_workers=1, force_adapt=False, force_eval=False)`: 鍞竴鍏紑杩愯鍏ュ彛锛屾寜 `run_configs.json` 涓殑閰嶇疆椤哄簭閫愮粍鍔犺浇 `TaskCase` 鍒楄〃锛涘悓涓€閰嶇疆鍐呮寜 case 椤哄簭涓茶鎴栧苟琛屾墽琛岋紝杩斿洖鍊兼寜閰嶇疆鍜?case 鐨勫師濮嬮『搴忔帓鍒椼€傝嫢 `benchmark.json` 閰嶇疆浜?`max_workers`锛屽疄闄?worker 鏁板彇鍛戒护琛?workers 涓庤瀛楁鐨勮緝灏忓€硷紝涓旀渶灏忎负 1銆俙force_adapt=True` 鏃朵細鍦ㄨ繍琛屽墠閲嶅缓缂撳瓨鐨?adapted case锛屽苟鑷姩寮哄埗 `force_eval=True`锛沗force_eval=True` 鏃跺拷鐣ュ凡鏈?case 绾?`runs/results` 浜х墿骞惰鐩栧啓鍑恒€?
+Runner 鍙礋璐ｉ€夋嫨 case銆佸姞杞?adapted `TaskCase`銆佽皟鐢?`evaluator.evaluate(harness, config, task_case)` 鍜屽啓鍑烘枃浠躲€傚畠涓嶈皟鐢?`harness.run_case()`锛屼篃涓嶈皟鐢ㄦ暣杞ㄨ抗璇勪及浣滀负涓诲疄楠屾祦绋嬨€傚崟 case 杈撳嚭璺緞銆乻ummary 鍜?report 閮戒互 `task_case.case_id` 涓哄噯锛屼笉瑕佹眰鎶?`HarnessRunConfig.case_ids` 鏀瑰啓鎴愬崟鍏冪礌鍏冪粍銆?
+褰?`run_configs.json` 宸查€氳繃 `scenarios` 鏄惧紡鎸囧畾 case 鏃讹紝Runner 鐩存帴浣跨敤璇ラ『搴忥紝涓嶅啀璋冪敤 `list_cases()` 鍏ㄩ噺鏋氫妇 benchmark锛涙湭鎸囧畾 `scenarios` 鏃舵墠閫氳繃 `list_cases()` 灞曞紑鍙繍琛?case銆傝繖鏍峰凡鏈?adapted cache 鐨勬寚瀹?case 杩愯涓嶄細琚?benchmark 鍘熺敓鍏ㄩ噺鍦烘櫙鏋勯€犳嫋鎱€?
+Runner 瀵规瘡涓?config 浼氬厛璋冪敤涓€娆?`load_task_case(run_config, adapter)` 鍔犺浇鏈粍 `TaskCase` 鍒楄〃锛岀劧鍚庤緭鍑烘棩蹇楋細`鍩轰簬閰嶇疆XXX锛屽紑濮嬪熀浜?{benchmark} 灞曞紑璇勪及锛孋ases鏁伴噺: N`銆傚崟 case 鎵ц鍙礋璐?evaluator 璋冪敤鍜岀粨鏋滄枃浠跺啓鍏ワ紝閬垮厤澶氬満鏅繍琛屾椂鍙嶅鍒濆鍖栨棩蹇楁垨鍒峰睆銆?
+`run_harness_configs(...)` 浼氭妸鍗曚釜 case 鐨勫紓甯稿寘瑁呬负 `HarnessCaseExecutionError`锛岄敊璇俊鎭寘鍚?benchmark 鍜?case_id锛屼究浜庝覆琛屾垨骞惰杩愯鏃跺畾浣嶅け璐ユ牱鏈€傚苟琛屾ā寮忎笅鏃ュ織缂撳啿鍜?logger 鍒濆鍖栦娇鐢ㄩ攣淇濇姢锛沺rovider client 涓嶅湪 worker 涔嬮棿鍏变韩锛岀敱姣忔 `BaseLLM.chat(...)` 璋冪敤鍒涘缓涓€娆★紝骞跺湪璇ユ璋冪敤鐨勯噸璇曞惊鐜腑澶嶇敤銆?
+Runner 浣跨敤 `dynsteer.progress.TqdmCaseProgressManager` 鏄剧ず浼扮畻鎬绘鏁拌繘搴︽潯銆傝繘搴︽潯鐨?`steps` 鍗曚綅鏄畬鏁撮棴鍚堢殑 agent step锛屼笉鏄?raw step锛涘疄闄呭悓鏃惰繍琛岀殑 case 鏁伴噺浠嶄笉瓒呰繃 `max_workers`銆傛瘡涓椿鍔?case 浣跨敤涓€鏉?tqdm 杩涘害鏉★紝鍚庣紑鍖呭惈 `elapsed`銆乣steps` 鍜?`avg_step`銆俢ase 瀹屾垚鍚庡搴旇繘搴︽潯鍏抽棴锛岃繍琛屾湡闂寸粓绔棩蹇?handler 浼氫复鏃堕潤榛橈紝鏂囦欢鏃ュ織鍜屽唴瀛樻棩蹇椾粛淇濈暀 INFO 缁撴瀯鍖栧唴瀹广€?
+Harness 妯″紡杈撳嚭锛?
 - `runs/<benchmark>/<method>/<case_id>/raw/`
 - `runs/<benchmark>/<method>/<case_id>/raw_summary.json`
 - `runs/<benchmark>/<method>/<case_id>/trajectory.json`
@@ -131,28 +81,17 @@ Harness 模式输出：
 - `results/<benchmark>/<method>/<case_id>/report.json`
 - `results/<benchmark>/<method>/<case_id>/summary.json`
 
-`results/<benchmark>/<method>/summary.json` 是方法级汇总摘要，聚合同一 `benchmark/method` 下所有 case 的单场景 `summary.json`。汇总字段包含 `benchmark`、`method`、`case_count`、`average_overall_score`、`milestone_coverage_counts`、`total_step_count`、`total_llm_tokens`、`total_trajectory_tokens`、`average_elapsed_seconds` 和 `cases`。`cases[]` 保留每个场景的 `case_id`、相对 `summary_path`、相对 `report_path` 以及单场景摘要字段，便于从总览追溯到具体场景结果。
+`results/<benchmark>/<method>/summary.json` 鏄柟娉曠骇姹囨€绘憳瑕侊紝鑱氬悎鍚屼竴 `benchmark/method` 涓嬫墍鏈?case 鐨勫崟鍦烘櫙 `summary.json`銆傛眹鎬诲瓧娈靛寘鍚?`benchmark`銆乣method`銆乣case_count`銆乣average_overall_score`銆乣milestone_coverage_counts`銆乣total_step_count`銆乣total_llm_tokens`銆乣total_trajectory_tokens`銆乣average_elapsed_seconds` 鍜?`cases`銆俙cases[]` 淇濈暀姣忎釜鍦烘櫙鐨?`case_id`銆佺浉瀵?`summary_path`銆佺浉瀵?`report_path` 浠ュ強鍗曞満鏅憳瑕佸瓧娈碉紝渚夸簬浠庢€昏杩芥函鍒板叿浣撳満鏅粨鏋溿€?
+`trajectory.json` 鍖呭惈瀹屾暣 raw `Trajectory` 搴忓垪鍖栫粨鏋滐紝step 涓殑 `recipient` 鏄?DynSTEER 瑙勮寖鍖栬鑹诧紱benchmark 鍘熺敓 sender/recipient 鍙繚鐣欎负 raw 璇婃柇瀛楁锛屼緥濡?ToolSandbox 鐨?`raw_sender`銆乣raw_recipient`銆侱efault 杞ㄨ抗浼氬湪椤跺眰 raw 瀛楁涓啓鍏?`runtime_initial_state`锛屼緵 replay 澶嶇敤鏈 session 鐨勭湡瀹炲垵濮嬬姸鎬併€俙raw_summary.json.trajectory_output.path` 鍥哄畾鎸囧悜 `trajectory.json`锛屽苟璁板綍 agent `step_count`銆乣raw_step_count`銆乣snapshot_count` 鍜?`final_state_present`锛涘畬鏁?steps 涓嶅祵鍏?`raw_summary.json`锛岄伩鍏嶅崟涓憳瑕佹枃浠惰繃澶с€?
+`raw_summary.json` 浼氬湪 benchmark 鍘熺敓鎽樿鍩虹涓婅拷鍔?DynSTEER 杩愯鏈熷瓧娈碉細`runtime_metrics`銆乣trajectory_output`銆乣terminated_by_policy`銆乣termination_code`銆乣termination_reason` 鍜?`stage_settlements`銆侱efault raw summary 杩樹細鍐欏叆 `runtime_initial_state_source=harness_session` 涓?`runtime_initial_state_summary`銆俙runtime_metrics.step_count` 璁板綍瀹屾暣闂悎 agent step 鏁帮紝`runtime_metrics.raw_step_count` 璁板綍瀹屾暣 raw 杞ㄨ抗娑堟伅鏁帮紝姝ゅ杩樿褰?case 璇勪及鑰楁椂銆乼ool call 鏁般€佽建杩?step cost 鑱氬悎銆乧ost 鍙敤鎬у瓧娈靛拰 LLM judge token usage 鑱氬悎銆俙trajectory_cost_available=false` 鎴?`trajectory_latency_available=false` 琛ㄧず瀵瑰簲 `0` 鍊煎彧鏄暟鎹笉鍙敤鍏滃簳锛屼笉鏄湡瀹為浂鎴愭湰銆俙task_case_snapshot.runtime_initial_state_source` 璁板綍杩愯鏈熻瘎鍒嗕娇鐢ㄧ殑鍒濆鐘舵€佹潵婧愶紝`runtime_initial_state_summary` 鍙繚鐣?namespace 琛屾暟鎽樿銆俙stage_settlements[].metadata` 涓殑 `stage_trace` 涓?`milestone_matching` 鐢?`DynSTEEREvaluator` 鐢熸垚锛孯unner 鍙礋璐ｅ簭鍒楀寲钀界洏銆俙stage_trace` 鐢ㄤ簬鏌ョ湅鏈樁娈佃建杩规楠わ紝`milestone_matching` 鐢ㄤ簬鏌ョ湅 milestone 鍛戒腑杈圭晫銆佺害鏉熻瘎鍒嗗拰 finish 闃舵鏈懡涓?milestone銆?
+Default 杈撳嚭浣跨敤鍚屼竴鐩綍缁撴瀯锛屼絾 case 鐩綍涓嬬殑鎶ュ憡鏂囦欢涓?`default_report.json`锛宻ummary 涓殑 `overall_score` 涓?`default_score` 鍧囨潵鑷?benchmark 鍘熺敓 `BenchmarkDefaultResult.score`銆俁eplay 杈撳嚭浣跨敤 `report.json`锛屽苟鍦?summary/report metadata 涓褰?`method`銆乣strategy`銆乣model_id`銆乣repeat_index` 鍜屽彲閫?`default_reference`銆?
+`raw_summary.json` 杩樺寘鍚疄鏃?milestone 鍖归厤璇婃柇瀛楁锛?
+- `milestone_graph_summary`: 褰撳墠 case 杞崲鍚庣殑 milestone DAG 鎽樿锛屽寘鍚妭鐐广€佽竟銆乵andatory milestone ID 鍜岀害鏉熸憳瑕併€?- `milestone_match_attempts`: 杩愯鏈熸瘡涓瓨鍦?ready milestone 鐨勫€欓€?step 鍖归厤灏濊瘯锛屽寘鍚懡涓墠 matched/ready 闆嗗悎銆佸€欓€夎竟鐣屻€佸€欓€?milestone 璇勫垎銆佹槸鍚﹁閫変腑鍜屾嫆缁濆師鍥犮€?- `milestone_final_diagnostics`: 姣忎釜 milestone 鐨勬渶缁堢姸鎬佹憳瑕侊紝鍖呭惈 `matched`/`pending`銆佹槸鍚︽浘缁?ready銆佸皾璇曟鏁般€佹渶浣冲垎鏁般€佹渶浣宠竟鐣屻€侀樆濉炲師鍥犲拰鏈弧瓒冲墠椹便€?
+## ToolSandbox 閫傞厤璇存槑
 
-`trajectory.json` 包含完整 raw `Trajectory` 序列化结果，step 中的 `recipient` 是 DynSTEER 规范化角色；benchmark 原生 sender/recipient 可保留为 raw 诊断字段，例如 ToolSandbox 的 `raw_sender`、`raw_recipient`。Default 轨迹会在顶层 raw 字段中写入 `runtime_initial_state`，供 replay 复用本次 session 的真实初始状态。`raw_summary.json.trajectory_output.path` 固定指向 `trajectory.json`，并记录 agent `step_count`、`raw_step_count`、`snapshot_count` 和 `final_state_present`；完整 steps 不嵌入 `raw_summary.json`，避免单个摘要文件过大。
-
-`raw_summary.json` 会在 benchmark 原生摘要基础上追加 DynSTEER 运行期字段：`runtime_metrics`、`trajectory_output`、`terminated_by_policy`、`termination_code`、`termination_reason` 和 `stage_settlements`。Default raw summary 还会写入 `runtime_initial_state_source=harness_session` 与 `runtime_initial_state_summary`。`runtime_metrics.step_count` 记录完整闭合 agent step 数，`runtime_metrics.raw_step_count` 记录完整 raw 轨迹消息数，此外还记录 case 评估耗时、tool call 数、轨迹 step cost 聚合、cost 可用性字段和 LLM judge token usage 聚合。`trajectory_cost_available=false` 或 `trajectory_latency_available=false` 表示对应 `0` 值只是数据不可用兜底，不是真实零成本。`task_case_snapshot.runtime_initial_state_source` 记录运行期评分使用的初始状态来源，`runtime_initial_state_summary` 只保留 namespace 行数摘要。`stage_settlements[].metadata` 中的 `stage_trace` 与 `milestone_matching` 由 `DynSTEEREvaluator` 生成，Runner 只负责序列化落盘。`stage_trace` 用于查看本阶段轨迹步骤，`milestone_matching` 用于查看 milestone 命中边界、约束评分和 finish 阶段未命中 milestone。
-
-Default 输出使用同一目录结构，但 case 目录下的报告文件为 `default_report.json`，summary 中的 `overall_score` 与 `default_score` 均来自 benchmark 原生 `BenchmarkDefaultResult.score`。Replay 输出使用 `report.json`，并在 summary/report metadata 中记录 `method`、`strategy`、`model_id`、`repeat_index` 和可选 `default_reference`。
-
-`raw_summary.json` 还包含实时 milestone 匹配诊断字段：
-
-- `milestone_graph_summary`: 当前 case 转换后的 milestone DAG 摘要，包含节点、边、mandatory milestone ID 和约束摘要。
-- `milestone_match_attempts`: 运行期每个存在 ready milestone 的候选 step 匹配尝试，包含命中前 matched/ready 集合、候选边界、候选 milestone 评分、是否被选中和拒绝原因。
-- `milestone_final_diagnostics`: 每个 milestone 的最终状态摘要，包含 `matched`/`pending`、是否曾经 ready、尝试次数、最佳分数、最佳边界、阻塞原因和未满足前驱。
-
-## ToolSandbox 适配说明
-
-ToolSandbox 外部可选依赖由专门依赖边界工具函数加载，不通过 DynSTEER 包级 `__getattr__` 懒加载隐藏项目自身依赖。运行时需要保证 ToolSandbox 及其依赖已安装，或在 `data/toolsandbox/benchmark.json` 中配置可导入的外部 `source_root`。
-
-`data/{benchmark}/benchmark.json` 支持 `language` 字段，默认值为 `en`。`load_harness_run_configs(...)` 会校验该字段为非空字符串，并写入 `HarnessRunConfig.metadata["language"]`，供 prompt 模板选择语言版本。`benchmark.json` 还支持可选 `max_workers` 整数字段，用于为不支持并行的 benchmark 设置 case 并发上限。
-
-`data/toolsandbox/run_configs.json` 每项配置中，`agent` 与 `user` 只表示 ToolSandbox 角色实现类型；角色 SDK client 的连接参数由同级的 `agent_client` 与 `user_client` 控制，并原样写入 `HarnessRunConfig.metadata`。支持字段包括 `api_key`、`api_key_env`、`base_url`、`base_url_env`、`timeout_seconds`，其中空字符串会被视为未配置。实际 client 初始化优先级为显式值、显式环境变量、旧全局环境变量；未设置新字段时继续读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`。
-
+ToolSandbox 澶栭儴鍙€変緷璧栫敱涓撻棬渚濊禆杈圭晫宸ュ叿鍑芥暟鍔犺浇锛屼笉閫氳繃 DynSTEER 鍖呯骇 `__getattr__` 鎳掑姞杞介殣钘忛」鐩嚜韬緷璧栥€傝繍琛屾椂闇€瑕佷繚璇?ToolSandbox 鍙婂叾渚濊禆宸插畨瑁咃紝鎴栧湪 `data/toolsandbox/benchmark.json` 涓厤缃彲瀵煎叆鐨勫閮?`source_root`銆?
+`data/{benchmark}/benchmark.json` 鏀寔 `language` 瀛楁锛岄粯璁ゅ€间负 `en`銆俙load_harness_run_configs(...)` 浼氭牎楠岃瀛楁涓洪潪绌哄瓧绗︿覆锛屽苟鍐欏叆 `HarnessRunConfig.metadata["language"]`锛屼緵 prompt 妯℃澘閫夋嫨璇█鐗堟湰銆俙benchmark.json` 杩樻敮鎸佸彲閫?`max_workers` 鏁存暟瀛楁锛岀敤浜庝负涓嶆敮鎸佸苟琛岀殑 benchmark 璁剧疆 case 骞跺彂涓婇檺銆?
+`data/toolsandbox/run_configs.json` 姣忛」閰嶇疆涓紝`agent` 涓?`user` 鍙〃绀?ToolSandbox 瑙掕壊瀹炵幇绫诲瀷锛涜鑹?SDK client 鐨勮繛鎺ュ弬鏁扮敱鍚岀骇鐨?`agent_client` 涓?`user_client` 鎺у埗锛屽苟鍘熸牱鍐欏叆 `HarnessRunConfig.metadata`銆傛敮鎸佸瓧娈靛寘鎷?`api_key`銆乣api_key_env`銆乣base_url`銆乣base_url_env`銆乣timeout_seconds`锛屽叾涓┖瀛楃涓蹭細琚涓烘湭閰嶇疆銆傚疄闄?client 鍒濆鍖栦紭鍏堢骇涓烘樉寮忓€笺€佹樉寮忕幆澧冨彉閲忋€佹棫鍏ㄥ眬鐜鍙橀噺锛涙湭璁剧疆鏂板瓧娈垫椂缁х画璇诲彇 `OPENAI_API_KEY`銆乣OPENAI_BASE_URL`銆乣ANTHROPIC_API_KEY`銆乣ANTHROPIC_BASE_URL`銆?
 ```json
 {
     "agent": "GPT_4_o_2024_05_13",
@@ -168,12 +107,11 @@ ToolSandbox 外部可选依赖由专门依赖边界工具函数加载，不通�
 }
 ```
 
-ToolSandbox adapter 负责读取 scenario、初始 SANDBOX 行、初始数据库状态和 evaluation matcher，生成带 `case_id` 与已 enrich milestone graph 的 `TaskCase`。适配阶段不得调用 `scenario.play()`，也不得调用 agent/user `respond()`。
+ToolSandbox adapter 璐熻矗璇诲彇 scenario銆佸垵濮?SANDBOX 琛屻€佸垵濮嬫暟鎹簱鐘舵€佸拰 evaluation matcher锛岀敓鎴愬甫 `case_id` 涓庡凡 enrich milestone graph 鐨?`TaskCase`銆傞€傞厤闃舵涓嶅緱璋冪敤 `scenario.play()`锛屼篃涓嶅緱璋冪敤 agent/user `respond()`銆?
+ToolSandbox harness 涓嶈皟鐢ㄥ師鐢?`play_and_evaluate()` 鎴栨暣鍦?`Scenario.play()`銆俙start_case()` 鍙繁鎷疯礉涓€娆?`Scenario.starting_context`锛屽噯澶?system -> execution environment 鍒濆鍖栨秷鎭紝骞跺湪鍒濆鍖栧悗鎶婂綋鍓?context 鐨勭湡瀹炲垵濮嬬姸鎬佸浐鍖栧埌 session銆傛瘡娆?`_advance_native_session()` 鎭㈠ `session.context`锛岃鍙栧綋鍓?SANDBOX recipient锛屽苟鍙皟鐢ㄨ role 鐨勪竴娆?`respond()`銆傛瘡娆?respond 鍚庨兘浼氬啓鍥?`session.context = get_current_context()`锛岄伩鍏嶅悗缁帹杩涢噸缃洖 starting context銆?
+ToolSandbox 鐨?`initial_state_from_session()` 杩斿洖鍥哄寲鐨?runtime initial state锛沗final_state_from_session()` 杩斿洖褰撳墠 context 鐨?namespace 鐘舵€併€俰nitial銆乺untime snapshots 鍜?final state 閮戒繚鐣?`sandbox_message_index` 鍒楋紝閬垮厤绂荤嚎 adapted JSON 涓殑鍔ㄦ€?timestamp 鎴?schema 缂哄垪褰卞搷杩愯鏈?guardrail銆?
+ToolSandbox harness 浼氭寜 `data_root + tool_backend` 鍦ㄨ繘绋嬪唴缂撳瓨鍘熺敓 `named_scenarios()` 缁撴灉锛岄伩鍏嶅悓涓€娆¤繍琛屼腑 `list_cases()`銆乣start_case()` 鍙嶅鏋勯€犲叏閮?ToolSandbox 鍦烘櫙銆傚崟 case 鍚姩浠嶄細娣辨嫹璐?`starting_context`锛屼笉鍏变韩杩愯鏈?context銆?
+ToolSandbox 鐨勫師鐢熷伐鍏枫€乺ole 鍜?execution environment 閫氳繃妯″潡绾?`_global_execution_context` 璇诲啓褰撳墠娑堟伅涓婁笅鏂囷紝绾跨▼骞惰鎵ц涓嶅悓 case 浼氫簰鐩歌鐩?context銆傚洜姝?`data/toolsandbox/benchmark.json` 閰嶇疆 `max_workers: 1`锛岀‘淇?ToolSandbox case 涓茶鎵ц銆?
+## 闄勫姞璇存槑
 
-ToolSandbox harness 不调用原生 `play_and_evaluate()` 或整场 `Scenario.play()`。`start_case()` 只深拷贝一次 `Scenario.starting_context`，准备 system -> execution environment 初始化消息，并在初始化后把当前 context 的真实初始状态固化到 session。每次 `_advance_native_session()` 恢复 `session.context`，读取当前 SANDBOX recipient，并只调用该 role 的一次 `respond()`。每次 respond 后都会写回 `session.context = get_current_context()`，避免后续推进重置回 starting context。
-
-ToolSandbox 的 `initial_state_from_session()` 返回固化的 runtime initial state；`final_state_from_session()` 返回当前 context 的 namespace 状态。initial、runtime snapshots 和 final state 都保留 `sandbox_message_index` 列，避免离线 adapted JSON 中的动态 timestamp 或 schema 缺列影响运行期 guardrail。
-
-ToolSandbox harness 会按 `data_root + tool_backend` 在进程内缓存原生 `named_scenarios()` 结果，避免同一次运行中 `list_cases()`、`start_case()` 反复构造全部 ToolSandbox 场景。单 case 启动仍会深拷贝 `starting_context`，不共享运行期 context。
-
-ToolSandbox 的原生工具、role 和 execution environment 通过模块级 `_global_execution_context` 读写当前消息上下文，线程并行执行不同 case 会互相覆盖 context。因此 `data/toolsandbox/benchmark.json` 配置 `max_workers: 1`，确保 ToolSandbox case 串行执行。
+`data/{benchmark}/benchmark.json` 閲岀殑 `max_workers` 鐜板湪鏄彲閫夊瓧娈碉紱缂哄け鏃朵笉浼氬啓鍏?`benchmark_max_workers`銆俆oolSandbox 鐨?`agent_client` / `user_client` 杩樻敮鎸?`max_retries`銆乣retry_base_seconds` 鍜?`retry_max_seconds`锛岀敤浜庡師鐢?`respond()` 鐨勯噸璇曟帶鍒躲€?

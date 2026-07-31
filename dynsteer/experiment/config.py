@@ -1,12 +1,15 @@
 from __future__ import annotations
+
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
+
 from dynsteer.experiment.model import EvaluationStrategyConfig, ExperimentMethod, ExperimentRunSpec
-from dynsteer.harness.config import evaluation_strategy_from_mapping, threshold_config_from_mapping
+from dynsteer.harness.config import evaluation_strategy_from_mapping, load_benchmark_manifest_metadata, threshold_config_from_mapping
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject, ThresholdConfig
 from dynsteer.utils import optional_str, read_json_file, required_str
+
 
 def load_experiment_config(path: Path | str) -> JsonObject:
     """读取统一实验 JSON 配置。"""
@@ -18,6 +21,7 @@ def load_experiment_config(path: Path | str) -> JsonObject:
     data = read_json_file(config_path, "实验配置", dict)
     data["_config_path"] = str(config_path.resolve())
     return data
+
 
 def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpec]:
     """展开 benchmark × model × method × repeat × threshold profile 实验矩阵。"""
@@ -34,12 +38,13 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
     repeats = int(config.get("repeats", 1))
     if repeats < 1:
         raise ValueError("repeats 必须大于 0")
-    
+
     judge_profiles = _profile_mapping(config.get("judge_profiles"), "judge_profiles")
     threshold_profiles = _profile_mapping(config.get("threshold_profiles"), "threshold_profiles")
     default_threshold_profile = str(config.get("default_threshold_profile", "default"))
     threshold_names = _threshold_names(config, threshold_profiles, default_threshold_profile)
 
+    manifest_metadata_cache: dict[tuple[str, str], JsonObject] = {}
     specs: list[ExperimentRunSpec] = []
     for benchmark_spec in benchmarks:
         benchmark_data = _spec_mapping(benchmark_spec, "benchmark")
@@ -48,6 +53,11 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
         case_ids = _case_ids(benchmark_data.get("case_ids") or benchmark_data.get("scenarios"))
         if not case_ids:
             raise ValueError(f"Benchmark {benchmark} 的 case_ids/scenarios 为空")
+        manifest_cache_key = (benchmark, str(data_root.resolve()))
+        manifest_metadata = manifest_metadata_cache.get(manifest_cache_key)
+        if manifest_metadata is None:
+            manifest_metadata = load_benchmark_manifest_metadata(benchmark, data_root)
+            manifest_metadata_cache[manifest_cache_key] = manifest_metadata
         benchmark_metadata = _metadata(benchmark_data)
 
         for model_spec in models:
@@ -68,43 +78,68 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
                     thresholds = _threshold_config(threshold_profiles, threshold_name)
 
                     for repeat_index in range(repeats):
-                        metadata = _merge_metadata(config.get("metadata"), benchmark_metadata, model_metadata, method_metadata, model_data.get("harness_metadata"), method_data.get("harness_metadata"))
+                        metadata = _merge_metadata(
+                            manifest_metadata,
+                            config.get("metadata"),
+                            benchmark_metadata,
+                            model_metadata,
+                            method_metadata,
+                            model_data.get("harness_metadata"),
+                            method_data.get("harness_metadata"),
+                        )
                         specs.append(
                             ExperimentRunSpec(
-                                experiment_id=experiment_id, benchmark=benchmark,
-                                data_root=data_root, runs_dir=runs_dir, results_dir=results_dir, 
-                                case_ids=case_ids, model_id=model_id, repeat_index=repeat_index, method=method, 
-                                judge_profile=judge_profile, judge_config=judge_config, 
-                                threshold_profile=threshold_name, thresholds=thresholds, 
-                                strategy=strategy, metadata=metadata
+                                experiment_id=experiment_id,
+                                benchmark=benchmark,
+                                data_root=data_root,
+                                runs_dir=runs_dir,
+                                results_dir=results_dir,
+                                case_ids=case_ids,
+                                model_id=model_id,
+                                repeat_index=repeat_index,
+                                method=method,
+                                judge_profile=judge_profile,
+                                judge_config=judge_config,
+                                threshold_profile=threshold_name,
+                                thresholds=thresholds,
+                                strategy=strategy,
+                                metadata=metadata,
                             )
                         )
-                        
+
     validate_experiment_matrix(specs)
     return specs
+
 
 def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
     """把实验 run spec 转换为当前 harness 可用的 HarnessRunConfig。"""
     if spec is None:
         raise ValueError("spec 不能为空")
     return HarnessRunConfig(
-        benchmark=spec.benchmark, data_root=spec.data_root, 
-        case_ids=spec.case_ids, runs_dir=spec.runs_dir, results_dir=spec.results_dir, 
-        stop_on_stage_failure=spec.strategy.policy_stop, stop_on_minefield=spec.strategy.policy_stop, 
-        metadata=spec.to_metadata()
+        benchmark=spec.benchmark,
+        data_root=spec.data_root,
+        case_ids=spec.case_ids,
+        runs_dir=spec.runs_dir,
+        results_dir=spec.results_dir,
+        stop_on_stage_failure=spec.strategy.policy_stop,
+        stop_on_minefield=spec.strategy.policy_stop,
+        metadata=spec.to_metadata(),
     )
+
 
 def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
     """检查实验矩阵输出路径唯一性与基础字段合法性。"""
     for spec in specs:
         if spec is None:
-            raise ValueError("specs 不能包含空规格")
+            raise ValueError("specs 不能包含空配置")
 
-def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None=None) -> list[object]:
+
+def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None = None) -> list[object]:
     raw_value = config.get(key, default)
     if not isinstance(raw_value, list) or not raw_value:
         raise ValueError(f"实验配置字段 {key} 必须是非空数组")
     return list(raw_value)
+
 
 def _spec_mapping(value: object, default_key: str) -> dict[str, Any]:
     if isinstance(value, str):
@@ -112,6 +147,7 @@ def _spec_mapping(value: object, default_key: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     raise ValueError(f"实验矩阵项必须是字符串或 JSON 对象: {default_key}")
+
 
 def _profile_mapping(value: object, label: str) -> dict[str, JsonObject]:
     if value is None:
@@ -125,6 +161,7 @@ def _profile_mapping(value: object, label: str) -> dict[str, JsonObject]:
         profiles[str(key)] = dict(item)
     return profiles
 
+
 def _threshold_names(config: Mapping[str, Any], profiles: dict[str, JsonObject], default_profile: str) -> list[str | None]:
     raw_names = config.get("threshold_matrix")
     if raw_names is None:
@@ -133,12 +170,14 @@ def _threshold_names(config: Mapping[str, Any], profiles: dict[str, JsonObject],
         raise ValueError("threshold_matrix 必须是非空数组")
     return [str(item) for item in raw_names]
 
+
 def _threshold_config(profiles: dict[str, JsonObject], profile_name: str | None) -> ThresholdConfig:
     if profile_name is None:
         return ThresholdConfig()
     if profile_name not in profiles:
         raise ValueError(f"threshold profile 不存在: {profile_name}")
     return threshold_config_from_mapping(profiles[profile_name])
+
 
 def _strategy_for_method(method: ExperimentMethod, raw_strategy: object) -> EvaluationStrategyConfig:
     strategy = evaluation_strategy_from_mapping(raw_strategy if isinstance(raw_strategy, dict) else {})
@@ -148,6 +187,7 @@ def _strategy_for_method(method: ExperimentMethod, raw_strategy: object) -> Eval
         return replace(strategy, dynamic_routing=False, dynamic_weighting=False)
     return strategy
 
+
 def _judge_config(profiles: dict[str, JsonObject], profile_name: str | None) -> JsonObject:
     if profile_name is None:
         return {}
@@ -155,15 +195,17 @@ def _judge_config(profiles: dict[str, JsonObject], profile_name: str | None) -> 
         raise ValueError(f"judge profile 不存在: {profile_name}")
     return dict(profiles[profile_name])
 
+
 def _case_ids(value: object) -> tuple[str, ...] | None:
     if value is None:
         return None
     if not isinstance(value, list):
         raise ValueError("case_ids/scenarios 必须是字符串数组")
     case_ids = tuple((str(item).strip() for item in value))
-    if any((not item for item in case_ids)):
+    if any(not item for item in case_ids):
         raise ValueError("case_ids/scenarios 不能包含空字符串")
     return case_ids or None
+
 
 def _metadata(data: Mapping[str, Any]) -> JsonObject:
     raw_metadata = data.get("metadata")
@@ -173,6 +215,7 @@ def _metadata(data: Mapping[str, Any]) -> JsonObject:
         raise ValueError("metadata 必须是 JSON 对象")
     return {str(key): value for key, value in raw_metadata.items()}
 
+
 def _merge_metadata(*values: object) -> JsonObject:
     merged: JsonObject = {}
     for value in values:
@@ -181,6 +224,7 @@ def _merge_metadata(*values: object) -> JsonObject:
                 raise ValueError("metadata/harness_metadata 必须是 JSON 对象")
             merged.update({str(key): item for key, item in value.items()})
     return merged
+
 
 def _resolve_input_path(value: object, config_dir: Path) -> Path:
     if value is None:

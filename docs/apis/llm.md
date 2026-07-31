@@ -129,3 +129,6 @@ API key 读取优先级：
 
 - `LLMConfigurationError`: provider 配置缺失或不合法。
 - `LLMResponseError`: provider 返回内容无法解析。
+## 附加说明
+
+`BaseLLM.chat(...)` 的重试会覆盖整段 attempt，包括 `_create_client()`、`_normalize_infer_params(...)`、`_get_response_from_client(...)` 和 `_response_text(...)`。每次 attempt 都会重新创建一次 provider client，`LLMConfigurationError` 仍然会直接抛出，不进入重试。
