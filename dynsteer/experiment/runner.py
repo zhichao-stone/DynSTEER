@@ -35,6 +35,8 @@ _METHODS_NEED_DEFAULT = {
     ExperimentMethod.DEFAULT,
     ExperimentMethod.DYNSTEER_REPLAY,
     ExperimentMethod.DYNSTEER_REPLAY_STATIC,
+    ExperimentMethod.DYNSTEER_REPLAY_STATIC_WEIGHTING,
+    ExperimentMethod.DYNSTEER_REPLAY_STATIC_ROUTING,
 }
 
 

@@ -9,6 +9,8 @@ class ExperimentMethod(str, Enum):
     DYNSTEER_EVALUATE = "dynsteer_evaluate"
     DYNSTEER_REPLAY = "dynsteer_replay"
     DYNSTEER_REPLAY_STATIC = "dynsteer_replay_static"
+    DYNSTEER_REPLAY_STATIC_WEIGHTING = "dynsteer_replay_static_weighting"
+    DYNSTEER_REPLAY_STATIC_ROUTING = "dynsteer_replay_static_routing"
 
 @dataclass(frozen=True)
 class EvaluationStrategyConfig:

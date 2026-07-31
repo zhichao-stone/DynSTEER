@@ -185,6 +185,10 @@ def _strategy_for_method(method: ExperimentMethod, raw_strategy: object) -> Eval
         return replace(strategy, policy_stop=False)
     if method == ExperimentMethod.DYNSTEER_REPLAY_STATIC:
         return replace(strategy, dynamic_routing=False, dynamic_weighting=False)
+    if method == ExperimentMethod.DYNSTEER_REPLAY_STATIC_WEIGHTING:
+        return replace(strategy, dynamic_routing=True, dynamic_weighting=False)
+    if method == ExperimentMethod.DYNSTEER_REPLAY_STATIC_ROUTING:
+        return replace(strategy, dynamic_routing=False, dynamic_weighting=True)
     return strategy
 
 

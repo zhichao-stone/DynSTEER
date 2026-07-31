@@ -84,3 +84,14 @@ case 浜х墿浠嶅鐢?harness 鐩綍锛?
 ## 闄勫姞璇存槑
 
 `run_experiment(config_path, workers=1, force_adapt=False, force_eval=False, no_sum=False)` 鐜板湪浼氭帴鏀?CLI 鐨?`--workers`銆傚疄闄呭苟鍙戞暟鎸夋瘡涓?spec 鐨?`workers` 涓庡搴?benchmark 鐨?`benchmark_max_workers` 鍙栬緝灏忓€硷紱褰?`benchmark.json` 娌℃湁鎻愪緵 `max_workers` 鏃讹紝瀹為獙灞備細鐩存帴浣跨敤 CLI 鐨?`workers`銆?
+
+## Replay 消融方法
+
+统一实验配置的 `methods` 字段支持以下 replay 消融方法：
+
+- `dynsteer_replay`: 完整 DynSTEER replay，默认 `dynamic_routing=True`、`dynamic_weighting=True`。
+- `dynsteer_replay_static`: 静态路由 + 静态权重，强制 `dynamic_routing=False`、`dynamic_weighting=False`。
+- `dynsteer_replay_static_weighting`: 动态路由 + 静态权重，强制 `dynamic_routing=True`、`dynamic_weighting=False`。
+- `dynsteer_replay_static_routing`: 静态路由 + 动态权重，强制 `dynamic_routing=False`、`dynamic_weighting=True`。
+
+上述 replay 方法都会先准备同一组 `default` 轨迹，再基于该轨迹执行离线评估；`policy_stop`、`fixed_judge_level`、`replay_continue_after_virtual_stop` 和 `strategy.metadata` 仍可通过 method 级 `strategy` 配置覆盖。
