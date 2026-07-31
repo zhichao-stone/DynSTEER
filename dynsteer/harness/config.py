@@ -6,7 +6,7 @@ from typing import Any, Mapping
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
-from dynsteer.utils import normalize_client_config, optional_str, read_json_file, required_str
+from dynsteer.utils import normalize_client_config, optional_str, parse_int_value, read_json_file, required_str
 
 
 DEFAULT_READY_FRONTIER_PATIENCE = 8
@@ -43,12 +43,13 @@ def load_benchmark_manifest_metadata(benchmark: str, data_root: Path) -> JsonObj
         "tool_backend": tool_backend,
         "language": language.strip(),
     }
-    manifest_max_workers = manifest.get("max_workers")
+    manifest_max_workers = parse_int_value(
+        manifest.get("max_workers"),
+        "benchmark.json max_workers",
+        default=None,
+        min_value=1,
+    )
     if manifest_max_workers is not None:
-        if isinstance(manifest_max_workers, bool) or not isinstance(manifest_max_workers, int):
-            raise ValueError("benchmark.json max_workers 必须是正整数")
-        if manifest_max_workers < 1:
-            raise ValueError("benchmark.json max_workers 必须是正整数")
         metadata["benchmark_max_workers"] = manifest_max_workers
     return metadata
 
@@ -68,7 +69,12 @@ def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObje
         "base_url": source.get("DYNSTEER_JUDGE_BASE_URL"),
         "timeout_seconds": float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
         "temperature": float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
-        "max_tokens": _optional_positive_int(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS"),
+        "max_tokens": parse_int_value(
+            source.get("DYNSTEER_JUDGE_MAX_TOKENS"),
+            "DYNSTEER_JUDGE_MAX_TOKENS",
+            default=None,
+            min_value=1,
+        ),
         "max_retries": int(source.get("DYNSTEER_JUDGE_MAX_RETRIES", "3")),
         "retry_base_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS", "1.0")),
         "retry_max_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS", "8.0")),
@@ -122,16 +128,12 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None = None) -> E
 def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) -> int:
     """从环境变量读取 ready frontier 无进展 patience。"""
     source = env if env is not None else os.environ
-    raw_value = source.get("DYNSTEER_READY_FRONTIER_PATIENCE")
-    if raw_value is None or not raw_value.strip():
-        return DEFAULT_READY_FRONTIER_PATIENCE
-    try:
-        patience = int(raw_value.strip())
-    except ValueError as exc:
-        raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须是整数") from exc
-    if patience < 1:
-        raise ValueError("DYNSTEER_READY_FRONTIER_PATIENCE 必须大于 0")
-    return patience
+    return parse_int_value(
+        source.get("DYNSTEER_READY_FRONTIER_PATIENCE"),
+        "DYNSTEER_READY_FRONTIER_PATIENCE",
+        default=DEFAULT_READY_FRONTIER_PATIENCE,
+        min_value=1,
+    )
 
 
 def _case_ids_from_spec(spec: dict[str, Any], index: int) -> tuple[str, ...] | None:
@@ -212,16 +214,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
             )
         )
     return configs
-
-
-def _optional_positive_int(value: str | None, label: str) -> int | None:
-    """读取可选正整数。"""
-    if value is None or not value.strip():
-        return None
-    parsed = int(value.strip())
-    if parsed <= 0:
-        raise ValueError(f"{label} 必须是正整数")
-    return parsed
 
 
 def _bool_from_mapping(data: Mapping[str, Any], key: str, default: bool) -> bool:

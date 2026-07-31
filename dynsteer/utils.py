@@ -380,35 +380,10 @@ def _normalize_client_config_value(key: str, value: object, label: str) -> str |
         value = value.strip()
         return value or None
     if key in _CLIENT_CONFIG_INT_FIELDS:
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                return None
-            try:
-                value = int(value)
-            except ValueError as exc:
-                raise ValueError(f"{label}.{key} 必须是正整数") from exc
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{label}.{key} 必须是正整数")
-        if value < 1:
-            raise ValueError(f"{label}.{key} 必须大于 0")
-        return value
-    if key not in _CLIENT_CONFIG_FLOAT_FIELDS:
-        raise ValueError(f"{label} 不支持的字段: {key}")
-    if isinstance(value, str):
-        value = value.strip()
-        if not value:
-            return None
-        try:
-            value = float(value)
-        except ValueError as exc:
-            raise ValueError(f"{label}.{key} 必须是数字") from exc
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label}.{key} 必须是数字")
-    normalized_value = float(value)
-    if key == "timeout_seconds":
-        if normalized_value <= 0:
+        return parse_int_value(value, f"{label}.{key}", default=None, min_value=1)
+    if key in _CLIENT_CONFIG_FLOAT_FIELDS:
+        normalized_value = parse_float_value(value, f"{label}.{key}", default=None, min_value=0.0)
+        if key == "timeout_seconds" and normalized_value is not None and normalized_value <= 0:
             raise ValueError(f"{label}.timeout_seconds 必须大于 0")
-    elif normalized_value < 0:
-        raise ValueError(f"{label}.{key} 必须大于等于 0")
-    return normalized_value
+        return normalized_value
+    raise ValueError(f"{label} 不支持的字段: {key}")

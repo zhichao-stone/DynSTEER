@@ -9,7 +9,8 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.llm import build_llm_from_env
 from dynsteer.model import Actor, Constraint, ConstraintTarget, EventType, JsonObject, Milestone, MilestoneGraph, Minefield, MinefieldPenalty, Operator, Dimension, StageEvaluationSpec, StateSnapshot, StepCost, TaskCase, TaskType, ToolCall, ToolResult, Trajectory, TrajectoryStep, ensure_json_object
 from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goals, validate_stage_evaluation_specs
-from dynsteer.utils import enum_value, get_object, json_safe, normalize_actor, read_json_file, required_str, unknown_fields
+from dynsteer.utils import enum_value, get_object, json_safe, normalize_actor, parse_int_value, read_json_file, required_str, unknown_fields
+
 
 def safe_case_file_name(case_id: str) -> str:
     normalized = re.sub("[^A-Za-z0-9_.-]+", "_", str(case_id)).strip("._")
@@ -95,14 +96,6 @@ def _optional_json_object(data: JsonObject, key: str) -> JsonObject | None:
         return None
     if not isinstance(value, dict):
         raise ValueError(f"{key} 必须是 JSON 对象")
-    return value
-
-def _optional_int(data: JsonObject, key: str) -> int | None:
-    value = data.get(key)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{key} 必须是整数")
     return value
 
 def parse_constraint(data: JsonObject) -> Constraint:
@@ -206,7 +199,10 @@ def _load_step(data: JsonObject) -> TrajectoryStep:
     cost_data = _optional_json_object(data, "cost")
     cost = StepCost()
     if cost_data is not None:
-        cost = StepCost(tokens=_optional_int(cost_data, "tokens"), latency_ms=_optional_int(cost_data, "latency_ms"))
+        cost = StepCost(
+            tokens=parse_int_value(cost_data.get("tokens"), "tokens", default=None),
+            latency_ms=parse_int_value(cost_data.get("latency_ms"), "latency_ms", default=None),
+        )
     return TrajectoryStep(step_id=required_str(data, "step_id", "TrajectoryStep"), index=index, actor=normalize_actor(data.get("actor"), "actor", required=True) or Actor.EVALUATOR, event_type=enum_value(EventType, data.get("event_type"), "event_type"), recipient=normalize_actor(data.get("recipient"), "recipient", required=False), timestamp=data.get("timestamp"), content=data.get("content"), tool_call=tool_call, tool_result=tool_result, state_delta_refs=[str(item) for item in refs], cost=cost, raw=unknown_fields(data, known))
 
 def _load_snapshot(data: JsonObject) -> StateSnapshot:
