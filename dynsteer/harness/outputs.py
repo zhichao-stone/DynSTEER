@@ -1,5 +1,4 @@
 import json
-import logging
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -28,11 +27,6 @@ from dynsteer.model import (
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import as_number, json_safe, read_json_file
-
-
-logger = logging.getLogger(__name__)
-
-
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """把 Trajectory 转成 JSON 对象。"""
     raw_fields = {str(key): json_safe(value) for key, value in trajectory.raw.items()}
@@ -256,20 +250,6 @@ def write_default_case_outputs(
                 "runtime_metrics": runtime_metrics,
                 "trajectory_output": trajectory_output_summary(trajectory, runtime_metrics),
             }
-        )
-        logger.info(
-            "default_case_timing",
-            extra={
-                "事件": "DEFAULT case 完成耗时统计",
-                "benchmark": config.benchmark,
-                "case_id": case_id,
-                "method": str(config.metadata.get("method") or "default"),
-                "timing_available": runtime_metrics.get("execution_timing_available", False),
-                "virtual_stop_step_index": None,
-                "elapsed_seconds": runtime_metrics.get("elapsed_seconds"),
-                "default_prefix_execution_seconds": None,
-                "effective_elapsed_seconds": None,
-            },
         )
         summary = {
             "task_id": task_case.task_id,

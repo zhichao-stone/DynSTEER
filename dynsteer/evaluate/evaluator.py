@@ -433,20 +433,6 @@ class DynSTEEREvaluator:
             report.runtime_metrics.update(timing)
             result.raw_summary["replay_execution"] = replay_execution
             result.raw_summary["runtime_metrics"] = runtime_metrics
-            logger.info(
-                "replay_case_timing",
-                extra={
-                    "事件": "replay case 完成耗时统计",
-                    "benchmark": config.benchmark,
-                    "case_id": case_id,
-                    "method": str(config.metadata.get("method") or "dynsteer_replay"),
-                    "timing_available": timing.get("timing_available"),
-                    "virtual_stop_step_index": timing.get("virtual_stop_step_index"),
-                    "elapsed_seconds": timing.get("elapsed_seconds"),
-                    "default_prefix_execution_seconds": timing.get("default_prefix_execution_seconds"),
-                    "effective_elapsed_seconds": timing.get("effective_elapsed_seconds"),
-                },
-            )
             if not timing.get("timing_available"):
                 logger.warning(
                     "replay_timing_unavailable",
