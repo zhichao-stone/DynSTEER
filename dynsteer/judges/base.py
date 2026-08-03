@@ -3,6 +3,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dynsteer.prompt.judge import build_judge_system_prompt
+from dynsteer.evaluate.judge_cache import JudgeCache, judge_context_digest
 from dynsteer.judges.confidence import complete_dimension_confidence, uncertainty_from_confidence
 from dynsteer.language import TaskLanguage
 from dynsteer.llm.base import BaseLLM, LLMResponseError
@@ -28,13 +29,42 @@ class BaseJudge(ABC):
 class LLMJudge(BaseJudge):
     """基于 BaseLLM 的 LLM-as-a-Judge 抽象基类。"""
 
-    def __init__(self, llm: BaseLLM, passes: int=3) -> None:
+    def __init__(self, llm: BaseLLM, passes: int=3, cache: JudgeCache | None = None) -> None:
         if llm is None:
             raise LLMJudgeConfigurationError("LLMJudge 需要提供 BaseLLM 实例")
         if passes < 1:
             raise LLMJudgeConfigurationError("passes 必须大于 0")
         self._llm = llm
         self._passes = passes
+        self._cache = cache or JudgeCache()
+
+    def _cached_call_json(
+        self,
+        prompt: str,
+        context: JsonObject,
+        language: TaskLanguage = TaskLanguage.ENGLISH,
+        *,
+        semantic_review: bool = False,
+    ) -> JsonObject:
+        """按完整 judge 上下文精确去重 LLM JSON 调用。"""
+        cache_context = {
+            **context,
+            "passes": self._passes,
+            "prompt_context_digest": judge_context_digest({"prompt": prompt}),
+        }
+        key = judge_context_digest(cache_context)
+        cached = self._cache.get(key, semantic_review=semantic_review)
+        if cached is not None:
+            return cached
+        result = self._call_json(prompt, language=language)
+        self._cache.put(key, result)
+        return result
+
+    def _model_id(self) -> str:
+        """返回 cache key 使用的 LLM 模型标识。"""
+        config = getattr(self._llm, "_config", None)
+        model = getattr(config, "model", None)
+        return str(model or self._llm.__class__.__name__)
 
     def _call_json(self, prompt: str, language: TaskLanguage=TaskLanguage.ENGLISH) -> JsonObject:
         """调用 LLM 并解析为 JSON 对象。"""

@@ -1,11 +1,14 @@
+from copy import deepcopy
+
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.adapter.toolsandbox.utils.scenario import milestone_graph_from_scenario, task_description_from_steps, task_types_from_categories
-from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, sandbox_rows_from_context
+from dynsteer.adapter.toolsandbox.utils.state import sandbox_rows_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_rows_to_step_dicts
-from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module, tool_backend, toolsandbox_project_root
+from dynsteer.adapter.toolsandbox.utils.runtime import load_named_scenarios, load_toolsandbox_module, toolsandbox_project_root
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import TaskCase
+from dynsteer.stage import generate_stage_evaluation_specs, materialize_stage_goals
 from dynsteer.utils import enum_name
 
 class ToolSandboxAdapter(BaseBenchmarkAdapter):
@@ -18,10 +21,7 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
             raise ValueError("config 和 case_id 不能为空")
         ensure_source_root(config.data_root, toolsandbox_project_root(), self.benchmark)
         module_loader = load_toolsandbox_module
-        scenarios_module = module_loader("tool_sandbox.scenarios")
-        scenarios = scenarios_module.named_scenarios(preferred_tool_backend=tool_backend(config, module_loader))
-        if not isinstance(scenarios, dict):
-            raise ValueError("ToolSandbox named_scenarios 必须返回字典")
+        scenarios = load_named_scenarios(config, module_loader)
         if case_id not in scenarios:
             raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
         scenario = scenarios[case_id]
@@ -44,7 +44,7 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
             case_id=case_id,
             environment_schema={"source": "toolsandbox"},
             tool_schema={"source": "toolsandbox"},
-            initial_state=initial_state_from_context(context, module_loader),
+            initial_state=None,
             milestone_graph=graph,
             task_types=task_types_from_categories(getattr(scenario, "categories", [])),
             metadata={
@@ -55,3 +55,35 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
                 ],
             },
         )
+
+    def refresh_task_case_for_experiment(
+        self,
+        config: HarnessRunConfig,
+        task_case: TaskCase,
+        case_id: str,
+    ) -> TaskCase:
+        """使用本次共享 ToolSandbox scenario 刷新动态 expected。"""
+        if config is None or task_case is None or not case_id:
+            raise ValueError("config、task_case 和 case_id 不能为空")
+        scenarios = load_named_scenarios(config, load_toolsandbox_module)
+        if case_id not in scenarios:
+            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
+        if task_case.milestone_graph is None:
+            raise ValueError("TaskCase 缺少 milestone_graph")
+        source_graph = milestone_graph_from_scenario(scenarios[case_id])
+        source_constraints = {
+            constraint.constraint_id: constraint
+            for milestone in source_graph.nodes
+            for constraint in milestone.constraints
+        }
+        for milestone in task_case.milestone_graph.nodes:
+            for constraint in milestone.constraints:
+                source = source_constraints[constraint.constraint_id]
+                constraint.expected = deepcopy(source.expected)
+                semantics = constraint.stage_goal_semantics
+                if isinstance(semantics, dict) and semantics.get("kind") == "set_state":
+                    semantics["expected"] = deepcopy(constraint.expected)
+        task_case.initial_state = None
+        task_case.stage_goals = materialize_stage_goals(task_case)
+        task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
+        return task_case

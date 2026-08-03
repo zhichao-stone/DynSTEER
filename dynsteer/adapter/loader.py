@@ -8,7 +8,7 @@ from dynsteer.adapter.route import enrich_milestone_routes
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.llm import build_llm_from_env
 from dynsteer.model import Actor, Constraint, ConstraintTarget, EventType, JsonObject, Milestone, MilestoneGraph, Minefield, MinefieldPenalty, Operator, Dimension, StageEvaluationSpec, StateSnapshot, StepCost, TaskCase, TaskType, ToolCall, ToolResult, Trajectory, TrajectoryStep, ensure_json_object
-from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goals, validate_stage_evaluation_specs
+from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goal_templates, materialize_stage_goals, validate_stage_evaluation_specs
 from dynsteer.utils import enum_value, get_object, json_safe, normalize_actor, parse_int_value, read_json_file, required_str, unknown_fields
 
 
@@ -61,7 +61,24 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
         raise ValueError("path 和 task_case 不能为空")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json_safe(task_case)
+    data["initial_state"] = None
     path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+
+def refresh_task_cases_for_experiment(
+    config: HarnessRunConfig,
+    adapter: BaseBenchmarkAdapter,
+    task_cases: list[TaskCase],
+) -> list[TaskCase]:
+    """在一次实验执行前刷新所有当前 expected 并实例化 stage goals。"""
+    if config is None or adapter is None or task_cases is None:
+        raise ValueError("config、adapter 和 task_cases 不能为空")
+    refreshed: list[TaskCase] = []
+    for task_case in task_cases:
+        current = adapter.refresh_task_case_for_experiment(config, task_case, task_case.case_id)
+        current.stage_goals = materialize_stage_goals(current)
+        current.stage_evaluation_specs = generate_stage_evaluation_specs(current)
+        refreshed.append(current)
+    return refreshed
 
 def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, case_id: str) -> TaskCase:
     task_case = adapter.adapt_task_case(config, case_id)
@@ -80,10 +97,16 @@ def _postprocess_task_case(task_case: TaskCase, goal_mode: str="auto") -> TaskCa
     """对 TaskCase 执行通用适配后处理。"""
     if task_case.milestone_graph is not None:
         task_case.milestone_graph = enrich_milestone_routes(task_case.milestone_graph)
-    if not task_case.stage_goals:
-        task_case.stage_goals = generate_stage_goals(task_case, goal_mode, llm_provider=build_llm_from_env)
-    if not task_case.stage_evaluation_specs:
-        task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
+    if not task_case.stage_goal_templates:
+        generation_mode = "auto" if goal_mode == "stored" else goal_mode
+        task_case.stage_goal_templates = generate_stage_goal_templates(
+            task_case,
+            generation_mode,
+            llm_provider=build_llm_from_env,
+        )
+    task_case.metadata["stage_goal_template_schema_version"] = 1
+    task_case.stage_goals = materialize_stage_goals(task_case)
+    task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
     return task_case
 
 def _optional_object(data: JsonObject, key: str) -> JsonObject:
@@ -173,6 +196,7 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         ],
         initial_state=task_data.get("initial_state"),
         milestone_graph=milestone_graph,
+        stage_goal_templates={str(key): str(value) for key, value in task_data.get("stage_goal_templates", {}).items()},
         stage_goals={str(key): str(value) for key, value in task_data.get("stage_goals", {}).items()},
         stage_evaluation_specs={
             str(key): parse_stage_evaluation_spec(ensure_json_object(value))

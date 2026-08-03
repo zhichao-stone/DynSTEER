@@ -17,6 +17,7 @@ from dynsteer.evaluate.runtime import (
     task_case_snapshot,
 )
 from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement
+from dynsteer.evaluate.judge_cache import JudgeCache
 from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
 from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
@@ -74,6 +75,7 @@ class DynSTEEREvaluator:
         thresholds: ThresholdConfig | None = None,
         weight_config: DynamicWeightConfig | None = None,
         strategy: EvaluationStrategyConfig | None = None,
+        judge_cache: JudgeCache | None = None,
     ) -> None:
         self._cheap_judge = cheap_judge or CheapJudge()
         self._standard_judge = standard_judge
@@ -81,6 +83,11 @@ class DynSTEEREvaluator:
         self._thresholds = thresholds or ThresholdConfig()
         self._weight_config = weight_config or default_dynamic_weight_config()
         self._strategy = strategy or EvaluationStrategyConfig()
+        self._judge_cache = judge_cache or getattr(standard_judge, "_cache", None) or JudgeCache()
+        if self._standard_judge is not None:
+            self._standard_judge._cache = self._judge_cache
+        if self._expensive_judge is not None:
+            self._expensive_judge._cache = self._judge_cache
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "DynSTEEREvaluator":
@@ -133,12 +140,14 @@ class DynSTEEREvaluator:
             default=3,
             min_value=1,
         )
+        judge_cache = JudgeCache()
         return cls(
             cheap_judge=CheapJudge(),
-            standard_judge=StandardJudge(llm=llm, passes=standard_passes),
-            expensive_judge=ExpensiveJudge(llm=llm, passes=expensive_passes),
+            standard_judge=StandardJudge(llm=llm, passes=standard_passes, cache=judge_cache),
+            expensive_judge=ExpensiveJudge(llm=llm, passes=expensive_passes, cache=judge_cache),
             thresholds=thresholds,
             strategy=active_strategy,
+            judge_cache=judge_cache,
         )
 
     def evaluate(
@@ -149,6 +158,7 @@ class DynSTEEREvaluator:
         progress_reporter: CaseProgressReporter | None = None,
     ) -> HarnessRunResult:
         """执行 benchmark case，并进行阶段式动态评估。"""
+        self._judge_cache.clear()
         case_id = task_case.case_id
         harness.prepare_config(config)
         raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_evaluate") / "raw"
@@ -260,7 +270,7 @@ class DynSTEEREvaluator:
                 finish_on_termination=False,
             )
             runtime_metrics = self._build_runtime_metrics(metrics_recorder, trajectory, state.agent_step_tracker.completed_count)
-            return self._build_runtime_result(
+            result = self._build_runtime_result(
                 benchmark=config.benchmark,
                 case_id=case_id,
                 task_case=task_case,
@@ -297,6 +307,7 @@ class DynSTEEREvaluator:
         """
         if task_case is None or trajectory is None or scorer is None or config is None:
             raise ValueError("task_case、trajectory、scorer 和 config 不能为空")
+        self._judge_cache.clear()
         case_id = task_case.case_id
         raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_replay") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +405,33 @@ class DynSTEEREvaluator:
                 runtime_metrics=runtime_metrics,
                 metadata=self._report_metadata(config, method_fallback="dynsteer_replay"),
             )
+            report = result.evaluation_report
+            if report is None:
+                raise RuntimeError("replay 结果缺少 evaluation_report")
+            replay_execution = build_replay_execution_summary(
+                trajectory,
+                replay_trajectory,
+                virtual_termination,
+                report.milestone_coverage,
+            )
+            report.metadata["replay_execution"] = replay_execution
+            result.raw_summary["replay_execution"] = replay_execution
+            for settlement in result.stage_settlements:
+                if settlement.kind != "finish":
+                    continue
+                settlement.metadata["replay_execution"] = replay_execution
+                settlement.metadata["finish_after_virtual_stop"] = replay_execution[
+                    "finish_after_virtual_stop"
+                ]
+                stage_report = settlement.metadata.get("stage_report")
+                if isinstance(stage_report, dict):
+                    stage_metadata = stage_report.get("metadata")
+                    if isinstance(stage_metadata, dict):
+                        stage_metadata["replay_execution"] = replay_execution
+            for stage_report in report.stage_reports:
+                if stage_report.milestone_id == FINISH_NODE_ID:
+                    stage_report.metadata["replay_execution"] = replay_execution
+            return result
         finally:
             reset_runtime_metrics_recorder(metrics_token)
 
@@ -502,6 +540,7 @@ class DynSTEEREvaluator:
             trajectory=trajectory,
             llm_calls=metrics_recorder.llm_calls,
             agent_step_count=agent_step_count,
+            judge_cache_metrics=self._judge_cache.telemetry(),
         )
 
     def _build_runtime_result(
@@ -718,6 +757,41 @@ def _append_replay_snapshots(
         index += 1
     trajectory.extend_snapshots(visible_snapshots)
     return index
+
+
+def build_replay_execution_summary(
+    source_trajectory: Trajectory,
+    replay_trajectory: Trajectory,
+    termination: EvaluationTerminationState,
+    coverage: str,
+) -> JsonObject:
+    """汇总 replay 虚拟停点、完成度和轨迹变化。"""
+    if source_trajectory is None or replay_trajectory is None or termination is None:
+        raise ValueError("source_trajectory、replay_trajectory 和 termination 不能为空")
+    source_step_count = len(source_trajectory.steps)
+    replay_step_count = len(replay_trajectory.steps)
+    source_snapshot_count = len(source_trajectory.snapshots)
+    replay_snapshot_count = len(replay_trajectory.snapshots)
+    detail = termination.termination_detail if isinstance(termination.termination_detail, dict) else {}
+    virtual_stop = bool(termination.should_stop)
+    return {
+        "virtual_stop_triggered": virtual_stop,
+        "virtual_stop_code": termination.termination_code if virtual_stop else None,
+        "virtual_stop_step_index": detail.get("virtual_stop_step_index") if virtual_stop else None,
+        "finish_after_virtual_stop": virtual_stop,
+        "final_completion": coverage,
+        "coverage_basis": "milestone_graph",
+        "trajectory_changed": (
+            source_step_count != replay_step_count
+            or source_snapshot_count != replay_snapshot_count
+        ),
+        "source_step_count": source_step_count,
+        "replay_step_count": replay_step_count,
+        "source_snapshot_count": source_snapshot_count,
+        "replay_snapshot_count": replay_snapshot_count,
+        "step_ratio": replay_step_count / source_step_count if source_step_count else 1.0,
+        "snapshot_ratio": replay_snapshot_count / source_snapshot_count if source_snapshot_count else 1.0,
+    }
 
 
 def _metadata_from_config(config: HarnessRunConfig | Mapping[str, Any] | None) -> Mapping[str, Any]:

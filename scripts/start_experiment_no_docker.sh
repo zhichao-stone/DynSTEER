@@ -11,6 +11,7 @@ Options:
   --experiment-config PATH   Same as --exp.
   --source PATH              Optional source tree override. Defaults to benchmark.json source_root.
   --workers NUM              Optional worker override. Defaults to benchmark.json max_workers or 1.
+  --random_seed NUM          Python random seed. Defaults to 202608.
   --force_adapt              Rebuild adapted cases even if cached data already exists.
   --force_eval               Re-run evaluation and overwrite existing case outputs.
   --no_sum                   Skip experiment-level index/scores/metrics files.
@@ -124,6 +125,7 @@ main() {
     local experiment_config=""
     local source_path=""
     local workers=""
+    local random_seed=""
     local force_adapt="0"
     local force_eval="0"
     local no_sum="0"
@@ -165,6 +167,16 @@ main() {
             --workers=*)
                 workers="${1#*=}"
                 require_value "--workers" "$workers"
+                shift
+                ;;
+            --random_seed|--random-seed)
+                require_value "$1" "${2:-}"
+                random_seed="$2"
+                shift 2
+                ;;
+            --random_seed=*|--random-seed=*)
+                random_seed="${1#*=}"
+                require_value "--random_seed" "$random_seed"
                 shift
                 ;;
             --force_adapt|--force-adapt)
@@ -285,10 +297,15 @@ main() {
     if [[ "$no_sum" == "1" ]]; then
         no_sum_args=(--no_sum)
     fi
+    local random_seed_args=()
+    if [[ -n "$random_seed" ]]; then
+        random_seed_args=(--random_seed "$random_seed")
+    fi
 
     exec "$python_executable" main.py \
         --exp "$experiment_config" \
         "${worker_args[@]}" \
+        "${random_seed_args[@]}" \
         "${force_adapt_args[@]}" \
         "${force_eval_args[@]}" \
         "${no_sum_args[@]}"

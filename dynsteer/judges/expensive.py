@@ -19,7 +19,21 @@ class ExpensiveJudge(LLMJudge):
             prompt = build_judge_prompt(f"expensive/{dimension.value}", interval, task_case, trajectory, language=language, target_dimensions=[dimension])
             input_metadata = judge_input_metadata(interval, task_case, trajectory, prompt, prompt_type=f"expensive:{dimension.value}")
             input_metadata["target_dimensions"] = [dimension.value]
-            payloads = [self._call_json(prompt, language=language) for _ in range(self._passes)]
+            cache_context = {
+                "case_id": task_case.case_id,
+                "model_id": self._model_id(),
+                "prompt_type": f"expensive:{dimension.value}",
+                "stage_id": interval.stage_id,
+                "milestone_id": interval.milestone_id,
+                "trajectory_prefix": [interval.start_step_index, interval.end_step_index],
+                "boundary": interval.end_step_index,
+                "focus_dimensions": [dimension.value],
+                "language": language.value,
+            }
+            payloads = [
+                self._cached_call_json(prompt, cache_context, language=language)
+                for _ in range(self._passes)
+            ]
             for payload in payloads:
                 self._validate_payload(payload, [dimension])
                 payload["prompt_type"] = f"expensive:{dimension.value}"

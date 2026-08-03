@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from dynsteer.adapter import BaseBenchmarkHarness, get_harness
 from dynsteer.adapter.loader import load_trajectory
+from dynsteer.adapter.toolsandbox.utils.runtime import clear_named_scenarios_cache
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
@@ -26,7 +27,7 @@ from dynsteer.utils import as_number, json_safe, read_json_file
 
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
-DefaultOutputKey = tuple[str, str, int, str]
+DefaultOutputKey = tuple[str, str, str, int, str]
 DefaultOutputCache = dict[DefaultOutputKey, tuple[HarnessEvaluationOutput, JsonObject]]
 DefaultCaseItem = tuple[DefaultOutputKey, TaskCase]
 DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput, JsonObject]
@@ -68,16 +69,11 @@ def run_experiment(
 ) -> list[ExperimentCaseResult]:
     """执行统一实验矩阵并写出结果。"""
     config = load_experiment_config(config_path)
+    clear_named_scenarios_cache()
     specs = expand_experiment_matrix(config)
     effective_force_eval = bool(force_eval or force_adapt)
 
     harness_configs = [build_harness_config(spec) for spec in specs]
-    benchmark_state: dict[tuple[str, str, tuple[str, ...] | None], tuple[TaskCase, ...]] = {}
-    for spec, harness_config in zip(specs, harness_configs, strict=True):
-        cache_key = _task_case_cache_key(spec)
-        if cache_key not in benchmark_state:
-            task_cases, _ = prepare_task_cases(harness_config, force_adapt)
-            benchmark_state[cache_key] = tuple(task_cases)
 
     results: list[ExperimentCaseResult] = []
     default_outputs: DefaultOutputCache = {}
@@ -86,7 +82,12 @@ def run_experiment(
         print(
             f"Info: benchmark={spec.benchmark}, model={spec.model_id}, method={spec.method.name}, repeat_index={spec.repeat_index}"
         )
-        task_cases = benchmark_state[_task_case_cache_key(spec)]
+        prepared_task_cases, harness_config = prepare_task_cases(
+            harness_config,
+            force_adapt,
+            refresh_dynamic_targets=True,
+        )
+        task_cases = tuple(prepared_task_cases)
         spec_workers = effective_max_workers(workers, harness_config)
 
         if spec.method in _METHODS_NEED_DEFAULT:
@@ -133,14 +134,9 @@ def run_experiment(
     return results
 
 
-def _task_case_cache_key(spec: ExperimentRunSpec) -> tuple[str, str, tuple[str, ...] | None]:
-    """按 benchmark、数据根目录和 case_ids 缓存 TaskCase 模板。"""
-    return spec.benchmark, str(spec.data_root.resolve()), spec.case_ids
-
-
 def _default_output_key(spec: ExperimentRunSpec, task_case: TaskCase) -> DefaultOutputKey:
     """生成 default_outputs 的缓存 key。"""
-    return spec.benchmark, spec.model_id, spec.repeat_index, task_case.case_id
+    return spec.experiment_id, spec.benchmark, spec.model_id, spec.repeat_index, task_case.case_id
 
 
 def _pending_default_case_items(

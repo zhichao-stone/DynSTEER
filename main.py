@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,8 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
 from dynsteer.log import configure_logger
 
+DEFAULT_RANDOM_SEED = 202608
+
 
 def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     """解析 benchmark-only 和统一实验命令行参数。"""
@@ -24,6 +27,9 @@ def _parse_args(argv: Optional[list[str]]) -> argparse.Namespace:
     parser.add_argument("--results-dir", default="results", help="最终 DynSTEER 评估结果目录")
     parser.add_argument("--log-dir", default="logs", help="DynSTEER 日志目录")
     parser.add_argument("--workers", type=int, default=3, help="benchmark case 最大并行 worker 数，默认 3")
+    parser.add_argument("--random_seed", "--random-seed", type=int, default=DEFAULT_RANDOM_SEED,
+        help=f"Python random 随机种子，默认 {DEFAULT_RANDOM_SEED}",
+    )
     parser.add_argument("--only_adapt", "--only-adapt", action="store_true", help="仅适配 benchmark 数据并写入 data-root，不执行评估")
     parser.add_argument("--force_adapt", "--force-adapt", action="store_true", help="强制重建已有 adapted case，并自动重新执行评估流程")
     parser.add_argument("--force_eval", "--force-eval", action="store_true", help="强制重新执行评估流程并覆盖已有 case 产物")
@@ -77,7 +83,9 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
 def main(argv: Optional[list[str]] = None) -> int:
     """主实验入口：加载 benchmark 配置列表并执行评估。"""
     args = _parse_args(argv)
+    random.seed(args.random_seed)
     logger = configure_logger(args.log_dir)
+    logger.info("实验随机种子已设置", extra={"random_seed": args.random_seed})
     runs_dir = Path(args.runs_dir)
     results_dir = Path(args.results_dir)
 

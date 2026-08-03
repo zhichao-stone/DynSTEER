@@ -328,12 +328,19 @@ def write_replay_case_outputs(
     raw_summary["benchmark"] = config.benchmark
     raw_summary["experiment_id"] = config.metadata.get("experiment_id")
     raw_summary["trajectory_output"] = trajectory_output_summary(harness_result.trajectory, report.runtime_metrics)
+    replay_execution = report.metadata.get("replay_execution")
+    summary_payload = report.to_summary_dict()
+    report_payload = report.to_dict()
+    if isinstance(replay_execution, dict):
+        raw_summary["replay_execution"] = replay_execution
+        summary_payload["replay_execution"] = replay_execution
+        report_payload["replay_execution"] = replay_execution
     return _write_output_payloads(
         raw_run_dir=raw_run_dir,
         result_dir=result_dir,
         report_name="report.json",
-        summary=report.to_summary_dict(),
-        report=report.to_dict(),
+        summary=summary_payload,
+        report=report_payload,
         raw_summary=raw_summary,
         trajectory=harness_result.trajectory,
     )

@@ -1,6 +1,7 @@
 from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer
+from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, TaskCase, Trajectory
@@ -151,6 +152,20 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
             continue
         recheck = Milestone(milestone_id=milestone.milestone_id, name=milestone.name, description=milestone.description, constraints=constraints, pass_threshold=milestone.pass_threshold, metadata=dict(milestone.metadata), dependency_predecessor_ids=list(milestone.dependency_predecessor_ids), stage_anchor_predecessor_id=milestone.stage_anchor_predecessor_id)
         score = scorer.score_milestone(recheck, final_boundary, trajectory, trajectory.snapshots, context=context)
+        constraint_by_id = {constraint.constraint_id: constraint for constraint in constraints}
+        constraint_evidence = []
+        for constraint_score in score.constraint_scores:
+            constraint = constraint_by_id.get(constraint_score.constraint_id)
+            constraint_evidence.append(
+                {
+                    "constraint_id": constraint_score.constraint_id,
+                    "score": constraint_score.score,
+                    "actual_excerpt": constraint_actual_excerpt(constraint, constraint_score),
+                    "expected_excerpt": constraint_expected_excerpt(constraint),
+                    "target_source": "Constraint.expected",
+                    "evidence": list(constraint_score.evidence[:3]),
+                }
+            )
         checks.append(
             {
                 "milestone_id": milestone_id,
@@ -161,6 +176,7 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
                 "snapshot_id": final_boundary.snapshot_id,
                 "evidence": list(score.evidence[:6]),
                 "constraint_scores": json_safe(score.constraint_scores),
+                "constraint_evidence": constraint_evidence,
             }
         )
     return checks

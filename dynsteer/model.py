@@ -302,6 +302,7 @@ class TaskCase:
     policy_constraints: list[JsonObject] = field(default_factory=list)
     initial_state: Optional[JsonObject] = None
     milestone_graph: Optional[MilestoneGraph] = None
+    stage_goal_templates: dict[str, str] = field(default_factory=dict)
     stage_goals: dict[str, str] = field(default_factory=dict)
     stage_evaluation_specs: dict[str, "StageEvaluationSpec"] = field(default_factory=dict)
     task_types: list[TaskType] = field(default_factory=list)

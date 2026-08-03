@@ -134,6 +134,7 @@ def _constraint_checks(interval: StageInterval, task_case: TaskCase) -> list[Jso
                 "score": score.score,
                 "missing": score.missing,
                 "hard": constraint.hard if constraint is not None else None,
+                "target_source": "Constraint.expected",
                 "expected_excerpt": constraint_expected_excerpt(constraint),
                 "actual_excerpt": constraint_actual_excerpt(constraint, score),
                 "short_evidence": [str(item) for item in score.evidence[:3]],

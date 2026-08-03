@@ -1,6 +1,6 @@
 import json
 from dynsteer.language import TaskLanguage
-from dynsteer.model import Constraint, JsonObject, JsonValue, Milestone, MilestoneGraph, TaskCase
+from dynsteer.model import Constraint, JsonObject, Milestone, MilestoneGraph, TaskCase
 from dynsteer.prompt.template import load_prompt_template
 
 def build_stage_goal_system_prompt(language: TaskLanguage=TaskLanguage.ENGLISH) -> str:
@@ -20,7 +20,14 @@ def build_stage_goal_generation_prompt(task_case: TaskCase, required_keys: list[
         "required_stage_goal_keys": list(required_keys),
         "output_schema": {"stage_goals": {"milestone_id_1->milestone_id_2": "当前阶段自然语言目标"}},
     }
-    return load_prompt_template("stage", "goal_generation").render(language=language, context_json=json.dumps(payload, ensure_ascii=False, indent=2))
+    rules = (
+        "凡 stage goal 需要引用某个 constraint 的 expected，必须原样保留 "
+        "[[<constraint_id>.expected]]；不得把当前 expected 的具体值直接写死到模板中。"
+    )
+    return load_prompt_template("stage", "goal_generation").render(
+        language=language,
+        context_json=json.dumps(payload, ensure_ascii=False, indent=2),
+    ) + f"\n\n{rules}"
 
 def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
     """构造 LLM fallback prompt 使用的 milestone graph 摘要。"""
@@ -47,6 +54,10 @@ def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
 
 def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
     """构造 LLM fallback prompt 可消费的通用 constraint JSON。"""
+    semantics = dict(constraint.stage_goal_semantics) if isinstance(constraint.stage_goal_semantics, dict) else None
+    placeholder = f"[[{constraint.constraint_id}.expected]]"
+    if isinstance(semantics, dict) and semantics.get("kind") == "set_state":
+        semantics["expected"] = placeholder
     return {
         "constraint_id": constraint.constraint_id,
         "target": constraint.target.value,
@@ -56,19 +67,6 @@ def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
         "reference_milestone_id": constraint.reference_milestone_id,
         "hard": constraint.hard,
         "evaluator_hint": constraint.evaluator_hint,
-        "expected_summary": _expected_summary(constraint.expected),
-        "stage_goal_semantics": constraint.stage_goal_semantics,
+        "expected_summary": placeholder,
+        "stage_goal_semantics": semantics,
     }
-
-def _expected_summary(value: JsonValue) -> object:
-    """把 expected 值压缩为 LLM fallback prompt 摘要。"""
-    if isinstance(value, dict):
-        rows = value.get("rows")
-        columns = value.get("columns")
-        return {
-            "type": "dict",
-            "row_count": len(rows) if isinstance(rows, list) else None,
-            "columns": list(columns) if isinstance(columns, list) else None,
-            "sample": rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None,
-        }
-    return value

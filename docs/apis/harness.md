@@ -1,5 +1,11 @@
 ﻿# Harness API
 
+## 运行期动态 target
+
+`prepare_task_cases(config, force_adapt=False, refresh_dynamic_targets=True)` 在每次 experiment preparation 中调用 adapter 的 `refresh_task_case_for_experiment()`。ToolSandbox 使用与 harness session 相同的共享 scenario dictionary，把当前 scenario `target_dataframe` 转换得到的值写入 `Constraint.expected`，同步 `stage_goal_semantics["expected"]`，再实例化 `stage_goals`。
+
+`TaskCase.stage_goal_templates` 是 stage goal 的 canonical source，模板中的 expected 使用 `[[<constraint_id>.expected]]`。`TaskCase.stage_goals` 只是当前 expected 的实例化结果。adapted JSON 的 `initial_state` 固定写为 `null`；真实初始状态只在 `start_case()` 后由 harness session 注入，不参与 expected 或 stage goal 计算。
+
 ## 鐩爣
 
 Harness API 鐢ㄤ簬鎶?benchmark 鍘熺敓鎵ц杩囩▼鎺ュ叆 DynSTEER銆傚綋鍓嶈亴璐ｈ竟鐣屾槸锛?

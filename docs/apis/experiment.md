@@ -1,5 +1,17 @@
 ﻿# Experiment API
 
+## 动态 target 生命周期
+
+每个 `ExperimentRunSpec` 开始时独立调用一次 `prepare_task_cases(..., refresh_dynamic_targets=True)`。该 spec 的 default 与 replay 都只对这批已刷新 TaskCase 做深拷贝，replay 在读取 default trajectory 后不会再次调用 adapter 或重新生成 scenario。
+
+ToolSandbox adapter 与 harness 按 data root、backend 和 source root 共享同一份 scenario dictionary，因此当前 `Constraint.expected` 与 default starting context 来自同一次 scenario 生成。不同 experiment 的 default output cache key 包含 `experiment_id`，不会跨实验误用 default 结果。
+
+## 随机种子
+
+`main.py` 支持 `--random_seed NUM` 和 `--random-seed NUM`，默认值为 `202608`。参数在加载 experiment 和构造 ToolSandbox scenario 前调用 `random.seed()`，因此可以固定 ToolSandbox `named_scenarios()` 中基于 Python `random.shuffle()` 的工具顺序。
+
+随机种子不冻结 ToolSandbox 的 `datetime.now()` 动态时间戳，也不控制远端 LLM provider 的随机采样。需要跨进程严格比较动态 expected 时，还应让各进程在相同时间基准下构造 scenario，或进一步显式注入实验时钟。
+
 ## 鐩爣
 
 `dynsteer.experiment` 璐熻矗缁熶竴缂栨帓 ToolSandbox銆丼WE-bench Pro 绛?benchmark 鐨勫疄楠岀煩闃碉紝閬垮厤鎶?`{benchmark, model, method, repeat}` 缁勫悎閫昏緫濉炶繘 harness 鎴?evaluator銆?

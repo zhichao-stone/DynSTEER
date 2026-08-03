@@ -4,7 +4,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
-from dynsteer.adapter.loader import load_task_case
+from dynsteer.adapter.loader import load_task_case, refresh_task_cases_for_experiment
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.outputs import write_method_level_summaries
@@ -43,13 +43,20 @@ def run_harness_configs(
     return outputs
 
 
-def prepare_task_cases(config: HarnessRunConfig, force_adapt: bool = False) -> tuple[list[TaskCase], HarnessRunConfig]:
+def prepare_task_cases(
+    config: HarnessRunConfig,
+    force_adapt: bool = False,
+    refresh_dynamic_targets: bool = True,
+) -> tuple[list[TaskCase], HarnessRunConfig]:
+    """加载 TaskCase，并在实验边界刷新动态 target。"""
     adapter = get_adapter(config.benchmark)
     harness = get_harness(config.benchmark)
     case_ids = select_case_ids(config, harness, run_all=True)
     run_config = replace(config, case_ids=tuple(case_ids))
     harness.prepare_config(run_config)
     task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
+    if refresh_dynamic_targets:
+        task_cases = refresh_task_cases_for_experiment(run_config, adapter, task_cases)
     validate_loaded_task_cases(case_ids, task_cases)
     return task_cases, run_config
 

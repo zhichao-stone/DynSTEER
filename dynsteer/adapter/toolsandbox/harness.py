@@ -3,13 +3,12 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 from dynsteer.adapter.base import BaseBenchmarkHarness, BenchmarkDefaultResult
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.adapter.toolsandbox.utils.roles import get_agent_factory, get_user_factory, role_client_config
-from dynsteer.adapter.toolsandbox.utils.runtime import TOOL_SANDBOX_DEPENDENCY_ERROR, load_toolsandbox_module, tool_backend
+from dynsteer.adapter.toolsandbox.utils.runtime import TOOL_SANDBOX_DEPENDENCY_ERROR, load_named_scenarios, load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, snapshots_from_context, state_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
@@ -20,10 +19,6 @@ from dynsteer.utils import clamp, enum_name, json_safe
 
 
 logger = logging.getLogger(__name__)
-_NAMED_SCENARIOS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
-_NAMED_SCENARIOS_CACHE_LOCK = Lock()
-
-
 class ToolSandboxHarness(BaseBenchmarkHarness):
     """ToolSandbox benchmark 原生执行 harness。"""
 
@@ -211,17 +206,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
 
     def _named_scenarios(self, config: HarnessRunConfig) -> dict[str, Any]:
         """获取 ToolSandbox 原生场景字典。"""
-        backend = tool_backend(config, load_toolsandbox_module)
-        cache_key = (str(config.data_root.resolve()), enum_name(backend))
-        with _NAMED_SCENARIOS_CACHE_LOCK:
-            cached = _NAMED_SCENARIOS_CACHE.get(cache_key)
-            if cached is not None:
-                return cached
-            scenarios = load_toolsandbox_module("tool_sandbox.scenarios").named_scenarios(preferred_tool_backend=backend)
-            if not isinstance(scenarios, dict):
-                raise ValueError("ToolSandbox named_scenarios 必须返回字典")
-            _NAMED_SCENARIOS_CACHE[cache_key] = scenarios
-            return scenarios
+        return load_named_scenarios(config, load_toolsandbox_module)
 
     def _role_impl_type(self, role_name: object, role_label: str) -> object:
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")

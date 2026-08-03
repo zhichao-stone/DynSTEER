@@ -47,6 +47,17 @@ class BaseBenchmarkAdapter(ABC):
     def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
         """将 benchmark 原生 case 转换为 DynSTEER TaskCase。"""
 
+    def refresh_task_case_for_experiment(
+        self,
+        config: HarnessRunConfig,
+        task_case: TaskCase,
+        case_id: str,
+    ) -> TaskCase:
+        """按本次实验 source 更新动态 target 和 stage goal。"""
+        if config is None or task_case is None or not case_id:
+            raise ValueError("config、task_case 和 case_id 不能为空")
+        return task_case
+
 class BaseBenchmarkHarness(ABC):
     """benchmark 运行期执行接口基类。"""
     benchmark: str

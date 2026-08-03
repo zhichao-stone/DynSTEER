@@ -16,7 +16,7 @@ def current_runtime_metrics_recorder() -> RuntimeMetricsRecorder | None:
     """返回当前上下文中的运行统计 recorder。"""
     return _CURRENT_RECORDER.get()
 
-def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float, started_at: str, finished_at: str, trajectory: Trajectory, llm_calls: list[LLMCallMetrics], agent_step_count: int) -> JsonObject:
+def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float, started_at: str, finished_at: str, trajectory: Trajectory, llm_calls: list[LLMCallMetrics], agent_step_count: int, judge_cache_metrics: JsonObject | None = None) -> JsonObject:
     """聚合 trajectory 与 LLM 调用，生成运行统计 JSON。"""
     if agent_step_count < 0:
         raise ValueError("agent_step_count 不能为负数")
@@ -31,7 +31,7 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     llm_prompt_tokens = _sum_optional_int([call.prompt_tokens for call in llm_calls])
     llm_completion_tokens = _sum_optional_int([call.completion_tokens for call in llm_calls])
     llm_total_tokens = _sum_optional_int([call.total_tokens for call in llm_calls])
-    return {
+    metrics = {
         "started_at": started_at,
         "finished_at": finished_at,
         "elapsed_seconds": elapsed_seconds,
@@ -50,6 +50,8 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "llm_total_tokens": llm_total_tokens,
         "llm_calls": [call.to_dict() for call in llm_calls],
     }
+    metrics.update(judge_cache_metrics or {})
+    return metrics
 
 def _sum_optional_int(values: list[int | None]) -> int | None:
     total = 0

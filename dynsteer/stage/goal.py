@@ -1,5 +1,6 @@
 from collections.abc import Callable
 import json
+import re
 
 from dynsteer.language import TaskLanguage, language_from_task
 from dynsteer.llm.base import BaseLLM
@@ -9,19 +10,45 @@ from dynsteer.model import Constraint, LLMMessage, MilestoneGraph, StageGoalSema
 from dynsteer.stage.resolve import required_stage_goal_keys, stage_goal_key
 from dynsteer.utils import enum_value, optional_str
 
+EXPECTED_PLACEHOLDER_PATTERN = "[[{constraint_id}.expected]]"
+
+
+def expected_placeholder(constraint_id: str) -> str:
+    """返回约束 expected 的稳定 stage goal 占位符。"""
+    if not constraint_id:
+        raise ValueError("constraint_id 不能为空")
+    return EXPECTED_PLACEHOLDER_PATTERN.format(constraint_id=constraint_id)
+
 
 def generate_stage_goals(
     task_case: TaskCase,
     mode: str = "auto",
     llm_provider: Callable[[], BaseLLM] | None = None,
 ) -> dict[str, str]:
-    """集中生成 TaskCase 的 stage_goals。"""
+    """生成模板并使用当前 Constraint.expected 实例化 stage goals。"""
+    templates = generate_stage_goal_templates(task_case, mode, llm_provider)
+    task_case.stage_goal_templates = templates
+    goals = materialize_stage_goals(task_case, templates)
+    task_case.stage_goals = goals
+    return goals
+
+
+def generate_stage_goal_templates(
+    task_case: TaskCase,
+    mode: str = "auto",
+    llm_provider: Callable[[], BaseLLM] | None = None,
+) -> dict[str, str]:
+    """生成不包含本次实验具体 expected 值的 stage goal 模板。"""
+    if task_case is None:
+        raise ValueError("task_case 不能为空")
     graph = task_case.milestone_graph
+    if graph is None:
+        raise ValueError("TaskCase 缺少 milestone_graph")
     language = language_from_task(task_case)
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode == "stored":
-        validate_stage_goals(graph, task_case.stage_goals)
-        return dict(task_case.stage_goals)
+        validate_stage_goals(graph, task_case.stage_goal_templates)
+        return dict(task_case.stage_goal_templates)
     if normalized_mode not in {"auto", "semantic", "llm"}:
         raise ValueError(f"未知 stage_goal_generation 模式: {mode}")
 
@@ -37,6 +64,33 @@ def generate_stage_goals(
     stage_goals = _generate_stage_goals_by_llm(task_case, graph, language, llm_provider())
 
     return stage_goals
+
+
+def materialize_stage_goals(
+    task_case: TaskCase,
+    templates: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """用当前 milestone graph 中的 Constraint.expected 实例化 stage goals。"""
+    if task_case is None or task_case.milestone_graph is None:
+        raise ValueError("TaskCase 缺少 milestone_graph")
+    source = templates if templates is not None else task_case.stage_goal_templates
+    validate_stage_goals(task_case.milestone_graph, source)
+    replacements = {
+        expected_placeholder(constraint.constraint_id): json.dumps(
+            constraint.expected,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        for milestone in task_case.milestone_graph.nodes
+        for constraint in milestone.constraints
+    }
+    goals: dict[str, str] = {}
+    for key, template in source.items():
+        materialized = template
+        for placeholder, expected in replacements.items():
+            materialized = materialized.replace(placeholder, expected)
+        goals[key] = materialized
+    return goals
 
 
 def validate_stage_goals(graph: MilestoneGraph | None, stage_goals: dict[str, str]) -> None:
@@ -110,12 +164,21 @@ def _generate_stage_goals_by_llm(
         ],
         temperature=0.001,
     )
-    stage_goals = _parse_stage_goal_from_resp(raw_text)
+    required_placeholders = {
+        expected_placeholder(constraint.constraint_id)
+        for milestone in graph.nodes
+        for constraint in milestone.constraints
+        if _semantics_kind(constraint) == StageGoalSemanticKind.SET_STATE
+    }
+    stage_goals = _parse_stage_goal_from_resp(raw_text, required_placeholders)
     validate_stage_goals(graph, stage_goals)
     return stage_goals
 
 
-def _parse_stage_goal_from_resp(raw: str) -> dict[str, str]:
+def _parse_stage_goal_from_resp(
+    raw: str,
+    required_placeholders: set[str] | None = None,
+) -> dict[str, str]:
     """从 LLM 返回的 JSON 字符串中解析 stage_goals 字典。"""
     try:
         data = json.loads(raw)
@@ -134,6 +197,11 @@ def _parse_stage_goal_from_resp(raw: str) -> dict[str, str]:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"LLM stage_goal value 必须是非空字符串: {key}")
         stage_goals[key] = value.strip()
+    missing = sorted((required_placeholders or set()) - set().union(
+        *(set(_placeholders_in_goal(goal)) for goal in stage_goals.values())
+    ))
+    if missing:
+        raise ValueError(f"LLM stage_goal 未保留 expected 占位符: {missing}")
     return stage_goals
 
 
@@ -148,7 +216,7 @@ def _constraint_goal_text_from_semantics(constraint: Constraint, language: TaskL
         return None
     if kind == StageGoalSemanticKind.SET_STATE:
         namespace = optional_str(semantics.get("namespace"), "state")
-        expected = json.dumps(semantics.get("expected"), ensure_ascii=False, sort_keys=True)
+        expected = expected_placeholder(constraint.constraint_id)
         return _render_goal_template("set_state", language, namespace=namespace, expected=expected)
     if kind == StageGoalSemanticKind.PRESERVE_STATE:
         namespace = optional_str(semantics.get("namespace"), "state")
@@ -177,6 +245,22 @@ def _constraint_goal_text_from_semantics(constraint: Constraint, language: TaskL
             tool_name=tool_name, arguments_clause=arguments_clause
         )
     return None
+
+
+def _semantics_kind(constraint: Constraint) -> StageGoalSemanticKind | None:
+    """读取约束 stage goal 语义类型。"""
+    semantics = constraint.stage_goal_semantics
+    if not isinstance(semantics, dict):
+        return None
+    try:
+        return enum_value(StageGoalSemanticKind, semantics.get("kind"), "stage_goal_semantics.kind")
+    except ValueError:
+        return None
+
+
+def _placeholders_in_goal(goal: str) -> list[str]:
+    """提取 stage goal 中的 expected 占位符。"""
+    return re.findall(r"\[\[[^\[\]]+\.expected\]\]", goal)
 
 
 def _render_goal_template(name: str, language: TaskLanguage, **kwargs: object) -> str:

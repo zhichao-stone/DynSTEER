@@ -148,4 +148,81 @@
 ## 8. 最终判断
 
 `DYNSTEER_REPLAY` 目前更像一个**更严格、区分度更强的评估模式**，而不是一个已经完全替代 `DEFAULT` 的最终版本。  
-如果当前目标是“更准地分辨模型”，它是有价值的；如果目标是“更低成本、且与 default 保持稳定一致”，它还需要继续补强。
+如果当前目标是“更准地分辨模型”，它是有价值的；如果目标是“更低成本、且与 default 保持稳定一致”，它还需要继续补强。  
+补充看第 9 节：真正由坏执行触发的中途截断只覆盖了 12/100 个 replay 样本，而且其中 3 个并没有缩短轨迹，所以“提前中断”这件事还没有稳定到足够省等待的程度。
+
+## 9. 提前中断专项核查
+
+### 9.1 口径说明
+
+- 中断判定：`runs` 里的 `raw_summary.json` 出现 `termination_code != null` 或 `terminated_by_policy = true`。
+- 进度主口径：`replay_raw_step_count / default_raw_step_count`。
+- 辅助口径：`replay_step_count / default_step_count`，结论一致，只是数值略有差异。
+
+### 9.2 是否真的做到了“因为 agent 执行效果不佳而提前中断”
+
+- 20 / 100 个 replay 样本触发了中断。
+- 其中 8 个是 `evaluation_policy_stop`，全部来自 `add_reminder_content_and_date_and_time*`，属于虚拟停点后继续 `finish` 复核，不是 agent 失败导致的中断。
+- 剩下 12 个才是失败驱动中断（`minefield` / `milestone_no_progress`）。
+- 在这 12 个里，9 个确实比 default 更短，3 个没有缩短轨迹，说明 replay 只是在部分 case 上实现了真正的中途截断。
+
+### 9.3 各模型中断占比
+
+| 模型 | 中断数 | 中断率 | 真实早停数 | 真实早停率 | policy stop |
+|---|---:|---:|---:|---:|---:|
+| `deepseek-v4-flash` | 4 | 16% | 4 | 16% | 0 |
+| `deepseek-v4-pro` | 1 | 4% | 1 | 4% | 0 |
+| `qwen-plus-2025-12-01` | 7 | 28% | 3 | 12% | 4 |
+| `qwen3-max-2026-01-23` | 8 | 32% | 4 | 16% | 4 |
+
+### 9.4 policy stop 的 8 个 case
+
+- `qwen-plus-2025-12-01`：`add_reminder_content_and_date_and_time`、`add_reminder_content_and_date_and_time_10_distraction_tools`、`add_reminder_content_and_date_and_time_3_distraction_tools`、`add_reminder_content_and_date_and_time_3_distraction_tools_arg_description_scrambled`
+- `qwen3-max-2026-01-23`：同上 4 个 case
+
+这 8 个 case 的进度都一样：`4 / 7 = 0.571`（辅助口径 `2 / 3 = 0.667`），而且最终 `milestone_coverage` 仍然是 `full`。它们是“虚拟停点后 finish 闭环”，不等同于 agent 因错误被直接截断。
+
+### 9.5 失败驱动中断的逐 case 明细
+
+| 模型 | case | default→replay | early_stop | total_steps | progress |
+|---|---|---|---:|---:|---:|
+| `deepseek-v4-pro` | `find_days_till_holiday_insufficient_information` | `fail → none` | 3 | 23 | 0.130 |
+| `qwen3-max-2026-01-23` | `turn_on_location_low_battery_mode_3_distraction_tools_arg_type_scrambled` | `fail → none` | 18 | 100 | 0.180 |
+| `qwen-plus-2025-12-01` | `modify_contact_with_message_recency_insufficient_information` | `fail → none` | 13 | 37 | 0.351 |
+| `deepseek-v4-flash` | `find_days_till_holiday_insufficient_information` | `fail → none` | 11 | 31 | 0.355 |
+| `qwen-plus-2025-12-01` | `find_days_till_holiday_insufficient_information` | `fail → none` | 3 | 7 | 0.429 |
+| `qwen3-max-2026-01-23` | `find_days_till_holiday_insufficient_information` | `fail → none` | 3 | 7 | 0.429 |
+| `deepseek-v4-flash` | `modify_contact_with_message_recency_alt_10_distraction_tools` | `fail → partial` | 26 | 49 | 0.531 |
+| `qwen-plus-2025-12-01` | `modify_reminder_with_recency_latest` | `success → partial` | 26 | 35 | 0.743 |
+| `deepseek-v4-flash` | `search_message_with_recency_oldest_multiple_user_turn_3_distraction_tools_arg_description_scrambled` | `fail → none` | 18 | 21 | 0.857 |
+| `deepseek-v4-flash` | `update_contact_relationship_with_relationship_twice_multiple_user_turn` | `fail → partial` | 21 | 21 | 1.000 |
+| `qwen3-max-2026-01-23` | `remove_contact_by_phone_no_remove_contact_insufficient_information` | `fail → none` | 19 | 19 | 1.000 |
+| `qwen3-max-2026-01-23` | `search_message_with_recency_oldest_multiple_user_turn` | `fail → partial` | 27 | 27 | 1.000 |
+
+补充两点：
+
+- 12 个失败驱动中断里，只有 `modify_reminder_with_recency_latest` 同时改变了 trajectory 和 binary label；其余 11 个仍然是“同一条轨迹、不同评估口径”或“同长度轨迹”。
+- 3 个没有缩短轨迹的 case，才是当前最值得补强的地方，因为它们说明 `termination_code` 已经触发，但真正省下来的执行等待并不明显。
+
+### 9.6 为什么会出现“中断但没短下来”
+
+这 3 个 case 的共同点是：**终止信号出现得太晚，或者说默认轨迹本身已经走到了同一个终点附近**。
+
+1. `deepseek-v4-flash / update_contact_relationship_with_relationship_twice_multiple_user_turn`
+   - 触发的是 `milestone_no_progress:m1`
+   - 原因是 `m0` 已经完成，但 `m1` 连续 8/8 次评分都没有有效提升
+   - 这类 stop 是“穷尽后判死”，不是很早就能切断的那种
+   - 结果是 replay 和 default 都落在同一段尾部，`raw_step_count` 没有变短
+
+2. `qwen3-max-2026-01-23 / remove_contact_by_phone_no_remove_contact_insufficient_information`
+   - 触发的是 `milestone_no_progress:m0`
+   - 第一关卡本身就失败，而且已经做满了 9 次尝试
+   - 这说明失败点就在起跑段，系统没有更早的可裁剪前缀
+   - 因而虽然 stop 发生了，但轨迹长度和 default 基本一致
+
+3. `qwen3-max-2026-01-23 / search_message_with_recency_oldest_multiple_user_turn`
+   - 先过 `m0`、`m1`，直到 `m2` 才失败
+   - 这时大部分轨迹已经执行完了，stop 更像是在“尾段收口”
+   - default 本身也跑到了同样的位置，所以 replay 没有再省出额外步数
+
+所以，**“没有截断”并不表示 replay 没起作用，而是说明当前 stop 粒度还不够早**。它已经能判定失败，但判定点往往落在轨迹末尾，或者就是默认轨迹本来就已经很短。要进一步减少这种情况，需要更早的局部错误检测、更细的前沿判定，或者让 `milestone_no_progress` 在更少轮次内就能稳定停下来。
