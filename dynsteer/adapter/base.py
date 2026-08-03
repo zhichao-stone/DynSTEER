@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import time
 from pathlib import Path
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.scoring import GeneralScorer
@@ -74,6 +75,22 @@ class BaseBenchmarkHarness(ABC):
     @abstractmethod
     def advance_case(self, session: object) -> HarnessAdvanceResult:
         """推进 benchmark session 一个可中断执行批次。"""
+
+    def timed_advance_case(self, session: object) -> HarnessAdvanceResult:
+        """推进一个批次并记录批次级墙钟耗时（毫秒）。
+
+        入参：
+            session: benchmark 当前 session。
+        输出：
+            带有 ``execution_latency_ms`` 的批次结果；harness 异常原样传播。
+        """
+        started = time.perf_counter()
+        try:
+            advance = self.advance_case(session)
+        finally:
+            finished = time.perf_counter()
+        latency_ms = max(0, int(round((finished - started) * 1000)))
+        return replace(advance, execution_latency_ms=latency_ms)
 
     @abstractmethod
     def case_finished(self, session: object) -> bool:

@@ -99,6 +99,8 @@ case 浜х墿浠嶅鐢?harness 鐩綍锛?
 
 ## Replay 消融方法
 
+实验 `metrics.json.efficiency` 在保留 `average_elapsed_seconds`（replay evaluator 墙钟语义）的同时，增加 `average_default_prefix_execution_seconds`、`average_effective_elapsed_seconds` 与 `effective_timing_available_case_count`。只有 `timing_available=true` 的 replay case 才参与新增平均值；历史不可用 case 不按 0 秒纳入。
+
 统一实验配置的 `methods` 字段支持以下 replay 消融方法：
 
 - `dynsteer_replay`: 完整 DynSTEER replay，默认 `dynamic_routing=True`、`dynamic_weighting=True`。

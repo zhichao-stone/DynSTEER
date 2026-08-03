@@ -38,7 +38,13 @@ from dynsteer.harness.config import (
 from dynsteer.harness import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement, case_output_dir
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.llm import build_llm_from_config, build_llm_from_env
-from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
+from dynsteer.metrics import (
+    activate_runtime_metrics_recorder,
+    append_execution_timing,
+    build_replay_timing_metrics,
+    build_runtime_metrics,
+    reset_runtime_metrics_recorder,
+)
 from dynsteer.model import (
     AgentStepClosure,
     DynamicWeightConfig,
@@ -186,7 +192,8 @@ class DynSTEEREvaluator:
             state = self._initial_runtime_state(task_case)
 
             while True:
-                advance = harness.advance_case(session)
+                advance = harness.timed_advance_case(session)
+                append_execution_timing(trajectory, advance)
                 trajectory.extend_snapshots(advance.snapshots)
                 trajectory.final_state = harness.final_state_from_session(session)
                 trajectory.metrics = harness.metrics_from_session(session)
@@ -390,7 +397,14 @@ class DynSTEEREvaluator:
                 replay_trajectory,
                 state.agent_step_tracker.completed_count,
             )
-            return self._build_runtime_result(
+            timing = build_replay_timing_metrics(
+                source_trajectory=trajectory,
+                replay_trajectory=replay_trajectory,
+                termination=virtual_termination,
+                elapsed_seconds=float(runtime_metrics.get("elapsed_seconds", 0.0) or 0.0),
+            )
+            runtime_metrics.update(timing)
+            result = self._build_runtime_result(
                 benchmark=config.benchmark,
                 case_id=case_id,
                 task_case=task_case,
@@ -414,8 +428,34 @@ class DynSTEEREvaluator:
                 virtual_termination,
                 report.milestone_coverage,
             )
+            replay_execution["timing"] = timing
             report.metadata["replay_execution"] = replay_execution
+            report.runtime_metrics.update(timing)
             result.raw_summary["replay_execution"] = replay_execution
+            result.raw_summary["runtime_metrics"] = runtime_metrics
+            logger.info(
+                "replay_case_timing",
+                extra={
+                    "事件": "replay case 完成耗时统计",
+                    "benchmark": config.benchmark,
+                    "case_id": case_id,
+                    "method": str(config.metadata.get("method") or "dynsteer_replay"),
+                    "timing_available": timing.get("timing_available"),
+                    "virtual_stop_step_index": timing.get("virtual_stop_step_index"),
+                    "elapsed_seconds": timing.get("elapsed_seconds"),
+                    "default_prefix_execution_seconds": timing.get("default_prefix_execution_seconds"),
+                    "effective_elapsed_seconds": timing.get("effective_elapsed_seconds"),
+                },
+            )
+            if not timing.get("timing_available"):
+                logger.warning(
+                    "replay_timing_unavailable",
+                    extra={
+                        "事件": "历史 DEFAULT 轨迹缺少 execution_timing，请使用 force_eval=True 重新运行 DEFAULT",
+                        "benchmark": config.benchmark,
+                        "case_id": case_id,
+                    },
+                )
             for settlement in result.stage_settlements:
                 if settlement.kind != "finish":
                     continue

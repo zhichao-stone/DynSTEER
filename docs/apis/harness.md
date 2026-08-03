@@ -95,6 +95,10 @@ Default 杈撳嚭浣跨敤鍚屼竴鐩綍缁撴瀯锛屼絾 case 鐩綍涓
 - `milestone_graph_summary`: 褰撳墠 case 杞崲鍚庣殑 milestone DAG 鎽樿锛屽寘鍚妭鐐广€佽竟銆乵andatory milestone ID 鍜岀害鏉熸憳瑕併€?- `milestone_match_attempts`: 杩愯鏈熸瘡涓瓨鍦?ready milestone 鐨勫€欓€?step 鍖归厤灏濊瘯锛屽寘鍚懡涓墠 matched/ready 闆嗗悎銆佸€欓€夎竟鐣屻€佸€欓€?milestone 璇勫垎銆佹槸鍚﹁閫変腑鍜屾嫆缁濆師鍥犮€?- `milestone_final_diagnostics`: 姣忎釜 milestone 鐨勬渶缁堢姸鎬佹憳瑕侊紝鍖呭惈 `matched`/`pending`銆佹槸鍚︽浘缁?ready銆佸皾璇曟鏁般€佹渶浣冲垎鏁般€佹渶浣宠竟鐣屻€侀樆濉炲師鍥犲拰鏈弧瓒冲墠椹便€?
 ## ToolSandbox 閫傞厤璇存槑
 
+### 批次级 execution timing
+
+`BaseBenchmarkHarness.timed_advance_case(session)` 包装一次 `advance_case()` 调用，返回的 `HarnessAdvanceResult.execution_latency_ms` 是该批次的墙钟耗时；异常会原样传播。DEFAULT 和在线 evaluate 会将该耗时按 raw step 数均匀分摊到 `StepCost.latency_ms`，并在 `trajectory.raw.execution_timing` 写入 batch 索引、step 范围、总耗时和分摊规则。历史轨迹没有该字段时，耗时可用性必须标记为 false，不能将缺失值解释为真实 0 秒。
+
 ToolSandbox 澶栭儴鍙€変緷璧栫敱涓撻棬渚濊禆杈圭晫宸ュ叿鍑芥暟鍔犺浇锛屼笉閫氳繃 DynSTEER 鍖呯骇 `__getattr__` 鎳掑姞杞介殣钘忛」鐩嚜韬緷璧栥€傝繍琛屾椂闇€瑕佷繚璇?ToolSandbox 鍙婂叾渚濊禆宸插畨瑁咃紝鎴栧湪 `data/toolsandbox/benchmark.json` 涓厤缃彲瀵煎叆鐨勫閮?`source_root`銆?
 `data/{benchmark}/benchmark.json` 鏀寔 `language` 瀛楁锛岄粯璁ゅ€间负 `en`銆俙load_harness_run_configs(...)` 浼氭牎楠岃瀛楁涓洪潪绌哄瓧绗︿覆锛屽苟鍐欏叆 `HarnessRunConfig.metadata["language"]`锛屼緵 prompt 妯℃澘閫夋嫨璇█鐗堟湰銆俙benchmark.json` 杩樻敮鎸佸彲閫?`max_workers` 鏁存暟瀛楁锛岀敤浜庝负涓嶆敮鎸佸苟琛岀殑 benchmark 璁剧疆 case 骞跺彂涓婇檺銆?
 `data/toolsandbox/run_configs.json` 姣忛」閰嶇疆涓紝`agent` 涓?`user` 鍙〃绀?ToolSandbox 瑙掕壊瀹炵幇绫诲瀷锛涜鑹?SDK client 鐨勮繛鎺ュ弬鏁扮敱鍚岀骇鐨?`agent_client` 涓?`user_client` 鎺у埗锛屽苟鍘熸牱鍐欏叆 `HarnessRunConfig.metadata`銆傛敮鎸佸瓧娈靛寘鎷?`api_key`銆乣api_key_env`銆乣base_url`銆乣base_url_env`銆乣timeout_seconds`锛屽叾涓┖瀛楃涓蹭細琚涓烘湭閰嶇疆銆傚疄闄?client 鍒濆鍖栦紭鍏堢骇涓烘樉寮忓€笺€佹樉寮忕幆澧冨彉閲忋€佹棫鍏ㄥ眬鐜鍙橀噺锛涙湭璁剧疆鏂板瓧娈垫椂缁х画璇诲彇 `OPENAI_API_KEY`銆乣OPENAI_BASE_URL`銆乣ANTHROPIC_API_KEY`銆乣ANTHROPIC_BASE_URL`銆?

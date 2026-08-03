@@ -72,6 +72,7 @@ class HarnessAdvanceResult:
     snapshots: list[StateSnapshot]
     continue_running: bool
     reason: str | None = None
+    execution_latency_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.steps is None:
@@ -82,6 +83,11 @@ class HarnessAdvanceResult:
             raise TypeError("continue_running 必须是 bool")
         if self.reason is not None and (not self.reason.strip()):
             raise ValueError("reason 不能是空字符串")
+        if self.execution_latency_ms is not None:
+            if isinstance(self.execution_latency_ms, bool) or not isinstance(self.execution_latency_ms, int):
+                raise TypeError("execution_latency_ms 必须是非负整数或 None")
+            if self.execution_latency_ms < 0:
+                raise ValueError("execution_latency_ms 不能为负数")
 
 @dataclass(frozen=True)
 class HarnessStageSettlement:

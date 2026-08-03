@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -9,7 +10,12 @@ from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.paths import case_output_dir
-from dynsteer.metrics import activate_runtime_metrics_recorder, build_runtime_metrics, reset_runtime_metrics_recorder
+from dynsteer.metrics import (
+    activate_runtime_metrics_recorder,
+    append_execution_timing,
+    build_runtime_metrics,
+    reset_runtime_metrics_recorder,
+)
 from dynsteer.model import (
     AgentStepTracker,
     HarnessEvaluationOutput,
@@ -22,6 +28,9 @@ from dynsteer.model import (
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import as_number, json_safe, read_json_file
+
+
+logger = logging.getLogger(__name__)
 
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
@@ -88,6 +97,9 @@ def trajectory_output_summary(trajectory: Trajectory, runtime_metrics: JsonObjec
         "raw_step_count": len(trajectory.steps),
         "snapshot_count": len(trajectory.snapshots),
         "final_state_present": trajectory.final_state is not None,
+        "execution_timing_available": bool(metrics.get("execution_timing_available", False)),
+        "execution_batch_count": int(metrics.get("execution_batch_count", 0) or 0),
+        "unattributed_execution_seconds": float(metrics.get("unattributed_execution_seconds", 0.0) or 0.0),
     }
 
 
@@ -202,7 +214,8 @@ def write_default_case_outputs(
             )
             trajectory.raw["runtime_initial_state"] = runtime_initial_state
         while True:
-            advance = harness.advance_case(session)
+            advance = harness.timed_advance_case(session)
+            append_execution_timing(trajectory, advance)
             trajectory.extend_snapshots(advance.snapshots)
             completed_agent_steps = 0
             for step in advance.steps:
@@ -244,6 +257,20 @@ def write_default_case_outputs(
                 "trajectory_output": trajectory_output_summary(trajectory, runtime_metrics),
             }
         )
+        logger.info(
+            "default_case_timing",
+            extra={
+                "事件": "DEFAULT case 完成耗时统计",
+                "benchmark": config.benchmark,
+                "case_id": case_id,
+                "method": str(config.metadata.get("method") or "default"),
+                "timing_available": runtime_metrics.get("execution_timing_available", False),
+                "virtual_stop_step_index": None,
+                "elapsed_seconds": runtime_metrics.get("elapsed_seconds"),
+                "default_prefix_execution_seconds": None,
+                "effective_elapsed_seconds": None,
+            },
+        )
         summary = {
             "task_id": task_case.task_id,
             "benchmark": config.benchmark,
@@ -252,6 +279,9 @@ def write_default_case_outputs(
             "overall_score": default_result.score,
             "default_score": default_result.score,
             "resolved": default_result.resolved,
+            "default_prefix_execution_seconds": None,
+            "effective_elapsed_seconds": None,
+            "timing_available": None,
             "runtime_metrics": runtime_metrics,
             "metadata": {
                 "benchmark": config.benchmark,
@@ -310,7 +340,11 @@ def write_replay_case_outputs(
     if not force_eval:
         cached = existing_case_output(replay_config, task_case.case_id, "dynsteer_replay", "report.json")
         if cached is not None:
-            return cached
+            cached_summary = read_json_file(cached.summary_path, f"场景摘要: {cached.summary_path}", dict)
+            cached_metrics = cached_summary.get("runtime_metrics")
+            # 旧 replay 产物没有 timing 字段时重新生成，使不可用语义也能落盘。
+            if isinstance(cached_metrics, dict) and "timing_available" in cached_metrics:
+                return cached
     harness_result = evaluator.evaluate_replay(
         task_case=task_case,
         trajectory=trajectory,
@@ -402,6 +436,9 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
     total_llm_tokens = 0
     total_trajectory_tokens = 0
     elapsed_values: list[float] = []
+    default_prefix_values: list[float] = []
+    effective_elapsed_values: list[float] = []
+    timing_available_case_count = 0
     for output in outputs:
         summary_data = read_json_file(output.summary_path, f"场景摘要: {output.summary_path}", dict)
         coverage = str(summary_data.get("milestone_coverage", "unknown"))
@@ -413,6 +450,14 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
             total_llm_tokens += int(metrics.get("llm_total_tokens", 0) or 0)
             total_trajectory_tokens += int(metrics.get("trajectory_total_tokens", 0) or 0)
             elapsed_values.append(float(metrics.get("elapsed_seconds", 0.0) or 0.0))
+            if metrics.get("timing_available") is True:
+                timing_available_case_count += 1
+                prefix = metrics.get("default_prefix_execution_seconds")
+                effective = metrics.get("effective_elapsed_seconds")
+                if isinstance(prefix, (int, float)):
+                    default_prefix_values.append(float(prefix))
+                if isinstance(effective, (int, float)):
+                    effective_elapsed_values.append(float(effective))
         metadata = summary_data.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         method = str(summary_data.get("method") or metadata.get("method") or method_dir.name)
@@ -451,6 +496,13 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
         "total_llm_tokens": total_llm_tokens,
         "total_trajectory_tokens": total_trajectory_tokens,
         "average_elapsed_seconds": sum(elapsed_values) / len(elapsed_values) if elapsed_values else 0.0,
+        "average_default_prefix_execution_seconds": (
+            sum(default_prefix_values) / len(default_prefix_values) if default_prefix_values else 0.0
+        ),
+        "average_effective_elapsed_seconds": (
+            sum(effective_elapsed_values) / len(effective_elapsed_values) if effective_elapsed_values else 0.0
+        ),
+        "timing_available_case_count": timing_available_case_count,
         "cases": cases,
     }
 

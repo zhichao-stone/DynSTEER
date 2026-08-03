@@ -524,6 +524,10 @@ class TrajectoryEvaluationReport:
             "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
             "trajectory_cost_available": self.runtime_metrics.get("trajectory_cost_available"),
             "trajectory_latency_available": self.runtime_metrics.get("trajectory_latency_available"),
+            "default_prefix_execution_seconds": self.runtime_metrics.get("default_prefix_execution_seconds"),
+            "effective_elapsed_seconds": self.runtime_metrics.get("effective_elapsed_seconds"),
+            "timing_available": self.runtime_metrics.get("timing_available"),
+            "virtual_stop_step_index": self.runtime_metrics.get("virtual_stop_step_index"),
             "metadata": dict(self.metadata),
         }
 

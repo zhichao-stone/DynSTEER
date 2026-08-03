@@ -102,6 +102,9 @@ def aggregate_efficiency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     elapsed_values: list[float] = []
     step_values: list[int] = []
     raw_step_values: list[int] = []
+    default_prefix_values: list[float] = []
+    effective_elapsed_values: list[float] = []
+    timing_available_case_count = 0
     for result in results:
         metrics = result.runtime_metrics
         elapsed = metrics.get("elapsed_seconds")
@@ -113,11 +116,22 @@ def aggregate_efficiency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
         raw_step_count = metrics.get("raw_step_count")
         if isinstance(raw_step_count, int):
             raw_step_values.append(raw_step_count)
+        if result.method.value.startswith("dynsteer_replay") and metrics.get("timing_available") is True:
+            timing_available_case_count += 1
+            prefix = metrics.get("default_prefix_execution_seconds")
+            effective = metrics.get("effective_elapsed_seconds")
+            if isinstance(prefix, (int, float)):
+                default_prefix_values.append(float(prefix))
+            if isinstance(effective, (int, float)):
+                effective_elapsed_values.append(float(effective))
     return {
         "case_count": len(results), 
         "average_elapsed_seconds": _average(elapsed_values), 
         "average_agent_step_count": _average(step_values), 
-        "average_raw_step_count": _average(raw_step_values)
+        "average_raw_step_count": _average(raw_step_values),
+        "average_default_prefix_execution_seconds": _average(default_prefix_values),
+        "average_effective_elapsed_seconds": _average(effective_elapsed_values),
+        "effective_timing_available_case_count": timing_available_case_count,
     }
 
 def aggregate_cost(results: Sequence[ExperimentCaseResult]) -> JsonObject:
