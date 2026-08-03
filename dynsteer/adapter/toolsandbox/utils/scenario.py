@@ -1,3 +1,5 @@
+import re
+
 from dynsteer.adapter.loader import parse_milestone_graph
 from dynsteer.adapter.toolsandbox.utils.trace import tool_call_from_agent_row, tool_trace_from_row
 from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
@@ -162,6 +164,12 @@ def _sandbox_tool_call_semantics(
     if not is_agent_call and not is_tool_result:
         return None
     tool_call = tool_call_from_agent_row(row, trace)
+    if tool_call is None and is_agent_call:
+        content = row.get("content")
+        if isinstance(content, str) and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", content.strip()
+        ):
+            tool_call = {"name": content.strip(), "arguments": {}}
     if tool_call is None:
         return None
     return {
