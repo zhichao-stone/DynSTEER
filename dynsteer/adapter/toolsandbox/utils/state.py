@@ -45,13 +45,18 @@ def initial_state_from_context(context: object, module_loader: object) -> dict[s
 def snapshots_from_context(context: object, steps: list[dict[str, JsonValue]], module_loader: object) -> list[dict[str, JsonValue]]:
     if not steps:
         return []
-    sandbox_indexes = [int(step["raw_sandbox_message_index"]) for step in steps if isinstance(step.get("raw_sandbox_message_index"), int)]
-    if not sandbox_indexes:
-        return []
-    step_by_sandbox_index = {int(step["raw_sandbox_message_index"]): step for step in steps if isinstance(step.get("raw_sandbox_message_index"), int)}
+    sandbox_indexes: list[int] = []
+    for step in steps:
+        sandbox_index = step.get("raw_sandbox_message_index")
+        if not isinstance(sandbox_index, int) or sandbox_index < 0:
+            raise ValueError(f"ToolSandbox step 缺少有效 raw_sandbox_message_index: {step.get('step_id')}")
+        sandbox_indexes.append(sandbox_index)
+    if sandbox_indexes != sorted(sandbox_indexes):
+        raise ValueError("ToolSandbox steps 必须按 raw_sandbox_message_index 升序排列")
+    if len(sandbox_indexes) != len(set(sandbox_indexes)):
+        raise ValueError("ToolSandbox steps 包含重复 raw_sandbox_message_index")
     snapshots: list[dict[str, JsonValue]] = []
-    for sandbox_index in sorted(set(sandbox_indexes)):
-        step = step_by_sandbox_index[sandbox_index]
+    for step, sandbox_index in zip(steps, sandbox_indexes, strict=True):
         state = state_from_context(context, module_loader, sandbox_message_index=sandbox_index, include_sandbox=True)
         snapshots.append(
             {

@@ -1,5 +1,14 @@
 ﻿# Experiment API
 
+## 元评估指标
+
+`metrics.json` 不再输出 PSEP，保留 `efficiency`、`cost` 和 `rank_tau`，并新增：
+
+- `discriminability_score`：按 method/benchmark 输出 `0.01` 至 `0.05` 五个阈值。单阈值公式为 `(population_stddev / mean_score) * sqrt(significant_pair_count / pair_count)`，显著模型对要求归一化分差严格大于 epsilon。每项同时输出模型数、模型对数、均值、总体标准差、显著模型对数量/比例和最终 score；模型不足两个时 score 为 `null`，全零均值时为 `0.0`。
+- `success_consistency`：按相同 benchmark/model/case/repeat 配对 DEFAULT 和各 replay 方法，输出配对数、一致/不一致数、agreement rate、两个不一致方向的计数，以及包含双方 success 和 score 的不一致 case 清单。缺失任一侧成功结论的样本不进入分母。
+
+`ExperimentCaseResult.successful` 对 DEFAULT 读取 `resolved`，对 replay 读取 `milestone_coverage == "full"`；不会额外持久化重复的 success 字段。
+
 ## 动态 target 生命周期
 
 每个 `ExperimentRunSpec` 开始时独立调用一次 `prepare_task_cases(..., refresh_dynamic_targets=True)`。该 spec 的 default 与 replay 都只对这批已刷新 TaskCase 做深拷贝，replay 在读取 default trajectory 后不会再次调用 adapter 或重新生成 scenario。
@@ -56,7 +65,9 @@ Default 杈撳嚭鐨?`trajectory.json` 浼氭惡甯︽湰娆?session 鐨?`runtim
 - `runs/exp/<experiment_id>/<benchmark>/<model_id>/<method>/<case_id>/`
 - `results/exp/<experiment_id>/<benchmark>/<model_id>/<method>/<case_id>/`
 
-- `index.json`: 鍒嗗眰 case 绱㈠紩锛屾寜 `benchmark -> method -> model_id -> repeats -> repeat_index -> cases -> case_id` 缁勭粐銆?- `scores.json`: `method -> benchmark -> model_id -> average_score`銆?- `metrics.json`: PSEP銆乣rank_tau`銆佽€楁椂銆佹楠ゆ暟銆丄gent/Judge token 姹囨€汇€?
+- `index.json`：按 benchmark、method、model、repeat 和 case 分层组织。
+- `scores.json`：`method -> benchmark -> model_id -> average_score`。
+- `metrics.json`：`efficiency`、`cost`、多阈值 `discriminability_score`、`rank_tau` 与 `success_consistency`。
 `index.json` 鐨?repeat 鑺傜偣鍙繚鐣?`cases`锛宑ase 鍙跺瓙鍙繚鐣欑粨鏋滄湰韬紝涓嶅啀閲嶅鍐?`experiment_id`銆乣benchmark`銆乣case_id`銆乣model_id`銆?
 ```json
 {
@@ -89,10 +100,15 @@ case 浜х墿浠嶅鐢?harness 鐩綍锛?
 - Default: `default_report.json`銆乣summary.json`銆乣raw_summary.json`銆乣trajectory.json`銆?- Replay/Evaluate: `report.json`銆乣summary.json`銆乣raw_summary.json`銆乣trajectory.json`銆?
 `scores.json` 涓?`metrics.json` 淇濇寔绾?JSON 缁撴瀯锛屼笉鍐呭祵娉ㄩ噴瀛楁锛涘瓧娈佃涔夐€氳繃鏈枃妗ｈ鏄庯細
 
-- `scores.json`: 姣忎釜鍙跺瓙鍊奸兘鏄悓涓€ `method / benchmark / model_id` 涓嬬殑 case 骞冲潎鍒嗐€?- `metrics.json`: `efficiency` 姹囨€昏€楁椂涓庢楠ゆ暟锛宍cost` 姹囨€?token锛宍psep` 涓?`rank_tau` 鏄法妯″瀷瀵规瘮鎸囨爣銆?
+- `scores.json`：每个叶子值是同一 `method / benchmark / model_id` 下的 case 平均分。
+- `metrics.json`：`efficiency` 汇总耗时与步骤数，`cost` 汇总 token，其余字段提供模型区分度、排序一致性与 DEFAULT/replay 成功一致性。
 ## 鎸囨爣
 
-- `case_score(value)`: 灏?bool銆佹暟瀛楁垨鍚?`score/resolved/similarity` 鐨勫璞″綊涓€鍒?`[0, 1]`銆?- `model_scores(results)`: 璁＄畻 `S_{m,e,b}`銆?- `psep(scores)`: 璁＄畻妯″瀷瀵瑰湪骞冲潎寰楀垎涓婄殑闂磋窛銆?- `aggregate_efficiency(results)`: 姹囨€昏€楁椂鍜?Agent 姝ラ鏁般€?- `aggregate_cost(results)`: 姹囨€?Agent trajectory token 鍜?Judge LLM token锛屽苟淇濈暀鍙敤鎬ф爣璁般€?
+- `case_score(value)`：把 bool、数字或包含 `score/resolved/similarity` 的对象归一到 `[0, 1]`。
+- `model_scores(results)`：计算 `S_{m,e,b}`。
+- `discriminability_score(scores, epsilon)`：计算单阈值 DS 及其组成字段。
+- `success_consistency(results)`：配对 DEFAULT 与 replay 的成功结论。
+- `aggregate_efficiency(results)` 与 `aggregate_cost(results)`：汇总效率和成本。
 ## 闄勫姞璇存槑
 
 `run_experiment(config_path, workers=1, force_adapt=False, force_eval=False, no_sum=False)` 鐜板湪浼氭帴鏀?CLI 鐨?`--workers`銆傚疄闄呭苟鍙戞暟鎸夋瘡涓?spec 鐨?`workers` 涓庡搴?benchmark 鐨?`benchmark_max_workers` 鍙栬緝灏忓€硷紱褰?`benchmark.json` 娌℃湁鎻愪緵 `max_workers` 鏃讹紝瀹為獙灞備細鐩存帴浣跨敤 CLI 鐨?`workers`銆?

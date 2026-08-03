@@ -8,6 +8,8 @@ from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod
 from dynsteer.model import JsonObject
 from dynsteer.utils import clamp, json_safe
 
+DISCRIMINABILITY_THRESHOLDS = (0.01, 0.02, 0.03, 0.04, 0.05)
+
 def case_score(value: object) -> float:
     """将 benchmark 原生结果归一到 [0, 1]。"""
     if isinstance(value, int | float | bool):
@@ -46,19 +48,93 @@ def model_scores(results: Sequence[ExperimentCaseResult]) -> JsonObject:
         benchmark_scores[model_id] = sum(values) / len(values)
     return scores
 
-def psep(scores: Mapping[str, float]) -> float:
-    """计算模型对平均得分间距 PSEP。"""
-    if scores is None or not scores:
+def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonObject:
+    """按模型总体离散度和显著模型对比例计算 Discriminability Score。"""
+    if scores is None:
         raise ValueError("scores 不能为空")
+    if epsilon < 0:
+        raise ValueError("epsilon 不能为负数")
     values = [case_score(value) for value in scores.values()]
-    if len(values) < 2:
-        return 0.0
-    pair_count, total = 0, 0.0
-    for left_index, left_value in enumerate(values):
-        for right_value in values[left_index + 1:]:
-            total += abs(left_value - right_value)
-            pair_count += 1
-    return total / pair_count
+    model_count = len(values)
+    pair_count = model_count * (model_count - 1) // 2
+    mean_score = sum(values) / model_count if model_count else 0.0
+    population_stddev = (
+        math.sqrt(sum((value - mean_score) ** 2 for value in values) / model_count)
+        if model_count else 0.0
+    )
+    significant_pair_count = sum(
+        1
+        for left_index, left_value in enumerate(values)
+        for right_value in values[left_index + 1:]
+        if abs(left_value - right_value) > epsilon
+    )
+    significant_pair_ratio = significant_pair_count / pair_count if pair_count else 0.0
+    score = None
+    if model_count >= 2:
+        score = 0.0 if mean_score == 0 else (
+            population_stddev / mean_score
+        ) * math.sqrt(significant_pair_ratio)
+    return {
+        "epsilon": epsilon,
+        "model_count": model_count,
+        "pair_count": pair_count,
+        "mean_score": mean_score,
+        "population_stddev": population_stddev,
+        "significant_pair_count": significant_pair_count,
+        "significant_pair_ratio": significant_pair_ratio,
+        "score": score,
+    }
+
+
+def success_consistency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """按 case identity 配对 DEFAULT 与各 replay method 的成功结论。"""
+    if results is None:
+        raise ValueError("results 不能为空")
+    default_results = {
+        (result.benchmark, result.model_id, result.case_id, result.repeat_index): result
+        for result in results
+        if result.method == ExperimentMethod.DEFAULT
+    }
+    buckets: dict[tuple[str, str], list[tuple[ExperimentCaseResult, ExperimentCaseResult]]] = defaultdict(list)
+    for result in results:
+        if not result.method.value.startswith("dynsteer_replay"):
+            continue
+        identity = (result.benchmark, result.model_id, result.case_id, result.repeat_index)
+        default_result = default_results.get(identity)
+        if default_result is None or default_result.successful is None or result.successful is None:
+            continue
+        buckets[result.method.value, result.benchmark].append((default_result, result))
+    table: JsonObject = {}
+    for (method, benchmark), pairs in sorted(buckets.items()):
+        inconsistent = [(default, replay) for default, replay in pairs if default.successful != replay.successful]
+        default_success_replay_failure = sum(
+            1 for default, replay in inconsistent if default.successful is True and replay.successful is False
+        )
+        default_failure_replay_success = sum(
+            1 for default, replay in inconsistent if default.successful is False and replay.successful is True
+        )
+        method_table = table.setdefault(method, {})
+        method_table[benchmark] = {
+            "pair_count": len(pairs),
+            "consistent_count": len(pairs) - len(inconsistent),
+            "inconsistent_count": len(inconsistent),
+            "agreement_rate": (len(pairs) - len(inconsistent)) / len(pairs),
+            "default_success_replay_failure_count": default_success_replay_failure,
+            "default_failure_replay_success_count": default_failure_replay_success,
+            "inconsistent_cases": [
+                {
+                    "model": default.model_id,
+                    "repeat": default.repeat_index,
+                    "case": default.case_id,
+                    "default_success": default.successful,
+                    "replay_success": replay.successful,
+                    "default_score": default.score,
+                    "replay_score": replay.score,
+                }
+                for default, replay in inconsistent
+            ],
+        }
+    return table
 
 def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
     """计算带并列处理的 Kendall tau-b。
@@ -162,8 +238,11 @@ def write_metric_tables(results: Sequence[ExperimentCaseResult], output_dir: Pat
     output_dir.mkdir(parents=True, exist_ok=True)
     scores = model_scores(results)
     metrics: JsonObject = {
-        "efficiency": aggregate_efficiency(results), "cost": aggregate_cost(results), 
-        "psep": _psep_table(scores), "rank_tau": _rank_tau_table(scores)
+        "efficiency": aggregate_efficiency(results),
+        "cost": aggregate_cost(results),
+        "discriminability_score": _discriminability_table(scores),
+        "rank_tau": _rank_tau_table(scores),
+        "success_consistency": success_consistency(results),
     }
     (output_dir / "scores.json").write_text(json.dumps(json_safe(scores), ensure_ascii=False, indent=4), encoding="utf-8")
     (output_dir / "metrics.json").write_text(json.dumps(json_safe(metrics), ensure_ascii=False, indent=4), encoding="utf-8")
@@ -178,15 +257,19 @@ def _compare_score(left: float, right: float) -> int:
 def _average(values: Sequence[int | float]) -> float:
     return float(sum(values)) / len(values) if values else 0.0
 
-def _psep_table(scores: JsonObject) -> JsonObject:
+def _discriminability_table(scores: JsonObject) -> JsonObject:
     result: JsonObject = {}
     for method, method_scores in scores.items():
         if not isinstance(method_scores, dict):
             continue
         result[method] = {}
         for benchmark, benchmark_scores in method_scores.items():
-            if isinstance(benchmark_scores, dict) and benchmark_scores:
-                result[method][benchmark] = psep({str(key): float(value) for key, value in benchmark_scores.items()})
+            if isinstance(benchmark_scores, dict):
+                model_values = {str(key): float(value) for key, value in benchmark_scores.items()}
+                result[method][benchmark] = {
+                    f"{epsilon:.2f}": discriminability_score(model_values, epsilon)
+                    for epsilon in DISCRIMINABILITY_THRESHOLDS
+                }
     return result
 
 def _rank_tau_table(scores: JsonObject) -> JsonObject:

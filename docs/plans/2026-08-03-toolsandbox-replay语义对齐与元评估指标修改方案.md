@@ -1,4 +1,4 @@
-# 2026-08-03 ToolSandbox Replay 语义对齐与指标修改方案
+# 2026-08-03 ToolSandbox Replay 语义对齐与多阈值 DS 最终代码修改方案
 
 ## 1. 修改范围
 
@@ -82,6 +82,7 @@ metadata["empty_graph_completion_basis"] = (
 
 - `dynsteer/adapter/toolsandbox/harness.py`
 - `dynsteer/adapter/toolsandbox/utils/state.py`
+- `dynsteer/experiment/runner.py`
 - `docs/apis/harness.md`
 
 #### 2.2.1 `ToolSandboxHarness.advance_case()`
@@ -127,11 +128,13 @@ rows.sort(key=sandbox_message_index)
 
 #### 2.2.3 完整性检查
 
-在 DEFAULT case 输出完成前增加只读完整性检查：
+在 `dynsteer/experiment/runner.py::run_default_case()` 读取 `default_result` 后增加内部完整性检查：
 
 - native `milestone_mapping[*].snapshot_index` 必须全部存在于 trajectory snapshot 的 `raw.sandbox_message_index`；
 - 缺失时错误包含 benchmark、model、case、milestone 和 snapshot index；
 - 检查不修改 native mapping，也不使用最近 snapshot 代替缺失 snapshot。
+
+实现为 runner 文件内的内部函数，直接读取 `output.trajectory_path` 和 `default_result["raw"]["milestone_mapping"]`；非 ToolSandbox benchmark 或没有 milestone mapping 时直接跳过。
 
 ### 2.3 修复 ToolSandbox minefield-only 空图完成语义
 
@@ -385,7 +388,7 @@ finish 复核结果优先于中间失败诊断；不得使用 `first_failure_sta
 | `dynsteer/evaluate/settlement.py` | minefield-only 走 deterministic finish，不调用 whole-trajectory Judge |
 | `dynsteer/evaluate/evaluator.py` | 正确 coverage basis；增加 recovered-after-stop 展示字段 |
 | `dynsteer/experiment/model.py` | 增加 replay milestone coverage 和统一成功属性 |
-| `dynsteer/experiment/runner.py` | 从 summary 装载 milestone coverage |
+| `dynsteer/experiment/runner.py` | 校验 native milestone snapshot 完整性；从 summary 装载 milestone coverage |
 | `dynsteer/experiment/metrics.py` | 删除 PSEP；增加 0.01–0.05 多阈值 DS 和简单 success consistency；保留现有 scores/rank_tau/efficiency/cost |
 | `data/toolsandbox/adapted_cases/*.json` | 通过 force adapt 自动重建，不手工编辑 |
 | `docs/apis/stage_goal.md` | route 与 tool-call 推导规则 |
@@ -453,7 +456,9 @@ finish 复核结果优先于中间失败诊断；不得使用 `first_failure_sta
 7. 0.01、0.02、0.03、0.04、0.05 五个 key 完整输出；
 8. epsilon 增大时 significant pair count 和 DS 不得增加；
 9. 全模型零分返回 DS 0；模型不足 2 个返回 DS `null`；负 epsilon 报错；
-10. 使用当前四模型均分 fixture 验证 epsilon=0.02 时 DEFAULT DS≈0.020924298、replay DS≈0.036117163；
+10. 使用当前四模型均分构造固定 fixture，验证：
+    - DEFAULT：0.01→0.027013153、0.02→0.020924298、0.03→0.020924298、0.04→0.020924298、0.05→0.017084618；
+    - replay：0.01→0.044234310、0.02→0.036117163、0.03→0.031278381、0.04→0.025538691、0.05→0.018058581；
 11. `scores.json`、现有 `rank_tau`、efficiency 和 cost 输出保持；
 12. 不新增 Separability、precision、recall、F1、kappa、Pearson/Spearman 或 pairwise model-order 指标。
 
@@ -496,65 +501,45 @@ finish 复核结果优先于中间失败诊断；不得使用 `first_failure_sta
 4. 验证五个 DS 阈值全部输出并与单元测试公式一致。
 5. 重做 100 对成功一致性和轨迹证据核查。
 
-## 10. 验收标准
+## 6. 验收标准
 
-### 10.1 正确性
+### 6.1 ToolSandbox 语义与轨迹
 
 - 22 条用户消息 constraint 不再被识别为工具调用。
+- 普通消息首词 `Location`、`Stephen`、`I` 不再成为 tool name。
 - DEFAULT 已命中的 native snapshot 在 replay source 中缺失数为 0。
-- genuine hard milestones 未被删除或降级。
-- minefield-only case 不再调用 whole-trajectory Judge。
-- `coverage_basis` 三处输出一致。
-- DEFAULT/replay 仍使用同一 source trajectory。
+- 同一 advance 内所有新增 SANDBOX rows 均生成 step 和 snapshot。
+- genuine hard milestones、threshold 和 graph edge 未被删除或降级。
 
-### 10.2 指标
+### 6.2 Finish 与 replay 输出
 
-- `metrics.json` 不包含 PSEP。
-- DEFAULT 和 DYNSTEER_REPLAY 均输出 Separability@95、模型/共同 case/模型对数量、各模型 95% CI 和模型对清单。
-- 输出 DEFAULT/replay success 的配对数、一致数、不一致数、一致率和不一致 case 清单。
-- `scores.json`、现有 `rank_tau`、efficiency 和 cost 输出保持可用。
-- 不新增 trajectory quality、precision/recall/F1/kappa、Pearson/Spearman 或 pairwise model-order 指标。
-- 文档只允许把更高 Separability 表述为统计分辨率更高；若 `rank_tau` 明显恶化，不得据此宣称 evaluator 整体更优。
+- ToolSandbox minefield-only case 不调用 whole-trajectory Judge。
+- minefield-only 无命中输出 full；fatal match 输出 none。
+- `coverage_basis` 在 finish metadata、report 和顶层 replay summary 中一致。
+- `recovered_after_virtual_stop` 仅在 virtual stop 后最终 full 时为 true。
+- DEFAULT/replay 继续使用同一 source trajectory。
 
-### 10.3 范围
+### 6.3 实验指标
 
-- API key 配置保持不变。
-- virtual stop 阈值和目标比例保持不变。
-- 不新增 online DYNSTEER 实验。
-- 不新增第三方依赖。
-- 不主动 git commit。
-
-## 11. 风险与回滚边界
-
-1. 全 history SANDBOX 读取会增加每次 advance 的行扫描量，但随后立即按 `last_sandbox_message_index` 过滤；ToolSandbox 单 case 消息上限为小规模，正确性优先。若性能出现问题，只允许在 context 层增加按 index 增量读取接口，不得回退到“只读最近 snapshot”。
-2. 消息语义修复会改变大量 adapted case 和 replay 结果，这是预期的语义纠正；必须 force adapt/force eval，禁止混用旧 adapted JSON 或旧 trajectory。
-3. minefield-only deterministic completion 与当前 whole-trajectory Judge 结果会明显不同，但它直接对应 ToolSandbox 原始 graph 定义；通用 evaluator 只读取 adapter 显式写入的 `empty_graph_completion_basis`，其他 benchmark 不会因“有 minefield”被自动改成 minefield-only。
-4. 删除 PSEP 会改变 metrics schema。项目约束默认不保留旧接口兼容，因此同步修改所有代码和文档消费者。
+- `metrics.json` 不包含 `psep`。
+- `metrics.json.discriminability_score` 对每个 method/benchmark 包含 `0.01`、`0.02`、`0.03`、`0.04`、`0.05`。
+- 每个阈值项包含 model count、pair count、mean score、population stddev、significant pair count/ratio 和 DS score。
+- 当前未修复结果 fixture 在 epsilon=0.02 时得到 DEFAULT≈0.020924298、DYNSTEER_REPLAY≈0.036117163。
+- success consistency 输出配对数、一致数、不一致数、方向计数和不一致 case 清单。
+- `scores.json`、`rank_tau`、efficiency 和 cost 保持可用。
+- 全部测试通过，新增/修改核心函数行覆盖率不低于 80%。
 
 ## 附录A. 项目中没有把握实现的模块部分
 
-### A.1 ToolSandbox native snapshot index 的完整语义
+### A.1 ToolSandbox 重复 sandbox index
 
-当前已经确定 harness 使用最近 snapshot 导致多 row 丢失，也已统计到 26 个 native mapped index 缺失。但 ToolSandbox 在并行工具调用、role respond 和原生 milestone matcher 中对同一 sandbox index 的具体生成顺序属于外部项目实现细节。
+当前代码和现有结果以 `sandbox_message_index` 同时作为 step index 和 snapshot identity。外部 ToolSandbox 在并行工具调用时是否可能为多 row 分配同一 index，需要先通过真实 fixture 确认。
 
-不确定点：
+实施顺序：
 
-- 一次 role respond 是否可能生成相同 index 的多 row；
-- `milestone_mapping.snapshot_index` 是否在所有 scenario 中都与 SANDBOX message index 一一等价；
-- tool augmentation/scramble 模式是否改变 index 或 trace 表达。
+1. 先增加重复 index 检测和真实 ToolSandbox 集成测试。
+2. 若实际 index 唯一，保留当前 `s{index}` 与 `toolsandbox:{index}` 标识。
+3. 若实际允许重复 index，不得仅删除重复 row；需要把 trajectory step identity 改为稳定的 `sandbox index + row ordinal`，并同步调整 snapshot boundary、successor mapping 和相关 API 文档。
+4. 未获得 fixture 证据前，不提前修改公共 trajectory index 模型。
 
-处理方式：先以 current ToolSandbox 源码和当前 25 个 case 建立集成断言；如果存在同 index 多 row，trajectory step id 需要增加稳定子序号，而不能仅用 `s{index}`。实施时必须先通过 fixture 验证，不能凭假设改模型结构。
-
-### A.2 没有人工 gold 时的 evaluator 正确性
-
-当前只能把 DEFAULT/native evaluator 作为 reference proxy。success consistency 只能衡量“与 DEFAULT 的成功/失败结论是否一致”，不能证明 DEFAULT 或 replay 谁更符合人类判断。
-
-本轮不确定点不是代码实现，而是论文结论边界：没有人工裁决数据时，不能将 `reference_alignment` 表述为绝对 evaluator accuracy。方案通过字段命名和文档限制避免过度结论；未来是否建设人工 gold 集由后续研究设计决定。
-
-## 附录B. 调研结论摘要
-
-ToolSandbox、AgentBoard、τ-bench 都会展示不同 Agent 模型的得分、成功率、progress 或稳定性差异，但这些差异用于描述 Agent 能力或 benchmark 难度，不用于证明某个 evaluator 更优。
-
-AgentRewardBench 是本轮找到的最直接比较 Agent 轨迹 evaluator 的论文；它使用专家逐轨迹标签和 precision/recall/F1，而不是跨模型平均分间距。
-
-因此，没有论文依据支持当前 PSEP；但 Raju et al. (2024) 明确支持使用 95% CI 非重叠模型对比例衡量 Separability，Benchmark² (2026) 也明确把 Discriminability 作为 benchmark quality 维度。本方案用单一 `separability_at_95` 替换 PSEP，不引入复杂指标体系，并以现有 `rank_tau` 防止把“有区分但方向错误”误写成整体更优。
+除该外部 index 语义外，其余修改均可直接基于当前项目结构实现。

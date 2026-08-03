@@ -94,6 +94,7 @@ class ExperimentCaseResult:
     default_score: float | None = None
     dynsteer_score: float | None = None
     resolved: bool | None = None
+    milestone_coverage: str | None = None
     runtime_metrics: JsonObject = field(default_factory=dict)
     output_paths: JsonObject = field(default_factory=dict)
     raw: JsonObject = field(default_factory=dict)
@@ -101,6 +102,15 @@ class ExperimentCaseResult:
     @property
     def score(self) -> float | None:
         return self.default_score if self.method == ExperimentMethod.DEFAULT else self.dynsteer_score
+
+    @property
+    def successful(self) -> bool | None:
+        """统一返回 DEFAULT resolved 与 replay full coverage 成功语义。"""
+        if self.method == ExperimentMethod.DEFAULT:
+            return self.resolved
+        if self.milestone_coverage is None:
+            return None
+        return self.milestone_coverage == "full"
 
     def to_dict(self) -> JsonObject:
         return self._base_payload(True)

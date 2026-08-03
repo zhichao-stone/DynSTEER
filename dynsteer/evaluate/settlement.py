@@ -234,7 +234,7 @@ def finish_settlement(
 
     verification = build_finish_verification(task_case, trajectory, state, scorer)
     replay_metadata = replay_termination.to_dict() if replay_termination is not None else None
-    if bool(verification.get("whole_trajectory_evaluation_required")):
+    if verification["whole_trajectory_evaluation_required"]:
         stage_result = _whole_trajectory_finish_stage_result(
             interval=interval,
             task_case=task_case,

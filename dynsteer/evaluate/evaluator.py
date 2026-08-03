@@ -427,6 +427,7 @@ class DynSTEEREvaluator:
                 replay_trajectory,
                 virtual_termination,
                 report.milestone_coverage,
+                _finish_coverage_basis(report.stage_reports),
             )
             replay_execution["timing"] = timing
             report.metadata["replay_execution"] = replay_execution
@@ -695,7 +696,7 @@ class DynSTEEREvaluator:
             }
         milestone_ids = {node.milestone_id for node in graph.nodes}
         if not graph.nodes:
-            coverage = _empty_graph_whole_trajectory_coverage(stage_reports)
+            coverage = _empty_graph_coverage(stage_reports)
         elif milestone_ids.issubset(matched_ids):
             coverage = "full"
         elif matched_ids:
@@ -787,6 +788,7 @@ def build_replay_execution_summary(
     replay_trajectory: Trajectory,
     termination: EvaluationTerminationState,
     coverage: str,
+    coverage_basis: str,
 ) -> JsonObject:
     """汇总 replay 虚拟停点、完成度和轨迹变化。"""
     if source_trajectory is None or replay_trajectory is None or termination is None:
@@ -803,7 +805,8 @@ def build_replay_execution_summary(
         "virtual_stop_step_index": detail.get("virtual_stop_step_index") if virtual_stop else None,
         "finish_after_virtual_stop": virtual_stop,
         "final_completion": coverage,
-        "coverage_basis": "milestone_graph",
+        "coverage_basis": coverage_basis,
+        "recovered_after_virtual_stop": virtual_stop and coverage == "full",
         "trajectory_changed": (
             source_step_count != replay_step_count
             or source_snapshot_count != replay_snapshot_count
@@ -828,8 +831,8 @@ def _metadata_from_config(config: HarnessRunConfig | Mapping[str, Any] | None) -
     raise ValueError("config 必须是 HarnessRunConfig 或 JSON 对象")
 
 
-def _empty_graph_whole_trajectory_coverage(stage_reports: list[StageEvaluationResult]) -> str:
-    """根据空图 whole-trajectory finish 阶段状态生成 coverage。"""
+def _empty_graph_coverage(stage_reports: list[StageEvaluationResult]) -> str:
+    """根据空图 finish coverage basis 和阶段状态生成 coverage。"""
     finish_stage = next(
         (stage for stage in reversed(stage_reports) if stage.milestone_id == FINISH_NODE_ID),
         None,
@@ -837,10 +840,30 @@ def _empty_graph_whole_trajectory_coverage(stage_reports: list[StageEvaluationRe
     if finish_stage is None:
         return "none"
     evaluation = finish_stage.metadata.get("finish_stage_evaluation")
-    if not isinstance(evaluation, dict) or evaluation.get("coverage_basis") != "whole_trajectory":
+    if not isinstance(evaluation, dict):
+        return "none"
+    coverage_basis = evaluation.get("coverage_basis")
+    if coverage_basis not in {"minefield_only", "whole_trajectory"}:
         return "none"
     if finish_stage.status == StageStatus.PASS:
         return "full"
-    if finish_stage.status in {StageStatus.WARN, StageStatus.AMBIGUOUS}:
+    if coverage_basis == "minefield_only" and finish_stage.status == StageStatus.WARN:
+        return "full"
+    if coverage_basis == "whole_trajectory" and finish_stage.status in {StageStatus.WARN, StageStatus.AMBIGUOUS}:
         return "partial"
     return "none"
+
+
+def _finish_coverage_basis(stage_reports: list[StageEvaluationResult]) -> str:
+    """读取 finish 阶段最终采用的 coverage basis。"""
+    finish_stage = next(
+        (stage for stage in reversed(stage_reports) if stage.milestone_id == FINISH_NODE_ID),
+        None,
+    )
+    if finish_stage is None:
+        return "milestone_graph"
+    evaluation = finish_stage.metadata.get("finish_stage_evaluation")
+    if not isinstance(evaluation, dict):
+        return "milestone_graph"
+    coverage_basis = evaluation.get("coverage_basis")
+    return str(coverage_basis) if coverage_basis in {"minefield_only", "whole_trajectory"} else "milestone_graph"

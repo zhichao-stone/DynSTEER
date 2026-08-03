@@ -102,6 +102,35 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
 
 def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvaluationState) -> JsonObject:
     fatal_minefield = bool(state.fatal_minefield)
+    metadata = graph.metadata if isinstance(graph.metadata, dict) else {}
+    coverage_basis = str(metadata.get("empty_graph_completion_basis") or "whole_trajectory")
+    minefield_only = coverage_basis == "minefield_only"
+    if minefield_only:
+        status = StageStatus.FAIL if fatal_minefield else StageStatus.PASS
+        score = 0.0 if fatal_minefield else 1.0
+        evidence_message = (
+            "minefield-only graph triggered fatal minefield"
+            if fatal_minefield
+            else "minefield-only graph completed without fatal minefield"
+        )
+        diagnosis_message = (
+            "finish final verification failed: fatal minefield."
+            if fatal_minefield
+            else "finish final verification passed: no fatal minefield."
+        )
+    else:
+        status = StageStatus.FAIL if fatal_minefield else StageStatus.AMBIGUOUS
+        score = 0.0
+        evidence_message = (
+            "empty graph triggered fatal minefield"
+            if fatal_minefield
+            else "empty graph requires whole-trajectory evaluation"
+        )
+        diagnosis_message = (
+            "finish final verification failed: fatal minefield."
+            if fatal_minefield
+            else "finish final verification precheck passed: whole-trajectory judge still required."
+        )
     return {
         "all_milestones_matched": True,
         "unmatched_milestone_ids": [],
@@ -112,21 +141,19 @@ def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvalua
         "empty_milestone_graph": True,
         "fixed_milestones_applicable": False,
         "whole_trajectory_evaluation": False,
-        "whole_trajectory_evaluation_required": not fatal_minefield,
-        "coverage_basis": "whole_trajectory",
+        "whole_trajectory_evaluation_required": not minefield_only and not fatal_minefield,
+        "coverage_basis": coverage_basis,
         "default_reference_used": False,
         "minefield_count": len(graph.minefields) if graph is not None else 0,
         "minefield_match_count": len(state.minefield_matches),
-        "status": StageStatus.FAIL.value if fatal_minefield else StageStatus.AMBIGUOUS.value,
-        "score": 0.0,
+        "status": status.value,
+        "score": score,
         "evidence": [
             "finish 结算节点",
-            "empty graph triggered fatal minefield" if fatal_minefield
-            else "empty graph requires whole-trajectory evaluation",
+            evidence_message,
         ],
         "diagnosis": [
-            "finish final verification failed: fatal minefield." if fatal_minefield
-            else "finish final verification precheck passed: whole-trajectory judge still required."
+            diagnosis_message,
         ],
     }
 

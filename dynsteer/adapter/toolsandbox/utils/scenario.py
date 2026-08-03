@@ -1,6 +1,5 @@
-import re
 from dynsteer.adapter.loader import parse_milestone_graph
-from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
+from dynsteer.adapter.toolsandbox.utils.trace import tool_call_from_agent_row, tool_trace_from_row
 from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
 from dynsteer.model import Actor, JsonObject, JsonValue, MilestoneGraph, StageGoalSemanticKind, TaskType
 from dynsteer.utils import enum_name, json_safe
@@ -57,23 +56,30 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
             "user_visible_required": False,
         }
     elif namespace == "SANDBOX":
-        first = rows[0] if rows and isinstance(rows[0], dict) else {}
-        tool_call_semantics = _sandbox_tool_call_semantics(first) if isinstance(first, dict) else None
-        if tool_call_semantics is not None:
-            stage_goal_semantics = tool_call_semantics
-        else:
-            sender = first.get("sender") if isinstance(first, dict) else None
-            recipient = first.get("recipient") if isinstance(first, dict) else None
-            content = first.get("content") if isinstance(first, dict) else None
+        if not rows or not isinstance(rows[0], dict):
+            raise ValueError(f"ToolSandbox SANDBOX constraint 缺少 expected row: constraint_id={constraint_id}")
+        first = rows[0]
+        sender = enum_name(first.get("sender")).strip().upper()
+        recipient = enum_name(first.get("recipient")).strip().upper()
+        content = first.get("content")
+        if _is_user_visible_message_route(sender, recipient):
             stage_goal_semantics = {
                 "kind": StageGoalSemanticKind.EMIT_MESSAGE.value,
-                "sender": str(sender or "AGENT"),
-                "recipient": str(recipient or "USER"),
+                "sender": sender,
+                "recipient": recipient,
                 "content": str(content or ""),
                 "match_policy": "semantic_equivalent",
                 "evidence_source": "trajectory_or_structured_scorer",
-                "user_visible_required": _is_user_visible_message_route(sender, recipient),
+                "user_visible_required": True,
             }
+        else:
+            tool_call_semantics = _sandbox_tool_call_semantics(first, sender, recipient)
+            if tool_call_semantics is None:
+                raise ValueError(
+                    "ToolSandbox SANDBOX constraint 缺少合法消息或工具证据: "
+                    f"constraint_id={constraint_id}, sender={sender}, recipient={recipient}"
+                )
+            stage_goal_semantics = tool_call_semantics
     else:
         expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
         stage_goal_semantics = {
@@ -126,47 +132,42 @@ def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
         )
     milestone_matcher = getattr(evaluation, "milestone_matcher", None)
     minefield_matcher = getattr(evaluation, "minefield_matcher", None)
+    nodes = _matcher_nodes(milestone_matcher, "m", True)
+    minefields = _matcher_nodes(minefield_matcher, "mf", False)
     return parse_milestone_graph(
         {
-            "nodes": _matcher_nodes(milestone_matcher, "m", True),
+            "nodes": nodes,
             "edges": edge_list(milestone_matcher, "m"),
-            "minefields": _matcher_nodes(minefield_matcher, "mf", False),
+            "minefields": minefields,
             "metadata": {
                 "benchmark": "toolsandbox",
                 "constraint_semantics": "toolsandbox_custom_metadata",
+                "empty_graph_completion_basis": (
+                    "minefield_only" if not nodes and minefields else "whole_trajectory"
+                ),
             },
         }
     )
 
-def _sandbox_tool_call_semantics(row: dict[str, JsonValue]) -> JsonObject | None:
-    traces = tool_trace_items(row.get("tool_trace"))
-    if traces:
-        trace = traces[0]
-        tool_name = trace.get("tool_name")
-        if isinstance(tool_name, str) and tool_name.strip():
-            arguments = trace.get("arguments")
-            return {
-                "kind": StageGoalSemanticKind.TOOL_CALL.value,
-                "tool_name": tool_name.strip(),
-                "arguments": arguments if isinstance(arguments, dict) else {},
-                "evidence_source": "trajectory_or_structured_scorer",
-                "user_visible_required": False,
-            }
-    raw_name = row.get("openai_function_name")
-    tool_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else ""
-    if not tool_name:
-        content = row.get("content")
-        if isinstance(content, str) and content.strip():
-            match = re.search("([A-Za-z_][A-Za-z0-9_]*)", content.strip())
-            tool_name = match.group(1) if match is not None else ""
-    sender = str(row.get("sender") or "").strip().upper()
-    recipient = str(row.get("recipient") or "").strip().upper()
-    if not tool_name and (not (sender == "AGENT" and recipient in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"})):
+def _sandbox_tool_call_semantics(
+    row: dict[str, JsonValue], sender: str, recipient: str
+) -> JsonObject | None:
+    trace = tool_trace_from_row(row)
+    is_agent_call = sender == "AGENT" and recipient in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"}
+    is_tool_result = (
+        sender in {"EXECUTION_ENVIRONMENT", "ENVIRONMENT"}
+        and recipient == "AGENT"
+        and trace is not None
+    )
+    if not is_agent_call and not is_tool_result:
+        return None
+    tool_call = tool_call_from_agent_row(row, trace)
+    if tool_call is None:
         return None
     return {
         "kind": StageGoalSemanticKind.TOOL_CALL.value,
-        "tool_name": tool_name or "unknown",
-        "arguments": {},
+        "tool_name": str(tool_call["name"]),
+        "arguments": tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {},
         "evidence_source": "trajectory_or_structured_scorer",
         "user_visible_required": False,
     }
@@ -174,7 +175,7 @@ def _sandbox_tool_call_semantics(row: dict[str, JsonValue]) -> JsonObject | None
 def _is_user_visible_message_route(sender: object, recipient: object) -> bool:
     sender_text = str(sender or "").strip().upper()
     recipient_text = str(recipient or "").strip().upper()
-    return recipient_text == "USER" and sender_text in {"AGENT", "ENVIRONMENT", "SYSTEM", ""}
+    return recipient_text == "USER" and sender_text in {"AGENT", "ENVIRONMENT", "SYSTEM"}
 
 def _matcher_nodes(matcher: object | None, prefix: str, is_milestone: bool) -> list[dict[str, JsonValue]]:
     if matcher is None:

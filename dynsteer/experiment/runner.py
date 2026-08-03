@@ -344,6 +344,7 @@ def _case_result_from_output(
         default_score = as_number(default_reference.get("score"))
     dynsteer_score = None if spec.method == ExperimentMethod.DEFAULT else as_number(summary.get("overall_score"))
     resolved = summary.get("resolved")
+    milestone_coverage = summary.get("milestone_coverage")
 
     return ExperimentCaseResult(
         experiment_id=spec.experiment_id,
@@ -355,6 +356,7 @@ def _case_result_from_output(
         default_score=default_score,
         dynsteer_score=dynsteer_score,
         resolved=resolved if isinstance(resolved, bool) else None,
+        milestone_coverage=milestone_coverage if isinstance(milestone_coverage, str) else None,
         runtime_metrics=dict(runtime_metrics),
         output_paths={
             k: str(v)

@@ -154,11 +154,13 @@ Replay 的 `runtime_metrics.elapsed_seconds` 仍只表示 replay evaluator 自�
 
 `__finish__` 阶段不再继承上一阶段动态 judge 策略，也不要求 agent 在最后区间额外调用验证工具。普通 milestone graph 下，它由 `dynsteer.evaluate.final.build_finish_verification(...)` 基于真实 milestone 覆盖、terminal 状态约束重检、terminal 消息约束确认和 fatal minefield 生成确定性 final verification payload，并写入 `metadata.finish_stage_evaluation`。
 
-空 milestone graph 不再被直接解释为 invalid，也不会借用 ToolSandbox default 原生 evaluator 结论。此类 case 表示没有固定正向 milestone 可切分，replay 会把 `__start__->__finish__` 作为 whole-trajectory stage：先扫描完整轨迹上的 minefield；若命中 fatal minefield，finish 始终 `fail/0`；若未命中 fatal minefield，则由 DynSTEER 自己的 `StandardJudge` 根据任务描述、完整轨迹、工具结果、最终状态和 minefield 约束判断任务是否完成。
+空 milestone graph 不再被直接解释为 invalid，也不会借用 ToolSandbox default 原生 evaluator 结论。ToolSandbox adapter 对“没有正向 milestone、但存在 minefield”的 graph 写入 `empty_graph_completion_basis="minefield_only"`：未命中 fatal minefield 时确定性返回 `pass/1/full`，命中时返回 `fail/0/none`，且不调用 `StandardJudge`。其他空图仍使用 `whole_trajectory` stage，由 `StandardJudge` 根据任务描述、完整轨迹、工具结果、最终状态和 minefield 约束判断任务是否完成。
 
 空图 finish 的 `metadata.finish_stage_evaluation` 会写入 `empty_milestone_graph=true`、`fixed_milestones_applicable=false`、`whole_trajectory_evaluation=true`、`coverage_basis="whole_trajectory"`、`default_reference_used=false`、`judge_level="standard"` 和 `focus_dimensions`。若未配置 `StandardJudge` 或等价终态评估器，则保守返回 `invalid/0`，并写入 `whole_trajectory_evaluator_unavailable=true`。
 
 空图 `milestone_coverage` 在报告中表示完整轨迹完成度：whole-trajectory finish `pass` 为 `full`，`warn/ambiguous` 为 `partial`，`fail/invalid/missing` 或缺少 finish stage 为 `none`。
+
+Replay 输出中，`milestone_coverage/final_completion` 是 finish 复核后的最终完成结论；`first_failure_stage_id` 与 `virtual_stop_code` 只保留中间诊断，不覆盖最终结论。`coverage_basis` 从 finish stage 统一传入 replay summary；`recovered_after_virtual_stop` 仅在确实发生 virtual stop 且最终 coverage 为 `full` 时为 `true`。同一个 replay summary 对象复用于报告、顶层输出和 finish settlement metadata。
 
 实验层保留的 `metadata.default_reference` 只用于对照、溯源和审计差异，不参与 replay 的 `status`、`overall_score`、`milestone_coverage`、minefield 扫描、stage judge 或 finish 判定，也不会进入 judge prompt。
 

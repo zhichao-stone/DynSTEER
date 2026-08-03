@@ -75,9 +75,24 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if session.finished:
             return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")
         self._advance_native_session(session)
-        rows = [row for row in rows_from_dataframe(self._sandbox_database(session.context)) if sandbox_message_index(row) > session.last_sandbox_message_index]
-        if rows:
-            session.last_sandbox_message_index = max(sandbox_message_index(row) for row in rows)
+        all_rows = rows_from_dataframe(
+            self._sandbox_database(session.context, get_all_history_snapshots=True)
+        )
+        rows = [
+            row
+            for row in all_rows
+            if sandbox_message_index(row) > session.last_sandbox_message_index
+        ]
+        rows.sort(key=sandbox_message_index)
+        indexes = [sandbox_message_index(row) for row in rows]
+        if len(indexes) != len(set(indexes)):
+            seen: set[int] = set()
+            duplicates: set[int] = set()
+            for index in indexes:
+                if index in seen:
+                    duplicates.add(index)
+                seen.add(index)
+            raise ValueError(f"ToolSandbox 新增 SANDBOX rows 包含重复 index: {sorted(duplicates)}")
         steps = sandbox_rows_to_step_dicts(rows)
         snapshot_data = snapshots_from_context(session.context, steps, load_toolsandbox_module) if session.context is not None else []
         trajectory = trajectory_from_sandbox_rows(
@@ -87,6 +102,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         )
         if not trajectory.steps and not session.finished:
             raise RuntimeError("benchmark session 未完成但没有新增轨迹步骤")
+        if indexes:
+            session.last_sandbox_message_index = max(indexes)
         return HarnessAdvanceResult(
             steps=trajectory.steps,
             snapshots=trajectory.snapshots,

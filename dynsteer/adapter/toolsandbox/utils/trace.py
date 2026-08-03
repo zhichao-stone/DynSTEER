@@ -50,22 +50,22 @@ def tool_arguments_from_agent_content(content: object) -> JsonObject:
 
 def tool_call_from_agent_row(row: dict[str, object], trace: dict[str, JsonValue] | None) -> JsonObject | None:
     parsed_arguments = tool_arguments_from_agent_content(row.get("content"))
-    if trace is not None and isinstance(trace.get("tool_name"), str) and trace.get("tool_name"):
+    if trace is not None and isinstance(trace.get("tool_name"), str) and str(trace.get("tool_name")).strip():
         arguments = trace.get("arguments")
         return {
-            "name": str(trace["tool_name"]),
+            "name": str(trace["tool_name"]).strip(),
             "arguments": arguments if isinstance(arguments, dict) else parsed_arguments,
         }
-    if isinstance(row.get("openai_function_name"), str) and row.get("openai_function_name"):
-        return {"name": str(row["openai_function_name"]), "arguments": parsed_arguments}
+    if isinstance(row.get("openai_function_name"), str) and str(row.get("openai_function_name")).strip():
+        return {"name": str(row["openai_function_name"]).strip(), "arguments": parsed_arguments}
     
     content = row.get("content")
     if not isinstance(content, str):
         return None
-    match = re.search("([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", content)
-    if match is None:
+    parsed_call = _tool_call_from_content(content)
+    if parsed_call is None:
         return None
-    return {"name": match.group(1), "arguments": parsed_arguments}
+    return parsed_call
 
 def sandbox_message_index(row: dict[str, object]) -> int:
     value = row.get("sandbox_message_index")
@@ -117,3 +117,25 @@ def _parse_tool_trace_value(value: object) -> JsonValue:
         except json.JSONDecodeError:
             return None
     return json_safe(value)
+
+
+def _tool_call_from_content(content: str) -> JsonObject | None:
+    """解析完整的 `name(...)` 表达式及其关键字参数。"""
+    if re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*\([\s\S]*\)\s*", content) is None:
+        return None
+    try:
+        expression = ast.parse(content.strip(), mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.Call) or not isinstance(expression.func, ast.Name):
+        return None
+    arguments: JsonObject = {}
+    for keyword in expression.keywords:
+        if keyword.arg is None:
+            return None
+        try:
+            value = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError):
+            return None
+        arguments[keyword.arg] = json_safe(value)
+    return {"name": expression.func.id, "arguments": arguments}

@@ -34,7 +34,7 @@
 
 私有 scorer metadata 应保留在各 benchmark 自己的 key 下，例如 `metadata["toolsandbox"]`。公共 stage_goal 生成不得读取这些私有 key。
 
-ToolSandbox SANDBOX snapshot constraint 如果 target row 包含 `tool_trace`，adapter 应将其 `stage_goal_semantics.kind` 设置为 `tool_call`，并写入 `tool_name` 与 `arguments`。`stage_goal` 文本应表达为 `Call tool ...`，而不是 `Emit a message from EXECUTION_ENVIRONMENT to AGENT...`。普通 AGENT -> USER 消息仍使用 `emit_message`。
+ToolSandbox SANDBOX snapshot constraint 使用 route-first 语义。`AGENT/ENVIRONMENT/SYSTEM -> USER` 始终映射为 `emit_message`，不会从消息正文首词推导工具名。只有 `AGENT -> EXECUTION_ENVIRONMENT/ENVIRONMENT`，或携带结构化 `tool_trace` 的 `EXECUTION_ENVIRONMENT/ENVIRONMENT -> AGENT` 才尝试映射 `tool_call`。工具证据必须来自 `tool_trace[*].tool_name`、非空 `openai_function_name` 或完整 `name(...)` 调用；其他 route 缺少证据时 adapter 抛出包含 constraint 和 route 的 `ValueError`，不生成 `tool_name="unknown"`。
 
 `emit_message` 的 stage goal 只要求消息内容与目标语义一致，不要求字面完全一致。即使历史数据中出现 `match_policy="exact"`，stage goal 文本也不应要求 exact wording；精确匹配或专用语义复判属于 scorer/matching 层职责，不属于 stage goal 文本职责。
 

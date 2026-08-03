@@ -1,5 +1,11 @@
 ﻿# Harness API
 
+## ToolSandbox history 完整性
+
+`ToolSandboxHarness.advance_case()` 每次只调用一次原生 role `respond()`，随后读取 `get_all_history_snapshots=True` 的完整 SANDBOX history，按 `last_sandbox_message_index` 过滤本批新增 rows，并按原生 index 升序生成 step 和 snapshot。一次 respond 产生的并行 tool calls、tool results 与最终消息都会被保留；重复 index、缺失 index 或乱序 steps 会明确报错。只有整批 step/snapshot 构造成功后才推进 session 的 last index。
+
+实验 runner 会进一步校验 ToolSandbox native `milestone_mapping[*].snapshot_index` 全部存在于 DEFAULT `trajectory.json` 的 `snapshots[*].raw.sandbox_message_index`，缺失时拒绝把该轨迹用于 replay。
+
 ## 运行期动态 target
 
 `prepare_task_cases(config, force_adapt=False, refresh_dynamic_targets=True)` 在每次 experiment preparation 中调用 adapter 的 `refresh_task_case_for_experiment()`。ToolSandbox 使用与 harness session 相同的共享 scenario dictionary，把当前 scenario `target_dataframe` 转换得到的值写入 `Constraint.expected`，同步 `stage_goal_semantics["expected"]`，再实例化 `stage_goals`。
