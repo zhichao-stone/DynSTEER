@@ -4,6 +4,8 @@
 
 `ToolSandboxHarness.advance_case()` 每次只调用一次原生 role `respond()`，随后读取 `get_all_history_snapshots=True` 的完整 SANDBOX history，按 `last_sandbox_message_index` 过滤本批新增 rows，并按原生 index 升序生成 step 和 snapshot。一次 respond 产生的并行 tool calls、tool results 与最终消息都会被保留；重复 index、缺失 index 或乱序 steps 会明确报错。只有整批 step/snapshot 构造成功后才推进 session 的 last index。
 
+同一批新增 rows 可以包含多个连续的 Agent tool outbound。harness 不丢弃前面的调用、不把批次重排为伪串行序列，也不负责闭包配对；row 转换会把 tool call 与 tool result 的 `openai_tool_call_id` 保留在 `TrajectoryStep.raw`，交由公共 `AgentStepTracker` 精确配对。该字段在 `trajectory.json` 序列化和公共 loader 往返后保持不变。
+
 实验 runner 会进一步校验 ToolSandbox native `milestone_mapping[*].snapshot_index` 全部存在于 DEFAULT `trajectory.json` 的 `snapshots[*].raw.sandbox_message_index`，缺失时拒绝把该轨迹用于 replay。
 
 ## 运行期动态 target

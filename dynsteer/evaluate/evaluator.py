@@ -289,6 +289,7 @@ class DynSTEEREvaluator:
                 runtime_metrics=runtime_metrics,
                 metadata=self._report_metadata(config, method_fallback="dynsteer_evaluate"),
             )
+            return result
         finally:
             try:
                 self._teardown_session_safely(harness, session, config.benchmark, case_id)

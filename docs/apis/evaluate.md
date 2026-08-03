@@ -65,6 +65,10 @@ ready frontier 的观察单位是完整闭合的 agent step，不是 raw step。
 
 `AgentStepTracker` 在 agent outbound 闭合时会返回完整闭包步骤组。milestone 匹配仍只评分一次：若 milestone 的 `metadata.milestone_matching.route_groups` 中存在唯一 route，则从当前闭包内选择最后一个 sender/recipient 匹配的 step 构造评分 boundary；无 route 或闭包内找不到匹配 step 时沿用闭包终点。当前实现显式拒绝同一 milestone 存在多个 route group 的 adapted case。
 
+tracker 支持同一 Agent 响应产生多个连续的 `Agent -> Environment` tool outbound，但每个 outbound 必须携带唯一且非空的 `raw.openai_tool_call_id`。tool result 优先按该 correlation ID 精确配对；result 带未知 ID、route 不匹配、并行 outbound 缺失或重复 ID 时都会抛出 `AgentStepProtocolError`。只有唯一 reciprocal pending 时，缺少 ID 的串行 feedback 才可按 route 回退；多个同 route pending 下缺少 ID 会明确失败。
+
+每个 tool outbound 独立形成闭包、独立执行 milestone matching，并使 `completed_count` 增加 1。兄弟 tool call/result 不会混入彼此的闭包。未返回 result 的 tool outbound 不会在 `finalize()` 中自闭合，也不触发 checkpoint、no-progress 或 step count；唯一终局 `Agent -> User` 的 `MESSAGE/FINAL` 仍可自然自闭合。Default、在线 DynSTEER 与 Replay 均使用这一公共语义，result 即使逆序返回也不会串线。
+
 ## Scoring
 
 `GeneralScorer` 支持三类 operator：

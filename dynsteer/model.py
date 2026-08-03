@@ -160,53 +160,131 @@ class AgentStepProtocolError(RuntimeError):
 
 @dataclass
 class AgentStepTracker:
-    """跟踪单个串行 agent outbound 的闭包状态。
+    """跟踪串行或带 correlation ID 的并行 agent outbound 闭包状态。
 
     入参：
-        pending_outbound: 尚未收到反馈的 Agent -> X 原始 step。
-        pending_steps: 当前未闭合 agent step 已收集的 raw steps。
+        pending_outbounds: 按稳定内部 key 保存尚未收到反馈的 Agent -> X step。
+        pending_steps: 按稳定内部 key 保存各闭包已收集的 raw steps。
         completed_count: 已闭合的 agent step 数量。
     输出：
         `ingest()` 在闭包完成时返回完整闭包，否则返回 None。
     """
-    pending_outbound: TrajectoryStep | None = None
-    pending_steps: list[TrajectoryStep] = field(default_factory=list)
+    pending_outbounds: dict[str, TrajectoryStep] = field(default_factory=dict)
+    pending_steps: dict[str, list[TrajectoryStep]] = field(default_factory=dict)
     completed_count: int = 0
 
     def ingest(self, raw_step: TrajectoryStep) -> AgentStepClosure | None:
         """摄入一条 raw step，并在闭合 agent step 时返回完整闭包。"""
+        if raw_step is None:
+            raise ValueError("raw_step 不能为空")
         if self._is_agent_outbound(raw_step):
-            if self.pending_outbound is not None:
-                raise AgentStepProtocolError(f"上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound: pending_step_id={self.pending_outbound.step_id}, current_step_id={raw_step.step_id}")
-            self.pending_outbound = raw_step
-            self.pending_steps = [raw_step]
+            self._add_pending(raw_step)
             return None
-        pending = self.pending_outbound
-        if pending is None:
+        if not self.pending_outbounds:
             return None
-        self.pending_steps.append(raw_step)
-        if raw_step.actor == pending.recipient and raw_step.recipient == Actor.AGENT:
-            return self._complete_pending()
-        return None
+
+        key = self._matching_pending_key(raw_step)
+        if key is not None:
+            self.pending_steps[key].append(raw_step)
+            return self._complete_pending(key)
+        if len(self.pending_outbounds) == 1:
+            only_key = next(iter(self.pending_outbounds))
+            self.pending_steps[only_key].append(raw_step)
+            return None
+        raise self._protocol_error("并行 pending 期间的 step 无法唯一归属", raw_step)
 
     def finalize(self) -> AgentStepClosure | None:
-        """自然结束时闭合允许自闭合的终局 agent message。"""
-        pending = self.pending_outbound
-        if pending is None:
+        """自然结束时闭合允许自闭合的唯一终局 agent message。"""
+        if len(self.pending_outbounds) != 1:
             return None
-        if pending.actor == Actor.AGENT and pending.recipient == Actor.USER and (pending.event_type in {EventType.MESSAGE, EventType.FINAL}):
-            return self._complete_pending()
+        key, pending = next(iter(self.pending_outbounds.items()))
+        if pending.actor == Actor.AGENT and pending.recipient == Actor.USER and pending.event_type in {EventType.MESSAGE, EventType.FINAL}:
+            return self._complete_pending(key)
         return None
 
-    def _complete_pending(self) -> AgentStepClosure:
-        """完成当前 pending closure，并重置 tracker 状态。"""
-        steps = tuple(self.pending_steps)
+    ## 内部函数
+
+    def _add_pending(self, raw_step: TrajectoryStep) -> None:
+        """新增 outbound，并校验连续 outbound 是否为合法并行工具调用。"""
+        key = self._pending_key(raw_step)
+        if self.pending_outbounds:
+            pending_values = list(self.pending_outbounds.values())
+            if not all(self._is_parallel_tool_outbound(step) for step in [*pending_values, raw_step]):
+                raise self._protocol_error("上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound", raw_step)
+            missing_ids = [step.step_id for step in [*pending_values, raw_step] if self._tool_call_id(step) is None]
+            if missing_ids:
+                raise self._protocol_error(f"并行 tool outbound 缺少 correlation id: step_ids={missing_ids}", raw_step)
+            if key in self.pending_outbounds:
+                raise self._protocol_error("并行 tool outbound 使用重复 correlation id", raw_step)
+        self.pending_outbounds[key] = raw_step
+        self.pending_steps[key] = [raw_step]
+
+    def _complete_pending(self, key: str) -> AgentStepClosure:
+        """完成指定 pending closure，并更新 tracker 状态。"""
+        steps = tuple(self.pending_steps.get(key, []))
         if not steps:
             raise AgentStepProtocolError("agent step closure 缺少 pending steps")
-        self.pending_outbound = None
-        self.pending_steps = []
+        del self.pending_outbounds[key]
+        del self.pending_steps[key]
         self.completed_count += 1
         return AgentStepClosure(steps=steps)
+
+    def _matching_pending_key(self, feedback: TrajectoryStep) -> str | None:
+        """按 correlation ID 优先、reciprocal route 次之解析 feedback。"""
+        call_id = self._tool_call_id(feedback)
+        if call_id is not None:
+            key = f"tool:{call_id}"
+            pending = self.pending_outbounds.get(key)
+            if pending is None:
+                raise self._protocol_error("feedback 使用未知 correlation id", feedback)
+            if not self._is_reciprocal_feedback(pending, feedback):
+                raise self._protocol_error("feedback correlation id 匹配但 route 不匹配", feedback)
+            return key
+
+        candidates = [
+            key
+            for key, pending in self.pending_outbounds.items()
+            if self._is_reciprocal_feedback(pending, feedback)
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            raise self._protocol_error("并行 feedback 缺少 correlation id", feedback)
+        return None
+
+    def _pending_key(self, step: TrajectoryStep) -> str:
+        """生成 pending outbound 的稳定内部 key。"""
+        call_id = self._tool_call_id(step)
+        return f"tool:{call_id}" if call_id is not None else f"step:{step.step_id}"
+
+    def _protocol_error(self, category: str, current: TrajectoryStep) -> AgentStepProtocolError:
+        """构造包含 pending、route 与 correlation 上下文的协议异常。"""
+        pending_ids = [step.step_id for step in self.pending_outbounds.values()]
+        pending_call_ids = [
+            call_id
+            for step in self.pending_outbounds.values()
+            if (call_id := self._tool_call_id(step)) is not None
+        ]
+        return AgentStepProtocolError(
+            f"{category}: pending_step_ids={pending_ids}, current_step_id={current.step_id}, "
+            f"current={current.actor.value}/{current.recipient.value if current.recipient else None}/{current.event_type.value}, "
+            f"current_call_id={self._tool_call_id(current)}, pending_call_ids={pending_call_ids}"
+        )
+
+    def _tool_call_id(self, step: TrajectoryStep) -> str | None:
+        """读取并清理 step raw 中的 OpenAI tool call correlation ID。"""
+        value = step.raw.get("openai_tool_call_id")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    def _is_parallel_tool_outbound(self, step: TrajectoryStep) -> bool:
+        """判断 step 是否属于允许并行的 Agent -> Environment tool call。"""
+        return step.actor == Actor.AGENT and step.recipient == Actor.ENVIRONMENT and step.event_type == EventType.TOOL_CALL
+
+    def _is_reciprocal_feedback(self, pending: TrajectoryStep, feedback: TrajectoryStep) -> bool:
+        """判断 feedback route 是否与 pending outbound 相反。"""
+        return feedback.actor == pending.recipient and feedback.recipient == Actor.AGENT
 
     def _is_agent_outbound(self, raw_step: TrajectoryStep) -> bool:
         """判断 raw step 是否为 Agent -> X 的行为起点。"""
