@@ -443,17 +443,14 @@ class DynSTEEREvaluator:
                     },
                 )
             for settlement in result.stage_settlements:
-                if settlement.kind != "finish":
-                    continue
-                settlement.metadata["replay_execution"] = replay_execution
-                settlement.metadata["finish_after_virtual_stop"] = replay_execution[
-                    "finish_after_virtual_stop"
-                ]
-                stage_report = settlement.metadata.get("stage_report")
-                if isinstance(stage_report, dict):
-                    stage_metadata = stage_report.get("metadata")
-                    if isinstance(stage_metadata, dict):
-                        stage_metadata["replay_execution"] = replay_execution
+                if settlement.kind == "finish":
+                    settlement.metadata["replay_execution"] = replay_execution
+                    settlement.metadata["finish_after_virtual_stop"] = replay_execution["finish_after_virtual_stop"]
+                    stage_report = settlement.metadata.get("stage_report")
+                    if isinstance(stage_report, dict):
+                        stage_metadata = stage_report.get("metadata")
+                        if isinstance(stage_metadata, dict):
+                            stage_metadata["replay_execution"] = replay_execution
             for stage_report in report.stage_reports:
                 if stage_report.milestone_id == FINISH_NODE_ID:
                     stage_report.metadata["replay_execution"] = replay_execution
