@@ -1,6 +1,12 @@
 # Stage Goal API
 
-`dynsteer.stage.generate_stage_goals(task_case, mode="auto", llm_provider=None)` 是 stage_goals 的唯一生成入口。
+阶段目标采用模板生成与物化两阶段接口，不再提供中转函数：
+
+```python
+templates = generate_stage_goal_templates(task_case, mode, llm_provider)
+task_case.stage_goal_templates = templates
+task_case.stage_goals = materialize_stage_goals(task_case, templates)
+```
 
 `dynsteer.stage.resolve` 提供不依赖 stage goal 生成逻辑的解析入口：
 

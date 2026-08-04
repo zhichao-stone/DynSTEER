@@ -34,9 +34,6 @@ class BenchmarkDefaultResult:
             "metrics": dict(self.metrics),
         }
 
-class BaseBenchmarkConstraintScorer(GeneralScorer):
-    """benchmark 约束评分器基类。"""
-
 class BaseBenchmarkAdapter(ABC):
     """benchmark 离线数据转换基类。"""
     benchmark: str
@@ -59,7 +56,6 @@ class BaseBenchmarkAdapter(ABC):
 class BaseBenchmarkHarness(ABC):
     """benchmark 运行期执行接口基类。"""
     benchmark: str
-    dependency_error_message: str | None = None
 
     @abstractmethod
     def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
@@ -89,13 +85,9 @@ class BaseBenchmarkHarness(ABC):
         latency_ms = max(0, int(round((finished - started) * 1000)))
         return replace(advance, execution_latency_ms=latency_ms)
 
-    @abstractmethod
-    def case_finished(self, session: object) -> bool:
-        """判断 benchmark session 是否自然完成。"""
-
-    def constraint_scorer(self) -> BaseBenchmarkConstraintScorer:
+    def constraint_scorer(self) -> GeneralScorer:
         """返回当前 benchmark 的约束评分器。"""
-        return BaseBenchmarkConstraintScorer()
+        return GeneralScorer()
 
     def prepare_config(self, config: HarnessRunConfig) -> None:
         """校验配置并准备 benchmark source_root。"""

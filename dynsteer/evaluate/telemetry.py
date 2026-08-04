@@ -1,11 +1,10 @@
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.evaluate.runtime import selected_candidate_from_attempt
-from dynsteer.model import JsonObject, JsonValue, RuntimeEvaluationDecision, StageEvaluationResult, TaskCase
-from dynsteer.utils import as_number, compact_text, first_text, optional_str
+from dynsteer.model import JsonObject, RuntimeEvaluationDecision, StageEvaluationResult, TaskCase
+from dynsteer.utils import as_number, first_text, optional_str
 
 
 _TEXT_LIMIT = 160
-_LIST_LIMIT = 8
 
 def policy_stop_log_extra(task_case: TaskCase, decision: RuntimeEvaluationDecision) -> JsonObject:
     """构造策略提前终止 warning 摘要。"""
@@ -45,7 +44,7 @@ def policy_stop_log_extra(task_case: TaskCase, decision: RuntimeEvaluationDecisi
         if selected_candidate is not None
         else None,
     }
-    return _sanitize_extra(extra)
+    return {key: sanitize_log_value(value) for key, value in extra.items()}
 
 def _milestone_layer(source: StageEvaluationResult | HarnessStageSettlement | None) -> tuple[float | None, str | None]:
     if source is None:
@@ -58,18 +57,4 @@ def _milestone_layer(source: StageEvaluationResult | HarnessStageSettlement | No
         return (None, None)
     return (as_number(score.get("score")), optional_str(score.get("status")))
 
-def _sanitize_extra(value: JsonValue | JsonObject) -> JsonObject:
-    if not isinstance(value, dict):
-        raise ValueError("日志 extra 必须是 JSON 对象")
-    return {str(key): _sanitize_value(item) for key, item in value.items()}
-
-def _sanitize_value(value: object) -> JsonValue:
-    if value is None or isinstance(value, bool | int | float):
-        return value
-    if isinstance(value, str):
-        return compact_text(value, _TEXT_LIMIT)
-    if isinstance(value, list):
-        return [_sanitize_value(item) for item in value[:_LIST_LIMIT]]
-    if isinstance(value, dict):
-        return {str(key): _sanitize_value(item) for key, item in list(value.items())[:_LIST_LIMIT]}
-    return compact_text(value, _TEXT_LIMIT)
+from dynsteer.log import sanitize_log_value

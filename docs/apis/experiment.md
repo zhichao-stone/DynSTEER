@@ -1,5 +1,7 @@
 ﻿# Experiment API
 
+> 当前结果 schema 为 v3：case 结果仅保留单一 `score`，default/evaluate/replay 均使用 `report.json`；replay 不再内嵌 `default_reference`，通过 experiment identity 与对应 default case 关联。
+
 ## 元评估指标
 
 `metrics.json` 不再输出 PSEP 或二元成功一致率，保留连续分与运行统计，并新增：

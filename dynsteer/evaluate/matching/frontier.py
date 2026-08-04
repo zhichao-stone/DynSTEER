@@ -82,17 +82,6 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
     """
     return tuple((frontier.milestone_by_id[milestone_id] for milestone_id in frontier.blocked_candidate_ids if milestone_id in frontier.milestone_by_id))
 
-def ready_milestone_ids(frontier: MilestoneFrontierState, matched: dict[str, HarnessStageSettlement]) -> tuple[str, ...]:
-    """返回当前 ready frontier 的稳定 milestone id 元组。
-
-    入参：
-        frontier: 当前 case 的 frontier 增量状态。
-        matched: 当前已匹配 milestone 结算表。
-    输出：
-        尚未匹配的 ready milestone id。
-    """
-    return tuple((milestone.milestone_id for milestone in ready_milestones(frontier) if milestone.milestone_id not in matched))
-
 def _insert_id_by_order(milestone_ids: list[str], milestone_id: str, order_by_id: dict[str, int]) -> None:
     if milestone_id in milestone_ids:
         return

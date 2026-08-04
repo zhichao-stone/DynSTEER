@@ -99,10 +99,9 @@ def _context_json(
             "initial_state_summary": task_case.metadata.get("runtime_initial_state_summary"),
             "final_state": json_safe(trajectory.final_state),
             "minefields": _minefield_prompt_json(task_case.milestone_graph),
-            "default_reference_used": False,
         }
     if extra is not None:
-        data.update(_safe_extra_context(extra))
+        data.update(extra)
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
@@ -176,12 +175,6 @@ def _minefield_prompt_json(graph: MilestoneGraph | None) -> list[JsonObject]:
         for minefield in graph.minefields
         if minefield is not None
     ]
-
-
-def _safe_extra_context(extra: JsonObject) -> JsonObject:
-    """过滤不应进入 judge prompt 的实验对照元数据。"""
-    blocked_keys = {"default_reference", "default_score"}
-    return {key: value for key, value in extra.items() if key not in blocked_keys}
 
 
 def _output_schema(language: TaskLanguage, dimensions: list[Dimension]) -> JsonObject:

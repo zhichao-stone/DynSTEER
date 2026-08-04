@@ -93,6 +93,7 @@ class HarnessAdvanceResult:
 class HarnessStageSettlement:
     """记录 harness 运行期的阶段结算节点。"""
     settlement_id: str
+    stage_id: str
     kind: str
     milestone_id: str | None
     start_step_index: int
@@ -101,7 +102,6 @@ class HarnessStageSettlement:
     boundary_step_index: int | None = None
     score: float | None = None
     status: str | None = None
-    checkpointed: bool = False
     evidence: list[str] = field(default_factory=list)
     metadata: JsonObject = field(default_factory=dict)
 
@@ -121,6 +121,7 @@ class HarnessStageSettlement:
         """转换为 JSON 可序列化字典。"""
         return {
             "settlement_id": self.settlement_id,
+            "stage_id": self.stage_id,
             "kind": self.kind,
             "milestone_id": self.milestone_id,
             "start_step_index": self.start_step_index,
@@ -129,7 +130,6 @@ class HarnessStageSettlement:
             "boundary_step_index": self.boundary_step_index,
             "score": self.score,
             "status": self.status,
-            "checkpointed": self.checkpointed,
             "evidence": list(self.evidence),
             "metadata": dict(self.metadata),
         }
@@ -139,8 +139,8 @@ class HarnessRunResult:
     """benchmark harness 运行结果。"""
     benchmark: str
     case_id: str
-    task_case: TaskCase | None
-    trajectory: Trajectory | None
+    task_case: TaskCase
+    trajectory: Trajectory
     raw_output_dir: Path
     raw_summary: JsonObject = field(default_factory=dict)
     stage_settlements: list[HarnessStageSettlement] = field(default_factory=list)
@@ -152,7 +152,5 @@ class HarnessRunResult:
             raise ValueError("benchmark 不能为空")
         if not self.case_id or not self.case_id.strip():
             raise ValueError("case_id 不能为空")
-        if self.task_case is None or self.trajectory is None:
-            raise ValueError("task_case 和 trajectory 不能为空")
         if self.raw_output_dir is None:
             raise ValueError("raw_output_dir 不能为空")

@@ -2,13 +2,15 @@ from collections.abc import Callable
 from functools import partial
 import json
 from typing import Any
-from dynsteer.adapter.base import BaseBenchmarkConstraintScorer
+from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.model import Boundary, Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, Operator, ScoringContext, StageStatus, StageGoalSemanticKind, StateSnapshot, Trajectory
 from dynsteer.utils import clamp
 import polars as pl
+
+
 _FALLBACK_TOOLSANDBOX_SCHEMAS: dict[str, dict[str, Any]] = {
     "SANDBOX": {
         "sandbox_message_index": pl.Int32,
@@ -61,7 +63,7 @@ _FALLBACK_TOOLSANDBOX_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
-class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
+class ToolSandboxConstraintScorer(GeneralScorer):
 
     def __init__(self, module_loader: Callable[[str], Any] | None=None) -> None:
         self._module_loader = module_loader or load_toolsandbox_module

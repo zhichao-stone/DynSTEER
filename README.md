@@ -13,7 +13,7 @@ uv run python main.py --input examples/minimal_experiment.json --results-dir res
 生成展示数据：
 
 ```powershell
-uv run python display/build.py --runs-dir runs --results-dir results --output display/data.js
+uv run python -m display.build --runs-dir runs --results-dir results --output display/data.js
 ```
 
 然后直接打开 `display/index.html` 查看中文评估看板。页面会展示 benchmark/method/case 切换、执行轨迹、milestone graph、阶段评估与点击联动。

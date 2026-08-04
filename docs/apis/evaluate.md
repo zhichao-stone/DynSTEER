@@ -9,7 +9,7 @@
 ```python
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 
-result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
+result = DynSTEEREvaluator.from_config(config).evaluate(harness, config, task_case)
 ```
 
 执行顺序：

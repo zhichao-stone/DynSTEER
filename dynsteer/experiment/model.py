@@ -95,28 +95,35 @@ class ExperimentCaseResult:
     model_id: str
     repeat_index: int
     method: ExperimentMethod
-    default_score: float | None = None
-    dynsteer_score: float | None = None
+    score: float | None = None
     milestone_coverage: str | None = None
-    score_components: JsonObject = field(default_factory=dict)
     minefield_match_count: int | None = None
-    termination_reason: str | None = None
+    termination_code: str | None = None
     runtime_metrics: JsonObject = field(default_factory=dict)
     output_paths: JsonObject = field(default_factory=dict)
-    raw: JsonObject = field(default_factory=dict)
-
-    @property
-    def score(self) -> float | None:
-        return self.default_score if self.method == ExperimentMethod.DEFAULT else self.dynsteer_score
 
     def to_dict(self) -> JsonObject:
-        return self._base_payload(True)
+        return self._payload(True)
 
     def to_index_dict(self) -> JsonObject:
-        return self._base_payload(False)
+        return self._payload(False)
 
-    def _base_payload(self, include_identity: bool) -> JsonObject:
-        EXCLUDE_FIELDS = [] if include_identity else ["experiment_id", "benchmark", "case_id", "model_id", "repeat_index", "method"]
-        payload: JsonObject = {"score": self.score}
-        payload.update({k: v for k, v in asdict(self).items() if k not in EXCLUDE_FIELDS})
+    def _payload(self, include_identity: bool) -> JsonObject:
+        payload: JsonObject = {
+            "score": self.score,
+            "milestone_coverage": self.milestone_coverage,
+            "minefield_match_count": self.minefield_match_count,
+            "termination_code": self.termination_code,
+            "runtime_metrics": dict(self.runtime_metrics),
+            "output_paths": dict(self.output_paths),
+        }
+        if include_identity:
+            payload.update({
+                "experiment_id": self.experiment_id,
+                "benchmark": self.benchmark,
+                "case_id": self.case_id,
+                "model_id": self.model_id,
+                "repeat_index": self.repeat_index,
+                "method": self.method.value,
+            })
         return payload

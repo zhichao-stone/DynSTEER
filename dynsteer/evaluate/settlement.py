@@ -5,7 +5,7 @@ from dynsteer.evaluate.diagnostics import (
 )
 from dynsteer.evaluate.final import build_finish_verification
 from dynsteer.evaluate.matching.boundary import boundary_snapshot
-from dynsteer.evaluate.matching.frontier import advance_milestone_frontier, ready_milestones
+from dynsteer.evaluate.matching.frontier import advance_milestone_frontier
 from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
 from dynsteer.evaluate.runtime import JudgeConfigurationError, scoring_context
@@ -76,7 +76,7 @@ def evaluate_checkpoint(
     """
     anchor_id, boundary_index = stage_start_for_ready_milestone(milestone, state.matched_settlements, trajectory)
     start_step_index = stage_start_step_index(trajectory.successor_by_boundary, boundary_index, boundary.step_index)
-    ready_milestone_ids_before_match = [item.milestone_id for item in ready_milestones(state.milestone_frontier)]
+    ready_milestone_ids_before_match = list(state.milestone_frontier.ready_ids)
     interval = StageInterval(
         stage_id=stage_goal_key(anchor_id, milestone.milestone_id),
         milestone_id=milestone.milestone_id,
@@ -119,6 +119,7 @@ def evaluate_checkpoint(
         semantic_review["final_stage_score"] = stage_result.stage_score
     settlement = HarnessStageSettlement(
         settlement_id=f"st{len(state.settlements)}",
+        stage_id=interval.stage_id,
         kind="milestone",
         milestone_id=interval.milestone_id,
         start_step_index=interval.start_step_index,
@@ -127,10 +128,8 @@ def evaluate_checkpoint(
         boundary_step_index=boundary.step_index,
         score=stage_result.stage_score,
         status=stage_result.status.value,
-        checkpointed=True,
         evidence=list(stage_result.evidence),
         metadata={
-            "stage_report": stage_result.to_dict(),
             "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
             "stage_start_boundary_step_index": interval.start_boundary_step_index,
             "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
@@ -223,23 +222,16 @@ def refresh_reference_anchors(
 
 
 def finish_settlement(
-    settlements: list[HarnessStageSettlement],
     task_case: TaskCase,
     trajectory: Trajectory,
     scorer: GeneralScorer,
     state: RuntimeEvaluationState,
-    replay_termination: EvaluationTerminationState | None = None,
     standard_judge: StandardJudge | None = None,
     thresholds: ThresholdConfig | None = None,
-) -> tuple[
-    HarnessStageSettlement,
-    StageEvaluationResult,
-    EvaluationPolicyState
-]:
+) -> tuple[HarnessStageSettlement, StageEvaluationResult]:
     """生成自然结束时的 finish 阶段结算。
 
     入参：
-        settlements: 已有结算节点。
         task_case: 当前 benchmark case。
         trajectory: 当前运行期轨迹。
         scorer: 当前 benchmark 约束评分器。
@@ -247,10 +239,9 @@ def finish_settlement(
         standard_judge: 空 milestone graph 完整轨迹终态评估器。
         thresholds: 完整轨迹终态评估使用的阶段阈值。
     输出：
-        finish 结算、阶段报告、新权重和策略更新。
+        finish 结算与阶段报告。
     """
     matched = state.matched_settlements
-    evaluation_policy = state.evaluation_policy
 
     graph = task_case.milestone_graph
     last_step_index = trajectory.steps[-1].index if trajectory.steps else 0
@@ -286,16 +277,13 @@ def finish_settlement(
     )
 
     verification = build_finish_verification(task_case, trajectory, state, scorer)
-    replay_metadata = replay_termination.to_dict() if replay_termination is not None else None
-    if verification["whole_trajectory_evaluation_required"]:
+    if verification.get("coverage_basis") == "whole_trajectory" and not verification.get("fatal_minefield"):
         stage_result = _whole_trajectory_finish_stage_result(
             interval=interval,
             task_case=task_case,
             trajectory=trajectory,
             verification=verification,
             state=state,
-            evaluation_policy=evaluation_policy,
-            replay_metadata=replay_metadata,
             standard_judge=standard_judge,
             thresholds=thresholds or ThresholdConfig(),
         )
@@ -304,12 +292,11 @@ def finish_settlement(
             interval=interval,
             verification=verification,
             state=state,
-            evaluation_policy=evaluation_policy,
-            replay_metadata=replay_metadata,
         )
 
     settlement = HarnessStageSettlement(
-        settlement_id=f"st{len(settlements)}",
+        settlement_id=f"st{len(state.settlements)}",
+        stage_id=interval.stage_id,
         kind="finish",
         milestone_id=interval.milestone_id,
         start_step_index=interval.start_step_index,
@@ -318,25 +305,20 @@ def finish_settlement(
         status=stage_result.status.value,
         evidence=list(stage_result.evidence),
         metadata={
-            "stage_report": stage_result.to_dict(),
             "stage_anchor_milestone_id": interval.stage_anchor_milestone_id,
             "stage_start_boundary_step_index": interval.start_boundary_step_index,
             "stage_trace": build_stage_trace(trajectory=trajectory, interval=interval),
             "milestone_matching": build_finish_matching_detail(graph=graph, matched=matched),
             "finish_stage_evaluation": stage_result.metadata.get("finish_stage_evaluation", verification),
-            "replay_virtual_stop": replay_metadata,
-            "finish_after_virtual_stop": replay_metadata is not None,
         },
     )
-    return settlement, stage_result, evaluation_policy
+    return settlement, stage_result
 
 
 def _deterministic_finish_stage_result(
     interval: StageInterval,
     verification: JsonObject,
     state: RuntimeEvaluationState,
-    evaluation_policy: EvaluationPolicyState,
-    replay_metadata: JsonObject | None,
 ) -> StageEvaluationResult:
     """把确定性 final verification 转换为 finish 阶段报告。"""
     status = StageStatus(str(verification.get("status") or StageStatus.FAIL.value))
@@ -368,8 +350,8 @@ def _deterministic_finish_stage_result(
         diagnosis=diagnosis,
         fatal=bool(verification.get("fatal_minefield")),
         hard_pass=status in {StageStatus.PASS, StageStatus.WARN},
-        required_fields_missing_ratio=0.0 if bool(verification.get("all_milestones_matched")) else 1.0,
-        metadata=_finish_stage_metadata(verification, evaluation_policy, replay_metadata),
+        required_fields_missing_ratio=1.0 if verification.get("unmatched_milestone_ids") else 0.0,
+        metadata=_finish_stage_metadata(verification),
     )
 
 
@@ -379,8 +361,6 @@ def _whole_trajectory_finish_stage_result(
     trajectory: Trajectory,
     verification: JsonObject,
     state: RuntimeEvaluationState,
-    evaluation_policy: EvaluationPolicyState,
-    replay_metadata: JsonObject | None,
     standard_judge: StandardJudge | None,
     thresholds: ThresholdConfig,
 ) -> StageEvaluationResult:
@@ -396,8 +376,7 @@ def _whole_trajectory_finish_stage_result(
             {
                 "status": StageStatus.INVALID.value,
                 "score": 0.0,
-                "whole_trajectory_evaluation": False,
-                "whole_trajectory_evaluator_unavailable": True,
+                "evaluation_mode": "unavailable",
                 "judge_level": None,
                 "focus_dimensions": [dimension.value for dimension in focus_dimensions],
             }
@@ -426,8 +405,6 @@ def _whole_trajectory_finish_stage_result(
             required_fields_missing_ratio=1.0,
             metadata=_finish_stage_metadata(
                 finish_evaluation,
-                evaluation_policy,
-                replay_metadata,
                 extra={
                     "focus_dimensions": [dimension.value for dimension in focus_dimensions],
                     "dimension_rationale": _dimension_rationale_json(spec.dimension_rationale, focus_dimensions),
@@ -447,11 +424,8 @@ def _whole_trajectory_finish_stage_result(
         {
             "status": status.value,
             "score": score,
-            "whole_trajectory_evaluation": True,
-            "whole_trajectory_evaluation_required": True,
-            "whole_trajectory_evaluator_unavailable": False,
+            "evaluation_mode": "standard_judge",
             "coverage_basis": "whole_trajectory",
-            "default_reference_used": False,
             "judge_level": EvaluationLevel.STANDARD.value,
             "judge_status": judge_result.status.value,
             "judge_stage_score": score,
@@ -479,8 +453,6 @@ def _whole_trajectory_finish_stage_result(
         required_fields_missing_ratio=0.0 if hard_pass else 1.0,
         metadata=_finish_stage_metadata(
             finish_evaluation,
-            evaluation_policy,
-            replay_metadata,
             extra={
                 "dimension_judge_results": [_judge_result_metadata(judge_result, focus_dimensions, state.weights)],
                 "focus_dimensions": [dimension.value for dimension in focus_dimensions],
@@ -533,18 +505,10 @@ def _finish_result(
 
 def _finish_stage_metadata(
     finish_evaluation: JsonObject,
-    evaluation_policy: EvaluationPolicyState,
-    replay_metadata: JsonObject | None,
     extra: JsonObject | None = None,
 ) -> JsonObject:
     """构造 finish 阶段报告通用 metadata。"""
-    metadata: JsonObject = {
-        "finish_stage_evaluation": finish_evaluation,
-        "next_evaluation_policy": evaluation_policy.to_dict(),
-        "evaluation_termination": EvaluationTerminationState().to_dict(),
-        "replay_virtual_stop": replay_metadata,
-        "finish_after_virtual_stop": replay_metadata is not None,
-    }
+    metadata: JsonObject = {"finish_stage_evaluation": finish_evaluation}
     if extra is not None:
         metadata.update(extra)
     return metadata

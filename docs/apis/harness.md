@@ -1,5 +1,7 @@
 ﻿# Harness API
 
+> 当前结果 schema 为 v3：default/evaluate/replay 均生成 `report.json`；`summary.json` 使用单一 `score`、嵌套 `runtime_metrics` 与结构化 `termination={should_stop, code, reason, detail}`。运行循环只以 `HarnessAdvanceResult.continue_running` 为准，不再提供 `case_finished()` 或 `BaseBenchmarkConstraintScorer`。
+
 ## ToolSandbox history 完整性
 
 `ToolSandboxHarness.advance_case()` 每次只调用一次原生 role `respond()`，随后读取 `get_all_history_snapshots=True` 的完整 SANDBOX history，按 `last_sandbox_message_index` 过滤本批新增 rows，并按原生 index 升序生成 step 和 snapshot。一次 respond 产生的并行 tool calls、tool results 与最终消息都会被保留；重复 index、缺失 index 或乱序 steps 会明确报错。只有整批 step/snapshot 构造成功后才推进 session 的 last index。

@@ -41,21 +41,14 @@ _LOG_RECORD_BUILTINS = {
 class StructuredLogFormatter(logging.Formatter):
     """在日志消息后追加轻量 JSON extra 的 formatter。"""
 
+    def __init__(self, fmt: str, terminal: bool = False) -> None:
+        super().__init__(fmt)
+        self._terminal = terminal
+
     def format(self, record: logging.LogRecord) -> str:
         """格式化日志记录并追加结构化 extra。"""
         message = super().format(record)
-        extra = log_extra_from_record(record)
-        if not extra:
-            return message
-        return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
-
-class TerminalLogFormatter(logging.Formatter):
-    """终端专用 formatter，仅展示少量摘要字段。"""
-
-    def format(self, record: logging.LogRecord) -> str:
-        """格式化终端日志并追加受控摘要。"""
-        message = super().format(record)
-        extra = terminal_log_extra_from_record(record)
+        extra = terminal_log_extra_from_record(record) if self._terminal else log_extra_from_record(record)
         if not extra:
             return message
         return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
@@ -94,7 +87,7 @@ def configure_logger(log_dir: str | Path) -> logging.Logger:
             handler.close()
             logger.removeHandler(handler)
         formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s")
-        terminal_formatter = TerminalLogFormatter("%(asctime)s %(levelname)s %(message)s")
+        terminal_formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s", terminal=True)
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(terminal_formatter)
         file_path = directory / f"{datetime.now().date().isoformat()}.log"

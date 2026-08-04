@@ -31,11 +31,6 @@ class PromptTemplate:
                 raise ValueError(f"{language} prompt 模板不能为空")
         self._templates = {key: value.strip() for key, value in lang_templates.items()}
 
-    @property
-    def supported_languages(self) -> list[str]:
-        """返回当前模板支持的语言列表。"""
-        return list(self._templates.keys())
-
     def render(self, language: TaskLanguage=TaskLanguage.ENGLISH, **kwargs: object) -> str:
         """按语言渲染 prompt。"""
         if not isinstance(language, TaskLanguage):
@@ -47,23 +42,6 @@ class PromptTemplate:
             template = next(iter(self._templates.values()))
             logger.warning("Prompt language %s is not found. Fall back to first template.", language.value)
         return _safe_format(template, **kwargs)
-
-def load_prompt_text(domain: str, name: str, language: TaskLanguage) -> str:
-    """读取指定语言的 prompt 模板文本。"""
-    if not isinstance(domain, str) or not domain.strip():
-        raise ValueError("prompt domain 不能为空")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("prompt name 不能为空")
-    language_code = language.value if isinstance(language, TaskLanguage) else TaskLanguage.ENGLISH.value
-    path = _TEMPLATE_DIR / domain / f"{name}.{language_code}.md"
-    if not path.exists() and language_code != TaskLanguage.ENGLISH.value:
-        path = _TEMPLATE_DIR / domain / f"{name}.{TaskLanguage.ENGLISH.value}.md"
-    if not path.exists():
-        raise FileNotFoundError(f"缺少 prompt 模板: {path}")
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        raise ValueError(f"prompt 模板不能为空: {path}")
-    return text
 
 def load_prompt_template(domain: str, name: str) -> PromptTemplate:
     """读取指定 prompt 的全部已存在语言模板。"""

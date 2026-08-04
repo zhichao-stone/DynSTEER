@@ -73,5 +73,5 @@ constraint 定义来自 adapted case 的 `milestone_graph.nodes[].constraints[]`
 ## 命令行生成
 
 ```powershell
-uv run python display/build.py --runs-dir runs --results-dir results --data-dir data --output display/data.js
+uv run python -m display.build --runs-dir runs --results-dir results --data-dir data --output display/data.js
 ```

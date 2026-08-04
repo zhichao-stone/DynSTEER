@@ -34,8 +34,8 @@ def build_llm_from_env(env: Mapping[str, str] | None=None) -> BaseLLM | None:
     config = LLMConfig(
         provider=provider,
         model=model.strip(),
-        api_key=_read_api_key(source, provider),
-        base_url=_read_base_url(source, provider),
+        api_key=_provider_setting(source, provider, "API_KEY"),
+        base_url=_provider_setting(source, provider, "BASE_URL"),
         timeout_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS"), "DYNSTEER_JUDGE_TIMEOUT_SECONDS", default=60.0, error_type=LLMConfigurationError),
         temperature=parse_float_value(source.get("DYNSTEER_JUDGE_TEMPERATURE"), "DYNSTEER_JUDGE_TEMPERATURE", default=0.0, error_type=LLMConfigurationError),
         max_tokens=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS", default=None, min_value=1, error_type=LLMConfigurationError),
@@ -71,8 +71,8 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
     llm_config = LLMConfig(
         provider=provider,
         model=str(model).strip(),
-        api_key=_read_api_key(source, provider),
-        base_url=optional_str(config.get("base_url")) or _read_base_url(source, provider),
+        api_key=_provider_setting(source, provider, "API_KEY"),
+        base_url=optional_str(config.get("base_url")) or _provider_setting(source, provider, "BASE_URL"),
         timeout_seconds=parse_float_value(config.get("timeout_seconds"), "timeout_seconds", default=60.0, error_type=LLMConfigurationError),
         temperature=parse_float_value(config.get("temperature"), "temperature", default=0.0, error_type=LLMConfigurationError),
         max_tokens=parse_int_value(config.get("max_tokens"), "max_tokens", default=None, min_value=1, error_type=LLMConfigurationError),
@@ -82,16 +82,6 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
     )
     return build_llm(llm_config)
 
-def _read_api_key(source: Mapping[str, str], provider: str) -> str | None:
-    api_key = normalize_str_from_source(source, "DYNSTEER_JUDGE_API_KEY")
-    if api_key is not None:
-        return api_key
-    fallback_key = "ANTHROPIC_API_KEY" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_API_KEY"
-    return normalize_str_from_source(source, fallback_key)
-
-def _read_base_url(source: Mapping[str, str], provider: str) -> str | None:
-    base_url = normalize_str_from_source(source, "DYNSTEER_JUDGE_BASE_URL")
-    if base_url is not None:
-        return base_url
-    fallback_key = "ANTHROPIC_BASE_URL" if provider in _ANTHROPIC_PROVIDERS else "OPENAI_BASE_URL"
-    return normalize_str_from_source(source, fallback_key)
+def _provider_setting(source: Mapping[str, str], provider: str, setting: str) -> str | None:
+    prefix = "ANTHROPIC" if provider in _ANTHROPIC_PROVIDERS else "OPENAI"
+    return normalize_str_from_source(source, f"DYNSTEER_JUDGE_{setting}") or normalize_str_from_source(source, f"{prefix}_{setting}")

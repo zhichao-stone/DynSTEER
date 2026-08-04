@@ -94,18 +94,13 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
         if not diagnosis:
             diagnosis = ["finish final verification warning: non-fatal quality issue."]
     return {
-        "all_milestones_matched": not unmatched_ids,
         "unmatched_milestone_ids": unmatched_ids,
         "terminal_milestone_ids": terminal_ids,
         "terminal_state_checks": terminal_state_checks,
         "terminal_message_checks": terminal_message_checks,
         "fatal_minefield": fatal_minefield,
-        "empty_milestone_graph": False,
-        "fixed_milestones_applicable": True,
-        "whole_trajectory_evaluation": False,
-        "whole_trajectory_evaluation_required": False,
         "coverage_basis": "milestone_graph",
-        "default_reference_used": False,
+        "evaluation_mode": "deterministic",
         "status": status.value,
         "score": score,
         "evidence": evidence,
@@ -145,18 +140,13 @@ def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvalua
             else "finish final verification precheck passed: whole-trajectory judge still required."
         )
     return {
-        "all_milestones_matched": True,
         "unmatched_milestone_ids": [],
         "terminal_milestone_ids": [],
         "terminal_state_checks": [],
         "terminal_message_checks": [],
         "fatal_minefield": fatal_minefield,
-        "empty_milestone_graph": True,
-        "fixed_milestones_applicable": False,
-        "whole_trajectory_evaluation": False,
-        "whole_trajectory_evaluation_required": not minefield_only and not fatal_minefield,
         "coverage_basis": coverage_basis,
-        "default_reference_used": False,
+        "evaluation_mode": "deterministic" if minefield_only or fatal_minefield else "standard_judge",
         "minefield_count": len(graph.minefields) if graph is not None else 0,
         "minefield_match_count": len(state.minefield_matches),
         "status": status.value,

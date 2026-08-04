@@ -148,16 +148,12 @@ def parse_milestone_graph(data: JsonObject) -> MilestoneGraph:
     node_values = graph_data.get("nodes", [])
     edge_values = graph_data.get("edges", [])
     minefield_values = graph_data.get("minefields", [])
-    thresholds = graph_data.get("default_thresholds", {})
     graph = MilestoneGraph(
         nodes=[parse_milestone(ensure_json_object(item)) for item in node_values],
         edges=[(str(source), str(target)) for source, target in edge_values],
         minefields=[
             parse_minefield(ensure_json_object(item)) for item in minefield_values
         ],
-        default_thresholds={
-            str(key): float(value) for key, value in thresholds.items()
-        },
         metadata=_optional_object(graph_data, "metadata"),
     )
     return graph
@@ -191,9 +187,6 @@ def parse_task_case(data: JsonObject) -> TaskCase:
         case_id=required_str(task_data, "case_id", "TaskCase"),
         environment_schema=_optional_object(task_data, "environment_schema"),
         tool_schema=_optional_object(task_data, "tool_schema"),
-        policy_constraints=[
-            ensure_json_object(item) for item in task_data.get("policy_constraints", [])
-        ],
         initial_state=task_data.get("initial_state"),
         milestone_graph=milestone_graph,
         stage_goal_templates={str(key): str(value) for key, value in task_data.get("stage_goal_templates", {}).items()},

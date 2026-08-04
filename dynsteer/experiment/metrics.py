@@ -54,7 +54,8 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
         raise ValueError("scores 不能为空")
     if epsilon < 0:
         raise ValueError("epsilon 不能为负数")
-    values = [case_score(value) for value in scores.values()]
+    normalized = {model: case_score(value) for model, value in scores.items()}
+    values = list(normalized.values())
     model_count = len(values)
     pair_count = model_count * (model_count - 1) // 2
     mean_score = sum(values) / model_count if model_count else 0.0
@@ -75,9 +76,9 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
             population_stddev / mean_score
         ) * math.sqrt(significant_pair_ratio)
     model_pairs = [
-        {"left_model": left, "right_model": right, "absolute_difference": abs(case_score(scores[left]) - case_score(scores[right])), "significant": abs(case_score(scores[left]) - case_score(scores[right])) > epsilon}
-        for index, left in enumerate(sorted(scores))
-        for right in sorted(scores)[index + 1:]
+        {"left_model": left, "right_model": right, "absolute_difference": abs(normalized[left] - normalized[right]), "significant": abs(normalized[left] - normalized[right]) > epsilon}
+        for index, left in enumerate(sorted(normalized))
+        for right in sorted(normalized)[index + 1:]
     ]
     return {
         "epsilon": epsilon,
@@ -93,17 +94,16 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
 
 def rank_tau_by_repeat(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     """仅在相同 repeat 内配对 DEFAULT 与 replay 的模型排名。"""
-    grouped: dict[tuple[str, str, int, str], dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
+    grouped: dict[tuple[str, str, int], dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
     for result in results:
         if result.score is not None:
-            grouped[(result.method.value, result.benchmark, result.repeat_index, result.model_id)][result.method.value][result.case_id] = case_score(result.score)
+            grouped[(result.benchmark, result.model_id, result.repeat_index)][result.method.value][result.case_id] = case_score(result.score)
     output: JsonObject = {}
-    for (method, benchmark, repeat, model), _ in grouped.items():
-        if method == ExperimentMethod.DEFAULT.value:
-            continue
-        left = {r.case_id: case_score(r.score) for r in results if r.method == ExperimentMethod.DEFAULT and r.benchmark == benchmark and r.model_id == model and r.repeat_index == repeat and r.score is not None}
-        right = {r.case_id: case_score(r.score) for r in results if r.method.value == method and r.benchmark == benchmark and r.model_id == model and r.repeat_index == repeat and r.score is not None}
-        output.setdefault(method, {}).setdefault(benchmark, {})[str(repeat)] = kendall_tau(left, right)
+    for (benchmark, _model, repeat), methods in grouped.items():
+        default_scores = methods.get(ExperimentMethod.DEFAULT.value, {})
+        for method, scores in methods.items():
+            if method != ExperimentMethod.DEFAULT.value:
+                output.setdefault(method, {}).setdefault(benchmark, {})[str(repeat)] = kendall_tau(default_scores, scores)
     return output
 
 
@@ -145,7 +145,7 @@ def categorical_counts(results: Sequence[ExperimentCaseResult]) -> JsonObject:
             minefield["hit"] += 1
         else:
             minefield["not_hit"] += 1
-        termination[item.termination_reason or "unknown"] += 1
+        termination[item.termination_code or "unknown"] += 1
     return {
         "coverage_counts": dict(sorted(coverage.items())),
         "minefield_counts": minefield,

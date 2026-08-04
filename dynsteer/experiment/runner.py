@@ -10,7 +10,8 @@ from typing import Callable, Sequence, TypeVar
 
 from tqdm import tqdm
 
-from dynsteer.adapter import BaseBenchmarkHarness, get_harness
+from dynsteer.adapter.base import BaseBenchmarkHarness
+from dynsteer.adapter.registry import get_harness
 from dynsteer.adapter.loader import load_trajectory
 from dynsteer.adapter.toolsandbox.utils.runtime import clear_named_scenarios_cache
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
@@ -28,9 +29,9 @@ from dynsteer.utils import as_number, json_safe, read_json_file
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
 DefaultOutputKey = tuple[str, str, str, int, str]
-DefaultOutputCache = dict[DefaultOutputKey, tuple[HarnessEvaluationOutput, JsonObject]]
+DefaultOutputCache = dict[DefaultOutputKey, HarnessEvaluationOutput]
 DefaultCaseItem = tuple[DefaultOutputKey, TaskCase]
-DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput, JsonObject]
+DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput]
 
 _METHODS_NEED_DEFAULT = {
     ExperimentMethod.DEFAULT,
@@ -98,9 +99,9 @@ def run_experiment(
                 runner=partial(_run_default_case_entry, spec=default_spec, force_eval=effective_force_eval),
                 progress_desc="执行 DEFAULT case",
             )
-            for key, task_case, output, reference in default_entries:
-                default_outputs[key] = (output, reference)
-                results.append(_case_result_from_output(default_spec, task_case, output, reference))
+            for key, task_case, output in default_entries:
+                default_outputs[key] = output
+                results.append(_case_result_from_output(default_spec, task_case, output))
 
             if spec.method != ExperimentMethod.DEFAULT:
                 results.extend(
@@ -157,10 +158,10 @@ def _run_default_case_entry(item: DefaultCaseItem, *, spec: ExperimentRunSpec, f
     """执行单个 default case 并返回可缓存结果。"""
     key, task_case = item
     try:
-        output, reference = run_default_case(spec, task_case, force_eval=force_eval)
+        output = run_default_case(spec, task_case, force_eval=force_eval)
     except Exception as exc:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
-    return key, task_case, output, reference
+    return key, task_case, output
 
 
 def _run_replay_case_entry(
@@ -175,18 +176,16 @@ def _run_replay_case_entry(
     cached = default_outputs.get(key)
     if cached is None:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, KeyError(f"缺少 default output: {key}"))
-    default_output, default_reference = cached
     try:
         output = run_replay_case(
             spec,
             task_case,
-            default_output,
-            default_reference,
+            cached,
             force_eval=force_eval,
         )
     except Exception as exc:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
-    return _case_result_from_output(spec, task_case, output, default_reference)
+    return _case_result_from_output(spec, task_case, output)
 
 
 def _run_evaluate_case_entry(task_case: TaskCase, *, spec: ExperimentRunSpec, force_eval: bool) -> ExperimentCaseResult:
@@ -238,27 +237,21 @@ def run_default_case(
     spec: ExperimentRunSpec,
     task_case_template: TaskCase,
     force_eval: bool = False,
-) -> tuple[HarnessEvaluationOutput, JsonObject]:
+) -> HarnessEvaluationOutput:
     """执行原生 Default case。"""
     task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
-    output = write_default_case_outputs(
+    return write_default_case_outputs(
         config=config,
         harness=harness,
         task_case=task_case,
         force_eval=force_eval,
     )
-    raw_summary = read_json_file(output.raw_summary_path, str(output.raw_summary_path), dict)
-    default_result = raw_summary.get("default_result")
-    if not isinstance(default_result, dict):
-        raise ValueError(f"Default raw_summary 缺少 default_result: {output.raw_summary_path}")
-    return output, dict(default_result)
 
 
 def run_replay_case(
     spec: ExperimentRunSpec,
     task_case_template: TaskCase,
     default_output: HarnessEvaluationOutput,
-    default_reference: JsonObject,
     force_eval: bool = False,
 ) -> HarnessEvaluationOutput:
     """读取 Default 轨迹并执行 replay。"""
@@ -275,7 +268,6 @@ def run_replay_case(
         task_case=task_case,
         trajectory=trajectory,
         harness=harness,
-        default_reference=default_reference,
         force_eval=force_eval,
     )
 
@@ -332,36 +324,16 @@ def _case_result_from_output(
     spec: ExperimentRunSpec,
     task_case: TaskCase,
     output: HarnessEvaluationOutput,
-    default_reference: JsonObject | None = None,
 ) -> ExperimentCaseResult:
     """从输出文件中抽取 ExperimentCaseResult。"""
     summary: dict = read_json_file(output.summary_path, str(output.summary_path), dict)
-    metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
     runtime_metrics = summary.get("runtime_metrics") if isinstance(summary.get("runtime_metrics"), dict) else {}
 
-    default_score = as_number(summary.get("default_score"))
-    if default_score is None and default_reference is not None:
-        default_score = as_number(default_reference.get("score"))
-    dynsteer_score = None if spec.method == ExperimentMethod.DEFAULT else as_number(summary.get("overall_score"))
+    score = as_number(summary.get("score"))
     milestone_coverage = summary.get("milestone_coverage")
-    default_result = metadata.get("default_result") if isinstance(metadata.get("default_result"), dict) else {}
-    default_raw = default_result.get("raw") if isinstance(default_result.get("raw"), dict) else {}
-    summary_components = summary.get("score_components")
-    score_components = dict(summary_components) if isinstance(summary_components, dict) else {
-        key: value
-        for key in ("similarity", "milestone_similarity", "minefield_similarity")
-        if (value := as_number(default_raw.get(key))) is not None
-    }
     minefield_match_count = summary.get("minefield_match_count")
-    if not isinstance(minefield_match_count, int):
-        native_mapping = default_raw.get("minefield_mapping")
-        if isinstance(native_mapping, dict):
-            minefield_match_count = sum(
-                1
-                for item in native_mapping.values()
-                if isinstance(item, dict) and (as_number(item.get("similarity")) or 0.0) > 0.0
-            )
-    termination_reason = summary.get("termination_reason") or summary.get("termination_code")
+    termination = summary.get("termination")
+    termination_code = termination.get("code") if isinstance(termination, dict) else None
 
     return ExperimentCaseResult(
         experiment_id=spec.experiment_id,
@@ -370,17 +342,14 @@ def _case_result_from_output(
         model_id=spec.model_id,
         repeat_index=spec.repeat_index,
         method=spec.method,
-        default_score=default_score,
-        dynsteer_score=dynsteer_score,
+        score=score,
         milestone_coverage=milestone_coverage if isinstance(milestone_coverage, str) else None,
-        score_components=score_components,
         minefield_match_count=minefield_match_count if isinstance(minefield_match_count, int) else None,
-        termination_reason=str(termination_reason) if termination_reason else None,
+        termination_code=str(termination_code) if termination_code else None,
         runtime_metrics=dict(runtime_metrics),
         output_paths={
             k: str(v)
             for k, v in asdict(output).items()
             if k in ["result_dir", "raw_run_dir", "summary_path", "report_path", "trajectory_path"]
         },
-        raw={"summary_metadata": dict(metadata), "default_reference": dict(default_reference or {})},
     )

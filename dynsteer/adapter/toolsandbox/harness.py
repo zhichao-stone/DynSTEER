@@ -8,7 +8,7 @@ from typing import Any
 from dynsteer.adapter.base import BaseBenchmarkHarness, BenchmarkDefaultResult
 from dynsteer.adapter.toolsandbox.scorer import ToolSandboxConstraintScorer
 from dynsteer.adapter.toolsandbox.utils.roles import get_agent_factory, get_user_factory, role_client_config
-from dynsteer.adapter.toolsandbox.utils.runtime import TOOL_SANDBOX_DEPENDENCY_ERROR, load_named_scenarios, load_toolsandbox_module
+from dynsteer.adapter.toolsandbox.utils.runtime import load_named_scenarios, load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, snapshots_from_context, state_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
@@ -23,7 +23,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     """ToolSandbox benchmark 原生执行 harness。"""
 
     benchmark = "toolsandbox"
-    dependency_error_message = TOOL_SANDBOX_DEPENDENCY_ERROR
 
     def constraint_scorer(self) -> ToolSandboxConstraintScorer:
         """返回 ToolSandbox 专用约束评分器。"""
@@ -110,11 +109,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             continue_running=not session.finished,
             reason=session.stop_reason if session.finished else None,
         )
-
-    def case_finished(self, session: object) -> bool:
-        """判断 ToolSandbox session 是否完成。"""
-        session = self._require_session(session)
-        return session.finished
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 运行期 metrics。"""

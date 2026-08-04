@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 import time
@@ -32,7 +31,6 @@ from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.harness.config import (
     evaluation_strategy_from_mapping,
-    load_judge_config_from_env,
     threshold_config_from_mapping,
 )
 from dynsteer.harness import HarnessRunConfig, HarnessRunResult, HarnessStageSettlement, case_output_dir
@@ -59,6 +57,7 @@ from dynsteer.model import (
     ThresholdConfig,
     Trajectory,
     TrajectoryEvaluationReport,
+    TrajectoryStep,
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import parse_int_value
@@ -94,12 +93,6 @@ class DynSTEEREvaluator:
             self._standard_judge._cache = self._judge_cache
         if self._expensive_judge is not None:
             self._expensive_judge._cache = self._judge_cache
-
-    @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "DynSTEEREvaluator":
-        """从环境变量构建评估器。"""
-        source = env if env is not None else os.environ
-        return cls.from_config({}, judge_config=load_judge_config_from_env(source), env=source)
 
     @classmethod
     def from_config(
@@ -171,7 +164,6 @@ class DynSTEEREvaluator:
         raw_output_dir.mkdir(parents=True, exist_ok=True)
 
         session: object | None = None
-        termination = EvaluationTerminationState()
         metrics_recorder = RuntimeMetricsRecorder()
         metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
 
@@ -201,71 +193,36 @@ class DynSTEEREvaluator:
                 completed_agent_steps = 0
                 for step in advance.steps:
                     trajectory.append_step(step)
-                    decision = self._evaluate_step(
+                    decision, closed = self._evaluate_appended_step(
+                        config, task_case, trajectory, state, step, scorer
+                    )
+                    completed_agent_steps += int(closed)
+                    if self._apply_live_decision(
+                        decision,
                         harness=harness,
                         session=session,
                         task_case=task_case,
-                        eval_function=lambda step=step: evaluate_step_minefields(
-                            config=config,
-                            task_case=task_case,
-                            trajectory=trajectory,
-                            state=state,
-                            step=step,
-                            scorer=scorer,
-                        )
-                    )
-                    if decision is not None:
-                        state = decision.next_state
-                        termination = decision.termination
+                    ):
                         break
 
-                    closure = state.agent_step_tracker.ingest(step)
-                    if closure is None:
-                        continue
-                    completed_agent_steps += 1
-                    decision = self._evaluate_step(
-                        harness=harness,
-                        session=session,
-                        task_case=task_case,
-                        eval_function=lambda closure=closure: self._evaluate_closed_agent_step(
-                            config=config,
-                            task_case=task_case,
-                            trajectory=trajectory,
-                            state=state,
-                            closure=closure,
-                            scorer=scorer,
-                        ),
-                    )
-                    if decision is not None:
-                        state = decision.next_state
-                        termination = decision.termination
-                        break
-
-                if not termination.should_stop and not advance.continue_running:
+                if not state.evaluation_termination.should_stop and not advance.continue_running:
                     closure = state.agent_step_tracker.finalize()
                     if closure is not None:
                         completed_agent_steps += 1
-                        decision = self._evaluate_step(
+                        decision = self._evaluate_closed_agent_step(
+                            config, task_case, trajectory, state, closure, scorer
+                        )
+                        self._apply_live_decision(
+                            decision,
                             harness=harness,
                             session=session,
                             task_case=task_case,
-                            eval_function=lambda closure=closure: self._evaluate_closed_agent_step(
-                                config=config,
-                                task_case=task_case,
-                                trajectory=trajectory,
-                                state=state,
-                                closure=closure,
-                                scorer=scorer,
-                            ),
                         )
-                        if decision is not None:
-                            state = decision.next_state
-                            termination = decision.termination
 
                 if progress_reporter is not None and completed_agent_steps > 0:
                     progress_reporter.case_advanced(case_id, completed_agent_steps)
 
-                if termination.should_stop or not advance.continue_running:
+                if state.evaluation_termination.should_stop or not advance.continue_running:
                     break
 
             self._finalize_state_reports(
@@ -273,7 +230,6 @@ class DynSTEEREvaluator:
                 trajectory,
                 scorer,
                 state,
-                termination,
                 finish_on_termination=False,
             )
             runtime_metrics = self._build_runtime_metrics(metrics_recorder, trajectory, state.agent_step_tracker.completed_count)
@@ -285,7 +241,6 @@ class DynSTEEREvaluator:
                 raw_output_dir=raw_output_dir,
                 raw_summary=harness.raw_summary_from_session(session),
                 state=state,
-                termination=termination,
                 runtime_metrics=runtime_metrics,
                 metadata=self._report_metadata(config, method_fallback="dynsteer_evaluate"),
             )
@@ -328,7 +283,6 @@ class DynSTEEREvaluator:
             raw=dict(trajectory.raw),
         )
         state = self._initial_runtime_state(task_case)
-        virtual_termination = EvaluationTerminationState()
         metrics_recorder = RuntimeMetricsRecorder()
         metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
         snapshots = sorted(trajectory.snapshots, key=lambda item: (item.after_step_index, item.snapshot_id))
@@ -338,38 +292,14 @@ class DynSTEEREvaluator:
             for step in trajectory.steps:
                 replay_trajectory.append_step(step)
                 snapshot_index = _append_replay_snapshots(replay_trajectory, snapshots, snapshot_index, step.index)
-                decision = evaluate_step_minefields(
-                    config=config,
-                    task_case=task_case,
-                    trajectory=replay_trajectory,
-                    state=state,
-                    step=step,
-                    scorer=scorer,
+                decision, _ = self._evaluate_appended_step(
+                    config, task_case, replay_trajectory, state, step, scorer
                 )
-                virtual_termination = self._record_replay_decision(
-                    decision, state, virtual_termination, step_index=step.index
-                )
-                if virtual_termination.should_stop and not self._strategy.replay_continue_after_virtual_stop:
+                self._record_replay_decision(decision, state, step.index)
+                if state.evaluation_termination.should_stop and not self._strategy.replay_continue_after_virtual_stop:
                     break
 
-                closure = state.agent_step_tracker.ingest(step)
-                if closure is None:
-                    continue
-                decision = self._evaluate_closed_agent_step(
-                    config=config,
-                    task_case=task_case,
-                    trajectory=replay_trajectory,
-                    state=state,
-                    closure=closure,
-                    scorer=scorer,
-                )
-                virtual_termination = self._record_replay_decision(
-                    decision, state, virtual_termination, step_index=closure.end_step.index
-                )
-                if virtual_termination.should_stop and not self._strategy.replay_continue_after_virtual_stop:
-                    break
-
-            if not virtual_termination.should_stop or self._strategy.replay_continue_after_virtual_stop:
+            if not state.evaluation_termination.should_stop or self._strategy.replay_continue_after_virtual_stop:
                 closure = state.agent_step_tracker.finalize()
                 if closure is not None:
                     decision = self._evaluate_closed_agent_step(
@@ -380,18 +310,14 @@ class DynSTEEREvaluator:
                         closure=closure,
                         scorer=scorer,
                     )
-                    virtual_termination = self._record_replay_decision(
-                        decision, state, virtual_termination, step_index=closure.end_step.index
-                    )
+                    self._record_replay_decision(decision, state, closure.end_step.index)
 
             self._finalize_state_reports(
                 task_case,
                 replay_trajectory,
                 scorer,
                 state,
-                virtual_termination,
                 finish_on_termination=True,
-                replay_termination=virtual_termination if virtual_termination.should_stop else None,
             )
             runtime_metrics = self._build_runtime_metrics(
                 metrics_recorder,
@@ -401,7 +327,7 @@ class DynSTEEREvaluator:
             timing = build_replay_timing_metrics(
                 source_trajectory=trajectory,
                 replay_trajectory=replay_trajectory,
-                termination=virtual_termination,
+                termination=state.evaluation_termination,
                 elapsed_seconds=float(runtime_metrics.get("elapsed_seconds", 0.0) or 0.0),
             )
             runtime_metrics.update(timing)
@@ -416,7 +342,6 @@ class DynSTEEREvaluator:
                     "method": str(config.metadata.get("method") or "dynsteer_replay"),
                 },
                 state=state,
-                termination=virtual_termination,
                 runtime_metrics=runtime_metrics,
                 metadata=self._report_metadata(config, method_fallback="dynsteer_replay"),
             )
@@ -426,14 +351,13 @@ class DynSTEEREvaluator:
             replay_execution = build_replay_execution_summary(
                 trajectory,
                 replay_trajectory,
-                virtual_termination,
+                state.evaluation_termination,
                 report.milestone_coverage,
                 _finish_coverage_basis(report.stage_reports),
             )
             replay_execution["timing"] = timing
             report.metadata["replay_execution"] = replay_execution
             report.runtime_metrics.update(timing)
-            result.raw_summary["replay_execution"] = replay_execution
             result.raw_summary["runtime_metrics"] = runtime_metrics
             if not timing.get("timing_available"):
                 logger.warning(
@@ -444,18 +368,6 @@ class DynSTEEREvaluator:
                         "case_id": case_id,
                     },
                 )
-            for settlement in result.stage_settlements:
-                if settlement.kind == "finish":
-                    settlement.metadata["replay_execution"] = replay_execution
-                    settlement.metadata["finish_after_virtual_stop"] = replay_execution["finish_after_virtual_stop"]
-                    stage_report = settlement.metadata.get("stage_report")
-                    if isinstance(stage_report, dict):
-                        stage_metadata = stage_report.get("metadata")
-                        if isinstance(stage_metadata, dict):
-                            stage_metadata["replay_execution"] = replay_execution
-            for stage_report in report.stage_reports:
-                if stage_report.milestone_id == FINISH_NODE_ID:
-                    stage_report.metadata["replay_execution"] = replay_execution
             return result
         finally:
             reset_runtime_metrics_recorder(metrics_token)
@@ -473,6 +385,7 @@ class DynSTEEREvaluator:
             settlements=[
                 HarnessStageSettlement(
                     settlement_id="st0",
+                    stage_id="start",
                     kind="start",
                     milestone_id=None,
                     start_step_index=0,
@@ -506,6 +419,24 @@ class DynSTEEREvaluator:
             evaluate_checkpoint=self._evaluate_checkpoint_for_strategy,
         )
 
+    def _evaluate_appended_step(
+        self,
+        config: HarnessRunConfig,
+        task_case: TaskCase,
+        trajectory: Trajectory,
+        state: RuntimeEvaluationState,
+        step: TrajectoryStep,
+        scorer: GeneralScorer,
+    ) -> tuple[RuntimeEvaluationDecision | None, bool]:
+        """评估已追加的 raw step，并在 agent step 闭合时执行阶段评估。"""
+        decision = evaluate_step_minefields(config, task_case, trajectory, state, step, scorer)
+        if decision is not None:
+            return decision, False
+        closure = state.agent_step_tracker.ingest(step)
+        if closure is None:
+            return None, False
+        return self._evaluate_closed_agent_step(config, task_case, trajectory, state, closure, scorer), True
+
     def _evaluate_checkpoint_for_strategy(self, **kwargs: object) -> RuntimeEvaluationDecision:
         """按当前 judge、阈值、权重和策略执行 checkpoint 结算。"""
         return evaluate_checkpoint(
@@ -524,31 +455,25 @@ class DynSTEEREvaluator:
         trajectory: Trajectory,
         scorer: GeneralScorer,
         state: RuntimeEvaluationState,
-        termination: EvaluationTerminationState,
         finish_on_termination: bool,
-        replay_termination: EvaluationTerminationState | None = None,
     ) -> None:
         """写入 pending 或 finish 阶段报告。"""
-        state.evaluation_termination = termination
         pending_stage_reports = self._new_pending_stage_reports(task_case, state)
         if pending_stage_reports:
             state.stage_reports.extend(pending_stage_reports)
             return
-        if termination.should_stop and not finish_on_termination:
+        if state.evaluation_termination.should_stop and not finish_on_termination:
             return
-        settlement, stage_result, next_policy = finish_settlement(
-            state.settlements,
+        settlement, stage_result = finish_settlement(
             task_case,
             trajectory,
             scorer,
             state,
-            replay_termination=replay_termination,
             standard_judge=self._standard_judge,
             thresholds=self._thresholds,
         )
         state.settlements.append(settlement)
         state.stage_reports.append(stage_result)
-        state.evaluation_policy = next_policy
 
     def _build_runtime_metrics(
         self,
@@ -577,11 +502,11 @@ class DynSTEEREvaluator:
         raw_output_dir: Path,
         raw_summary: JsonObject,
         state: RuntimeEvaluationState,
-        termination: EvaluationTerminationState,
         runtime_metrics: JsonObject,
         metadata: JsonObject,
     ) -> HarnessRunResult:
         """构造统一 HarnessRunResult 与 raw summary。"""
+        termination = state.evaluation_termination
         report = self._runtime_report(task_case, trajectory, state, metadata=metadata)
         report.runtime_metrics = runtime_metrics
         summary = dict(raw_summary)
@@ -589,15 +514,11 @@ class DynSTEEREvaluator:
         summary.update(
             {
                 "runtime_metrics": runtime_metrics,
-                "terminated_by_policy": termination.should_stop,
-                "termination_code": termination.termination_code,
-                "termination_reason": termination.termination_reason,
+                "termination": termination.to_dict(),
                 "stage_settlements": [settlement.to_dict() for settlement in state.settlements],
                 "task_case_snapshot": task_case_snapshot(task_case),
             }
         )
-        if termination.termination_detail is not None:
-            summary["termination_detail"] = termination.termination_detail
         return HarnessRunResult(
             benchmark=benchmark,
             case_id=case_id,
@@ -610,46 +531,42 @@ class DynSTEEREvaluator:
             termination=termination,
         )
 
-    def _evaluate_step(
+    def _apply_live_decision(
         self,
+        decision: RuntimeEvaluationDecision | None,
         harness: BaseBenchmarkHarness,
         session: object,
         task_case: TaskCase,
-        eval_function: Callable[[], RuntimeEvaluationDecision | None],
-    ) -> RuntimeEvaluationDecision | None:
+    ) -> bool:
         """执行单步评估函数，并统一处理策略提前终止副作用。"""
-        decision = eval_function()
         if decision is None or not decision.termination.should_stop:
-            return None
+            return False
         if not self._strategy.policy_stop:
-            decision.termination = EvaluationTerminationState()
-            decision.next_state.evaluation_termination = decision.termination
             if decision.stage_result is not None:
                 decision.stage_result.metadata["policy_stop_suppressed"] = True
-            return None
+            return False
         termination_reason = decision.termination.termination_reason or DEFAULT_POLICY_STOP_REASON
         decision.termination.termination_reason = termination_reason
         decision.next_state.evaluation_termination = decision.termination
         harness.stop_case(session, termination_reason)
         logger.warning("evaluator_policy_stop", extra={"事件": "策略提前终止", **policy_stop_log_extra(task_case, decision)})
-        return decision
+        return True
 
     def _record_replay_decision(
         self,
         decision: RuntimeEvaluationDecision | None,
         state: RuntimeEvaluationState,
-        current_termination: EvaluationTerminationState,
         step_index: int,
-    ) -> EvaluationTerminationState:
+    ) -> None:
         """记录 replay 虚拟早停，不触发外部 session stop。"""
         if decision is None or not decision.termination.should_stop:
-            return current_termination
+            return
         if not self._strategy.policy_stop:
             if decision.stage_result is not None:
                 decision.stage_result.metadata["policy_stop_suppressed"] = True
-            return current_termination
-        if current_termination.should_stop:
-            return current_termination
+            return
+        if state.evaluation_termination.should_stop:
+            return
         termination = decision.termination
         termination.termination_reason = termination.termination_reason or DEFAULT_POLICY_STOP_REASON
         detail = dict(termination.termination_detail or {})
@@ -657,9 +574,6 @@ class DynSTEEREvaluator:
         detail["replay_continue_after_virtual_stop"] = self._strategy.replay_continue_after_virtual_stop
         termination.termination_detail = detail
         state.evaluation_termination = termination
-        if decision.stage_result is not None:
-            decision.stage_result.metadata["replay_virtual_stop"] = termination.to_dict()
-        return termination
 
     def _new_pending_stage_reports(
         self, task_case: TaskCase, state: RuntimeEvaluationState
@@ -724,8 +638,6 @@ class DynSTEEREvaluator:
     def _report_metadata(self, config: HarnessRunConfig, method_fallback: str) -> JsonObject:
         """构造评估报告实验元数据。"""
         metadata = config.metadata
-        default_reference = metadata.get("default_reference")
-        default_score = metadata.get("default_score")
         return {
             "benchmark": config.benchmark,
             "experiment_id": metadata.get("experiment_id"),
@@ -735,8 +647,6 @@ class DynSTEEREvaluator:
             "threshold_profile": metadata.get("threshold_profile"),
             "model_id": metadata.get("model_id"),
             "repeat_index": metadata.get("repeat_index"),
-            "default_score": default_score if isinstance(default_score, (int, float)) else None,
-            "default_reference": dict(default_reference) if isinstance(default_reference, dict) else None,
         }
 
     def _teardown_session_safely(
@@ -794,30 +704,14 @@ def build_replay_execution_summary(
     """汇总 replay 虚拟停点、完成度和轨迹变化。"""
     if source_trajectory is None or replay_trajectory is None or termination is None:
         raise ValueError("source_trajectory、replay_trajectory 和 termination 不能为空")
-    source_step_count = len(source_trajectory.steps)
-    replay_step_count = len(replay_trajectory.steps)
-    source_snapshot_count = len(source_trajectory.snapshots)
-    replay_snapshot_count = len(replay_trajectory.snapshots)
-    detail = termination.termination_detail if isinstance(termination.termination_detail, dict) else {}
-    virtual_stop = bool(termination.should_stop)
     return {
-        "virtual_stop_triggered": virtual_stop,
-        "virtual_stop_code": termination.termination_code if virtual_stop else None,
-        "virtual_stop_step_index": detail.get("virtual_stop_step_index") if virtual_stop else None,
-        "finish_after_virtual_stop": virtual_stop,
+        "termination": termination.to_dict(),
         "final_completion": coverage,
         "coverage_basis": coverage_basis,
-        "recovered_after_virtual_stop": virtual_stop and coverage == "full",
-        "trajectory_changed": (
-            source_step_count != replay_step_count
-            or source_snapshot_count != replay_snapshot_count
-        ),
-        "source_step_count": source_step_count,
-        "replay_step_count": replay_step_count,
-        "source_snapshot_count": source_snapshot_count,
-        "replay_snapshot_count": replay_snapshot_count,
-        "step_ratio": replay_step_count / source_step_count if source_step_count else 1.0,
-        "snapshot_ratio": replay_snapshot_count / source_snapshot_count if source_snapshot_count else 1.0,
+        "source_step_count": len(source_trajectory.steps),
+        "replay_step_count": len(replay_trajectory.steps),
+        "source_snapshot_count": len(source_trajectory.snapshots),
+        "replay_snapshot_count": len(replay_trajectory.snapshots),
     }
 
 

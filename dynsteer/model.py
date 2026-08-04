@@ -1,4 +1,5 @@
 from __future__ import annotations
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -81,13 +82,6 @@ class StageStatus(str, Enum):
     AMBIGUOUS = "ambiguous"
     INVALID = "invalid"
 
-class EvaluationFailureBasis(str, Enum):
-    STRUCTURAL_HARD_CONSTRAINT = "structural_hard_constraint"
-    QUALITY_SCORE = "quality_score"
-    FATAL_MINEFIELD = "fatal_minefield"
-    READY_FRONTIER_NO_PROGRESS = "ready_frontier_no_progress"
-    MILESTONE_PREDECESSOR_GAP = "milestone_predecessor_gap"
-
 class StageGoalSemanticKind(str, Enum):
     SET_STATE = "set_state"
     PRESERVE_STATE = "preserve_state"
@@ -101,8 +95,6 @@ class ThresholdConfig:
     fail_threshold: float = 0.4
     low_dimension_uncertainty: float = 0.2
     high_dimension_uncertainty: float = 0.45
-    safe_minefield_threshold: float = 0.2
-    risky_minefield_threshold: float = 0.5
     fatal_minefield_threshold: float = 0.95
     threshold_margin: float = 0.05
 
@@ -353,7 +345,6 @@ class MilestoneGraph:
     nodes: list[Milestone] = field(default_factory=list)
     edges: list[tuple[str, str]] = field(default_factory=list)
     minefields: list[Minefield] = field(default_factory=list)
-    default_thresholds: dict[str, float] = field(default_factory=dict)
     metadata: JsonObject = field(default_factory=dict)
 
 @dataclass
@@ -384,7 +375,6 @@ class TaskCase:
     case_id: str
     environment_schema: JsonObject = field(default_factory=dict)
     tool_schema: JsonObject = field(default_factory=dict)
-    policy_constraints: list[JsonObject] = field(default_factory=list)
     initial_state: Optional[JsonObject] = None
     milestone_graph: Optional[MilestoneGraph] = None
     stage_goal_templates: dict[str, str] = field(default_factory=dict)
@@ -417,6 +407,7 @@ class Trajectory:
     first_step_index: int = 0
     successor_by_boundary: dict[int, int] = field(default_factory=dict)
     latest_step_index: int | None = None
+    _snapshot_positions: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """根据已有 step 序列维护阶段边界 O(1) 查询上下文。"""
@@ -427,6 +418,7 @@ class Trajectory:
             if step is None:
                 raise ValueError("trajectory.steps 不能包含空 step")
             self._append_step_index(step.index)
+        self._rebuild_snapshot_positions()
 
     def _append_step_index(self, step_index: int) -> None:
         """仅追加 step index，用于维护阶段边界后继表。"""
@@ -442,17 +434,24 @@ class Trajectory:
 
     def append_step(self, step: TrajectoryStep) -> None:
         """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
-        self.steps.append(step)
         self._append_step_index(step.index)
+        self.steps.append(step)
 
     def extend_snapshots(self, snapshots: list[StateSnapshot]) -> None:
         """按 snapshot_id 去重追加状态快照。"""
-        if not snapshots:
-            return
-        snapshot_by_id = {snapshot.snapshot_id: snapshot for snapshot in self.snapshots}
+        out_of_order = False
         for snapshot in snapshots:
-            snapshot_by_id[snapshot.snapshot_id] = snapshot
-        self.snapshots = sorted(snapshot_by_id.values(), key=lambda item: (item.after_step_index, item.snapshot_id))
+            position = self._snapshot_positions.get(snapshot.snapshot_id)
+            if position is not None:
+                self.snapshots[position] = snapshot
+                out_of_order = True
+            else:
+                out_of_order |= bool(self.snapshots and _snapshot_key(snapshot) < _snapshot_key(self.snapshots[-1]))
+                self._snapshot_positions[snapshot.snapshot_id] = len(self.snapshots)
+                self.snapshots.append(snapshot)
+        if out_of_order:
+            self.snapshots.sort(key=_snapshot_key)
+            self._rebuild_snapshot_positions()
 
     def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
         """返回指定 step index 区间内的轨迹步骤。"""
@@ -462,9 +461,22 @@ class Trajectory:
             return []
         if max_index < self.first_step_index or min_index >= self.latest_step_index:
             return []
-        lower_bound = max(min_index, self.first_step_index - 1)
-        upper_bound = min(max_index, self.latest_step_index)
-        return [step for step in self.steps if lower_bound < step.index <= upper_bound]
+        left = bisect_right(self.steps, min_index, key=lambda step: step.index)
+        right = bisect_right(self.steps, max_index, key=lambda step: step.index)
+        return self.steps[left:right]
+
+    def _rebuild_snapshot_positions(self) -> None:
+        """校验 snapshot id 唯一性并重建位置索引。"""
+        self._snapshot_positions = {}
+        for position, snapshot in enumerate(self.snapshots):
+            if snapshot.snapshot_id in self._snapshot_positions:
+                raise ValueError(f"trajectory snapshot_id 重复: {snapshot.snapshot_id}")
+            self._snapshot_positions[snapshot.snapshot_id] = position
+
+
+def _snapshot_key(snapshot: StateSnapshot) -> tuple[int, str]:
+    """返回 snapshot 的稳定排序键。"""
+    return snapshot.after_step_index, snapshot.snapshot_id
 
 @dataclass
 class Boundary:
@@ -541,7 +553,6 @@ class StageEvaluationResult:
     required_fields_missing_ratio: float = 0.0
     minefield_score: float = 0.0
     fatal_minefield_score: float = 0.0
-    minefield_evidence_is_structural: bool = True
     metadata: JsonObject = field(default_factory=dict)
 
     def to_dict(self) -> JsonObject:
@@ -601,18 +612,6 @@ class TrajectoryEvaluationReport:
             ),
             "first_failure_stage_id": self.first_failure_stage_id,
             "runtime_metrics": dict(self.runtime_metrics),
-            "elapsed_seconds": self.runtime_metrics.get("elapsed_seconds"),
-            "step_count": self.runtime_metrics.get("step_count"),
-            "tool_call_count": self.runtime_metrics.get("tool_call_count"),
-            "llm_call_count": self.runtime_metrics.get("llm_call_count"),
-            "llm_total_tokens": self.runtime_metrics.get("llm_total_tokens"),
-            "trajectory_total_tokens": self.runtime_metrics.get("trajectory_total_tokens"),
-            "trajectory_cost_available": self.runtime_metrics.get("trajectory_cost_available"),
-            "trajectory_latency_available": self.runtime_metrics.get("trajectory_latency_available"),
-            "default_prefix_execution_seconds": self.runtime_metrics.get("default_prefix_execution_seconds"),
-            "effective_elapsed_seconds": self.runtime_metrics.get("effective_elapsed_seconds"),
-            "timing_available": self.runtime_metrics.get("timing_available"),
-            "virtual_stop_step_index": self.runtime_metrics.get("virtual_stop_step_index"),
             "metadata": dict(self.metadata),
         }
 
@@ -653,9 +652,9 @@ class EvaluationTerminationState:
         """转换为 JSON 可序列化终止状态。"""
         return {
             "should_stop": self.should_stop,
-            "termination_code": self.termination_code,
-            "termination_reason": self.termination_reason,
-            "termination_detail": self.termination_detail,
+            "code": self.termination_code,
+            "reason": self.termination_reason,
+            "detail": self.termination_detail or {},
         }
 
 def initial_evaluation_policy() -> EvaluationPolicyState:
@@ -687,6 +686,7 @@ class RuntimeEvaluationState:
     """保存单个 case 运行期间的评估状态。"""
     weights: dict[Dimension, float]
     settlements: list[HarnessStageSettlement]
+    milestone_frontier: MilestoneFrontierState
     matched_settlements: dict[str, HarnessStageSettlement] = field(default_factory=dict)
     reference_anchor_snapshots: dict[str, StateSnapshot] = field(default_factory=dict)
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
@@ -696,7 +696,6 @@ class RuntimeEvaluationState:
     max_minefield_score: float = 0.0
     fatal_minefield: bool = False
     ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
-    milestone_frontier: MilestoneFrontierState | None = None
     agent_step_tracker: AgentStepTracker = field(default_factory=AgentStepTracker)
     evaluation_termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
 
@@ -750,7 +749,6 @@ class CaseProgressEvent:
     kind: Literal["case_started", "case_advanced", "case_finished"]
     case_id: str
     step_count: int = 0
-    message: str | None = None
 
 @dataclass
 class CaseProgressState:

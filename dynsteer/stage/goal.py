@@ -20,19 +20,6 @@ def expected_placeholder(constraint_id: str) -> str:
     return EXPECTED_PLACEHOLDER_PATTERN.format(constraint_id=constraint_id)
 
 
-def generate_stage_goals(
-    task_case: TaskCase,
-    mode: str = "auto",
-    llm_provider: Callable[[], BaseLLM] | None = None,
-) -> dict[str, str]:
-    """生成模板并使用当前 Constraint.expected 实例化 stage goals。"""
-    templates = generate_stage_goal_templates(task_case, mode, llm_provider)
-    task_case.stage_goal_templates = templates
-    goals = materialize_stage_goals(task_case, templates)
-    task_case.stage_goals = goals
-    return goals
-
-
 def generate_stage_goal_templates(
     task_case: TaskCase,
     mode: str = "auto",

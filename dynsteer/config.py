@@ -1,5 +1,4 @@
 from dynsteer.model import Dimension, DynamicWeightConfig, TaskType
-DIMENSION_ORDER: tuple[Dimension, ...] = (Dimension.PROGRESS, Dimension.STATE_CONSISTENCY, Dimension.TOOL_QUALITY, Dimension.EFFICIENCY, Dimension.SAFETY, Dimension.INTERACTION_QUALITY, Dimension.RECOVERY)
 TASK_TYPE_WEIGHTS: dict[TaskType, dict[Dimension, float]] = {
     TaskType.GENERAL: {
         Dimension.PROGRESS: 0.25,

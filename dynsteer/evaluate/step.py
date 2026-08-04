@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from dynsteer.evaluate.matching.boundary import candidate_boundary_for_current_step
-from dynsteer.evaluate.matching.frontier import ready_milestone_ids
 from dynsteer.evaluate.matching.milestone import analyze_milestone_step
 from dynsteer.evaluate.matching.minefield import evaluate_minefields_at_boundary
 from dynsteer.evaluate.runtime import blocked_milestone_termination_reason, ready_frontier_no_progress_termination_reason, selected_candidate_from_attempt, scoring_context, update_ready_frontier_progress_watch
@@ -77,8 +76,6 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
     输出：
         需要提前终止时返回决策，否则返回 None。
     """
-    if state.milestone_frontier is None:
-        raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
     boundary = candidate_boundary_for_current_step(trajectory, step)
     context = scoring_context(
         task_case,
@@ -122,8 +119,6 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
             semantic_review_detail["final_stage_status"] = decision.stage_result.status.value
             semantic_review_detail["final_stage_score"] = decision.stage_result.stage_score
             decision.stage_result.metadata["semantic_message_review"] = dict(semantic_review_detail)
-            if decision.checkpoint is not None:
-                decision.checkpoint.metadata["stage_report"] = decision.stage_result.to_dict()
     if analysis.attempt_detail is not None:
         state.match_attempts.append(analysis.attempt_detail)
     if decision.checkpoint is None and analysis.attempt_detail is not None:
@@ -147,7 +142,7 @@ def _semantic_message_review_score(standard_judge: object | None, task_case: Tas
     return (reviewed_score, semantic_review_attempt_detail(targets, reviews, reviewed_score))
 
 def _ready_frontier_no_progress_decision(config: HarnessRunConfig, state: RuntimeEvaluationState, attempt_detail: JsonObject, thresholds: ThresholdConfig) -> RuntimeEvaluationDecision | None:
-    ready_ids = ready_milestone_ids(state.milestone_frontier, state.matched_settlements)
+    ready_ids = tuple(state.milestone_frontier.ready_ids)
     if config.stop_on_ready_frontier_no_progress:
         termination_detail = update_ready_frontier_progress_watch(state=state, ready_ids=ready_ids, attempt_detail=attempt_detail, thresholds=thresholds, patience=config.ready_frontier_patience, min_delta=config.ready_frontier_min_delta)
     else:
