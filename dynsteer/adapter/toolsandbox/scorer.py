@@ -310,6 +310,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         row_list = rows if isinstance(rows, list) else []
         columns = sorted({str(column) for row in row_list if isinstance(row, dict) for column in row})
         summary = {
+            "reference_anchor_policy": "latest_still_satisfied",
             "reference_snapshot_id": reference_snapshot.snapshot_id,
             "reference_milestone_id": reference_milestone_id,
             "namespace": namespace,
@@ -342,6 +343,7 @@ class ToolSandboxConstraintScorer(BaseBenchmarkConstraintScorer):
         return [
             (
                 "ToolSandbox reference snapshot 诊断: "
+                f"policy={summary.get('reference_anchor_policy')}, "
                 f"id={summary.get('reference_snapshot_id')}, "
                 f"milestone={summary.get('reference_milestone_id')}, "
                 f"namespace={summary.get('namespace')}, "

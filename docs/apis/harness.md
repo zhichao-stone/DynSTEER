@@ -71,7 +71,9 @@ class MyHarness(BaseBenchmarkHarness):
 
 瀹屾暣 Default 瀹為獙浼氬湪 benchmark 鑷劧缁撴潫鍚庤皟鐢ㄨ鎺ュ彛锛屾彁鍙栧師鐢?benchmark 鍒嗘暟銆傛寮忓疄楠?benchmark 蹇呴』鏄惧紡瀹炵幇锛岃繑鍥烇細
 
-- `score`: `[0, 1]` 涓诲垎鏁般€?- `resolved`: benchmark 鍘熺敓 resolved 甯冨皵鍊硷紱涓嶅彲鐢ㄦ椂涓?`None`銆?- `raw`: 鍘熺敓鏄犲皠銆佺浉浼煎害绛夊璁′俊鎭€?- `metrics`: 鍘熺敓 turn count銆佽€楁椂鎴栧叾浠栧彲鐢ㄦ寚鏍囥€?
+- `score`: `[0, 1]` 连续主分数；`raw` 保存原生 similarity、milestone/minefield mapping；`metrics` 保存 turn count 等原生统计。结果不派生或输出 `resolved`、`success_basis` 和成功阈值。
+
+ToolSandbox 会话未显式配置 `max_messages` 时继续使用 DynSTEER harness 默认值 100，显式配置时按 override 执行。原生结束原因结构化为 `natural_end_conversation`、`max_messages` 或 `role_error`；不增加重复话术、重复空查询或 `simulator_stall` detector。
 ToolSandbox 褰撳墠閫氳繃 `scenario.evaluation.evaluate(execution_context=session.context, max_turn_count=session.max_messages)` 鎻愬彇 `similarity`锛屽苟鎶?`milestone_mapping`銆乣minefield_mapping` 鍜?`turn_count` 鍐欏叆 raw銆?
 ## 杩斿洖濂戠害
 

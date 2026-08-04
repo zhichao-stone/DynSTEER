@@ -688,6 +688,7 @@ class RuntimeEvaluationState:
     weights: dict[Dimension, float]
     settlements: list[HarnessStageSettlement]
     matched_settlements: dict[str, HarnessStageSettlement] = field(default_factory=dict)
+    reference_anchor_snapshots: dict[str, StateSnapshot] = field(default_factory=dict)
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
     match_attempts: list[JsonObject] = field(default_factory=list)
     evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
@@ -825,6 +826,7 @@ class ToolSandboxSession:
     system_environment_messages_prepared: bool = False
     finished: bool = False
     stop_reason: str | None = None
+    termination_reason: str | None = None
 
 def ensure_json_object(value: Any) -> JsonObject:
     """校验输入是否为 JSON 对象。"""

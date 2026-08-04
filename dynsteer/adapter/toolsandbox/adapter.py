@@ -62,7 +62,7 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
         task_case: TaskCase,
         case_id: str,
     ) -> TaskCase:
-        """使用本次共享 ToolSandbox scenario 刷新动态 expected。"""
+        """使用本次共享 ToolSandbox scenario 刷新动态约束信息。"""
         if config is None or task_case is None or not case_id:
             raise ValueError("config、task_case 和 case_id 不能为空")
         scenarios = load_named_scenarios(config, load_toolsandbox_module)
@@ -73,16 +73,15 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
         source_graph = milestone_graph_from_scenario(scenarios[case_id])
         source_constraints = {
             constraint.constraint_id: constraint
-            for milestone in source_graph.nodes
-            for constraint in milestone.constraints
+            for item in [*source_graph.nodes, *source_graph.minefields]
+            for constraint in item.constraints
         }
-        for milestone in task_case.milestone_graph.nodes:
-            for constraint in milestone.constraints:
+        for item in [*task_case.milestone_graph.nodes, *task_case.milestone_graph.minefields]:
+            for constraint in item.constraints:
                 source = source_constraints[constraint.constraint_id]
                 constraint.expected = deepcopy(source.expected)
-                semantics = constraint.stage_goal_semantics
-                if isinstance(semantics, dict) and semantics.get("kind") == "set_state":
-                    semantics["expected"] = deepcopy(constraint.expected)
+                constraint.stage_goal_semantics = deepcopy(source.stage_goal_semantics)
+                constraint.metadata = deepcopy(source.metadata)
         task_case.initial_state = None
         task_case.stage_goals = materialize_stage_goals(task_case)
         task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)

@@ -86,7 +86,9 @@ def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
         payload["stage_goal_semantics"] = json_safe(stage_goal_semantics)
         if stage_goal_semantics.get("kind") == "tool_call":
             payload["tool_name"] = stage_goal_semantics.get("tool_name")
-            payload["arguments"] = json_safe(stage_goal_semantics.get("arguments", {}))
+            payload["argument_match_policy"] = stage_goal_semantics.get("argument_match_policy", "exact")
+            if stage_goal_semantics.get("argument_match_policy") == "exact":
+                payload["arguments"] = json_safe(stage_goal_semantics.get("arguments", {}))
     return payload
 
 
@@ -143,6 +145,13 @@ def _constraint_goal_hint(constraint: Constraint | None) -> str:
         return f"Need to preserve {namespace} state relative to {preserve_state_reference_label(constraint)}."
     if kind == "tool_call":
         tool_name = str(semantics.get("tool_name") or "unknown")
+        if semantics.get("argument_match_policy") == "reference_derived":
+            return (
+                f"Required tool call not matched: tool={tool_name}, "
+                f"argument_match_policy=reference_derived, "
+                f"reference_milestone_node_index={semantics.get('reference_milestone_node_index')}, "
+                f"extractor={semantics.get('extractor')}"
+            )
         arguments = compact_json_text(semantics.get("arguments", {}), 240)
         return f"Required tool call not matched: tool={tool_name}, expected_arguments={arguments}"
 
@@ -187,7 +196,9 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
     if detail["semantic_kind"] == "tool_call":
         semantics = constraint.stage_goal_semantics if constraint is not None and isinstance(constraint.stage_goal_semantics, dict) else {}
         detail["expected_tool_name"] = semantics.get("tool_name")
-        detail["expected_tool_arguments"] = json_safe(semantics.get("arguments", {}))
+        detail["argument_match_policy"] = semantics.get("argument_match_policy", "exact")
+        if detail["argument_match_policy"] == "exact":
+            detail["expected_tool_arguments"] = json_safe(semantics.get("arguments", {}))
     if constraint is not None:
         detail["expected_summary"] = constraint_summary_to_dict(constraint)["expected_summary"]
         detail["expected_excerpt"] = constraint_expected_excerpt(constraint)
@@ -487,6 +498,8 @@ def build_finish_matching_detail(graph: MilestoneGraph, matched: dict[str, Harne
 def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
     tool_argument_warnings: list[JsonObject] = []
     empty_tool_results: list[JsonObject] = []
+    informational_tool_results: list[JsonObject] = []
+    query_no_match_results: list[JsonObject] = []
     failed_tool_results: list[JsonObject] = []
     grounding_warnings: list[JsonObject] = []
     next_agent_message_by_index = _next_agent_message_by_index(steps)
@@ -547,11 +560,17 @@ def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
                 "attribution_source": attribution_source,
                 "attribution_status": "ambiguous" if tool_name is None else "matched",
                 "content": content,
-                **_classify_empty_tool_result(tool_name),
+                **_classify_empty_tool_result(tool_name, content),
             }
-            empty_tool_results.append(empty)
+            category = empty["result_category"]
+            if category == "state_mutation_no_payload":
+                informational_tool_results.append(empty)
+            elif category == "query_no_match":
+                query_no_match_results.append(empty)
+            else:
+                empty_tool_results.append(empty)
             answer = next_agent_message_by_index.get(step.index)
-            if empty["severity"] == "warning" and answer is not None:
+            if category == "query_no_match" and answer is not None and _answer_claims_query_match(answer.content):
                 grounding_warnings.append(
                     {
                         "warning": "agent_answer_after_empty_tool_result",
@@ -597,19 +616,52 @@ def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
         "empty_tool_results": empty_tool_results,
         "failed_tool_results": failed_tool_results,
         "grounding_warnings": grounding_warnings,
+        "informational_tool_results": informational_tool_results,
+        "query_no_match_results": query_no_match_results,
         "efficiency": efficiency,
     }
 
 
-def _classify_empty_tool_result(tool_name: str | None) -> JsonObject:
+def _classify_empty_tool_result(tool_name: str | None, content: object) -> JsonObject:
+    """按工具语义和空值形态区分无 payload mutation、无匹配 query 与异常空值。"""
     if tool_name is None or not str(tool_name).strip():
         return {"severity": "warning", "result_category": "unknown_empty_payload"}
     normalized = str(tool_name).strip().lower()
     if normalized.startswith(STATE_MUTATION_TOOL_PREFIXES):
         return {"severity": "info", "result_category": "state_mutation_no_payload"}
-    if normalized.startswith(QUERY_TOOL_PREFIXES) or normalized in {"timestamp_diff"}:
-        return {"severity": "warning", "result_category": "query_empty_payload"}
+    if normalized.startswith(QUERY_TOOL_PREFIXES) and _is_empty_collection_content(content):
+        return {"severity": "info", "result_category": "query_no_match"}
     return {"severity": "warning", "result_category": "unknown_empty_payload"}
+
+
+def _is_empty_collection_content(value: object) -> bool:
+    """判断工具返回是否为明确的空集合，而不是语义不明的 None。"""
+    if isinstance(value, list | dict):
+        return len(value) == 0
+    return isinstance(value, str) and value.strip() in {"[]", "{}"}
+
+
+def _answer_claims_query_match(content: str | None) -> bool:
+    """判断空查询后的回答是否避开“未找到”语义并声称存在结果。"""
+    text = str(content or "").strip().lower()
+    if not text:
+        return False
+    no_match_markers = (
+        "not found",
+        "no match",
+        "no result",
+        "nothing found",
+        "couldn't find",
+        "could not find",
+        "unable to find",
+        "didn't find",
+        "未找到",
+        "没有找到",
+        "无法找到",
+        "查无",
+        "请补充",
+    )
+    return not any(marker in text for marker in no_match_markers)
 
 
 def _tool_argument_warnings(step: TrajectoryStep) -> list[JsonObject]:

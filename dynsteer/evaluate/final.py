@@ -4,7 +4,7 @@ from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, TaskCase, Trajectory
+from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, StateSnapshot, TaskCase, Trajectory
 from dynsteer.utils import clean_evidence_items, compact_text, json_safe
 
 def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, scorer: GeneralScorer) -> JsonObject:
@@ -37,7 +37,14 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
         augmented_edges = analysis.get("augmented_edges") if isinstance(analysis, dict) else None
         if isinstance(augmented_edges, list):
             terminal_ids = [str(edge[0]) for edge in augmented_edges if isinstance(edge, list) and len(edge) >= 2 and (edge[1] == FINISH_NODE_ID) and (edge[0] in real_ids)]
-    terminal_state_checks = _terminal_state_checks(task_case, trajectory, matched, terminal_ids, scorer)
+    terminal_state_checks = _terminal_state_checks(
+        task_case,
+        trajectory,
+        matched,
+        state.reference_anchor_snapshots,
+        terminal_ids,
+        scorer,
+    )
     terminal_message_checks = _terminal_message_checks(task_case, matched, terminal_ids)
     failed_terminal_checks = [item for item in terminal_state_checks if item.get("status") in {StageStatus.FAIL.value, StageStatus.MISSING.value, StageStatus.INVALID.value}]
     warn_terminal_checks = [item for item in [*terminal_state_checks, *terminal_message_checks] if item.get("status") == StageStatus.WARN.value]
@@ -163,7 +170,7 @@ def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvalua
         ],
     }
 
-def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], terminal_ids: list[str], scorer: GeneralScorer) -> list[JsonObject]:
+def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], reference_anchor_snapshots: dict[str, StateSnapshot], terminal_ids: list[str], scorer: GeneralScorer) -> list[JsonObject]:
     graph = task_case.milestone_graph
     milestone_by_id = {node.milestone_id: node for node in graph.nodes}
     final_step_index = trajectory.latest_step_index if trajectory.latest_step_index is not None else 0
@@ -174,7 +181,7 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
         snapshot_id=snapshot.snapshot_id if snapshot is not None else None,
         reason="finish_final_state_check",
     )
-    context = scoring_context(task_case, trajectory, matched)
+    context = scoring_context(task_case, trajectory, matched, reference_anchor_snapshots)
     checks: list[JsonObject] = []
     for milestone_id in terminal_ids:
         milestone = milestone_by_id.get(milestone_id)

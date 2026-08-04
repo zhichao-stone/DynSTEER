@@ -231,7 +231,12 @@ def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluatio
         )
     return results
 
-def scoring_context(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement]) -> ScoringContext:
+def scoring_context(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    matched: dict[str, HarnessStageSettlement],
+    reference_anchor_snapshots: dict[str, StateSnapshot] | None = None,
+) -> ScoringContext:
     """构造运行期评分上下文。"""
     matched_boundaries: dict[str, Boundary] = {}
     matched_snapshots: dict[str, StateSnapshot] = {}
@@ -248,6 +253,8 @@ def scoring_context(task_case: TaskCase, trajectory: Trajectory, matched: dict[s
         snapshot = boundary_snapshot(boundary, trajectory.snapshots)
         if snapshot is not None:
             matched_snapshots[milestone_id] = snapshot
+    if reference_anchor_snapshots:
+        matched_snapshots.update(reference_anchor_snapshots)
     return ScoringContext(task_case=task_case, matched_boundaries=matched_boundaries, matched_snapshots=matched_snapshots)
 
 def task_case_snapshot(task_case: TaskCase) -> JsonObject:

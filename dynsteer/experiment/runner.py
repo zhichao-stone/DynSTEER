@@ -343,8 +343,25 @@ def _case_result_from_output(
     if default_score is None and default_reference is not None:
         default_score = as_number(default_reference.get("score"))
     dynsteer_score = None if spec.method == ExperimentMethod.DEFAULT else as_number(summary.get("overall_score"))
-    resolved = summary.get("resolved")
     milestone_coverage = summary.get("milestone_coverage")
+    default_result = metadata.get("default_result") if isinstance(metadata.get("default_result"), dict) else {}
+    default_raw = default_result.get("raw") if isinstance(default_result.get("raw"), dict) else {}
+    summary_components = summary.get("score_components")
+    score_components = dict(summary_components) if isinstance(summary_components, dict) else {
+        key: value
+        for key in ("similarity", "milestone_similarity", "minefield_similarity")
+        if (value := as_number(default_raw.get(key))) is not None
+    }
+    minefield_match_count = summary.get("minefield_match_count")
+    if not isinstance(minefield_match_count, int):
+        native_mapping = default_raw.get("minefield_mapping")
+        if isinstance(native_mapping, dict):
+            minefield_match_count = sum(
+                1
+                for item in native_mapping.values()
+                if isinstance(item, dict) and (as_number(item.get("similarity")) or 0.0) > 0.0
+            )
+    termination_reason = summary.get("termination_reason") or summary.get("termination_code")
 
     return ExperimentCaseResult(
         experiment_id=spec.experiment_id,
@@ -355,8 +372,10 @@ def _case_result_from_output(
         method=spec.method,
         default_score=default_score,
         dynsteer_score=dynsteer_score,
-        resolved=resolved if isinstance(resolved, bool) else None,
         milestone_coverage=milestone_coverage if isinstance(milestone_coverage, str) else None,
+        score_components=score_components,
+        minefield_match_count=minefield_match_count if isinstance(minefield_match_count, int) else None,
+        termination_reason=str(termination_reason) if termination_reason else None,
         runtime_metrics=dict(runtime_metrics),
         output_paths={
             k: str(v)

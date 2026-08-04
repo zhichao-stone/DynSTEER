@@ -27,6 +27,9 @@ from dynsteer.model import (
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import as_number, json_safe, read_json_file
+
+RESULT_SCHEMA_VERSION = 2
+
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """把 Trajectory 转成 JSON 对象。"""
     raw_fields = {str(key): json_safe(value) for key, value in trajectory.raw.items()}
@@ -119,6 +122,9 @@ def existing_case_output(
         and report_path.exists()
     ):
         return None
+    summary = read_json_file(summary_path, f"场景摘要: {summary_path}", dict)
+    if summary.get("result_schema_version") != RESULT_SCHEMA_VERSION:
+        return None
     return HarnessEvaluationOutput(
         run_dir=result_dir,
         raw_run_dir=raw_case_dir,
@@ -156,18 +162,41 @@ def write_case_outputs(
     raw_summary["trajectory_output"] = trajectory_output_summary(trajectory, runtime_metrics)
     raw_summary.update(
         {
+            "result_schema_version": RESULT_SCHEMA_VERSION,
             "terminated_by_policy": harness_result.termination.should_stop,
             "termination_code": harness_result.termination.termination_code,
             "termination_reason": harness_result.termination.termination_reason,
             "stage_settlements": [settlement.to_dict() for settlement in harness_result.stage_settlements],
         }
     )
+    summary_payload = report.to_summary_dict()
+    report_payload = report.to_dict()
+    score_components = {
+        "overall_score": report.overall_score,
+        "stage_scores": {
+            stage.stage_id: stage.stage_score for stage in report.stage_reports
+        },
+    }
+    raw_summary["score_components"] = score_components
+    termination_reason = (
+        harness_result.termination.termination_code
+        or harness_result.trajectory.raw.get("termination_reason")
+    )
+    for payload in (summary_payload, report_payload):
+        payload["result_schema_version"] = RESULT_SCHEMA_VERSION
+        payload["minefield_match_count"] = len(report.minefield_matches)
+        payload["score_components"] = score_components
+        payload["termination_reason"] = termination_reason
+        payload["termination_detail"] = harness_result.termination.termination_reason
+        metadata_payload = payload.get("metadata")
+        if isinstance(metadata_payload, dict):
+            metadata_payload["result_schema_version"] = RESULT_SCHEMA_VERSION
     return _write_output_payloads(
         raw_run_dir=case_output_dir(config.runs_dir, config, case_id, "dynsteer_evaluate"),
         result_dir=case_output_dir(config.results_dir, config, case_id, "dynsteer_evaluate"),
         report_name="report.json",
-        summary=report.to_summary_dict(),
-        report=report.to_dict(),
+        summary=summary_payload,
+        report=report_payload,
         raw_summary=raw_summary,
         trajectory=trajectory,
     )
@@ -237,11 +266,13 @@ def write_default_case_outputs(
             agent_step_count=tracker.completed_count,
         )
         raw_summary = dict(harness.raw_summary_from_session(session))
+        trajectory.raw["termination_reason"] = raw_summary.get("termination_reason")
         if runtime_initial_state_summary is not None:
             raw_summary["runtime_initial_state_source"] = "harness_session"
             raw_summary["runtime_initial_state_summary"] = runtime_initial_state_summary
         raw_summary.update(
             {
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "benchmark": config.benchmark,
                 "experiment_id": config.metadata.get("experiment_id"),
                 "method": str(config.metadata.get("method") or "default"),
@@ -251,19 +282,42 @@ def write_default_case_outputs(
                 "trajectory_output": trajectory_output_summary(trajectory, runtime_metrics),
             }
         )
+        default_raw = default_result.raw
+        score_components = {
+            key: default_raw[key]
+            for key in ("similarity", "milestone_similarity", "minefield_similarity")
+            if isinstance(default_raw.get(key), (int, float))
+        }
+        native_minefield_mapping = default_raw.get("minefield_mapping")
+        minefield_match_count = (
+            sum(
+                1
+                for item in native_minefield_mapping.values()
+                if isinstance(item, dict) and float(item.get("similarity", 0.0) or 0.0) > 0.0
+            )
+            if isinstance(native_minefield_mapping, dict)
+            else 0
+        )
+        raw_summary["score_components"] = score_components
         summary = {
+            "result_schema_version": RESULT_SCHEMA_VERSION,
             "task_id": task_case.task_id,
             "benchmark": config.benchmark,
             "experiment_id": config.metadata.get("experiment_id"),
             "method": str(config.metadata.get("method") or "default"),
             "overall_score": default_result.score,
             "default_score": default_result.score,
-            "resolved": default_result.resolved,
+            "score_components": score_components,
+            "milestone_coverage": None,
             "default_prefix_execution_seconds": None,
             "effective_elapsed_seconds": None,
             "timing_available": None,
             "runtime_metrics": runtime_metrics,
+            "termination_reason": raw_summary.get("termination_reason"),
+            "termination_detail": raw_summary.get("termination_detail"),
+            "minefield_match_count": minefield_match_count,
             "metadata": {
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "benchmark": config.benchmark,
                 "experiment_id": config.metadata.get("experiment_id"),
                 "method": str(config.metadata.get("method") or "default"),
@@ -340,11 +394,33 @@ def write_replay_case_outputs(
     if default_reference is not None:
         raw_summary["default_reference"] = dict(default_reference)
     raw_summary["benchmark"] = config.benchmark
+    raw_summary["result_schema_version"] = RESULT_SCHEMA_VERSION
     raw_summary["experiment_id"] = config.metadata.get("experiment_id")
     raw_summary["trajectory_output"] = trajectory_output_summary(harness_result.trajectory, report.runtime_metrics)
     replay_execution = report.metadata.get("replay_execution")
     summary_payload = report.to_summary_dict()
     report_payload = report.to_dict()
+    score_components = {
+        "overall_score": report.overall_score,
+        "stage_scores": {
+            stage.stage_id: stage.stage_score for stage in report.stage_reports
+        },
+    }
+    raw_summary["score_components"] = score_components
+    summary_payload["result_schema_version"] = RESULT_SCHEMA_VERSION
+    report_payload["result_schema_version"] = RESULT_SCHEMA_VERSION
+    termination_reason = (
+        harness_result.termination.termination_code
+        or harness_result.trajectory.raw.get("termination_reason")
+    )
+    for payload in (summary_payload, report_payload):
+        payload["minefield_match_count"] = len(report.minefield_matches)
+        payload["score_components"] = score_components
+        payload["termination_reason"] = termination_reason
+        payload["termination_detail"] = harness_result.termination.termination_reason
+        metadata_payload = payload.get("metadata")
+        if isinstance(metadata_payload, dict):
+            metadata_payload["result_schema_version"] = RESULT_SCHEMA_VERSION
     if isinstance(replay_execution, dict):
         raw_summary["replay_execution"] = replay_execution
         summary_payload["replay_execution"] = replay_execution

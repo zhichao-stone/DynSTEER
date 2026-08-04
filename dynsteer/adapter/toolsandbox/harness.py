@@ -136,7 +136,12 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     def raw_summary_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 原生摘要。"""
         session = self._require_session(session)
-        return {"native_evaluation_skipped": True, "case_id": session.case_id}
+        return {
+            "native_evaluation_skipped": True,
+            "case_id": session.case_id,
+            "termination_reason": session.termination_reason,
+            "termination_detail": session.stop_reason,
+        }
 
     def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:
         """从 ToolSandbox 原生 evaluation 中提取 Default 结果。"""
@@ -176,7 +181,11 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             if isinstance(getattr(result, "minefield_mapping", {}), dict)
             else {},
         }
-        return BenchmarkDefaultResult(score=score, resolved=score >= 1.0, raw=raw, metrics={"turn_count": int(getattr(result, "turn_count", 0))})
+        return BenchmarkDefaultResult(
+            score=score,
+            raw=raw,
+            metrics={"turn_count": int(getattr(result, "turn_count", 0))},
+        )
 
     def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止 ToolSandbox session。"""
@@ -185,6 +194,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             raise ValueError("reason 不能为空")
         session.finished = True
         session.stop_reason = reason
+        session.termination_reason = "evaluation_policy_stop"
 
     def teardown_case(self, session: object) -> None:
         """释放 ToolSandbox role 资源并断开大对象引用。"""
@@ -304,11 +314,13 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if not bool(self._last_column_value(sandbox_db, "conversation_active")):
             session.finished = True
             session.stop_reason = "ToolSandbox conversation_active 为 false"
+            session.termination_reason = "natural_end_conversation"
             return
         latest_index = int(self._last_column_value(sandbox_db, "sandbox_message_index"))
         if latest_index >= session.initial_max_sandbox_message_index + session.max_messages:
             session.finished = True
             session.stop_reason = "ToolSandbox 达到 max_messages"
+            session.termination_reason = "max_messages"
             return
         recipient = self._last_column_value(sandbox_db, "recipient")
         role = self._role_for_recipient(session.roles, recipient)
@@ -333,20 +345,24 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             respond()
             session.context = self._get_current_context()
 
-        retry_call(
-            operation,
-            max_retries=max_retries,
-            retry_base_seconds=retry_base_seconds,
-            retry_max_seconds=retry_max_seconds,
-            logger=logger,
-            warning_message="ToolSandbox role respond 失败，准备重试",
-            extra={
-                "benchmark": self.benchmark,
-                "case_id": session.case_id,
-                "role": role_name,
-                "recipient": enum_name(recipient),
-            },
-        )
+        try:
+            retry_call(
+                operation,
+                max_retries=max_retries,
+                retry_base_seconds=retry_base_seconds,
+                retry_max_seconds=retry_max_seconds,
+                logger=logger,
+                warning_message="ToolSandbox role respond 失败，准备重试",
+                extra={
+                    "benchmark": self.benchmark,
+                    "case_id": session.case_id,
+                    "role": role_name,
+                    "recipient": enum_name(recipient),
+                },
+            )
+        except Exception:
+            session.termination_reason = "role_error"
+            raise
 
     def _sandbox_database(self, context: object, *, drop_sandbox_message_index: bool = False, get_all_history_snapshots: bool = False) -> object:
         """读取 ToolSandbox SANDBOX 数据库。"""

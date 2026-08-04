@@ -4,10 +4,11 @@ from dynsteer.evaluate.diagnostics import (
     build_stage_trace,
 )
 from dynsteer.evaluate.final import build_finish_verification
+from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.matching.frontier import advance_milestone_frontier, ready_milestones
 from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
-from dynsteer.evaluate.runtime import JudgeConfigurationError
+from dynsteer.evaluate.runtime import JudgeConfigurationError, scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
 from dynsteer.evaluate.weights import update_weights
@@ -142,6 +143,9 @@ def evaluate_checkpoint(
         return RuntimeEvaluationDecision(next_state=state, stage_result=stage_result)
 
     state.matched_settlements[milestone.milestone_id] = settlement
+    matched_snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+    if matched_snapshot is not None:
+        state.reference_anchor_snapshots[milestone.milestone_id] = matched_snapshot
     state.ready_frontier_progress_watch = None
     advance_milestone_frontier(state.milestone_frontier, milestone.milestone_id, state.matched_settlements)
     state.settlements.append(settlement)
@@ -167,6 +171,55 @@ def evaluate_checkpoint(
         return RuntimeEvaluationDecision(state, settlement, stage_result)
     stage_result.metadata["evaluation_termination"] = stop_termination.to_dict()
     return RuntimeEvaluationDecision(state, settlement, stage_result, termination=stop_termination)
+
+
+def refresh_reference_anchors(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    state: RuntimeEvaluationState,
+    boundary: Boundary,
+    scorer: GeneralScorer,
+) -> None:
+    """把仍满足原约束的已匹配 ToolSandbox milestone 引用锚点前移。"""
+    graph = task_case.milestone_graph
+    snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+    if graph is None or snapshot is None:
+        return
+
+    # 只刷新仍被未完成 milestone 动态引用的已匹配节点。
+    referenced_ids: set[str] = set()
+    for pending in graph.nodes:
+        if pending.milestone_id in state.matched_settlements:
+            continue
+        for constraint in pending.constraints:
+            metadata = constraint.metadata.get("toolsandbox")
+            reference_index = metadata.get("reference_milestone_node_index") if isinstance(metadata, dict) else None
+            if isinstance(reference_index, int) and reference_index >= 0:
+                referenced_ids.add(f"m{reference_index}")
+
+    milestone_by_id = {milestone.milestone_id: milestone for milestone in graph.nodes}
+    for milestone_id in sorted(referenced_ids & state.matched_settlements.keys()):
+        current = state.reference_anchor_snapshots.get(milestone_id)
+        if current is not None and current.after_step_index >= snapshot.after_step_index:
+            continue
+        milestone = milestone_by_id.get(milestone_id)
+        if milestone is None:
+            continue
+        context = scoring_context(
+            task_case,
+            trajectory,
+            state.matched_settlements,
+            state.reference_anchor_snapshots,
+        )
+        score = scorer.score_milestone(
+            milestone,
+            boundary,
+            trajectory,
+            trajectory.snapshots,
+            context=context,
+        )
+        if score.status == StageStatus.PASS:
+            state.reference_anchor_snapshots[milestone_id] = snapshot
 
 
 def finish_settlement(

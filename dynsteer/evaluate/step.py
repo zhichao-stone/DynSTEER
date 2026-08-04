@@ -8,6 +8,7 @@ from dynsteer.evaluate.semantic import apply_semantic_message_reviews, semantic_
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import Boundary, JsonObject, EvaluationTerminationState, Milestone, MilestoneScore, RuntimeEvaluationDecision, RuntimeEvaluationState, StageStatus, TaskCase, ThresholdConfig, Trajectory, TrajectoryStep
 from dynsteer.evaluate.scoring import GeneralScorer
+from dynsteer.evaluate.settlement import refresh_reference_anchors
 
 def evaluate_step_minefields(config: HarnessRunConfig, task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, step: TrajectoryStep, scorer: GeneralScorer) -> RuntimeEvaluationDecision | None:
     """对单条 step 执行 minefield 即时安全检查。
@@ -22,8 +23,14 @@ def evaluate_step_minefields(config: HarnessRunConfig, task_case: TaskCase, traj
     输出：
         命中 fatal minefield 且启用提前终止时返回决策，否则返回 None。
     """
-    context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
+    refresh_reference_anchors(task_case, trajectory, state, boundary, scorer)
+    context = scoring_context(
+        task_case,
+        trajectory,
+        state.matched_settlements,
+        state.reference_anchor_snapshots,
+    )
     minefield_matches, minefield_score, fatal_minefield = evaluate_minefields_at_boundary(task_case.milestone_graph, trajectory, boundary, scorer, context)
     if not minefield_matches:
         return None
@@ -72,8 +79,13 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
     """
     if state.milestone_frontier is None:
         raise ValueError("RuntimeEvaluationState 缺少 milestone_frontier")
-    context = scoring_context(task_case, trajectory, state.matched_settlements)
     boundary = candidate_boundary_for_current_step(trajectory, step)
+    context = scoring_context(
+        task_case,
+        trajectory,
+        state.matched_settlements,
+        state.reference_anchor_snapshots,
+    )
     analysis = analyze_milestone_step(trajectory, step, boundary, state.matched_settlements, state.milestone_frontier, closure_steps=closure_steps or [step], scorer=scorer, context=context)
     if analysis.hit is None:
         if analysis.attempt_detail is not None:

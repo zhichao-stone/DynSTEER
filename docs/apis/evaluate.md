@@ -87,6 +87,10 @@ selector/operator 详细规范见 [constraints.md](constraints.md)。
 
 ToolSandbox 专用 scorer 对 `preserve_state` 约束会把 `target_dataframe` 解析为 runtime reference snapshot；`set_state`、`emit_message`、`tool_call` 等其他语义仍使用 `constraint.expected`。诊断 evidence 会显示 `target_source=reference_snapshot` 或 `target_source=constraint.expected`，便于区分真实目标与 adapted case 的序列化占位。
 
+ToolSandbox 已匹配 milestone 的首次 settlement 保持不变；若该 milestone 仍被未完成节点引用，并在新 boundary 上仍为 PASS，`refresh_reference_anchors(...)` 只把 `RuntimeEvaluationState.reference_anchor_snapshots` 前移到新快照。`scoring_context(...)` 优先使用该锚点，因此动态 extractor 和 preserve-state 读取最新仍满足约束的参考状态，而不会重算阶段分、改变 coverage 或撤销 policy-stop。
+
+`tool_trace_dependant_similarity` 的工具语义使用 `argument_match_policy=reference_derived`、reference milestone index 和 extractor 名称，不把缺少静态实参显示成字面 `arguments={}`。真正零参数工具仍使用 `argument_match_policy=exact` 和空参数对象。
+
 ## 阶段结果
 
 `StageEvaluationResult` 只保留逐维置信度/不确定度：

@@ -82,6 +82,18 @@ def constraint_from_snapshot_constraint(constraint_id: str, constraint: object) 
                     f"constraint_id={constraint_id}, sender={sender}, recipient={recipient}"
                 )
             stage_goal_semantics = tool_call_semantics
+            if (
+                snapshot_constraint_name == "tool_trace_dependant_similarity"
+                and stage_goal_semantics.get("kind") == StageGoalSemanticKind.TOOL_CALL.value
+            ):
+                stage_goal_semantics.pop("arguments", None)
+                stage_goal_semantics.update(
+                    {
+                        "argument_match_policy": "reference_derived",
+                        "reference_milestone_node_index": reference_index,
+                        "extractor": snapshot_constraint_kwargs.get("extractor"),
+                    }
+                )
     else:
         expected = dict(rows[0]) if len(rows) == 1 and isinstance(rows[0], dict) else list(rows)
         stage_goal_semantics = {
@@ -175,6 +187,7 @@ def _sandbox_tool_call_semantics(
     return {
         "kind": StageGoalSemanticKind.TOOL_CALL.value,
         "tool_name": str(tool_call["name"]),
+        "argument_match_policy": "exact",
         "arguments": tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {},
         "evidence_source": "trajectory_or_structured_scorer",
         "user_visible_required": False,

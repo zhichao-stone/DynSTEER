@@ -15,7 +15,7 @@ def case_score(value: object) -> float:
     if isinstance(value, int | float | bool):
         return clamp(float(value))
     if isinstance(value, Mapping):
-        for key in ("score", "similarity", "milestone_similarity", "resolved"):
+        for key in ("score", "similarity", "milestone_similarity"):
             if key in value:
                 return case_score(value[key])
     raise ValueError("无法从输入中读取 case score")
@@ -107,55 +107,50 @@ def rank_tau_by_repeat(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     return output
 
 
-def success_consistency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
-    """按 case identity 配对 DEFAULT 与各 replay method 的成功结论。"""
-    if results is None:
-        raise ValueError("results 不能为空")
-    default_results = {
-        (result.benchmark, result.model_id, result.case_id, result.repeat_index): result
-        for result in results
-        if result.method == ExperimentMethod.DEFAULT
+def score_delta(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """按 case identity 计算 DEFAULT 与 replay 的连续分差。"""
+    defaults = {
+        (item.benchmark, item.model_id, item.case_id, item.repeat_index): item
+        for item in results
+        if item.method == ExperimentMethod.DEFAULT and item.score is not None
     }
-    buckets: dict[tuple[str, str], list[tuple[ExperimentCaseResult, ExperimentCaseResult]]] = defaultdict(list)
-    for result in results:
-        if not result.method.value.startswith("dynsteer_replay"):
+    buckets: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for item in results:
+        if not item.method.value.startswith("dynsteer_replay") or item.score is None:
             continue
-        identity = (result.benchmark, result.model_id, result.case_id, result.repeat_index)
-        default_result = default_results.get(identity)
-        if default_result is None or default_result.successful is None or result.successful is None:
-            continue
-        buckets[result.method.value, result.benchmark].append((default_result, result))
-    table: JsonObject = {}
-    for (method, benchmark), pairs in sorted(buckets.items()):
-        inconsistent = [(default, replay) for default, replay in pairs if default.successful != replay.successful]
-        default_success_replay_failure = sum(
-            1 for default, replay in inconsistent if default.successful is True and replay.successful is False
-        )
-        default_failure_replay_success = sum(
-            1 for default, replay in inconsistent if default.successful is False and replay.successful is True
-        )
-        method_table = table.setdefault(method, {})
-        method_table[benchmark] = {
-            "pair_count": len(pairs),
-            "consistent_count": len(pairs) - len(inconsistent),
-            "inconsistent_count": len(inconsistent),
-            "agreement_rate": (len(pairs) - len(inconsistent)) / len(pairs),
-            "default_success_replay_failure_count": default_success_replay_failure,
-            "default_failure_replay_success_count": default_failure_replay_success,
-            "inconsistent_cases": [
-                {
-                    "model": default.model_id,
-                    "repeat": default.repeat_index,
-                    "case": default.case_id,
-                    "default_success": default.successful,
-                    "replay_success": replay.successful,
-                    "default_score": default.score,
-                    "replay_score": replay.score,
-                }
-                for default, replay in inconsistent
-            ],
+        default = defaults.get((item.benchmark, item.model_id, item.case_id, item.repeat_index))
+        if default is not None and default.score is not None:
+            buckets[item.method.value, item.benchmark].append(case_score(item.score) - case_score(default.score))
+    return {
+        method: {
+            benchmark: {"pair_count": len(values), "mean_delta": _average(values)}
+            for (current_method, benchmark), values in sorted(buckets.items())
+            if current_method == method
         }
-    return table
+        for method in sorted({key[0] for key in buckets})
+    }
+
+
+def categorical_counts(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """汇总 replay coverage、minefield 和结构化终止原因。"""
+    coverage: dict[str, int] = defaultdict(int)
+    minefield = {"hit": 0, "not_hit": 0, "unknown": 0}
+    termination: dict[str, int] = defaultdict(int)
+    for item in results:
+        if item.milestone_coverage is not None:
+            coverage[item.milestone_coverage] += 1
+        if item.minefield_match_count is None:
+            minefield["unknown"] += 1
+        elif item.minefield_match_count > 0:
+            minefield["hit"] += 1
+        else:
+            minefield["not_hit"] += 1
+        termination[item.termination_reason or "unknown"] += 1
+    return {
+        "coverage_counts": dict(sorted(coverage.items())),
+        "minefield_counts": minefield,
+        "termination_counts": dict(sorted(termination.items())),
+    }
 
 def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
     """计算带并列处理的 Kendall tau-b。
@@ -193,25 +188,20 @@ def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
     return (concordant - discordant) / denominator
 
 def repeat_statistics(results: Sequence[ExperimentCaseResult]) -> JsonObject:
-    """按 repeat/case 聚合分数与成功率，并计算总体标准差。"""
+    """按 repeat/case 聚合连续分，并计算总体标准差。"""
     groups: dict[tuple[str, str, str], dict[int, list[ExperimentCaseResult]]] = defaultdict(lambda: defaultdict(list))
     for result in results:
         groups[(result.method.value, result.benchmark, result.model_id)][result.repeat_index].append(result)
     output: JsonObject = {}
     for (method, benchmark, model), repeats in sorted(groups.items()):
-        repeat_scores, repeat_rates = {}, {}
+        repeat_scores = {}
         for repeat, items in sorted(repeats.items()):
             scores = [case_score(item.score) for item in items if item.score is not None]
-            successes = [item.successful for item in items if item.successful is not None]
             repeat_scores[str(repeat)] = _average(scores)
-            repeat_rates[str(repeat)] = _average([1.0 if value else 0.0 for value in successes])
         output.setdefault(method, {}).setdefault(benchmark, {})[model] = {
             "repeat_count": len(repeats), "repeat_scores": repeat_scores,
             "mean_score": _average(list(repeat_scores.values())),
             "population_stddev": _population_stddev(list(repeat_scores.values())),
-            "repeat_success_rates": repeat_rates,
-            "mean_success_rate": _average(list(repeat_rates.values())),
-            "success_rate_stddev": _population_stddev(list(repeat_rates.values())),
         }
     return output
 
@@ -287,12 +277,14 @@ def write_metric_tables(results: Sequence[ExperimentCaseResult], output_dir: Pat
         raise ValueError("results 和 output_dir 不能为空")
     output_dir.mkdir(parents=True, exist_ok=True)
     scores = model_scores(results)
+    counts = categorical_counts(results)
     metrics: JsonObject = {
         "efficiency": aggregate_efficiency(results),
         "cost": aggregate_cost(results),
         "discriminability_score": _discriminability_table(scores),
-        "rank_tau": _rank_tau_table(scores),
-        "success_consistency": success_consistency(results),
+        "score_rank_tau": _rank_tau_table(scores),
+        "score_delta": score_delta(results),
+        **counts,
         "repeat_statistics": repeat_statistics(results),
         "rank_tau_by_repeat": rank_tau_by_repeat(results),
     }

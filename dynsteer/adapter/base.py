@@ -13,14 +13,12 @@ class BenchmarkDefaultResult:
 
     入参：
         score: 原生主分数，已归一到 [0, 1]。
-        resolved: benchmark 是否判定为 resolved；无法判断时为 None。
         raw: 原生未压缩摘要。
         metrics: 原生评估统计。
     输出：
         `to_dict()` 返回 JSON 可序列化结构。
     """
     score: float
-    resolved: bool | None = None
     raw: JsonObject = field(default_factory=dict)
     metrics: JsonObject = field(default_factory=dict)
 
@@ -32,7 +30,6 @@ class BenchmarkDefaultResult:
         """转换为 JSON 可序列化字典。"""
         return {
             "score": self.score,
-            "resolved": self.resolved,
             "raw": dict(self.raw),
             "metrics": dict(self.metrics),
         }

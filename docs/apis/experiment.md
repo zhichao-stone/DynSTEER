@@ -2,12 +2,14 @@
 
 ## 元评估指标
 
-`metrics.json` 不再输出 PSEP，保留 `efficiency`、`cost` 和 `rank_tau`，并新增：
+`metrics.json` 不再输出 PSEP 或二元成功一致率，保留连续分与运行统计，并新增：
 
 - `discriminability_score`：按 method/benchmark 输出 `0.01` 至 `0.05` 五个阈值。单阈值公式为 `(population_stddev / mean_score) * sqrt(significant_pair_count / pair_count)`，显著模型对要求归一化分差严格大于 epsilon。每项同时输出模型数、模型对数、均值、总体标准差、显著模型对数量/比例和最终 score；模型不足两个时 score 为 `null`，全零均值时为 `0.0`。
-- `success_consistency`：按相同 benchmark/model/case/repeat 配对 DEFAULT 和各 replay 方法，输出配对数、一致/不一致数、agreement rate、两个不一致方向的计数，以及包含双方 success 和 score 的不一致 case 清单。缺失任一侧成功结论的样本不进入分母。
+- `score_delta`：按相同 benchmark/model/case/repeat 配对 DEFAULT 与 replay，输出连续分差的配对数和均值。
+- `coverage_counts`、`minefield_counts`、`termination_counts`：分别汇总 replay 覆盖状态、minefield 命中状态和结构化终止原因。
+- `score_rank_tau`：按模型连续均分计算 DEFAULT 与 replay 的排名一致性。
 
-`ExperimentCaseResult.successful` 对 DEFAULT 读取 `resolved`，对 replay 读取 `milestone_coverage == "full"`；不会额外持久化重复的 success 字段。
+`ExperimentCaseResult` 不包含 `resolved` 或 `successful`。`milestone_coverage` 仅表示 replay 的结构化覆盖状态，不转换为 benchmark success。
 
 实验 repeat 从 `0` 开始计数。只要存在 experiment metadata，case 输出位于 `<benchmark>/<model>/r<repeat_index>/<method>/<case>`，并在 metadata 中记录 `repeat_count`。`metrics.json` 额外包含 `repeat_statistics` 与 `rank_tau_by_repeat`，统计先按 repeat/case 聚合。
 
@@ -73,7 +75,7 @@ Default 杈撳嚭鐨?`trajectory.json` 浼氭惡甯︽湰娆?session 鐨?`runtim
 
 - `index.json`：按 benchmark、method、model、repeat 和 case 分层组织。
 - `scores.json`：`method -> benchmark -> model_id -> average_score`。
-- `metrics.json`：`efficiency`、`cost`、多阈值 `discriminability_score`、`rank_tau` 与 `success_consistency`。
+- `metrics.json`：`efficiency`、`cost`、多阈值 `discriminability_score`、`score_rank_tau`、`score_delta`、coverage/minefield/termination 计数。
 `index.json` 鐨?repeat 鑺傜偣鍙繚鐣?`cases`锛宑ase 鍙跺瓙鍙繚鐣欑粨鏋滄湰韬紝涓嶅啀閲嶅鍐?`experiment_id`銆乣benchmark`銆乣case_id`銆乣model_id`銆?
 ```json
 {
@@ -90,7 +92,12 @@ Default 杈撳嚭鐨?`trajectory.json` 浼氭惡甯︽湰娆?session 鐨?`runtim
                                     "score": 1.0,
                                     "default_score": 1.0,
                                     "dynsteer_score": null,
-                                    "resolved": true
+                                    "score_components": {
+                                        "similarity": 1.0,
+                                        "milestone_similarity": 1.0,
+                                        "minefield_similarity": 1.0
+                                    },
+                                    "termination_reason": "natural_end_conversation"
                                 }
                             }
                         }
@@ -110,10 +117,11 @@ case 浜х墿浠嶅鐢?harness 鐩綍锛?
 - `metrics.json`：`efficiency` 汇总耗时与步骤数，`cost` 汇总 token，其余字段提供模型区分度、排序一致性与 DEFAULT/replay 成功一致性。
 ## 鎸囨爣
 
-- `case_score(value)`：把 bool、数字或包含 `score/resolved/similarity` 的对象归一到 `[0, 1]`。
+- `case_score(value)`：把数字或包含 `score/similarity/milestone_similarity` 的对象归一到 `[0, 1]`。
 - `model_scores(results)`：计算 `S_{m,e,b}`。
 - `discriminability_score(scores, epsilon)`：计算单阈值 DS 及其组成字段。
-- `success_consistency(results)`：配对 DEFAULT 与 replay 的成功结论。
+- `score_delta(results)`：配对 DEFAULT 与 replay 的连续分数并计算差值。
+- `categorical_counts(results)`：汇总 coverage、minefield 与 termination 分类计数。
 - `aggregate_efficiency(results)` 与 `aggregate_cost(results)`：汇总效率和成本。
 ## 闄勫姞璇存槑
 
