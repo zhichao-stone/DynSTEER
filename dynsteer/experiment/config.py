@@ -98,6 +98,7 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
                                 model_id=model_id,
                                 repeat_index=repeat_index,
                                 method=method,
+                                repeat_count=repeats,
                                 judge_profile=judge_profile,
                                 judge_config=judge_config,
                                 threshold_profile=threshold_name,

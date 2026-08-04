@@ -662,6 +662,11 @@ def _evaluate_stage(
     }
     stage_result.metadata["evaluation_strategy"] = active_strategy.to_dict()
     stage_result.metadata["structural_failure"] = structural_failure
+    stage_result.metadata["failure_basis"] = (
+        "structural_hard_constraint" if structural_failure else
+        "fatal_minefield" if stage_result.fatal_minefield_score >= thresholds.fatal_minefield_threshold else
+        "quality_score" if stage_result.stage_score < thresholds.fail_threshold else None
+    )
     if low_score_dimensions:
         stage_result.metadata["low_score_dimensions"] = low_score_dimensions
     if semantic_review_metadata is not None:

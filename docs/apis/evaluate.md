@@ -26,6 +26,8 @@ result = DynSTEEREvaluator.from_env().evaluate(harness, config, task_case)
 
 ## Replay 流程
 
+阶段的 hard constraint 与质量分数是两层判断：hard pass 不保证 stage pass；质量分数低于 `0.4` 仍会触发原有 `evaluation_policy_stop`。停止与阶段元数据统一记录 `failure_basis`（如 `structural_hard_constraint`、`quality_score`、`fatal_minefield`、`ready_frontier_no_progress` 或 `milestone_predecessor_gap`）。
+
 ```python
 result = evaluator.evaluate_replay(task_case, trajectory, scorer, config)
 ```

@@ -89,6 +89,7 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
                 termination_code = f"milestone_predecessor_gap:{milestone_id}"
                 termination_detail = dict(analysis.blocked_detail)
                 termination_detail["code"] = termination_code
+                termination_detail.setdefault("failure_basis", "milestone_predecessor_gap")
                 return RuntimeEvaluationDecision(state, termination=EvaluationTerminationState(should_stop=True, termination_code=termination_code, termination_reason=blocked_milestone_termination_reason(analysis.blocked_detail), termination_detail=termination_detail))
         return None
     milestone, boundary, milestone_score = analysis.hit
@@ -142,4 +143,5 @@ def _ready_frontier_no_progress_decision(config: HarnessRunConfig, state: Runtim
     if termination_detail is None:
         return None
     termination_code = str(termination_detail.get("code") or "ready_frontier_no_progress")
+    termination_detail.setdefault("failure_basis", "ready_frontier_no_progress")
     return RuntimeEvaluationDecision(state, termination=EvaluationTerminationState(should_stop=True, termination_code=termination_code, termination_reason=ready_frontier_no_progress_termination_reason(termination_detail), termination_detail=termination_detail))

@@ -9,6 +9,8 @@
 
 `ExperimentCaseResult.successful` 对 DEFAULT 读取 `resolved`，对 replay 读取 `milestone_coverage == "full"`；不会额外持久化重复的 success 字段。
 
+实验 repeat 从 `0` 开始计数。只要存在 experiment metadata，case 输出位于 `<benchmark>/<model>/r<repeat_index>/<method>/<case>`，并在 metadata 中记录 `repeat_count`。`metrics.json` 额外包含 `repeat_statistics` 与 `rank_tau_by_repeat`，统计先按 repeat/case 聚合。
+
 ## Agent step 计数
 
 `runtime_metrics.step_count` 表示已闭合的 Agent outbound 数量，不表示 LLM 请求轮数。一次模型响应中的多个并行 tool calls 分别计数：两个调用都返回 result 时计 2，尚未返回 result 的 pending 调用不计数。`average_agent_step_count` 聚合相同口径；`raw_step_count` 与 `average_raw_step_count` 仍统计完整 raw trajectory steps，不受闭包分组影响。

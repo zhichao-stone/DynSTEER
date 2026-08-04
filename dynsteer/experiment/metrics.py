@@ -74,6 +74,11 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
         score = 0.0 if mean_score == 0 else (
             population_stddev / mean_score
         ) * math.sqrt(significant_pair_ratio)
+    model_pairs = [
+        {"left_model": left, "right_model": right, "absolute_difference": abs(case_score(scores[left]) - case_score(scores[right])), "significant": abs(case_score(scores[left]) - case_score(scores[right])) > epsilon}
+        for index, left in enumerate(sorted(scores))
+        for right in sorted(scores)[index + 1:]
+    ]
     return {
         "epsilon": epsilon,
         "model_count": model_count,
@@ -83,7 +88,23 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
         "significant_pair_count": significant_pair_count,
         "significant_pair_ratio": significant_pair_ratio,
         "score": score,
+        "model_pairs": model_pairs,
     }
+
+def rank_tau_by_repeat(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """仅在相同 repeat 内配对 DEFAULT 与 replay 的模型排名。"""
+    grouped: dict[tuple[str, str, int, str], dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(dict))
+    for result in results:
+        if result.score is not None:
+            grouped[(result.method.value, result.benchmark, result.repeat_index, result.model_id)][result.method.value][result.case_id] = case_score(result.score)
+    output: JsonObject = {}
+    for (method, benchmark, repeat, model), _ in grouped.items():
+        if method == ExperimentMethod.DEFAULT.value:
+            continue
+        left = {r.case_id: case_score(r.score) for r in results if r.method == ExperimentMethod.DEFAULT and r.benchmark == benchmark and r.model_id == model and r.repeat_index == repeat and r.score is not None}
+        right = {r.case_id: case_score(r.score) for r in results if r.method.value == method and r.benchmark == benchmark and r.model_id == model and r.repeat_index == repeat and r.score is not None}
+        output.setdefault(method, {}).setdefault(benchmark, {})[str(repeat)] = kendall_tau(left, right)
+    return output
 
 
 def success_consistency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
@@ -171,6 +192,35 @@ def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
         return 0.0
     return (concordant - discordant) / denominator
 
+def repeat_statistics(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """按 repeat/case 聚合分数与成功率，并计算总体标准差。"""
+    groups: dict[tuple[str, str, str], dict[int, list[ExperimentCaseResult]]] = defaultdict(lambda: defaultdict(list))
+    for result in results:
+        groups[(result.method.value, result.benchmark, result.model_id)][result.repeat_index].append(result)
+    output: JsonObject = {}
+    for (method, benchmark, model), repeats in sorted(groups.items()):
+        repeat_scores, repeat_rates = {}, {}
+        for repeat, items in sorted(repeats.items()):
+            scores = [case_score(item.score) for item in items if item.score is not None]
+            successes = [item.successful for item in items if item.successful is not None]
+            repeat_scores[str(repeat)] = _average(scores)
+            repeat_rates[str(repeat)] = _average([1.0 if value else 0.0 for value in successes])
+        output.setdefault(method, {}).setdefault(benchmark, {})[model] = {
+            "repeat_count": len(repeats), "repeat_scores": repeat_scores,
+            "mean_score": _average(list(repeat_scores.values())),
+            "population_stddev": _population_stddev(list(repeat_scores.values())),
+            "repeat_success_rates": repeat_rates,
+            "mean_success_rate": _average(list(repeat_rates.values())),
+            "success_rate_stddev": _population_stddev(list(repeat_rates.values())),
+        }
+    return output
+
+def _population_stddev(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    mean = sum(values) / len(values)
+    return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
 def aggregate_efficiency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     """汇总评估耗时与 Agent 步骤数。"""
     if results is None:
@@ -243,6 +293,8 @@ def write_metric_tables(results: Sequence[ExperimentCaseResult], output_dir: Pat
         "discriminability_score": _discriminability_table(scores),
         "rank_tau": _rank_tau_table(scores),
         "success_consistency": success_consistency(results),
+        "repeat_statistics": repeat_statistics(results),
+        "rank_tau_by_repeat": rank_tau_by_repeat(results),
     }
     (output_dir / "scores.json").write_text(json.dumps(json_safe(scores), ensure_ascii=False, indent=4), encoding="utf-8")
     (output_dir / "metrics.json").write_text(json.dumps(json_safe(metrics), ensure_ascii=False, indent=4), encoding="utf-8")

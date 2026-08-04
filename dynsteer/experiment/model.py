@@ -47,6 +47,7 @@ class ExperimentRunSpec:
     model_id: str
     repeat_index: int
     method: ExperimentMethod
+    repeat_count: int = 1
     judge_profile: str | None = None
     judge_config: JsonObject = field(default_factory=dict)
     threshold_profile: str | None = None
@@ -67,6 +68,8 @@ class ExperimentRunSpec:
             raise ValueError("model_id 不能为空")
         if self.repeat_index < 0:
             raise ValueError("repeat_index 不能为负数")
+        if self.repeat_count < 1 or self.repeat_index >= self.repeat_count:
+            raise ValueError("repeat_index must satisfy 0 <= repeat_index < repeat_count")
 
     def to_metadata(self) -> JsonObject:
         metadata: JsonObject = dict(self.metadata)
@@ -75,6 +78,7 @@ class ExperimentRunSpec:
             "method": self.method.value,
             "model_id": self.model_id,
             "repeat_index": self.repeat_index,
+            "repeat_count": self.repeat_count,
             "judge_profile": self.judge_profile,
             "judge": dict(self.judge_config),
             "threshold_profile": self.threshold_profile,

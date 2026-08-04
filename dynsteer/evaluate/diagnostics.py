@@ -67,7 +67,8 @@ def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
             "row_count": len(rows) if isinstance(rows, list) else None,
             "columns": list(columns) if isinstance(columns, list) else None,
         }
-    return {
+    stage_goal_semantics = constraint.stage_goal_semantics if isinstance(constraint.stage_goal_semantics, dict) else {}
+    payload = {
         "constraint_id": constraint.constraint_id,
         "target": constraint.target.value,
         "namespace": constraint.namespace,
@@ -81,6 +82,12 @@ def constraint_summary_to_dict(constraint: Constraint) -> JsonObject:
         "expected_summary": expected_summary,
         "metadata": dict(constraint.metadata),
     }
+    if stage_goal_semantics:
+        payload["stage_goal_semantics"] = json_safe(stage_goal_semantics)
+        if stage_goal_semantics.get("kind") == "tool_call":
+            payload["tool_name"] = stage_goal_semantics.get("tool_name")
+            payload["arguments"] = json_safe(stage_goal_semantics.get("arguments", {}))
+    return payload
 
 
 def _format_number(value: object) -> str:
@@ -135,7 +142,9 @@ def _constraint_goal_hint(constraint: Constraint | None) -> str:
         namespace = constraint.namespace or "state"
         return f"Need to preserve {namespace} state relative to {preserve_state_reference_label(constraint)}."
     if kind == "tool_call":
-        return "Need to call the required tool."
+        tool_name = str(semantics.get("tool_name") or "unknown")
+        arguments = compact_json_text(semantics.get("arguments", {}), 240)
+        return f"Required tool call not matched: tool={tool_name}, expected_arguments={arguments}"
 
     metadata = constraint.metadata.get("toolsandbox")
     if isinstance(metadata, dict):
@@ -175,6 +184,10 @@ def _constraint_failure_detail(constraint: Constraint | None, score: JsonObject)
         "evidence": [compact_text(item, 220) for item in evidence[:2]] if isinstance(evidence, list) else [],
         "actual_excerpt": actual_excerpt,
     }
+    if detail["semantic_kind"] == "tool_call":
+        semantics = constraint.stage_goal_semantics if constraint is not None and isinstance(constraint.stage_goal_semantics, dict) else {}
+        detail["expected_tool_name"] = semantics.get("tool_name")
+        detail["expected_tool_arguments"] = json_safe(semantics.get("arguments", {}))
     if constraint is not None:
         detail["expected_summary"] = constraint_summary_to_dict(constraint)["expected_summary"]
         detail["expected_excerpt"] = constraint_expected_excerpt(constraint)
@@ -481,6 +494,15 @@ def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
     first_tool_index: int | None = None
     tool_call_count = 0
     latest_tool_call: TrajectoryStep | None = None
+    pending_calls: dict[str, TrajectoryStep] = {}
+    unmatched_calls: list[TrajectoryStep] = []
+    for candidate in steps:
+        if candidate.tool_call is not None or candidate.event_type == EventType.TOOL_CALL:
+            call_id = str(candidate.raw.get("openai_tool_call_id") or candidate.raw.get("tool_call_id") or "")
+            if call_id:
+                pending_calls[call_id] = candidate
+            else:
+                unmatched_calls.append(candidate)
 
     for step in steps:
         if step.actor == Actor.USER and first_user_index is None:
@@ -494,19 +516,36 @@ def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
         if step.tool_result is None and step.event_type != EventType.TOOL_RESULT:
             continue
         result = step.tool_result
-        tool_name = latest_tool_call.tool_call.name if latest_tool_call and latest_tool_call.tool_call else None
+        raw_name = step.raw.get("openai_function_name")
+        call_id = str(step.raw.get("openai_tool_call_id") or step.raw.get("tool_call_id") or "")
+        matched_call = pending_calls.get(call_id) if call_id else None
+        if isinstance(raw_name, str) and raw_name.strip():
+            tool_name = raw_name.strip()
+            attribution_source = "result.openai_function_name"
+        elif matched_call is not None and matched_call.tool_call is not None:
+            tool_name = matched_call.tool_call.name
+            attribution_source = "result.openai_tool_call_id"
+        elif len(unmatched_calls) == 1 and latest_tool_call is not None and latest_tool_call.tool_call is not None:
+            tool_name = latest_tool_call.tool_call.name
+            attribution_source = "single_unmatched_call_fallback"
+        else:
+            tool_name = None
+            attribution_source = "ambiguous"
         success = bool(result.success) if result is not None else False
         exception = result.exception if result is not None else None
         content = result.content if result is not None else None
         if not success or exception:
             failed_tool_results.append(
-                {"step_index": step.index, "step_id": step.step_id, "tool_name": tool_name, "exception": exception}
+                {"step_index": step.index, "step_id": step.step_id, "tool_name": tool_name, "tool_call_id": call_id or None, "attribution_source": attribution_source, "attribution_status": "ambiguous" if tool_name is None else "matched", "exception": exception}
             )
         if success and _is_empty_tool_content(content):
             empty = {
                 "step_index": step.index,
                 "step_id": step.step_id,
                 "tool_name": tool_name,
+                "tool_call_id": call_id or None,
+                "attribution_source": attribution_source,
+                "attribution_status": "ambiguous" if tool_name is None else "matched",
                 "content": content,
                 **_classify_empty_tool_result(tool_name),
             }

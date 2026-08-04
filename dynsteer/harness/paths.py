@@ -14,6 +14,9 @@ def case_output_dir(base_dir: Path, config: HarnessRunConfig, case_id: str, meth
         if model_id is None:
             raise ValueError("experiment_id 存在时 model_id 不能为空")
         case_dir = case_dir / model_id
+        repeat_index = config.metadata.get("repeat_index")
+        if repeat_index is not None:
+            case_dir = case_dir / f"r{repeat_index}"
     return case_dir / method / case_id
 
 

@@ -81,6 +81,13 @@ class StageStatus(str, Enum):
     AMBIGUOUS = "ambiguous"
     INVALID = "invalid"
 
+class EvaluationFailureBasis(str, Enum):
+    STRUCTURAL_HARD_CONSTRAINT = "structural_hard_constraint"
+    QUALITY_SCORE = "quality_score"
+    FATAL_MINEFIELD = "fatal_minefield"
+    READY_FRONTIER_NO_PROGRESS = "ready_frontier_no_progress"
+    MILESTONE_PREDECESSOR_GAP = "milestone_predecessor_gap"
+
 class StageGoalSemanticKind(str, Enum):
     SET_STATE = "set_state"
     PRESERVE_STATE = "preserve_state"
