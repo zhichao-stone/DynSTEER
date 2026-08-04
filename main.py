@@ -8,6 +8,7 @@ from typing import Optional
 
 from dynsteer.adapter.loader import adapted_case_path, load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
+from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
 from dynsteer.experiment.runner import run_experiment
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
@@ -80,6 +81,29 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
     return adapted_paths
 
 
+def _adapt_only_experiment(config_path: Path | str, force_adapt: bool = False) -> list[Path]:
+    """仅适配统一实验配置中涉及的 benchmark 数据，并返回 adapted case 路径。"""
+    config = load_experiment_config(config_path)
+    specs = expand_experiment_matrix(config)
+    grouped: dict[tuple[str, str], tuple[HarnessRunConfig, list[str]]] = {}
+    for spec in specs:
+        harness_config = build_harness_config(spec)
+        key = (harness_config.benchmark, str(harness_config.data_root.resolve()))
+        if key not in grouped:
+            grouped[key] = (harness_config, [])
+        config_for_group, case_ids = grouped[key]
+        for case_id in harness_config.case_ids or ():
+            if case_id not in case_ids:
+                case_ids.append(case_id)
+        grouped[key] = (config_for_group, case_ids)
+
+    adapted_paths: list[Path] = []
+    for harness_config, case_ids in grouped.values():
+        grouped_config = replace(harness_config, case_ids=tuple(case_ids))
+        adapted_paths.extend(_adapt_only_configs([grouped_config], force_adapt=force_adapt))
+    return adapted_paths
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """主实验入口：加载 benchmark 配置列表并执行评估。"""
     args = _parse_args(argv)
@@ -94,6 +118,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise ValueError("--workers 必须大于 0")
 
         if args.experiment_config is not None:
+            if args.only_adapt:
+                adapted_paths = _adapt_only_experiment(args.experiment_config, force_adapt=bool(args.force_adapt))
+                logger.info("数据适配完成，输出 case 数量: %s", len(adapted_paths), extra={"case_count": len(adapted_paths)})
+                for path in adapted_paths:
+                    print(str(path))
+                return 0
             results = run_experiment(
                 Path(args.experiment_config),
                 workers=int(args.workers),
