@@ -121,8 +121,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.only_adapt:
                 adapted_paths = _adapt_only_experiment(args.experiment_config, force_adapt=bool(args.force_adapt))
                 logger.info("数据适配完成，输出 case 数量: %s", len(adapted_paths), extra={"case_count": len(adapted_paths)})
-                for path in adapted_paths:
-                    print(str(path))
                 return 0
             results = run_experiment(
                 Path(args.experiment_config),
@@ -132,8 +130,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 no_sum=bool(args.no_sum),
             )
             logger.info("统一实验完成，case结果数量: %s", len(results), extra={"case_count": len(results)})
-            for result in results:
-                print(f"{result.benchmark}/{result.method.value}/{result.model_id}/{result.case_id}")
             return 0
 
         if args.benchmark is None:
@@ -147,8 +143,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.only_adapt:
             adapted_paths = _adapt_only_configs(configs, force_adapt=bool(args.force_adapt))
             logger.info("数据适配完成，输出 case 数量: %s", len(adapted_paths), extra={"case_count": len(adapted_paths)})
-            for path in adapted_paths:
-                print(str(path))
             return 0
 
         outputs: list[HarnessEvaluationOutput] = run_harness_configs(
@@ -158,8 +152,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             force_eval=bool(args.force_eval),
         )
         logger.info("评估完成，输出报告数量: %s", len(outputs), extra={"report_count": len(outputs)})
-        for output in outputs:
-            print(str(output.report_path))
         return 0
     except ValueError as exc:
         logger.exception("benchmark 输入解析失败", extra={"error": str(exc)})
