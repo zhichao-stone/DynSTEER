@@ -119,7 +119,10 @@ def run_agentcompass_case(
     attempts = raw_detail.get("attempts")
     if not isinstance(attempts, Mapping) or len(attempts) != 1:
         raise ValueError(f"AgentCompass detail attempts 必须恰好包含一次尝试: {case_id}")
-    sanitized = _sanitize_detail(normalized, raw_detail, run_dir, detail_path, run_key, run_id)
+    raw_attempt = next(iter(attempts.values()))
+    if not isinstance(raw_attempt, Mapping):
+        raise TypeError("AgentCompass attempt 必须是对象")
+    sanitized = _sanitize_detail(normalized, str(raw_detail["task_id"]), raw_attempt, run_dir, detail_path, run_key, run_id)
     logger.info(
         "agentcompass_case_completed",
         extra={"事件": "AgentCompass单任务完成", "benchmark": normalized, "case_id": case_id, "run_id": run_id, "detail_path": str(detail_path)},
@@ -243,20 +246,14 @@ def _run_identity(config: HarnessRunConfig, benchmark: str, case_id: str) -> tup
 
 def _sanitize_detail(
     benchmark: str,
-    raw_detail: Mapping[str, object],
+    task_id: str,
+    raw_attempt: Mapping[str, object],
     run_dir: Path,
     detail_path: Path,
     run_key: str,
     run_id: str,
 ) -> JsonObject:
     """将原始 detail 投影为 benchmark 所需的严格白名单结构。"""
-    task_id = raw_detail.get("task_id")
-    attempts = raw_detail.get("attempts")
-    if not isinstance(task_id, str) or not task_id or not isinstance(attempts, Mapping) or len(attempts) != 1:
-        raise ValueError("AgentCompass detail task_id/attempts schema 不合法")
-    raw_attempt = next(iter(attempts.values()))
-    if not isinstance(raw_attempt, Mapping):
-        raise TypeError("AgentCompass attempt 必须是对象")
     status = raw_attempt.get("status")
     if not isinstance(status, str) or status not in _STATUS_VALUES:
         raise ValueError(f"AgentCompass attempt status 不合法: {status}")

@@ -27,12 +27,13 @@ def required_stage_goal_keys(graph: MilestoneGraph) -> list[str]:
     if graph is None:
         raise ValueError("graph 不能为空")
     keys: list[str] = []
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
     for milestone in graph.nodes:
         if milestone is None or not milestone.milestone_id:
             raise ValueError("milestone 不能为空")
-        anchor_id = milestone.stage_anchor_predecessor_id
-        if not isinstance(anchor_id, str) or not anchor_id:
-            raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
+        anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
         keys.append(stage_goal_key(anchor_id, milestone.milestone_id))
     return keys
 

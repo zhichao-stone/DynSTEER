@@ -24,6 +24,20 @@ class AgentCompassRunData:
     final_state: JsonObject | None
 
 
+def agentcompass_run_summary(detail: JsonObject, summary: JsonObject, score_source: str) -> JsonObject:
+    """构造两个 AgentCompass benchmark 共用的运行摘要。"""
+    provenance = detail.get("provenance")
+    if not isinstance(provenance, dict):
+        raise TypeError("detail.provenance 必须是对象")
+    return {
+        "score_source": score_source,
+        "run_error": summary["run_error"],
+        "eval_error": summary["eval_error"],
+        "error_present": summary["error_present"],
+        "provenance": dict(provenance),
+    }
+
+
 @dataclass
 class AgentCompassSession:
     """保存 AgentCompass 整任务执行的最小生命周期状态。"""

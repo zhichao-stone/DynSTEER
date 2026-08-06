@@ -1,21 +1,22 @@
 from dynsteer.harness.model import HarnessStageSettlement
+from dynsteer.log import sanitize_log_value
 from dynsteer.evaluate.runtime import selected_candidate_from_attempt
-from dynsteer.model import JsonObject, RuntimeEvaluationDecision, StageEvaluationResult, TaskCase
+from dynsteer.model import JsonObject, RuntimeEvaluationDecision, RuntimeEvaluationState, StageEvaluationResult, TaskCase
 from dynsteer.utils import as_number, first_text, optional_str
 
 
 _TEXT_LIMIT = 160
 
-def policy_stop_log_extra(task_case: TaskCase, decision: RuntimeEvaluationDecision) -> JsonObject:
+def policy_stop_log_extra(task_case: TaskCase, state: RuntimeEvaluationState, decision: RuntimeEvaluationDecision) -> JsonObject:
     """构造策略提前终止 warning 摘要。"""
     stage_result = decision.stage_result
-    matched_ids = sorted(decision.next_state.matched_settlements)
+    matched_ids = sorted(state.matched_settlements)
     matched_set = set(matched_ids)
     pending_ids = sorted((node.milestone_id for node in task_case.milestone_graph.nodes if node.milestone_id not in matched_set))
     milestone_score, milestone_status = _milestone_layer(stage_result)
     if milestone_score is None and milestone_status is None:
         milestone_score, milestone_status = _milestone_layer(decision.checkpoint)
-    last_attempt = next((item for item in reversed(decision.next_state.match_attempts) if isinstance(item, dict)), None)
+    last_attempt = next((item for item in reversed(state.match_attempts) if isinstance(item, dict)), None)
     selected_candidate = selected_candidate_from_attempt(last_attempt) if last_attempt is not None else None
     dimension_levels = {}
     if stage_result is not None:
@@ -56,5 +57,3 @@ def _milestone_layer(source: StageEvaluationResult | HarnessStageSettlement | No
     if not isinstance(score, dict):
         return (None, None)
     return (as_number(score.get("score")), optional_str(score.get("status")))
-
-from dynsteer.log import sanitize_log_value

@@ -6,7 +6,6 @@ from dynsteer.model import (
     EvaluationTerminationState,
     JsonObject,
     StateSnapshot,
-    TaskCase,
     Trajectory,
     TrajectoryEvaluationReport,
     TrajectoryStep,
@@ -151,20 +150,8 @@ class HarnessStageSettlement:
 @dataclass(frozen=True)
 class HarnessRunResult:
     """benchmark harness 运行结果。"""
-    benchmark: str
-    case_id: str
-    task_case: TaskCase
     trajectory: Trajectory
-    raw_output_dir: Path
     raw_summary: JsonObject = field(default_factory=dict)
     stage_settlements: list[HarnessStageSettlement] = field(default_factory=list)
     evaluation_report: TrajectoryEvaluationReport | None = None
     termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
-
-    def __post_init__(self) -> None:
-        if not self.benchmark or not self.benchmark.strip():
-            raise ValueError("benchmark 不能为空")
-        if not self.case_id or not self.case_id.strip():
-            raise ValueError("case_id 不能为空")
-        if self.raw_output_dir is None:
-            raise ValueError("raw_output_dir 不能为空")

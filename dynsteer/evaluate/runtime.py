@@ -1,7 +1,6 @@
-from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary, build_quality_diagnostics
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import Boundary, Dimension, EvaluationLevel, JsonObject, ReadyFrontierProgressWatch, ReadyMilestoneProgress, RuntimeEvaluationState, ScoringContext, StageEvaluationResult, StageStatus, StateSnapshot, TaskCase, ThresholdConfig, Trajectory
+from dynsteer.model import Dimension, EvaluationLevel, JsonObject, MilestoneGraph, ReadyFrontierProgressWatch, ReadyMilestoneProgress, RuntimeEvaluationState, ScoringContext, StageEvaluationResult, StageStatus, StateSnapshot, TaskCase, ThresholdConfig, Trajectory
 from dynsteer.stage import stage_goal_key
 from dynsteer.utils import clamped_number
 
@@ -137,12 +136,7 @@ def runtime_diagnostics_summary(task_case: TaskCase, trajectory: Trajectory, sta
     return {
         "milestone_graph_summary": build_milestone_graph_summary(graph),
         "milestone_match_attempts": list(state.match_attempts),
-        "milestone_final_diagnostics": build_final_milestone_diagnostics(
-            graph=graph,
-            matched=state.matched_settlements,
-            match_attempts=state.match_attempts,
-            termination=state.evaluation_termination,
-        ),
+        "milestone_final_diagnostics": _final_milestone_diagnostics(graph, state),
         "runtime_quality_diagnostics": build_quality_diagnostics(list(trajectory.steps)),
     }
 
@@ -177,7 +171,7 @@ def blocked_milestone_termination_reason(detail: JsonObject) -> str:
 def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
     """为自然结束时仍未完成的 milestone 生成失败阶段报告。"""
     graph = task_case.milestone_graph
-    diagnostics = build_final_milestone_diagnostics(graph=graph, matched=state.matched_settlements, match_attempts=state.match_attempts, termination=state.evaluation_termination)
+    diagnostics = _final_milestone_diagnostics(graph, state)
     milestones_by_id = {node.milestone_id: node for node in graph.nodes}
     results: list[StageEvaluationResult] = []
     for item in diagnostics:
@@ -187,9 +181,7 @@ def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluatio
         milestone = milestones_by_id.get(milestone_id)
         if milestone is None:
             raise ValueError(f"pending milestone 不存在: {milestone_id}")
-        anchor_id = milestone.stage_anchor_predecessor_id
-        if not isinstance(anchor_id, str) or not anchor_id:
-            raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone_id}")
+        anchor_id = state.milestone_frontier.topology.stage_anchor_by_id[milestone_id]
         blocker = str(item.get("blocker") or "unknown")
         ready_ever = bool(item.get("ready_ever"))
         attempt_count = int(item.get("attempt_count") or 0)
@@ -231,6 +223,12 @@ def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluatio
         )
     return results
 
+
+def _final_milestone_diagnostics(graph: MilestoneGraph, state: RuntimeEvaluationState) -> list[JsonObject]:
+    if state.final_milestone_diagnostics is None:
+        state.final_milestone_diagnostics = build_final_milestone_diagnostics(graph=graph, matched=state.matched_settlements, match_attempts=state.match_attempts, termination=state.evaluation_termination)
+    return state.final_milestone_diagnostics
+
 def scoring_context(
     task_case: TaskCase,
     trajectory: Trajectory,
@@ -238,24 +236,32 @@ def scoring_context(
     reference_anchor_snapshots: dict[str, StateSnapshot] | None = None,
 ) -> ScoringContext:
     """构造运行期评分上下文。"""
-    matched_boundaries: dict[str, Boundary] = {}
+    matched_step_indexes: dict[str, int] = {}
     matched_snapshots: dict[str, StateSnapshot] = {}
-    initial_state = task_case.initial_state
-    if isinstance(initial_state, dict):
-        namespaces = initial_state.get("namespaces")
-        if isinstance(namespaces, dict):
-            matched_snapshots["initial"] = StateSnapshot(snapshot_id="initial", after_step_id="initial", after_step_index=0, namespaces={str(key): value for key, value in namespaces.items()})
     for milestone_id, settlement in matched.items():
         if settlement.boundary_step_index is None:
             continue
-        boundary = Boundary(boundary_id=settlement.boundary_id or f"matched:{milestone_id}", step_index=settlement.boundary_step_index, snapshot_id=None, reason="matched_milestone")
-        matched_boundaries[milestone_id] = boundary
-        snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+        matched_step_indexes[milestone_id] = settlement.boundary_step_index
+        snapshot = trajectory.snapshot_at_or_before(settlement.boundary_step_index)
         if snapshot is not None:
             matched_snapshots[milestone_id] = snapshot
     if reference_anchor_snapshots:
         matched_snapshots.update(reference_anchor_snapshots)
-    return ScoringContext(task_case=task_case, matched_boundaries=matched_boundaries, matched_snapshots=matched_snapshots)
+    return ScoringContext(task_case=task_case, matched_step_indexes=matched_step_indexes, matched_snapshots=matched_snapshots)
+
+
+def state_scoring_context(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState) -> ScoringContext:
+    if state.scoring_context_cache is None:
+        state.scoring_context_cache = scoring_context(task_case, trajectory, state.matched_settlements, state.reference_anchor_snapshots)
+    return state.scoring_context_cache
+
+
+def initial_reference_snapshots(task_case: TaskCase) -> dict[str, StateSnapshot]:
+    initial_state = task_case.initial_state
+    namespaces = initial_state.get("namespaces") if isinstance(initial_state, dict) else None
+    if not isinstance(namespaces, dict):
+        return {}
+    return {"initial": StateSnapshot(snapshot_id="initial", after_step_id="initial", after_step_index=0, namespaces={str(key): value for key, value in namespaces.items()})}
 
 def task_case_snapshot(task_case: TaskCase) -> JsonObject:
     """构造可审计的任务快照摘要。"""

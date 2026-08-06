@@ -8,14 +8,15 @@ from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult
 from dynsteer.harness.paths import case_output_dir
+from dynsteer.harness.session import collect_session_trajectory
 from dynsteer.metrics import (
     activate_runtime_metrics_recorder,
-    append_execution_timing,
     build_runtime_metrics,
     reset_runtime_metrics_recorder,
 )
 from dynsteer.model import (
     AgentStepTracker,
+    EvaluationTerminationState,
     HarnessEvaluationOutput,
     JsonObject,
     RuntimeMetricsRecorder,
@@ -187,25 +188,20 @@ def write_default_case_outputs(
                 task_case, runtime_initial_state, "harness_session"
             )
             trajectory.raw["runtime_initial_state"] = runtime_initial_state
-        while True:
-            advance = harness.timed_advance_case(session)
-            append_execution_timing(trajectory, advance)
-            trajectory.extend_snapshots(advance.snapshots)
-            completed_agent_steps = 0
-            for step in advance.steps:
-                trajectory.append_step(step)
-                closure = tracker.ingest(step)
-                if closure is not None:
-                    completed_agent_steps += 1
-            if progress_reporter is not None and completed_agent_steps > 0:
-                progress_reporter.case_advanced(case_id, completed_agent_steps)
-            trajectory.final_state = harness.final_state_from_session(session)
-            trajectory.metrics = harness.metrics_from_session(session)
-            if not advance.continue_running:
-                closure = tracker.finalize()
-                if closure is not None:
-                    completed_agent_steps += 1
-                break
+        def on_step(step: TrajectoryStep) -> tuple[int, bool]:
+            return int(tracker.ingest(step) is not None), False
+
+        def on_finish() -> tuple[int, bool]:
+            return int(tracker.finalize() is not None), False
+
+        collect_session_trajectory(
+            harness,
+            session,
+            trajectory,
+            on_step,
+            on_finish,
+            (lambda count: progress_reporter.case_advanced(case_id, count)) if progress_reporter is not None else None,
+        )
         default_result = harness.default_result_from_session(session)
         runtime_metrics = build_runtime_metrics(
             started_monotonic=metrics_recorder.started_monotonic,
@@ -247,12 +243,11 @@ def write_default_case_outputs(
             if isinstance(native_minefield_mapping, dict)
             else 0
         )
-        termination = {
-            "should_stop": bool(raw_summary.get("termination_reason")),
-            "code": raw_summary.pop("termination_code", None),
-            "reason": raw_summary.pop("termination_reason", None),
-            "detail": raw_summary.pop("termination_detail", {}) or {},
-        }
+        termination = EvaluationTerminationState(
+            termination_code=raw_summary.pop("termination_code", None),
+            termination_reason=raw_summary.pop("termination_reason", None),
+            termination_detail=raw_summary.pop("termination_detail", {}) or {},
+        ).to_dict()
         raw_summary["termination"] = termination
         summary = {
             "result_schema_version": RESULT_SCHEMA_VERSION,

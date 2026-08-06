@@ -229,7 +229,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """获取 ToolSandbox 原生场景字典。"""
         return load_named_scenarios(config, load_toolsandbox_module)
 
-    def _role_impl_type(self, role_name: object, role_label: str) -> object:
+    def _role_impl_type(self, role_name: object) -> object:
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
         role_impl_type = getattr(cli_utils, "RoleImplType")
         effective_name = str(role_name).strip()
@@ -247,8 +247,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         execution_environment = load_toolsandbox_module("tool_sandbox.roles.execution_environment")
         cli_utils = load_toolsandbox_module("tool_sandbox.cli.utils")
         role_type = getattr(execution_context, "RoleType")
-        agent_type = self._role_impl_type(config.metadata.get("agent"), "agent")
-        user_type = self._role_impl_type(config.metadata.get("user"), "user")
+        agent_type = self._role_impl_type(config.metadata.get("agent"))
+        user_type = self._role_impl_type(config.metadata.get("user"))
         agent_client_config = config.metadata.get("agent_client")
         user_client_config = config.metadata.get("user_client")
         agent_factory = get_agent_factory(agent_type, agent_client_config) or getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)

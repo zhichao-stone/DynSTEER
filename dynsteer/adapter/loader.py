@@ -179,8 +179,7 @@ def parse_constraint(data: JsonObject) -> Constraint:
 
 def parse_milestone(data: JsonObject) -> Milestone:
     milestone_data = ensure_json_object(data)
-    stage_anchor = milestone_data.get("stage_anchor_predecessor_id")
-    return Milestone(milestone_id=required_str(milestone_data, "milestone_id", "Milestone"), name=required_str(milestone_data, "name", "Milestone"), description=required_str(milestone_data, "description", "Milestone"), constraints=[parse_constraint(ensure_json_object(item)) for item in milestone_data.get("constraints", [])], pass_threshold=float(milestone_data["pass_threshold"]) if milestone_data.get("pass_threshold") is not None else None, metadata=_optional_object(milestone_data, "metadata"), dependency_predecessor_ids=[str(item) for item in milestone_data.get("dependency_predecessor_ids", [])], stage_anchor_predecessor_id=stage_anchor if isinstance(stage_anchor, str) else None)
+    return Milestone(milestone_id=required_str(milestone_data, "milestone_id", "Milestone"), name=required_str(milestone_data, "name", "Milestone"), description=required_str(milestone_data, "description", "Milestone"), constraints=[parse_constraint(ensure_json_object(item)) for item in milestone_data.get("constraints", [])], pass_threshold=float(milestone_data["pass_threshold"]) if milestone_data.get("pass_threshold") is not None else None, metadata=_optional_object(milestone_data, "metadata"))
 
 def parse_minefield(data: JsonObject) -> Minefield:
     minefield_data = ensure_json_object(data)

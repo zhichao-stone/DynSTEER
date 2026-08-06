@@ -4,20 +4,18 @@ from dynsteer.evaluate.diagnostics import (
     build_stage_trace,
 )
 from dynsteer.evaluate.final import build_finish_verification
-from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.matching.frontier import advance_milestone_frontier
 from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
-from dynsteer.evaluate.runtime import JudgeConfigurationError, scoring_context
+from dynsteer.evaluate.runtime import JudgeConfigurationError, state_scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
-from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
+from dynsteer.evaluate.semantic import hard_failure_is_semantic_message_only
 from dynsteer.evaluate.weights import update_weights
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.model import (
-    Boundary,
     Dimension,
     DynamicWeightConfig,
     EvaluationLevel,
@@ -34,8 +32,9 @@ from dynsteer.model import (
     TaskCase,
     ThresholdConfig,
     Trajectory,
+    TrajectoryStep,
 )
-from dynsteer.stage import resolve_stage_evaluation_spec, stage_goal_key, stage_start_step_index
+from dynsteer.stage import resolve_stage_evaluation_spec, stage_goal_key
 from dynsteer.utils import as_number, clean_evidence_items
 
 
@@ -45,7 +44,7 @@ def evaluate_checkpoint(
     trajectory: Trajectory,
     state: RuntimeEvaluationState,
     milestone: Milestone,
-    boundary: Boundary,
+    scoring_step: TrajectoryStep,
     milestone_score: MilestoneScore,
     cheap_judge: CheapJudge,
     standard_judge: StandardJudge | None,
@@ -74,8 +73,8 @@ def evaluate_checkpoint(
     输出：
         本 checkpoint 的结算结果和可能的策略终止决策。
     """
-    anchor_id, boundary_index = stage_start_for_ready_milestone(milestone, state.matched_settlements, trajectory)
-    start_step_index = stage_start_step_index(trajectory.successor_by_boundary, boundary_index, boundary.step_index)
+    anchor_id, boundary_index = stage_start_for_ready_milestone(milestone, state.milestone_frontier.topology, state.matched_settlements, trajectory)
+    start_step_index = trajectory.first_step_after(boundary_index, scoring_step.index)
     ready_milestone_ids_before_match = list(state.milestone_frontier.ready_ids)
     interval = StageInterval(
         stage_id=stage_goal_key(anchor_id, milestone.milestone_id),
@@ -83,7 +82,7 @@ def evaluate_checkpoint(
         stage_anchor_milestone_id=anchor_id,
         start_boundary_step_index=boundary_index,
         start_step_index=start_step_index,
-        end_step_index=boundary.step_index,
+        end_step_index=scoring_step.index,
         status=milestone_score.status,
         milestone_score=milestone_score,
         evidence=list(milestone_score.evidence),
@@ -91,7 +90,8 @@ def evaluate_checkpoint(
     matching_detail = build_milestone_matching_detail(
         matched=state.matched_settlements,
         milestone=milestone,
-        boundary=boundary,
+        topology=state.milestone_frontier.topology,
+        scoring_step=scoring_step,
         milestone_score=milestone_score,
         ready_milestone_ids_before_match=ready_milestone_ids_before_match,
     )
@@ -124,8 +124,8 @@ def evaluate_checkpoint(
         milestone_id=interval.milestone_id,
         start_step_index=interval.start_step_index,
         end_step_index=interval.end_step_index,
-        boundary_id=boundary.boundary_id,
-        boundary_step_index=boundary.step_index,
+        boundary_id=f"runtime:b{scoring_step.index}",
+        boundary_step_index=scoring_step.index,
         score=stage_result.stage_score,
         status=stage_result.status.value,
         evidence=list(stage_result.evidence),
@@ -139,15 +139,14 @@ def evaluate_checkpoint(
     if milestone_score.status != StageStatus.PASS and (
         stage_result.status != StageStatus.PASS or stage_result.stage_score < thresholds.pass_threshold
     ):
-        return RuntimeEvaluationDecision(next_state=state, stage_result=stage_result)
+        return RuntimeEvaluationDecision(stage_result=stage_result)
 
-    state.matched_settlements[milestone.milestone_id] = settlement
-    matched_snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+    _record_settlement(state, settlement)
+    matched_snapshot = trajectory.snapshot_at_or_before(scoring_step.index)
     if matched_snapshot is not None:
         state.reference_anchor_snapshots[milestone.milestone_id] = matched_snapshot
     state.ready_frontier_progress_watch = None
-    advance_milestone_frontier(state.milestone_frontier, milestone.milestone_id, state.matched_settlements)
-    state.settlements.append(settlement)
+    advance_milestone_frontier(state.milestone_frontier, milestone.milestone_id)
     state.stage_reports.append(stage_result)
     state.weights = next_weights
     state.evaluation_policy = next_policy
@@ -159,7 +158,7 @@ def evaluate_checkpoint(
             "next_policy": next_policy.to_dict(),
         }
         stage_result.metadata["evaluation_termination"] = termination.to_dict()
-        return RuntimeEvaluationDecision(state, settlement, stage_result, termination=termination)
+        return RuntimeEvaluationDecision(settlement, stage_result, termination=termination)
     active_strategy = strategy or EvaluationStrategyConfig()
     stop_termination = (
         should_stop_after_stage(config, state, stage_result, thresholds)
@@ -167,58 +166,66 @@ def evaluate_checkpoint(
         else EvaluationTerminationState()
     )
     if not stop_termination.should_stop:
-        return RuntimeEvaluationDecision(state, settlement, stage_result)
+        return RuntimeEvaluationDecision(settlement, stage_result)
     stage_result.metadata["evaluation_termination"] = stop_termination.to_dict()
-    return RuntimeEvaluationDecision(state, settlement, stage_result, termination=stop_termination)
+    return RuntimeEvaluationDecision(settlement, stage_result, termination=stop_termination)
+
+
+def record_finish_settlement(state: RuntimeEvaluationState, settlement: HarnessStageSettlement) -> None:
+    """统一记录 finish settlement。"""
+    _record_settlement(state, settlement)
+
+
+def _record_settlement(state: RuntimeEvaluationState, settlement: HarnessStageSettlement) -> None:
+    state.scoring_context_cache = None
+    state.settlements.append(settlement)
+    if settlement.kind == "milestone" and settlement.milestone_id is not None:
+        state.matched_settlements[settlement.milestone_id] = settlement
 
 
 def refresh_reference_anchors(
     task_case: TaskCase,
     trajectory: Trajectory,
     state: RuntimeEvaluationState,
-    boundary: Boundary,
+    scoring_step: TrajectoryStep,
     scorer: GeneralScorer,
 ) -> None:
     """把仍满足原约束的已匹配 ToolSandbox milestone 引用锚点前移。"""
     graph = task_case.milestone_graph
-    snapshot = boundary_snapshot(boundary, trajectory.snapshots)
+    snapshot = trajectory.snapshot_at_or_before(scoring_step.index)
     if graph is None or snapshot is None:
         return
 
-    # 只刷新仍被未完成 milestone 动态引用的已匹配节点。
-    referenced_ids: set[str] = set()
-    for pending in graph.nodes:
-        if pending.milestone_id in state.matched_settlements:
-            continue
-        for constraint in pending.constraints:
-            metadata = constraint.metadata.get("toolsandbox")
-            reference_index = metadata.get("reference_milestone_node_index") if isinstance(metadata, dict) else None
-            if isinstance(reference_index, int) and reference_index >= 0:
-                referenced_ids.add(f"m{reference_index}")
-
-    milestone_by_id = {milestone.milestone_id: milestone for milestone in graph.nodes}
-    for milestone_id in sorted(referenced_ids & state.matched_settlements.keys()):
+    for milestone_id in sorted(state.referenced_milestone_ids & state.matched_settlements.keys()):
         current = state.reference_anchor_snapshots.get(milestone_id)
         if current is not None and current.after_step_index >= snapshot.after_step_index:
             continue
-        milestone = milestone_by_id.get(milestone_id)
+        milestone = state.milestone_frontier.topology.milestone_by_id.get(milestone_id)
         if milestone is None:
             continue
-        context = scoring_context(
-            task_case,
-            trajectory,
-            state.matched_settlements,
-            state.reference_anchor_snapshots,
-        )
+        context = state_scoring_context(task_case, trajectory, state)
         score = scorer.score_milestone(
             milestone,
-            boundary,
+            scoring_step,
             trajectory,
             trajectory.snapshots,
             context=context,
         )
         if score.status == StageStatus.PASS:
             state.reference_anchor_snapshots[milestone_id] = snapshot
+            state.scoring_context_cache = None
+
+
+def referenced_milestone_ids(task_case: TaskCase) -> frozenset[str]:
+    """预计算运行期可能动态引用的 milestone ID。"""
+    return frozenset(
+        f"m{index}"
+        for milestone in task_case.milestone_graph.nodes
+        for constraint in milestone.constraints
+        if isinstance((metadata := constraint.metadata.get("toolsandbox")), dict)
+        and isinstance((index := metadata.get("reference_milestone_node_index")), int)
+        and index >= 0
+    )
 
 
 def finish_settlement(
@@ -245,15 +252,8 @@ def finish_settlement(
 
     graph = task_case.milestone_graph
     last_step_index = trajectory.steps[-1].index if trajectory.steps else 0
-    analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
-    finish_anchor_id = (
-        analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else START_NODE_ID
-    )
-    if not isinstance(finish_anchor_id, str) or not finish_anchor_id:
-        finish_anchor_id = START_NODE_ID
-    finish_node_id = (
-        str(analysis.get("finish_node_id") or FINISH_NODE_ID) if isinstance(analysis, dict) else FINISH_NODE_ID
-    )
+    finish_anchor_id = graph.finish_anchor_id
+    finish_node_id = FINISH_NODE_ID
 
     if finish_anchor_id == START_NODE_ID:
         boundary_index = trajectory.first_step_index - 1
@@ -264,7 +264,7 @@ def finish_settlement(
             (settlement.end_step_index for settlement in matched.values()), default=trajectory.first_step_index - 1
         )
     end_step_index = max(boundary_index, last_step_index)
-    start_step_index = stage_start_step_index(trajectory.successor_by_boundary, boundary_index, end_step_index)
+    start_step_index = trajectory.first_step_after(boundary_index, end_step_index)
     interval = StageInterval(
         stage_id=stage_goal_key(finish_anchor_id, finish_node_id),
         milestone_id=finish_node_id,
@@ -276,7 +276,7 @@ def finish_settlement(
         evidence=["finish 结算节点"],
     )
 
-    verification = build_finish_verification(task_case, trajectory, state, scorer)
+    verification = build_finish_verification(task_case, trajectory, state, scorer, interval)
     if verification.get("coverage_basis") == "whole_trajectory" and not verification.get("fatal_minefield"):
         stage_result = _whole_trajectory_finish_stage_result(
             interval=interval,
@@ -751,23 +751,7 @@ def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) ->
         )
     if milestone is None:
         return False
-    score_by_id = {item.constraint_id: item for item in score.constraint_scores}
-    semantic_failure_found = False
-    for constraint in milestone.constraints:
-        if not constraint.hard:
-            continue
-        constraint_score = score_by_id.get(constraint.constraint_id)
-        failed = (
-            constraint_score is None
-            or constraint_score.missing
-            or constraint_score.score < constraint.threshold
-        )
-        if not failed:
-            continue
-        if not is_semantic_emit_message_constraint(constraint):
-            return False
-        semantic_failure_found = True
-    return semantic_failure_found
+    return hard_failure_is_semantic_message_only(milestone, score.constraint_scores)
 
 
 def _judge_result_metadata(
@@ -822,13 +806,11 @@ def should_stop_after_stage(
         if state.minefield_matches and state.fatal_minefield:
             minefield_id = str(state.minefield_matches[0].get("minefield_id", "minefield"))
             return EvaluationTerminationState(
-                should_stop=True,
                 termination_code=f"minefield:{minefield_id}",
                 termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
             )
         if state.minefield_matches and state.max_minefield_score >= thresholds.fatal_minefield_threshold:
             return EvaluationTerminationState(
-                should_stop=True,
                 termination_code=f"minefield_score:{state.max_minefield_score:.3f}",
                 termination_reason=f"minefield 分数 {state.max_minefield_score:.3f} 达到停止阈值，提前终止执行",
             )
@@ -836,7 +818,6 @@ def should_stop_after_stage(
         milestone_id = stage_result.milestone_id or "unknown"
         if stage_result.metadata.get("structural_failure") is True:
             return EvaluationTerminationState(
-                should_stop=True,
                 termination_code=f"stage_failure:{milestone_id}",
                 termination_reason=f"阶段存在结构性失败，提前终止执行：{milestone_id}",
                 termination_detail={
@@ -847,11 +828,8 @@ def should_stop_after_stage(
             )
         if stage_result.stage_score < thresholds.fail_threshold:
             return EvaluationTerminationState(
-                should_stop=True,
                 termination_code=f"stage_score:{milestone_id}",
                 termination_reason=f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
-                termination_detail = (
-                    {"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value},
-                )
+                termination_detail={"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value},
             )
     return EvaluationTerminationState()

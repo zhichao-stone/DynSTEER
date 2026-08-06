@@ -108,26 +108,18 @@ class BaseBenchmarkHarness(ABC):
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """从 session 提取运行期 metrics。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         return {}
 
     def initial_state_from_session(self, session: object) -> JsonObject | None:
         """从 session 提取当前运行的真实初始状态。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         return None
 
     def final_state_from_session(self, session: object) -> JsonObject | None:
         """从 session 提取最终或当前状态。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         return None
 
     def raw_summary_from_session(self, session: object) -> JsonObject:
         """提取 benchmark 原生摘要。"""
-        if session is None:
-            raise ValueError("session 不能为空")
         return {}
 
     def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:

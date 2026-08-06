@@ -244,6 +244,8 @@ def compact_text(value: object, limit: int=160) -> str:
 
 def compact_json_text(value: object, limit: int=160) -> str:
     """将 JSON 安全值压缩为单行短文本。"""
+    if value is None:
+        return ""
     if isinstance(value, str):
         return compact_text(value, limit)
     return compact_text(json.dumps(json_safe(value), ensure_ascii=False), limit)
@@ -334,7 +336,7 @@ def json_safe(value: object) -> JsonValue:
     if isinstance(value, Path):
         return str(value)
     if is_dataclass(value) and (not isinstance(value, type)):
-        return {field.name: json_safe(getattr(value, field.name)) for field in fields(value)}
+        return {field.name: json_safe(getattr(value, field.name)) for field in fields(value) if field.metadata.get("json_safe", True)}
     enum_raw_value = getattr(value, "value", None)
     if isinstance(enum_raw_value, (str, int, float, bool)) or (enum_raw_value is None and isinstance(value, Enum)):
         return enum_raw_value

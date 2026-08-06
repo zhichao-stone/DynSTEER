@@ -106,10 +106,11 @@ def _generate_stage_goals_by_semantic(
     language: TaskLanguage,
 ) -> dict[str, str] | None:
     semantic_goals: dict[str, str] = {}
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
     for milestone in graph.nodes:
-        anchor_id = milestone.stage_anchor_predecessor_id
-        if not isinstance(anchor_id, str) or not anchor_id:
-            raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
+        anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
         if not milestone.constraints:
             return None
         pieces: list[str] = []

@@ -1,4 +1,3 @@
-from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import Milestone, MilestoneGraph, MilestoneFrontierState
 
 def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierState:
@@ -9,20 +8,13 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
     输出：
         仅在 case 初始化阶段扫描 graph 后得到的 frontier 状态。
     """
-    milestone_by_id: dict[str, Milestone] = {}
-    order_by_id: dict[str, int] = {}
-    dependents: dict[str, list[str]] = {}
-    for index, milestone in enumerate(graph.nodes):
-        milestone_by_id[milestone.milestone_id] = milestone
-        order_by_id[milestone.milestone_id] = index
-        dependents.setdefault(milestone.milestone_id, [])
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
 
     remaining_predecessor_count: dict[str, int] = {}
     for milestone in graph.nodes:
-        remaining_count = 0
-        for predecessor_id in milestone.dependency_predecessor_ids:
-            dependents.setdefault(predecessor_id, []).append(milestone.milestone_id)
-            remaining_count += 1
+        remaining_count = len(topology.predecessors_by_id[milestone.milestone_id])
         remaining_predecessor_count[milestone.milestone_id] = remaining_count
 
     ready_ids: list[str] = []
@@ -32,35 +24,26 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
             ready_ids.append(milestone_id)
 
     return MilestoneFrontierState(
-        milestone_by_id=milestone_by_id, 
-        dependents_by_id={milestone_id: tuple(successors) for milestone_id, successors in dependents.items()},
-        remaining_predecessor_count=remaining_predecessor_count, 
-        ready_ids=ready_ids, blocked_candidate_ids=[], 
-        order_by_id=order_by_id
+        topology=topology,
+        remaining_predecessor_count=remaining_predecessor_count,
+        ready_ids=ready_ids,
     )
 
-def advance_milestone_frontier(frontier: MilestoneFrontierState, matched_milestone_id: str, matched: dict[str, HarnessStageSettlement]) -> None:
+def advance_milestone_frontier(frontier: MilestoneFrontierState, matched_milestone_id: str) -> None:
     """在 milestone matched 后原地推进 frontier。
 
     入参：
         frontier: 当前 case 的 frontier 增量状态。
         matched_milestone_id: 刚完成结算的 milestone id。
-        matched: 最新已匹配 milestone 结算表。
     输出：
         无返回值，函数会原地更新 frontier。
     """
     _remove_id(frontier.ready_ids, matched_milestone_id)
-    _remove_id(frontier.blocked_candidate_ids, matched_milestone_id)
-    for successor_id in frontier.dependents_by_id.get(matched_milestone_id, ()):
-        if successor_id in matched:
-            continue
+    for successor_id in frontier.topology.successors_by_id.get(matched_milestone_id, ()):
         remaining = max(frontier.remaining_predecessor_count.get(successor_id, 0) - 1, 0)
         frontier.remaining_predecessor_count[successor_id] = remaining
         if remaining == 0:
-            _insert_id_by_order(frontier.ready_ids, successor_id, frontier.order_by_id)
-            _remove_id(frontier.blocked_candidate_ids, successor_id)
-        else:
-            _insert_id_by_order(frontier.blocked_candidate_ids, successor_id, frontier.order_by_id)
+            _insert_id_by_order(frontier.ready_ids, successor_id, frontier.topology.order_by_id)
 
 def ready_milestones(frontier: MilestoneFrontierState) -> tuple[Milestone, ...]:
     """返回当前 ready milestone。
@@ -70,7 +53,7 @@ def ready_milestones(frontier: MilestoneFrontierState) -> tuple[Milestone, ...]:
     输出：
         当前可评估 milestone 元组。
     """
-    return tuple((frontier.milestone_by_id[milestone_id] for milestone_id in frontier.ready_ids if milestone_id in frontier.milestone_by_id))
+    return tuple(frontier.topology.milestone_by_id[milestone_id] for milestone_id in frontier.ready_ids)
 
 def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Milestone, ...]:
     """返回当前 blocked 诊断候选。
@@ -80,7 +63,11 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
     输出：
         当前低成本 predecessor gap 诊断候选元组。
     """
-    return tuple((frontier.milestone_by_id[milestone_id] for milestone_id in frontier.blocked_candidate_ids if milestone_id in frontier.milestone_by_id))
+    return tuple(
+        milestone
+        for milestone in frontier.topology.milestone_by_id.values()
+        if 0 < frontier.remaining_predecessor_count[milestone.milestone_id] < len(frontier.topology.predecessors_by_id[milestone.milestone_id])
+    )
 
 def _insert_id_by_order(milestone_ids: list[str], milestone_id: str, order_by_id: dict[str, int]) -> None:
     if milestone_id in milestone_ids:

@@ -13,7 +13,7 @@ from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.paths import case_identity_from_output_dir
 from dynsteer.model import JsonObject
 from dynsteer.stage.resolve import DEFAULT_FINISH_STAGE_GOAL
-from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file
+from dynsteer.utils import as_number, clean_evidence_items, compact_json_text, read_json_file, string_list
 
 CaseKey = tuple[str, str, str, int, str, str]
 
@@ -267,7 +267,7 @@ def _stage_reports(reports: Any, index: StageDefinitionIndex) -> list[JsonObject
             metadata["stage_goal"] = definition.get("stage_goal")
             metadata["stage_anchor_milestone_id"] = definition.get("anchor_milestone_id")
         if isinstance(item.get("evidence"), list):
-            item["evidence"] = clean_evidence_items([_text(value, 1200) for value in item["evidence"]])
+            item["evidence"] = clean_evidence_items([compact_json_text(value, 1200) for value in item["evidence"]])
         normalized.append(item)
         if item.get("milestone_id") != FINISH_NODE_ID and _is_terminal_stage_status(item.get("status")):
             terminal_before_finish = True
@@ -336,7 +336,7 @@ def _settlement_summary(settlement: JsonObject, index: StageDefinitionIndex) -> 
         "milestone_matching": _milestone_matching_summary(metadata.get("milestone_matching")),
         "status": str(settlement.get("status") or ""),
         "score": as_number(settlement.get("score")),
-        "evidence": clean_evidence_items([_text(value, 1200) for value in settlement.get("evidence", [])], 8),
+        "evidence": clean_evidence_items([compact_json_text(value, 1200) for value in settlement.get("evidence", [])], 8),
     }
 
 
@@ -438,7 +438,7 @@ def _minefield_definitions(adapted_case: JsonObject) -> list[JsonObject]:
             {
                 "minefield_id": str(value.get("minefield_id") or ""),
                 "name": str(value.get("name") or value.get("minefield_id") or ""),
-                "description": _text(value.get("description"), 1200),
+                "description": compact_json_text(value.get("description"), 1200),
                 "severity": str(value.get("severity") or ""),
                 "constraints": constraints,
                 "trigger_summary": _constraints_trigger_summary(constraints),
@@ -468,11 +468,11 @@ def _milestone_matching_summary(value: Any) -> JsonObject:
         "matched": value.get("matched"),
         "boundary": _boundary_summary(value.get("boundary")),
         "score": _matching_score_summary(value.get("score")),
-        "ready_milestone_ids_before_match": _string_list(value.get("ready_milestone_ids_before_match")),
-        "matched_milestone_ids_before_match": _string_list(value.get("matched_milestone_ids_before_match")),
-        "predecessor_milestone_ids": _string_list(value.get("predecessor_milestone_ids")),
-        "matched_milestone_ids": _string_list(value.get("matched_milestone_ids")),
-        "pending_milestone_ids": _string_list(value.get("pending_milestone_ids")),
+        "ready_milestone_ids_before_match": string_list(value.get("ready_milestone_ids_before_match")),
+        "matched_milestone_ids_before_match": string_list(value.get("matched_milestone_ids_before_match")),
+        "predecessor_milestone_ids": string_list(value.get("predecessor_milestone_ids")),
+        "matched_milestone_ids": string_list(value.get("matched_milestone_ids")),
+        "pending_milestone_ids": string_list(value.get("pending_milestone_ids")),
         "total_milestone_count": as_number(value.get("total_milestone_count")),
     }
 
@@ -509,7 +509,7 @@ def _constraint_score_summary(score: JsonObject) -> JsonObject:
         "constraint_id": str(score.get("constraint_id") or ""),
         "score": as_number(score.get("score")),
         "missing": score.get("missing"),
-        "evidence": clean_evidence_items([_text(item, 500) for item in score.get("evidence", [])], 2),
+        "evidence": clean_evidence_items([compact_json_text(item, 500) for item in score.get("evidence", [])], 2),
     }
 
 
@@ -518,7 +518,7 @@ def _node_summary(node: JsonObject, adapted_node: JsonObject | None = None) -> J
     return {
         "milestone_id": str(node.get("milestone_id") or ""),
         "name": str(node.get("name") or adapted.get("name") or node.get("milestone_id") or ""),
-        "description": _text(node.get("description") or adapted.get("description"), 1200),
+        "description": compact_json_text(node.get("description") or adapted.get("description"), 1200),
         "required": node.get("required") if node.get("required") is not None else adapted.get("required"),
         "constraint_count": as_number(node.get("constraint_count")),
         "pass_threshold": as_number(node.get("pass_threshold")),
@@ -544,7 +544,7 @@ def _stage_definitions(adapted_case: JsonObject) -> list[JsonObject]:
                 "stage_id": str(stage_id),
                 "anchor_milestone_id": anchor_id,
                 "milestone_id": milestone_id,
-                "stage_goal": _text(stage_goal, 1200),
+                "stage_goal": compact_json_text(stage_goal, 1200),
             }
         )
     finish_definition = _finish_stage_definition(adapted_case, stage_goals)
@@ -605,7 +605,7 @@ def _finish_stage_definition(adapted_case: JsonObject, stage_goals: JsonObject) 
         "stage_id": stage_id,
         "anchor_milestone_id": anchor_id,
         "milestone_id": finish_id,
-        "stage_goal": _text(stage_goals.get(stage_id) or DEFAULT_FINISH_STAGE_GOAL, 1200),
+        "stage_goal": compact_json_text(stage_goals.get(stage_id) or DEFAULT_FINISH_STAGE_GOAL, 1200),
     }
 
 
@@ -633,9 +633,9 @@ def _constraint_definition(constraint: JsonObject) -> JsonObject:
         "operator": str(constraint.get("operator") or ""),
         "threshold": as_number(constraint.get("threshold")),
         "hard": constraint.get("hard"),
-        "evaluator_hint": _text(constraint.get("evaluator_hint"), 240),
+        "evaluator_hint": compact_json_text(constraint.get("evaluator_hint"), 240),
         "expected_summary": _expected_summary(constraint.get("expected")),
-        "expected_detail": _text(constraint.get("expected"), 1200),
+        "expected_detail": compact_json_text(constraint.get("expected"), 1200),
         "semantic_kind": str(semantics.get("kind") or "") if isinstance(semantics, dict) else "",
         "semantic_summary": _semantic_summary(semantics if isinstance(semantics, dict) else {}),
         "expected_rows_summary": _expected_rows_summary(constraint.get("expected")),
@@ -653,7 +653,7 @@ def _expected_summary(expected: Any) -> str:
             parts.append(f"columns={','.join(str(item) for item in columns[:4])}")
         if parts:
             return "; ".join(parts)
-    return _text(expected, 240)
+    return compact_json_text(expected, 240)
 
 
 def _semantic_summary(semantics: JsonObject) -> str:
@@ -668,7 +668,7 @@ def _semantic_summary(semantics: JsonObject) -> str:
         tool_name = str(semantics.get("tool_name") or semantics.get("name") or "")
         arguments = semantics.get("arguments")
         if tool_name:
-            suffix = f" arguments={_text(arguments, 240)}" if arguments else ""
+            suffix = f" arguments={compact_json_text(arguments, 240)}" if arguments else ""
             return f"tool {tool_name}{suffix}"
     if kind:
         return kind
@@ -693,18 +693,18 @@ def _expected_row_summary(row: JsonObject) -> str:
     content = str(row.get("content") or "")
     if sender or recipient or content:
         return f"{sender} -> {recipient}: {content}".strip(": ")
-    return _text(row, 360)
+    return compact_json_text(row, 360)
 
 
 def _tool_trace_summary(tool_trace: Any) -> str:
     traces = tool_trace_items(tool_trace)
     if not traces:
-        return _text(tool_trace, 360)
+        return compact_json_text(tool_trace, 360)
     parts = []
     for trace in traces[:3]:
         tool_name = str(trace.get("tool_name") or trace.get("name") or "unknown")
         arguments = trace.get("arguments")
-        suffix = f" args={_text(arguments, 220)}" if arguments is not None else ""
+        suffix = f" args={compact_json_text(arguments, 220)}" if arguments is not None else ""
         parts.append(f"tool {tool_name}{suffix}")
     if len(traces) > 3:
         parts.append(f"另有 {len(traces) - 3} 次工具调用")
@@ -777,14 +777,6 @@ def _edge_summary(value: Any) -> JsonObject:
 def _coverage_summary(coverages: list[str]) -> str:
     unique_values = sorted(set(coverages))
     return unique_values[0] if len(unique_values) == 1 else "mixed" if unique_values else "unknown"
-
-
-def _string_list(value: Any) -> list[str]:
-    return [str(item) for item in value] if isinstance(value, list) else []
-
-
-def _text(value: Any, limit: int) -> str:
-    return "" if value is None else compact_json_text(value, limit)
 
 
 if __name__ == "__main__":

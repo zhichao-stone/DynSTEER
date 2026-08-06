@@ -248,14 +248,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         metadata["thresholds"] = {field.name: getattr(thresholds, field.name) for field in fields(ThresholdConfig)}
         metadata["strategy"] = strategy.to_dict()
         stop_on_ready = raw_spec.get("stop_on_ready_frontier_no_progress", True)
-        if not isinstance(stop_on_ready, bool):
-            raise ValueError("run_configs.json 字段 stop_on_ready_frontier_no_progress 必须是布尔值")
-        ready_min_delta = raw_spec.get("ready_frontier_min_delta", 0.02)
-        if not isinstance(ready_min_delta, (int, float)):
-            raise ValueError("run_configs.json 字段 ready_frontier_min_delta 必须是数字")
-        ready_min_delta = float(ready_min_delta)
-        if ready_min_delta < 0:
-            raise ValueError("run_configs.json 字段 ready_frontier_min_delta 不能为负数")
         configs.append(
             HarnessRunConfig(
                 benchmark=benchmark.strip().lower(),
@@ -265,7 +257,7 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
                 results_dir=results_dir,
                 stop_on_ready_frontier_no_progress=stop_on_ready,
                 ready_frontier_patience=ready_frontier_patience,
-                ready_frontier_min_delta=ready_min_delta,
+                ready_frontier_min_delta=raw_spec.get("ready_frontier_min_delta", 0.02),
                 milestone_generation=milestone_generation,
                 metadata=metadata,
             )

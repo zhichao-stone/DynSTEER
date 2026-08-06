@@ -202,8 +202,7 @@ def _env_value(name: str) -> str | None:
     value = value.strip()
     return value or None
 
-def _client_kwargs(client_config: Mapping[str, Any] | None, api_key_env: str, base_url_env: str, default_api_key: str | None=None) -> dict[str, object]:
-    config = normalize_client_config(client_config, "client_config")
+def _client_kwargs(config: Mapping[str, Any], api_key_env: str, base_url_env: str, default_api_key: str | None=None) -> dict[str, object]:
     api_key = config.get("api_key") or _env_value(config.get("api_key_env") or api_key_env) or default_api_key
     if api_key is None:
         raise ValueError(f"环境变量 {api_key_env} 未配置")
@@ -216,10 +215,10 @@ def _client_kwargs(client_config: Mapping[str, Any] | None, api_key_env: str, ba
         kwargs["timeout"] = timeout_seconds
     return kwargs
 
-def _openai_client_from_config(client_config: Mapping[str, Any] | None, default_api_key: str | None=None) -> object:
+def _openai_client_from_config(client_config: Mapping[str, Any], default_api_key: str | None=None) -> object:
     return OpenAI(**_client_kwargs(client_config, "OPENAI_API_KEY", "OPENAI_BASE_URL", default_api_key))
 
-def _anthropic_client_from_config(client_config: Mapping[str, Any] | None) -> object:
+def _anthropic_client_from_config(client_config: Mapping[str, Any]) -> object:
     return anthropic.Anthropic(**_client_kwargs(client_config, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"))
 
 def _build_role_factory(spec: RoleFactorySpec, client_config: Mapping[str, Any] | None) -> Callable[[], object]:

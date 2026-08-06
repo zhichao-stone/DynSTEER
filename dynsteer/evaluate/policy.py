@@ -17,7 +17,7 @@ def update_evaluation_policy(policy: EvaluationPolicyState, result: StageEvaluat
             failure_basis = "quality_score"
             stop_reason = f"阶段分数 {result.stage_score:.3f} 低于失败阈值 {thresholds.fail_threshold:.3f}，触发策略终止"
     if stop_reason:
-        return (EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=stop_reason), EvaluationTerminationState(should_stop=True, termination_code="evaluation_policy_stop", termination_reason=stop_reason, termination_detail={"failure_basis": failure_basis, "stage_score": result.stage_score, "fail_threshold": thresholds.fail_threshold, "triggered": True}))
+        return (EvaluationPolicyState(base_level=policy.base_level, dimension_levels=dict(policy.dimension_levels), reason=stop_reason), EvaluationTerminationState(termination_code="evaluation_policy_stop", termination_reason=stop_reason, termination_detail={"failure_basis": failure_basis, "stage_score": result.stage_score, "fail_threshold": thresholds.fail_threshold, "triggered": True}))
     max_uncertainty = max(result.dimension_uncertainty.values(), default=0.0)
     base_level = EvaluationLevel.CHEAP if result.stage_score >= thresholds.pass_threshold + thresholds.threshold_margin and max_uncertainty <= thresholds.low_dimension_uncertainty and (result.fatal_minefield_score == 0) else EvaluationLevel.STANDARD
     reason = "高分低不确定，下一阶段使用 cheap" if base_level == EvaluationLevel.CHEAP else "阶段结果处于合理区间，下一阶段使用 standard"

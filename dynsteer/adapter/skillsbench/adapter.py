@@ -1,5 +1,5 @@
 from dynsteer.adapter.agentcompass.contract import build_agentcompass_generator_view
-from dynsteer.adapter.agentcompass.runtime import load_task_records
+from dynsteer.adapter.agentcompass.result import adapt_record_case
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.adapter.skillsbench.utils.task import task_case_from_record
 from dynsteer.harness.model import HarnessRunConfig
@@ -14,14 +14,7 @@ class SkillsBenchAdapter(BaseBenchmarkAdapter):
 
     def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
         """按 case ID 执行 O(1) 查找并返回任务投影。"""
-        if config is None or not isinstance(case_id, str) or not case_id.strip():
-            raise ValueError("config 和 case_id 不能为空")
-        records = load_task_records(self.benchmark, config)
-        try:
-            record = records[case_id]
-        except KeyError as exc:
-            raise KeyError(f"SkillsBench case 不存在: {case_id}") from exc
-        return task_case_from_record(record)
+        return adapt_record_case(self.benchmark, config, case_id, task_case_from_record)
 
     def generator_task_view(
         self, config: HarnessRunConfig, task_case: TaskCase, case_id: str

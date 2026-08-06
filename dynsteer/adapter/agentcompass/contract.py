@@ -25,7 +25,10 @@ def build_agentcompass_generator_view(
     language = str(config.metadata.get("language") or "en")
     public_assets = _public_task_assets(task_case)
     normalized_output = _with_source_refs(output_contract, "output")
-    evidence = _actf_evidence_catalog(task_case, normalized_output)
+    tool_schema = json_safe(task_case.tool_schema)
+    if not isinstance(tool_schema, dict):
+        raise TypeError("task_case.tool_schema 必须是对象")
+    evidence = _actf_evidence_catalog(tool_schema, normalized_output)
     invariants = _explicit_invariants(
         task_case.task_description, public_assets, evidence
     )
@@ -36,7 +39,7 @@ def build_agentcompass_generator_view(
         language=language,
         instruction=task_case.task_description,
         public_assets=public_assets,
-        tool_schema=json_safe(task_case.tool_schema),
+        tool_schema=tool_schema,
         environment_schema=_with_source_refs(environment_schema, "environment"),
         output_contract=normalized_output,
         evidence_catalog=tuple(evidence),
@@ -45,7 +48,7 @@ def build_agentcompass_generator_view(
 
 
 def _actf_evidence_catalog(
-    task_case: TaskCase, output_contract: JsonObject
+    tool_schema: JsonObject, output_contract: JsonObject
 ) -> list[PublicEvidence]:
     """返回两个 AgentCompass benchmark 共用的 ACTF 证据目录。"""
     evidence = [
@@ -65,7 +68,7 @@ def _actf_evidence_catalog(
             expected_policy="none",
         ),
     ]
-    tools = task_case.tool_schema.get("tools")
+    tools = tool_schema.get("tools")
     if isinstance(tools, list):
         for index, tool in enumerate(tools):
             if not isinstance(tool, dict):
@@ -74,8 +77,7 @@ def _actf_evidence_catalog(
             if name is None:
                 continue
             source_ref = f"tool:{index}:name"
-            tool["source_ref"] = source_ref
-            tool["value"] = name
+            tools[index] = {**tool, "source_ref": source_ref, "value": name}
             evidence.append(
                 PublicEvidence(
                     evidence_id=f"tool_call_{index}",

@@ -1,13 +1,11 @@
-from dynsteer.evaluate.matching.boundary import boundary_snapshot
 from dynsteer.evaluate.runtime import scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.evaluate.semantic import constraint_actual_excerpt, constraint_expected_excerpt
-from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
 from dynsteer.harness.model import HarnessStageSettlement
-from dynsteer.model import Boundary, Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageStatus, StateSnapshot, TaskCase, Trajectory
+from dynsteer.model import Constraint, ConstraintTarget, JsonObject, Milestone, MilestoneGraph, RuntimeEvaluationState, StageGoalSemanticKind, StageInterval, StageStatus, StateSnapshot, TaskCase, Trajectory
 from dynsteer.utils import clean_evidence_items, compact_text, json_safe
 
-def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, scorer: GeneralScorer) -> JsonObject:
+def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, scorer: GeneralScorer, interval: StageInterval) -> JsonObject:
     """构造 `__finish__` 的任务级最终核查 payload。
 
     入参：
@@ -26,17 +24,7 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
     milestone_ids = [node.milestone_id for node in graph.nodes]
     matched_ids = set(matched)
     unmatched_ids = [milestone_id for milestone_id in milestone_ids if milestone_id not in matched_ids]
-    real_ids = {node.milestone_id for node in graph.nodes}
-    outgoing: dict[str, set[str]] = {node_id: set() for node_id in real_ids}
-    for source, target in graph.edges:
-        if source in real_ids and target in real_ids:
-            outgoing[source].add(target)
-    terminal_ids = [node.milestone_id for node in graph.nodes if not outgoing.get(node.milestone_id)]
-    if not terminal_ids:
-        analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
-        augmented_edges = analysis.get("augmented_edges") if isinstance(analysis, dict) else None
-        if isinstance(augmented_edges, list):
-            terminal_ids = [str(edge[0]) for edge in augmented_edges if isinstance(edge, list) and len(edge) >= 2 and (edge[1] == FINISH_NODE_ID) and (edge[0] in real_ids)]
+    terminal_ids = list(graph.topology.terminal_ids) if graph.topology is not None else []
     terminal_state_checks = _terminal_state_checks(
         task_case,
         trajectory,
@@ -72,7 +60,7 @@ def build_finish_verification(task_case: TaskCase, trajectory: Trajectory, state
             *_terminal_check_evidence(terminal_state_checks, state_check=True),
             *_terminal_check_evidence(terminal_message_checks, state_check=False),
             f"fatal minefield：{fatal_text}",
-            *_terminal_step_evidence(task_case, trajectory, matched),
+            *_terminal_step_evidence(trajectory, interval),
         ]
     )
     diagnosis: list[str] = []
@@ -162,15 +150,11 @@ def _empty_graph_finish_verification(graph: MilestoneGraph, state: RuntimeEvalua
 
 def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], reference_anchor_snapshots: dict[str, StateSnapshot], terminal_ids: list[str], scorer: GeneralScorer) -> list[JsonObject]:
     graph = task_case.milestone_graph
-    milestone_by_id = {node.milestone_id: node for node in graph.nodes}
-    final_step_index = trajectory.latest_step_index if trajectory.latest_step_index is not None else 0
-    snapshot = boundary_snapshot(Boundary("finish:snapshot", final_step_index, None, "finish_snapshot_lookup"), trajectory.snapshots)
-    final_boundary = Boundary(
-        boundary_id=f"finish:b{final_step_index}",
-        step_index=final_step_index,
-        snapshot_id=snapshot.snapshot_id if snapshot is not None else None,
-        reason="finish_final_state_check",
-    )
+    milestone_by_id = graph.topology.milestone_by_id if graph.topology is not None else {}
+    if not trajectory.steps:
+        return []
+    final_step = trajectory.steps[-1]
+    snapshot = trajectory.snapshot_at_or_before(final_step.index)
     context = scoring_context(task_case, trajectory, matched, reference_anchor_snapshots)
     checks: list[JsonObject] = []
     for milestone_id in terminal_ids:
@@ -180,8 +164,8 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
         constraints = [constraint for constraint in milestone.constraints if _is_terminal_state_constraint(constraint)]
         if not constraints:
             continue
-        recheck = Milestone(milestone_id=milestone.milestone_id, name=milestone.name, description=milestone.description, constraints=constraints, pass_threshold=milestone.pass_threshold, metadata=dict(milestone.metadata), dependency_predecessor_ids=list(milestone.dependency_predecessor_ids), stage_anchor_predecessor_id=milestone.stage_anchor_predecessor_id)
-        score = scorer.score_milestone(recheck, final_boundary, trajectory, trajectory.snapshots, context=context)
+        recheck = Milestone(milestone_id=milestone.milestone_id, name=milestone.name, description=milestone.description, constraints=constraints, pass_threshold=milestone.pass_threshold, metadata=dict(milestone.metadata))
+        score = scorer.score_milestone(recheck, final_step, trajectory, trajectory.snapshots, context=context)
         constraint_by_id = {constraint.constraint_id: constraint for constraint in constraints}
         constraint_evidence = []
         for constraint_score in score.constraint_scores:
@@ -202,8 +186,8 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
                 "status": score.status.value,
                 "score": score.score,
                 "constraint_count": len(constraints),
-                "boundary_step_index": final_step_index,
-                "snapshot_id": final_boundary.snapshot_id,
+                "boundary_step_index": final_step.index,
+                "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
                 "evidence": list(score.evidence[:6]),
                 "constraint_scores": json_safe(score.constraint_scores),
                 "constraint_evidence": constraint_evidence,
@@ -213,7 +197,7 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
 
 def _terminal_message_checks(task_case: TaskCase, matched: dict[str, HarnessStageSettlement], terminal_ids: list[str]) -> list[JsonObject]:
     graph = task_case.milestone_graph
-    milestone_by_id = {node.milestone_id: node for node in graph.nodes}
+    milestone_by_id = graph.topology.milestone_by_id if graph.topology is not None else {}
     checks: list[JsonObject] = []
     for milestone_id in terminal_ids:
         milestone = milestone_by_id.get(milestone_id)
@@ -283,22 +267,10 @@ def _terminal_check_evidence(checks: list[JsonObject], state_check: bool) -> lis
         for item in checks
     ]
 
-def _terminal_step_evidence(task_case: TaskCase, trajectory: Trajectory, matched: dict[str, HarnessStageSettlement]) -> list[str]:
-    final_step_index = trajectory.latest_step_index
-    if final_step_index is None:
+def _terminal_step_evidence(trajectory: Trajectory, interval: StageInterval) -> list[str]:
+    if interval.start_boundary_step_index >= interval.end_step_index:
         return []
-    graph = task_case.milestone_graph
-    analysis = graph.metadata.get("graph_analysis", {}) if isinstance(graph.metadata, dict) else {}
-    anchor_id = analysis.get("finish_stage_anchor_predecessor_id") if isinstance(analysis, dict) else START_NODE_ID
-    if not isinstance(anchor_id, str) or not anchor_id or anchor_id == START_NODE_ID:
-        boundary_index = trajectory.first_step_index - 1
-    elif anchor_id in matched:
-        boundary_index = matched[anchor_id].end_step_index
-    else:
-        boundary_index = max((settlement.end_step_index for settlement in matched.values()), default=trajectory.first_step_index - 1)
-    if boundary_index >= final_step_index:
-        boundary_index = final_step_index - 1
-    steps = trajectory.get_interval(boundary_index, final_step_index)
+    steps = trajectory.get_interval(interval.start_boundary_step_index, interval.end_step_index)
     evidence: list[str] = []
     for step in steps[-4:]:
         actor = step.actor.value

@@ -1,4 +1,5 @@
 import json
+from dynsteer.graph import augmented_edges
 from dynsteer.language import TaskLanguage
 from dynsteer.model import Constraint, JsonObject, Milestone, MilestoneGraph, TaskCase
 from dynsteer.prompt.template import load_prompt_template
@@ -33,12 +34,13 @@ def _graph_prompt_json(graph: MilestoneGraph) -> JsonObject:
     """构造 LLM fallback prompt 使用的 milestone graph 摘要。"""
     if graph is None:
         raise ValueError("graph 不能为空")
-    analysis = graph.metadata.get("graph_analysis") if isinstance(graph.metadata, dict) else None
-    augmented_edges = analysis.get("augmented_edges") if isinstance(analysis, dict) else None
-    edges = augmented_edges if isinstance(augmented_edges, list) else [[source, target] for source, target in graph.edges]
-    return {"nodes": [_milestone_prompt_json(node) for node in graph.nodes], "edges": edges}
+    edges = [[source, target] for source, target in augmented_edges(graph)]
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
+    return {"nodes": [_milestone_prompt_json(node, topology.stage_anchor_by_id[node.milestone_id]) for node in graph.nodes], "edges": edges}
 
-def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
+def _milestone_prompt_json(milestone: Milestone, anchor_id: str) -> JsonObject:
     """构造 LLM fallback prompt 使用的 milestone 摘要。"""
     if milestone is None:
         raise ValueError("milestone 不能为空")
@@ -46,7 +48,7 @@ def _milestone_prompt_json(milestone: Milestone) -> JsonObject:
         "milestone_id": milestone.milestone_id,
         "name": milestone.name,
         "description": milestone.description,
-        "anchor": milestone.stage_anchor_predecessor_id,
+        "anchor": anchor_id,
         "constraints": [
             _constraint_prompt_json(constraint) for constraint in milestone.constraints
         ],

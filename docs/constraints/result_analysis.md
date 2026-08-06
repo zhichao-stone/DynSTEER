@@ -108,9 +108,10 @@ expected_case_results = benchmark_count
 | 身份 | benchmark、experiment_id、model_id、method、repeat_index、case_id |
 | 分数 | score、default_score、dynsteer_score、native_score、overall_score |
 | 结果 | resolved、milestone_coverage、first_failure_stage_id |
-| replay 控制 | virtual_stop_triggered、virtual_stop_code、trajectory_changed、recovered_after_virtual_stop、final_completion |
-| 运行 | step_count、raw_step_count、snapshot_count、tool_call_count、elapsed_seconds、effective_elapsed_seconds |
-| Judge | llm_call_count、llm_failed_call_count、llm_total_tokens、cache_hit_count |
+| replay 控制 | virtual_stop_triggered、virtual_stop_code、trajectory_changed、recovered_after_virtual_stop、final_completion、agent_underperformance_stop |
+| 运行 | step_count、raw_step_count、snapshot_count、tool_call_count、stop_step、default_total_step、progress、elapsed_seconds、effective_elapsed_seconds |
+| 成本 | agent_time、adaptation_time、evaluation_time、agent_tokens、adaptation_tokens、evaluation_tokens、pipeline_time、pipeline_tokens |
+| Judge | llm_call_count、llm_failed_call_count、llm_prompt_tokens、llm_completion_tokens、llm_total_tokens、cache_hit_count |
 | 证据路径 | report_path、summary_path、trajectory_path |
 
 所有派生指标必须注明输入字段和判据。例如 `replay_full = (milestone_coverage == "full")`，不能只写“replay 成功”。
@@ -147,6 +148,24 @@ expected_case_results = benchmark_count
 - Judge 调用、失败调用、tokens、缓存命中；
 - 是否出现“full 但 stage fail”或“结构 scorer 与 Judge 证据冲突”。
 
+#### 3.4 因 Agent 执行不力而提前终止
+
+对每个 DynSTEER 系列方法，必须识别哪些配对样本因 Agent 执行质量不足、持续无进展、关键前置 milestone 未完成等 stop policy 判据而实际提前终止，并与 minefield 触发、正常完成、系统/评估异常和仅进行 virtual stop 模拟的样本分开。`agent_underperformance_stop` 必须由 stop code、stage report、trajectory 截断位置等证据共同判定，不能仅凭低分或轨迹较短反推。
+
+提前终止进度必须与同一 `(benchmark, model_id, repeat_index, case_id)` 的 DEFAULT 完整轨迹配对，并按下式计算：
+
+```text
+stop_step = DynSTEER 实际执行到提前终止点的步骤数
+default_total_step = 配对 DEFAULT 状态下 Agent 完整轨迹的步骤总数
+progress = stop_step / default_total_step
+```
+
+- `stop_step` 和 `default_total_step` 必须使用相同的 step 过滤、编号和计数口径；`stop_step` 是已执行步骤数量，不得直接混用从 0 开始的数组索引；
+- 必须逐配对样本报告 `stop_step`、`default_total_step`、`progress`、stop code 和证据路径，并按 case、model、method、benchmark 汇总提前终止数量、比例以及 progress 的 mean/median/P10/P90；
+- 若 DEFAULT 轨迹缺失、未完整执行、配对键不一致或 `default_total_step = 0`，则 `progress` 必须记为缺失并说明原因，不得补 0、改用其他 repeat/case 或使用全局平均步数；
+- 若 `stop_step > default_total_step`，必须作为计数口径或配对异常核查，不能静默截断为 1；
+- 分析必须说明提前终止是否确实阻止了低质量后续执行，以及停止过早、停止过晚或误停的代表性 case，不能把“发生提前终止”等同于“提前终止合理”。
+
 ### Step 4：逐 scenario/case 分析
 
 对每个 case 至少输出一行对照表，按 12 个配对样本（4 model × 3 repeat）或实际矩阵汇总：
@@ -156,6 +175,8 @@ expected_case_results = benchmark_count
 - score delta（replay−DEFAULT）；
 - replay coverage full/partial/none；
 - virtual stop / trajectory changed / recovery 计数；
+- 因 Agent 执行不力而提前终止的计数，以及每个提前终止配对样本的 `stop_step/default_total_step=progress`；
+- DEFAULT 与各 DynSTEER 方法的 Agent 执行、case 适配、评估及全流程时间/token，以及逐配对样本差值；
 - 主要异常工具、first failure stage 和 minefield 情况；
 - 一句有证据支持的 case-level 判断。
 
@@ -231,17 +252,45 @@ DS 提升只能说明模型平均分被拉开，不等于准确性、校准度�
 
 #### 5.5 效率和成本
 
-DEFAULT 与 replay 必须分方法报告：
+成本必须先拆分来源，再比较 DEFAULT 与各 DynSTEER 系列方法。至少区分：
 
-- wall-clock elapsed；
-- replay default-prefix execution time；
-- replay Judge/evaluator time；
-- replay effective time = prefix execution + evaluator time；
-- agent steps、raw steps、tool calls；
-- Judge calls、失败 calls、prompt/completion/total tokens；
-- 缓存命中、重复 prompt 避免和实际费用（若可用）。
+```text
+agent_cost      = Agent 执行轨迹产生的时间/token
+adaptation_cost = 为 case 生成 milestone、stage_goal、minefield 等适配产物的时间/token
+evaluation_cost = DynSTEER 在线评估、Judge、stop policy 等产生的时间/token
+pipeline_cost   = agent_cost + adaptation_cost + evaluation_cost
+```
 
-不能用 replay evaluator 的短 wall-clock 直接宣称 replay 更高效，因为它通常复用了 DEFAULT trajectory。
+DEFAULT 若存在原生 scorer/evaluator 成本，应计入 DEFAULT 的 `evaluation_cost`；不存在的 DynSTEER 专属适配成本记为 0。所有时间和 token 均应在来源可区分时采用同一边界计算，不能将并行任务的 wall-clock 与各组件耗时之和混用。
+
+逐 `(benchmark, model_id, repeat_index, case_id)` 配对样本至少报告：
+
+- Agent 执行时间/token、case 适配时间/token、评估时间/token和全流程时间/token；
+- DynSTEER 相对 DEFAULT 的专属额外开销：`adaptation_cost + evaluation_cost - default_evaluation_cost`；
+- DynSTEER 相对 DEFAULT 的全流程差值：`dynsteer_pipeline_cost - default_pipeline_cost`，时间与 token 分别计算；差值允许为负，提前终止节省的 Agent 执行成本不能被写成额外开销；
+- agent steps、raw steps、tool calls，Judge 调用/失败调用及 prompt/completion/total tokens，缓存命中、重复 prompt 避免和实际费用（若可用）；
+- 成本字段的原始来源、缺失状态，以及复用 DEFAULT 轨迹时 prefix execution 成本是实测、由时间戳重建还是估算。
+
+聚合时必须分别覆盖以下样本范围：
+
+1. **实验全量数据**：报告 DEFAULT 与 DynSTEER 的各组件总量、全流程总量、总量差值，同时给出逐样本差值的 mean/median/P90/P95；
+2. **因 Agent 执行不力而提前终止的配对子集**：使用 3.4 的同一判据和配对集合，仅与这些样本各自配对的 DEFAULT 行比较，报告相同的时间/token 指标，并结合 `progress` 解释节省的执行成本与新增评估成本；
+3. **逐 case 汇总**：按 case_id 报告配对样本数、提前终止数、各成本总量/均值及相对 DEFAULT 的差值，不能只给方法级总均值。
+
+case 适配若在多个 model、method 或 repeat 间共享/缓存，实验总量必须按实际调用次数计费，不能给每个配对样本重复记账。逐样本或逐 case 表中应单列共享成本及其分摊规则；同时优先报告“实际实验总成本”和“按明确规则分摊后的配对成本”，不得将分摊值伪装成实际调用成本。
+
+当 Agent 执行 token 可统计且三类 token 的边界可比时，对实验全量数据和提前终止子集分别报告以下占 DynSTEER 全流程 token 的比例：
+
+```text
+adaptation_token_share = adaptation_tokens / (agent_tokens + adaptation_tokens + evaluation_tokens)
+evaluation_token_share = evaluation_tokens / (agent_tokens + adaptation_tokens + evaluation_tokens)
+combined_overhead_token_share = (adaptation_tokens + evaluation_tokens)
+                                / (agent_tokens + adaptation_tokens + evaluation_tokens)
+```
+
+这三项分别对应仅 case 适配生成、仅评估、适配与评估合计的 token 范围。比例必须使用“先求分子/分母总量再相除”的 micro 口径；可另附逐样本比例的 macro 均值，但不能以 macro 均值替代总量占比。若 Agent token、适配 token 或评估 token 无法拆分，必须明确标为不可计算并报告可用样本覆盖率，不能把缺失项当作 0。
+
+不能用 replay evaluator 的短 wall-clock 直接宣称 replay 更高效，因为它通常复用了 DEFAULT trajectory；效率结论必须同时考虑完整 Agent 执行/截断 prefix、case 适配和评估成本。
 
 #### 5.6 重复稳定性
 
@@ -275,7 +324,7 @@ DEFAULT 与 replay 必须分方法报告：
 3. scenario/case 对照表；
 4. Agent 执行、异常和日志核查；
 5. DEFAULT/replay 判据差异；
-6. 任务完成、质量、区分度、重复稳定性、效率和成本指标；
+6. 任务完成、质量、区分度、重复稳定性、提前终止进度、效率和成本指标；
 7. 关键异常样例及证据路径；
 8. replay 是否更合理的分场景判断；
 9. 限制、改进建议和最终结论。
@@ -286,6 +335,8 @@ DEFAULT 与 replay 必须分方法报告：
 - 结果文件是否可信可复核；
 - 各 case 的 Agent 行为和评估是否合理；
 - DEFAULT/replay 不一致的原因；
+- DynSTEER 在哪些 case 因 Agent 执行不力而提前终止、停止时的执行进度及停止是否合理；
+- 全量数据和提前终止子集中，DynSTEER 相对 DEFAULT 的时间/token 额外开销与全流程差值；
 - replay 在哪些指标上更好、哪些指标上更差；
 - 是否有足够证据宣布 replay 优于 DEFAULT。
 
@@ -297,12 +348,15 @@ DEFAULT 与 replay 必须分方法报告：
 4. **不得只看最终分数**：必须回到 trajectory、snapshot、tool result、stage report 和 minefield/guardrail 证据。
 5. **不得静默移除异常样本**：异常应分类、计数、给出样例和路径。
 6. **不得把 Agent 工具异常自动当作系统故障**：先检查是否符合 case 的错误恢复、权限或网络设定。
-7. **不得把 replay 的复用时间当作完整实验时间**：同时报告 prefix、Judge 和 effective 三种口径。
+7. **不得把 replay 的复用时间当作完整实验时间**：必须拆分 Agent 执行、case 适配和评估成本，并报告包含三者的全流程成本。
 8. **不得把 Judge 分数当作 native ground truth**：Judge 需要通过 native scorer 或人工黄金集校准。
 9. **不得在重复统计中补齐缺失 repeat**：缺失必须保留为缺失并降低有效 pair 数。
 10. **不得暴露敏感配置**：报告只能记录模型 ID、endpoint 类型等必要元数据，不能复制 API key、token 或完整 secret 配置。
 11. **不得覆盖原始结果和约束文档**：分析文档和派生数据写入指定 docs/analysis 或独立目录；仅在用户明确要求时修改已有文档。
 12. **不得仅凭排名稳定性宣称正确**：稳定地得到同一排名，可能只是评分模板、Judge 偏差或 case 分布造成的。
+13. **不得脱离配对 DEFAULT 轨迹计算提前终止进度**：`progress` 必须使用相同 case/model/repeat 的 DEFAULT 完整步骤数作为分母，并保留不可配对和计数异常。
+14. **不得混合或重复计算成本**：Agent 执行、case 适配、评估成本必须拆分；共享/缓存适配成本按实际调用统计，分摊值必须另行标注。
+15. **不得只报告评估器自身成本**：全量数据和提前终止子集都必须报告包含 Agent 执行与评估的全流程时间/token、相对 DEFAULT 的差值及适配/评估 token 占比（数据可用时）。
 
 ## 5. 推荐的数据质量检查伪代码
 
@@ -320,11 +374,19 @@ validate timestamps and runtime counters
 for each paired case:
     collect native score and native success
     collect replay score, coverage, stop and recovery
+    classify agent_underperformance_stop from stop/report/trajectory evidence
+    if agent_underperformance_stop:
+        pair with the complete DEFAULT trajectory
+        compute progress = stop_step / default_total_step
+    split agent/adaptation/evaluation time and tokens
+    compute evaluation overhead and pipeline delta against DEFAULT
     compare only with explicitly declared predicates
     inspect trajectory and report when predicates disagree
 
 for each method and benchmark:
     aggregate score/quality/completion/cost metrics
+    aggregate full-data and early-stop-subset cost totals separately
+    compute adaptation/evaluation/combined token shares when agent tokens are available
     read repeat_rank_consistency.<method>.<benchmark>
     analyze its pairwise tau/exact/top1/displacement fields
     report missing and invalid pairs
@@ -340,7 +402,9 @@ re-read report and verify key totals against raw data
 - 实验矩阵、结果文件和运行轨迹完整性已核查；
 - 所有 success、coverage、quality、stop 字段的判据已写清；
 - 逐 case 对照表覆盖全部 scenario/case；
+- 因 Agent 执行不力而提前终止的 case 已识别，并以配对 DEFAULT 完整轨迹计算和报告 `stop_step/default_total_step=progress`；
 - DEFAULT 与 replay 的方法内 repeat 排名一致性已单独报告；
+- 全量数据与提前终止子集均已给出逐 case 和总量级的全流程时间/token、相对 DEFAULT 差值；不可计算项已说明原因和覆盖率；Agent token 可统计时，三种适配/评估 token 占比均已报告；
 - DS、分数方差、分数压缩、效率和成本至少有一项可审计明细；
 - 关键异常有分类、数量、样例路径和影响判断；
 - 报告结论区分“数据/流程正常”“评估口径一致”“方法优劣”三个层次；

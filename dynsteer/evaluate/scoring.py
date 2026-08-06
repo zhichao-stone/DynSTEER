@@ -1,9 +1,8 @@
 from dataclasses import asdict, is_dataclass
 from difflib import SequenceMatcher
 from typing import Any
-from dynsteer.evaluate.matching.boundary import boundary_snapshot, boundary_step
 from dynsteer.graph import START_NODE_ID
-from dynsteer.model import Boundary, Constraint, ConstraintScore, ConstraintTarget, Dimension, EventType, JsonObject, JsonValue, MISSING, Milestone, MilestoneScore, Operator, ScoringContext, StageEvaluationResult, StageStatus, StateSnapshot, Trajectory, TrajectoryStep
+from dynsteer.model import Constraint, ConstraintScore, ConstraintTarget, Dimension, EventType, JsonObject, JsonValue, MISSING, Milestone, MilestoneScore, Operator, ScoringContext, StageEvaluationResult, StageStatus, StateSnapshot, Trajectory, TrajectoryStep
 from dynsteer.utils import clamp, json_subsumes, read_token
 
 class GeneralScorer:
@@ -79,15 +78,17 @@ class GeneralScorer:
             evidence.append(f"selector 未命中: {constraint.selector}")
         return ConstraintScore(constraint_id=constraint.constraint_id, score=score, missing=missing, evidence=evidence, actual=actual)
 
-    def score_milestone(self, milestone: Milestone, boundary: Boundary, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
+    def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
+        boundary_id = f"runtime:b{scoring_step.index}"
         if len(milestone.constraints) == 0:
-            return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary.boundary_id, score=0.0, status=StageStatus.INVALID, evidence=["milestone 缺少 constraints"], missing_ratio=1.0, hard_constraints_all_pass=False)
+            return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary_id, score=0.0, status=StageStatus.INVALID, evidence=["milestone 缺少 constraints"], missing_ratio=1.0, hard_constraints_all_pass=False)
         constraint_scores: list[ConstraintScore] = []
         weighted_sum = 0.0
         weight_sum = 0.0
         hard_pass = True
+        stage_start_index = self._milestone_start_index(milestone, trajectory, context)
         for constraint in milestone.constraints:
-            source, reference = self.constraint_sources(constraint, boundary, trajectory, reference_snapshots, context=context)
+            source, reference = self.constraint_sources(constraint, scoring_step, trajectory, reference_snapshots, context=context, stage_start_index=stage_start_index)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             weight = max(float(constraint.weight), 0.0)
@@ -108,7 +109,7 @@ class GeneralScorer:
         else:
             status = StageStatus.FAIL
         evidence = [line for item in constraint_scores for line in item.evidence]
-        return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary.boundary_id, score=clamp(score), status=status, evidence=evidence, missing_ratio=missing_ratio, hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
+        return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary_id, score=clamp(score), status=status, evidence=evidence, missing_ratio=missing_ratio, hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
 
     def _resolve_source(self, constraint: Constraint, source: object | None) -> JsonValue:
         if source is None:
@@ -143,16 +144,16 @@ class GeneralScorer:
             return source
         return None
 
-    def constraint_sources(self, constraint: Constraint, boundary: Boundary, trajectory: Trajectory, snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> tuple[object, StateSnapshot | None]:
+    def constraint_sources(self, constraint: Constraint, scoring_step: TrajectoryStep, trajectory: Trajectory, snapshots: list[StateSnapshot], context: ScoringContext | None=None, stage_start_index: int | None=None) -> tuple[object, StateSnapshot | None]:
         """按约束目标解析 boundary 上的评分 source 与 reference。"""
         if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
-            source: object = boundary_snapshot(boundary, snapshots)
+            source: object = trajectory.snapshot_at_or_before(scoring_step.index)
         elif constraint.target == ConstraintTarget.METRIC:
             source = trajectory.metrics
         elif constraint.target in {ConstraintTarget.TOOL_CALL, ConstraintTarget.TOOL_RESULT}:
-            source = self._interval_step_source(constraint, boundary, trajectory, context)
+            source = self._interval_step_source(constraint, scoring_step, trajectory, stage_start_index)
         else:
-            source = boundary_step(trajectory, boundary)
+            source = scoring_step
         if constraint.reference_milestone_id is None:
             return (source, None)
         if context is not None:
@@ -164,37 +165,25 @@ class GeneralScorer:
                 return (source, snapshot)
         return (source, None)
 
-    def _interval_step_source(self, constraint: Constraint, boundary: Boundary, trajectory: Trajectory, context: ScoringContext | None) -> TrajectoryStep | None:
+    def _interval_step_source(self, constraint: Constraint, scoring_step: TrajectoryStep, trajectory: Trajectory, stage_start_index: int | None) -> TrajectoryStep | None:
         """在当前 milestone 阶段区间中寻找最近的目标 step。"""
-        start_index = self._stage_start_step_index(constraint, trajectory, context)
-        if boundary.step_index <= start_index:
-            return boundary_step(trajectory, boundary)
-        for step in reversed(trajectory.get_interval(start_index, boundary.step_index)):
+        start_index = stage_start_index if stage_start_index is not None else trajectory.first_step_index - 1
+        if scoring_step.index <= start_index:
+            return scoring_step
+        for step in reversed(trajectory.get_interval(start_index, scoring_step.index)):
             if constraint.target == ConstraintTarget.TOOL_CALL and (step.tool_call is not None or step.event_type == EventType.TOOL_CALL):
                 return step
             if constraint.target == ConstraintTarget.TOOL_RESULT and (step.tool_result is not None or step.event_type == EventType.TOOL_RESULT):
                 return step
-        return boundary_step(trajectory, boundary)
+        return scoring_step
 
-    def _stage_start_step_index(self, constraint: Constraint, trajectory: Trajectory, context: ScoringContext | None) -> int:
-        """根据 constraint 所属 milestone 找到当前阶段左边界。"""
-        if trajectory.latest_step_index is None:
-            return -1
-        if context is None or context.task_case is None or context.task_case.milestone_graph is None:
+    def _milestone_start_index(self, milestone: Milestone, trajectory: Trajectory, context: ScoringContext | None) -> int:
+        graph = context.task_case.milestone_graph if context is not None and context.task_case is not None else None
+        topology = graph.topology if graph is not None else None
+        if topology is None:
             return trajectory.first_step_index - 1
-        for milestone in context.task_case.milestone_graph.nodes:
-            if not any((item.constraint_id == constraint.constraint_id for item in milestone.constraints)):
-                continue
-            anchor_id = milestone.stage_anchor_predecessor_id
-            if anchor_id == START_NODE_ID:
-                return trajectory.first_step_index - 1
-            if isinstance(anchor_id, str) and anchor_id in context.matched_boundaries:
-                return context.matched_boundaries[anchor_id].step_index
-            return trajectory.first_step_index - 1
-        return trajectory.first_step_index - 1
-
-def get_effective_scorer(scorer: GeneralScorer | None) -> GeneralScorer:
-    return scorer if scorer is not None else GeneralScorer()
+        anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
+        return trajectory.first_step_index - 1 if anchor_id == START_NODE_ID else context.matched_step_indexes.get(anchor_id, trajectory.first_step_index - 1)
 
 def stage_score_from_dimensions(dimension_scores: dict[Dimension, float], weights: dict[Dimension, float]) -> float:
     """根据维度分数和动态权重计算阶段综合分数。"""

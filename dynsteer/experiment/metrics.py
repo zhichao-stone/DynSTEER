@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from itertools import combinations
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod
 from dynsteer.model import JsonObject
 from dynsteer.utils import clamp, json_safe
@@ -29,24 +29,16 @@ def model_scores(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     输出：
         method -> benchmark -> model_id -> average_score 的嵌套 JSON。
     """
-    if results is None:
-        raise ValueError("results 不能为空")
-    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
-    for result in results:
-        if result is None:
-            raise ValueError("results 不能包含空结果")
-        score = result.score
-        if score is not None:
-            buckets[result.method.value, result.benchmark, result.model_id].append(case_score(score))
     scores: JsonObject = {}
-    for (method, benchmark, model_id), values in sorted(buckets.items()):
+    averages = _group_average(results, lambda result: (result.method.value, result.benchmark, result.model_id), lambda result: case_score(result.score) if result.score is not None else None)
+    for (method, benchmark, model_id), average in sorted(averages.items()):
         method_scores = scores.setdefault(method, {})
         if not isinstance(method_scores, dict):
             raise ValueError("method scores 类型异常")
         benchmark_scores = method_scores.setdefault(benchmark, {})
         if not isinstance(benchmark_scores, dict):
             raise ValueError("benchmark scores 类型异常")
-        benchmark_scores[model_id] = sum(values) / len(values)
+        benchmark_scores[model_id] = average
     return scores
 
 def repeat_model_scores(
@@ -60,20 +52,24 @@ def repeat_model_scores(
         (method, benchmark, repeat_index) -> model_id -> average_score。
         缺失、无法解析或非有限的分数不进入均值，由一致性汇总标记对应 pair 无效。
     """
+    output: dict[tuple[str, str, int], dict[str, float]] = defaultdict(dict)
+    averages = _group_average(results, lambda result: (result.method.value, result.benchmark, result.repeat_index, result.model_id), lambda result: _finite_case_score(result.score))
+    for (method, benchmark, repeat, model), average in sorted(averages.items()):
+        output[method, benchmark, repeat][model] = average
+    return dict(output)
+
+
+def _group_average(results: Sequence[ExperimentCaseResult], key: Callable[[ExperimentCaseResult], tuple[object, ...]], score_getter: Callable[[ExperimentCaseResult], float | None]) -> dict[tuple[object, ...], float]:
     if results is None:
         raise ValueError("results 不能为空")
-    buckets: dict[tuple[str, str, int, str], list[float]] = defaultdict(list)
+    buckets: dict[tuple[object, ...], list[float]] = defaultdict(list)
     for result in results:
         if result is None:
             raise ValueError("results 不能包含空结果")
-        score = _finite_case_score(result.score)
+        score = score_getter(result)
         if score is not None:
-            buckets[result.method.value, result.benchmark, result.repeat_index, result.model_id].append(score)
-
-    output: dict[tuple[str, str, int], dict[str, float]] = defaultdict(dict)
-    for (method, benchmark, repeat, model), values in sorted(buckets.items()):
-        output[method, benchmark, repeat][model] = sum(values) / len(values)
-    return dict(output)
+            buckets[key(result)].append(score)
+    return {group: sum(values) / len(values) for group, values in buckets.items()}
 
 def rank_models(model_scores: Mapping[str, float]) -> JsonObject:
     """按模型均分降序生成稳定展示顺序和并列平均名次。
@@ -221,10 +217,11 @@ def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonO
         score = 0.0 if mean_score == 0 else (
             population_stddev / mean_score
         ) * math.sqrt(significant_pair_ratio)
+    ordered_models = sorted(normalized)
     model_pairs = [
         {"left_model": left, "right_model": right, "absolute_difference": abs(normalized[left] - normalized[right]), "significant": abs(normalized[left] - normalized[right]) > epsilon}
-        for index, left in enumerate(sorted(normalized))
-        for right in sorted(normalized)[index + 1:]
+        for index, left in enumerate(ordered_models)
+        for right in ordered_models[index + 1:]
     ]
     return {
         "epsilon": epsilon,

@@ -162,13 +162,11 @@ class AgentStepTracker:
     """跟踪串行或带 correlation ID 的并行 agent outbound 闭包状态。
 
     入参：
-        pending_outbounds: 按稳定内部 key 保存尚未收到反馈的 Agent -> X step。
-        pending_steps: 按稳定内部 key 保存各闭包已收集的 raw steps。
+        pending_steps: 按稳定内部 key 保存各闭包已收集的 raw steps；首元素即 outbound。
         completed_count: 已闭合的 agent step 数量。
     输出：
         `ingest()` 在闭包完成时返回完整闭包，否则返回 None。
     """
-    pending_outbounds: dict[str, TrajectoryStep] = field(default_factory=dict)
     pending_steps: dict[str, list[TrajectoryStep]] = field(default_factory=dict)
     completed_count: int = 0
 
@@ -179,24 +177,25 @@ class AgentStepTracker:
         if self._is_agent_outbound(raw_step):
             self._add_pending(raw_step)
             return None
-        if not self.pending_outbounds:
+        if not self.pending_steps:
             return None
 
         key = self._matching_pending_key(raw_step)
         if key is not None:
             self.pending_steps[key].append(raw_step)
             return self._complete_pending(key)
-        if len(self.pending_outbounds) == 1:
-            only_key = next(iter(self.pending_outbounds))
+        if len(self.pending_steps) == 1:
+            only_key = next(iter(self.pending_steps))
             self.pending_steps[only_key].append(raw_step)
             return None
         raise self._protocol_error("并行 pending 期间的 step 无法唯一归属", raw_step)
 
     def finalize(self) -> AgentStepClosure | None:
         """自然结束时闭合允许自闭合的唯一终局 agent message。"""
-        if len(self.pending_outbounds) != 1:
+        if len(self.pending_steps) != 1:
             return None
-        key, pending = next(iter(self.pending_outbounds.items()))
+        key, steps = next(iter(self.pending_steps.items()))
+        pending = steps[0]
         if pending.actor == Actor.AGENT and pending.recipient == Actor.USER and pending.event_type in {EventType.MESSAGE, EventType.FINAL}:
             return self._complete_pending(key)
         return None
@@ -206,16 +205,15 @@ class AgentStepTracker:
     def _add_pending(self, raw_step: TrajectoryStep) -> None:
         """新增 outbound，并校验连续 outbound 是否为合法并行工具调用。"""
         key = self._pending_key(raw_step)
-        if self.pending_outbounds:
-            pending_values = list(self.pending_outbounds.values())
+        if self.pending_steps:
+            pending_values = [steps[0] for steps in self.pending_steps.values()]
             if not all(self._is_parallel_tool_outbound(step) for step in [*pending_values, raw_step]):
                 raise self._protocol_error("上一个 agent outbound 尚未闭合，不能继续接收新的 agent outbound", raw_step)
             missing_ids = [step.step_id for step in [*pending_values, raw_step] if self._tool_call_id(step) is None]
             if missing_ids:
                 raise self._protocol_error(f"并行 tool outbound 缺少 correlation id: step_ids={missing_ids}", raw_step)
-            if key in self.pending_outbounds:
+            if key in self.pending_steps:
                 raise self._protocol_error("并行 tool outbound 使用重复 correlation id", raw_step)
-        self.pending_outbounds[key] = raw_step
         self.pending_steps[key] = [raw_step]
 
     def _complete_pending(self, key: str) -> AgentStepClosure:
@@ -223,7 +221,6 @@ class AgentStepTracker:
         steps = tuple(self.pending_steps.get(key, []))
         if not steps:
             raise AgentStepProtocolError("agent step closure 缺少 pending steps")
-        del self.pending_outbounds[key]
         del self.pending_steps[key]
         self.completed_count += 1
         return AgentStepClosure(steps=steps)
@@ -233,17 +230,18 @@ class AgentStepTracker:
         call_id = self._tool_call_id(feedback)
         if call_id is not None:
             key = f"tool:{call_id}"
-            pending = self.pending_outbounds.get(key)
-            if pending is None:
+            pending_steps = self.pending_steps.get(key)
+            if not pending_steps:
                 raise self._protocol_error("feedback 使用未知 correlation id", feedback)
+            pending = pending_steps[0]
             if not self._is_reciprocal_feedback(pending, feedback):
                 raise self._protocol_error("feedback correlation id 匹配但 route 不匹配", feedback)
             return key
 
         candidates = [
             key
-            for key, pending in self.pending_outbounds.items()
-            if self._is_reciprocal_feedback(pending, feedback)
+            for key, steps in self.pending_steps.items()
+            if self._is_reciprocal_feedback(steps[0], feedback)
         ]
         if len(candidates) == 1:
             return candidates[0]
@@ -258,10 +256,11 @@ class AgentStepTracker:
 
     def _protocol_error(self, category: str, current: TrajectoryStep) -> AgentStepProtocolError:
         """构造包含 pending、route 与 correlation 上下文的协议异常。"""
-        pending_ids = [step.step_id for step in self.pending_outbounds.values()]
+        pending_steps = [steps[0] for steps in self.pending_steps.values()]
+        pending_ids = [step.step_id for step in pending_steps]
         pending_call_ids = [
             call_id
-            for step in self.pending_outbounds.values()
+            for step in pending_steps
             if (call_id := self._tool_call_id(step)) is not None
         ]
         return AgentStepProtocolError(
@@ -321,8 +320,7 @@ class Milestone:
     constraints: list[Constraint]
     pass_threshold: Optional[float] = None
     metadata: JsonObject = field(default_factory=dict)
-    dependency_predecessor_ids: list[str] = field(default_factory=list)
-    stage_anchor_predecessor_id: Optional[str] = None
+    matching_route: tuple[Actor, Actor] | None = None
 
 @dataclass
 class MinefieldPenalty:
@@ -341,32 +339,43 @@ class Minefield:
     metadata: JsonObject = field(default_factory=dict)
 
 @dataclass
+class MilestoneTopology:
+    milestone_by_id: Mapping[str, Milestone]
+    predecessors_by_id: Mapping[str, tuple[str, ...]]
+    successors_by_id: Mapping[str, tuple[str, ...]]
+    stage_anchor_by_id: Mapping[str, str]
+    order_by_id: Mapping[str, int]
+    root_ids: tuple[str, ...]
+    terminal_ids: tuple[str, ...]
+    finish_anchor_id: str
+
+
+@dataclass
 class MilestoneGraph:
     nodes: list[Milestone] = field(default_factory=list)
     edges: list[tuple[str, str]] = field(default_factory=list)
     minefields: list[Minefield] = field(default_factory=list)
     metadata: JsonObject = field(default_factory=dict)
+    topology: MilestoneTopology | None = field(default=None, init=False, repr=False, metadata={"json_safe": False})
+
+    @property
+    def finish_anchor_id(self) -> str:
+        return self.topology.finish_anchor_id if self.topology is not None else "__start__"
 
 @dataclass
 class MilestoneFrontierState:
     """保存 milestone ready frontier 的运行期增量状态。
 
     入参：
-        milestone_by_id: milestone id 到 milestone 对象引用的映射。
-        dependents_by_id: milestone id 到直接后继 milestone id 的映射。
+        topology: milestone graph 的静态拓扑索引。
         remaining_predecessor_count: 未匹配前驱数量。
         ready_ids: 当前 ready frontier，按 graph 原始拓扑顺序维护。
-        blocked_candidate_ids: 已靠近执行前沿但仍缺少前驱的诊断候选，按 graph 原始拓扑顺序维护。
-        order_by_id: graph.nodes 原始顺序，用于稳定输出。
     输出：
         供运行期 step 分析和 match 后推进复用的状态对象。
     """
-    milestone_by_id: dict[str, Milestone]
-    dependents_by_id: dict[str, tuple[str, ...]]
+    topology: MilestoneTopology
     remaining_predecessor_count: dict[str, int]
     ready_ids: list[str]
-    blocked_candidate_ids: list[str]
-    order_by_id: dict[str, int]
 
 @dataclass
 class TaskCase:
@@ -404,38 +413,37 @@ class Trajectory:
     final_state: Optional[JsonObject] = None
     metrics: JsonObject = field(default_factory=dict)
     raw: JsonObject = field(default_factory=dict)
-    first_step_index: int = 0
-    successor_by_boundary: dict[int, int] = field(default_factory=dict)
-    latest_step_index: int | None = None
     _snapshot_positions: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """根据已有 step 序列维护阶段边界 O(1) 查询上下文。"""
-        self.first_step_index = 0
-        self.successor_by_boundary = {}
-        self.latest_step_index: int | None = None
-        for step in self.steps:
+        """校验已有 step 顺序并建立 snapshot 索引。"""
+        for position, step in enumerate(self.steps):
             if step is None:
                 raise ValueError("trajectory.steps 不能包含空 step")
-            self._append_step_index(step.index)
+            if position and step.index <= self.steps[position - 1].index:
+                raise ValueError("trajectory step index 必须递增")
         self._rebuild_snapshot_positions()
 
-    def _append_step_index(self, step_index: int) -> None:
-        """仅追加 step index，用于维护阶段边界后继表。"""
-        previous_index = self.latest_step_index
-        if previous_index is not None and step_index <= previous_index:
-            raise ValueError("trajectory step index 必须递增")
-        if previous_index is None:
-            self.first_step_index = step_index
-            self.successor_by_boundary[step_index - 1] = step_index
-        else:
-            self.successor_by_boundary[previous_index] = step_index
-        self.latest_step_index = step_index
+    @property
+    def first_step_index(self) -> int:
+        """返回首个 step index；空轨迹返回 0。"""
+        return self.steps[0].index if self.steps else 0
+
+    @property
+    def latest_step_index(self) -> int | None:
+        """返回最后一个 step index。"""
+        return self.steps[-1].index if self.steps else None
 
     def append_step(self, step: TrajectoryStep) -> None:
-        """追加单个 step，并同步维护首个 step 与 boundary 后继表。"""
-        self._append_step_index(step.index)
+        """按递增 index 追加单个 step。"""
+        if self.steps and step.index <= self.steps[-1].index:
+            raise ValueError("trajectory step index 必须递增")
         self.steps.append(step)
+
+    def first_step_after(self, boundary_index: int, end_index: int) -> int:
+        """返回 `(boundary_index, end_index]` 内首个 step index。"""
+        position = bisect_right(self.steps, boundary_index, key=lambda step: step.index)
+        return self.steps[position].index if position < len(self.steps) and self.steps[position].index <= end_index else end_index
 
     def extend_snapshots(self, snapshots: list[StateSnapshot]) -> None:
         """按 snapshot_id 去重追加状态快照。"""
@@ -444,7 +452,6 @@ class Trajectory:
             position = self._snapshot_positions.get(snapshot.snapshot_id)
             if position is not None:
                 self.snapshots[position] = snapshot
-                out_of_order = True
             else:
                 out_of_order |= bool(self.snapshots and _snapshot_key(snapshot) < _snapshot_key(self.snapshots[-1]))
                 self._snapshot_positions[snapshot.snapshot_id] = len(self.snapshots)
@@ -452,6 +459,11 @@ class Trajectory:
         if out_of_order:
             self.snapshots.sort(key=_snapshot_key)
             self._rebuild_snapshot_positions()
+
+    def snapshot_at_or_before(self, step_index: int) -> StateSnapshot | None:
+        """Return the latest snapshot whose step index is at most ``step_index``."""
+        position = bisect_right(self.snapshots, step_index, key=lambda snapshot: snapshot.after_step_index) - 1
+        return self.snapshots[position] if position >= 0 else None
 
     def get_interval(self, min_index: int, max_index: int) -> list[TrajectoryStep]:
         """返回指定 step index 区间内的轨迹步骤。"""
@@ -478,14 +490,6 @@ def _snapshot_key(snapshot: StateSnapshot) -> tuple[int, str]:
     """返回 snapshot 的稳定排序键。"""
     return snapshot.after_step_index, snapshot.snapshot_id
 
-@dataclass
-class Boundary:
-    boundary_id: str
-    step_index: int
-    snapshot_id: Optional[str]
-    reason: str
-    step_id: Optional[str] = None
-
 def _enum_key_dict(values: Mapping[Enum, object]) -> JsonObject:
     """将 enum key 字典转换为 JSON key 字典。"""
     return {key.value: value.value if isinstance(value, Enum) else value for key, value in values.items()}
@@ -511,7 +515,7 @@ class MilestoneScore:
 
 @dataclass(frozen=True)
 class MilestoneStepAnalysis:
-    hit: tuple[Milestone, Boundary, MilestoneScore] | None = None
+    hit: tuple[Milestone, TrajectoryStep, MilestoneScore] | None = None
     attempt_detail: JsonObject | None = None
     blocked_detail: JsonObject | None = None
     requires_semantic_review: bool = False
@@ -519,7 +523,7 @@ class MilestoneStepAnalysis:
 @dataclass(frozen=True)
 class ScoringContext:
     task_case: TaskCase | None = None
-    matched_boundaries: Mapping[str, Boundary] = field(default_factory=dict)
+    matched_step_indexes: Mapping[str, int] = field(default_factory=dict)
     matched_snapshots: Mapping[str, StateSnapshot] = field(default_factory=dict)
     metadata: JsonObject = field(default_factory=dict)
 
@@ -584,6 +588,7 @@ class TrajectoryEvaluationReport:
     overall_score: float
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
     minefield_matches: list[JsonObject] = field(default_factory=list)
+    evaluated_minefield_sources: set[str] = field(default_factory=set)
     first_failure_stage_id: Optional[str] = None
     runtime_metrics: JsonObject = field(default_factory=dict)
     metadata: JsonObject = field(default_factory=dict)
@@ -643,10 +648,14 @@ class EvaluationPolicyState:
 @dataclass
 class EvaluationTerminationState:
     """统一描述评估链路中的终止状态。"""
-    should_stop: bool = False
     termination_code: str | None = None
     termination_reason: str | None = None
     termination_detail: JsonObject | None = None
+
+    @property
+    def should_stop(self) -> bool:
+        """是否已产生明确终止代码。"""
+        return self.termination_code is not None
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化终止状态。"""
@@ -689,8 +698,11 @@ class RuntimeEvaluationState:
     milestone_frontier: MilestoneFrontierState
     matched_settlements: dict[str, HarnessStageSettlement] = field(default_factory=dict)
     reference_anchor_snapshots: dict[str, StateSnapshot] = field(default_factory=dict)
+    referenced_milestone_ids: frozenset[str] = frozenset()
+    scoring_context_cache: ScoringContext | None = None
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
     match_attempts: list[JsonObject] = field(default_factory=list)
+    final_milestone_diagnostics: list[JsonObject] | None = None
     evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
     minefield_matches: list[JsonObject] = field(default_factory=list)
     max_minefield_score: float = 0.0
@@ -702,7 +714,6 @@ class RuntimeEvaluationState:
 @dataclass
 class RuntimeEvaluationDecision:
     """单步运行期阶段评估决策。"""
-    next_state: RuntimeEvaluationState
     checkpoint: HarnessStageSettlement | None = None
     stage_result: StageEvaluationResult | None = None
     termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)

@@ -1,11 +1,11 @@
 from collections import deque
-from dynsteer.model import MilestoneGraph
+from dynsteer.model import MilestoneGraph, MilestoneTopology
 
 
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 
-def _augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
+def augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
     ids = {node.milestone_id for node in graph.nodes}
     if not ids:
         return [(START_NODE_ID, FINISH_NODE_ID)]
@@ -78,22 +78,22 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
     if graph is None:
         raise ValueError("graph 不能为空")
     actualnode_ids = {node.milestone_id for node in graph.nodes}
-    augmented = _augmented_edges(graph)
+    augmented = augmented_edges(graph)
     node_ids = actualnode_ids | {START_NODE_ID, FINISH_NODE_ID}
     predecessors, successors = build_adjacency(node_ids, augmented)
     order, depths = topological_order(predecessors, successors)
     idom = _immediate_dominators(order, predecessors, depths)
-    for node in graph.nodes:
-        node.dependency_predecessor_ids = [predecessor for predecessor in predecessors.get(node.milestone_id, []) if predecessor in actualnode_ids]
-        anchor_id = idom.get(node.milestone_id)
-        node.stage_anchor_predecessor_id = anchor_id if isinstance(anchor_id, str) else START_NODE_ID
     finish_anchor = idom.get(FINISH_NODE_ID)
-    graph.metadata["graph_analysis"] = {
-        "start_node_id": START_NODE_ID,
-        "finish_node_id": FINISH_NODE_ID,
-        "augmented_edges": [[source, target] for source, target in augmented],
-        "finish_stage_anchor_predecessor_id": finish_anchor
-        if isinstance(finish_anchor, str)
-        else START_NODE_ID,
-    }
+    actual_predecessors = {node_id: tuple(item for item in predecessors[node_id] if item in actualnode_ids) for node_id in actualnode_ids}
+    actual_successors = {node_id: tuple(item for item in successors[node_id] if item in actualnode_ids) for node_id in actualnode_ids}
+    graph.topology = MilestoneTopology(
+        milestone_by_id={node.milestone_id: node for node in graph.nodes},
+        predecessors_by_id=actual_predecessors,
+        successors_by_id=actual_successors,
+        stage_anchor_by_id={node_id: idom.get(node_id, START_NODE_ID) for node_id in actualnode_ids},
+        order_by_id={node.milestone_id: index for index, node in enumerate(graph.nodes)},
+        root_ids=tuple(node_id for node_id in order if node_id in actualnode_ids and not actual_predecessors[node_id]),
+        terminal_ids=tuple(node_id for node_id in order if node_id in actualnode_ids and not actual_successors[node_id]),
+        finish_anchor_id=finish_anchor if isinstance(finish_anchor, str) else START_NODE_ID,
+    )
     return graph

@@ -1,7 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
-from dynsteer.model import Boundary, Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, StageGoalSemanticKind, StageStatus, Trajectory
+from collections.abc import Iterable
+from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, StageGoalSemanticKind, StageStatus, Trajectory, TrajectoryStep
 from dynsteer.utils import clamp, compact_text, json_safe
 
 
@@ -65,6 +66,25 @@ _STATE_DISPLAY_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
+def hard_failure_is_semantic_message_only(
+    milestone: Milestone,
+    scores: Iterable[ConstraintScore],
+) -> bool:
+    """判断是否存在硬失败，且全部硬失败均为 emit_message。"""
+    score_by_id = {score.constraint_id: score for score in scores}
+    semantic_failure_found = False
+    for constraint in milestone.constraints:
+        if not constraint.hard:
+            continue
+        score = score_by_id.get(constraint.constraint_id)
+        if score is not None and not score.missing and score.score >= constraint.threshold:
+            continue
+        if not is_semantic_emit_message_constraint(constraint):
+            return False
+        semantic_failure_found = True
+    return semantic_failure_found
+
 @dataclass(frozen=True)
 class SemanticMessageReviewTarget:
     """单条消息语义等价复判目标。"""
@@ -121,14 +141,14 @@ class SemanticMessageReview:
             "raw_payload": dict(self.raw_payload),
         }
 
-def semantic_message_review_targets(milestone: Milestone, score: MilestoneScore, trajectory: Trajectory | None=None, boundary: Boundary | None=None) -> list[SemanticMessageReviewTarget]:
+def semantic_message_review_targets(milestone: Milestone, score: MilestoneScore, trajectory: Trajectory | None=None, scoring_step: TrajectoryStep | None=None) -> list[SemanticMessageReviewTarget]:
     """从 milestone 评分中提取需要专用语义复判的消息约束。
 
     入参：
         milestone: 当前候选 milestone。
         score: 原结构化评分结果。
         trajectory: 可选运行期轨迹，用于提供量词和指代消解上下文。
-        boundary: 当前候选边界，用于截取复判前上下文。
+        scoring_step: 当前评分 step，用于截取复判前上下文。
     输出：
         需要进行 expected-vs-actual 消息等价判断的目标列表。
     """
@@ -136,10 +156,10 @@ def semantic_message_review_targets(milestone: Milestone, score: MilestoneScore,
         raise ValueError("milestone 和 score 不能为空")
     score_by_id = {item.constraint_id: item for item in score.constraint_scores}
     supporting_context: JsonObject = {}
-    if trajectory is not None and boundary is not None:
+    if trajectory is not None and scoring_step is not None:
         supporting_context = {"usage": "Use this context only to resolve references, quantifiers, and scope in the expected/actual messages. Do not evaluate tool choice or whole-stage quality."}
         steps = []
-        for step in [item for item in trajectory.steps if item.index <= boundary.step_index][-SEMANTIC_MESSAGE_CONTEXT_STEP_LIMIT:]:
+        for step in [item for item in trajectory.steps if item.index <= scoring_step.index][-SEMANTIC_MESSAGE_CONTEXT_STEP_LIMIT:]:
             item: JsonObject = {
                 "index": step.index,
                 "actor": step.actor.value,
@@ -160,7 +180,7 @@ def semantic_message_review_targets(milestone: Milestone, score: MilestoneScore,
                 item["tool_result"] = result_summary
             steps.append(item)
         snapshots = []
-        for snapshot in [item for item in trajectory.snapshots if item.after_step_index <= boundary.step_index][-SEMANTIC_MESSAGE_CONTEXT_SNAPSHOT_LIMIT:]:
+        for snapshot in [item for item in trajectory.snapshots if item.after_step_index <= scoring_step.index][-SEMANTIC_MESSAGE_CONTEXT_SNAPSHOT_LIMIT:]:
             namespaces: JsonObject = {}
             for namespace, rows in snapshot.namespaces.items():
                 if not isinstance(rows, list):

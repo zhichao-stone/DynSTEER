@@ -500,16 +500,13 @@ def _consistent_reduced_edges(
 ) -> list[tuple[str, str]] | None:
     ordered_ids = sorted(retained_ids)
     edges: set[tuple[str, str]] = set()
+    positions = [{atom_id: index for index, atom_id in enumerate(path.atom_ids)} for path in paths]
     for left_index, left in enumerate(ordered_ids):
         for right in ordered_ids[left_index + 1 :]:
-            containing = [
-                path.atom_ids
-                for path in paths
-                if left in path.atom_ids and right in path.atom_ids
-            ]
+            containing = [position for position in positions if left in position and right in position]
             if not containing:
                 continue
-            orders = {items.index(left) < items.index(right) for items in containing}
+            orders = {position[left] < position[right] for position in containing}
             if len(orders) == 1:
                 edges.add((left, right) if orders.pop() else (right, left))
     if not _is_dag(retained_ids, sorted(edges)):
@@ -521,17 +518,19 @@ def _transitive_reduction(
     edges: set[tuple[str, str]],
 ) -> set[tuple[str, str]]:
     reduced = set(edges)
-    for edge in sorted(edges):
-        reduced.remove(edge)
-        if not _reachable(edge[0], edge[1], reduced):
-            reduced.add(edge)
-    return reduced
-
-
-def _reachable(source: str, target: str, edges: set[tuple[str, str]]) -> bool:
     successors: dict[str, set[str]] = {}
     for left, right in edges:
         successors.setdefault(left, set()).add(right)
+    for edge in sorted(edges):
+        reduced.remove(edge)
+        successors[edge[0]].remove(edge[1])
+        if not _reachable(edge[0], edge[1], successors):
+            reduced.add(edge)
+            successors[edge[0]].add(edge[1])
+    return reduced
+
+
+def _reachable(source: str, target: str, successors: dict[str, set[str]]) -> bool:
     pending = list(successors.get(source, set()))
     visited: set[str] = set()
     while pending:

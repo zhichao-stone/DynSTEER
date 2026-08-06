@@ -8,7 +8,6 @@ from dynsteer.evaluate.semantic import (
 from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.model import (
     Actor,
-    Boundary,
     Constraint,
     EventType,
     EvaluationTerminationState,
@@ -16,8 +15,8 @@ from dynsteer.model import (
     Milestone,
     MilestoneGraph,
     MilestoneScore,
+    MilestoneTopology,
     StageInterval,
-    StateSnapshot,
     Trajectory,
     TrajectoryStep,
 )
@@ -98,8 +97,8 @@ def _format_number(value: object) -> str:
 
 
 def _state_snapshot_delta_summary(trajectory: Trajectory, interval: StageInterval) -> JsonObject:
-    start_snapshot = _latest_snapshot_at_or_before(trajectory, interval.start_boundary_step_index)
-    end_snapshot = _latest_snapshot_at_or_before(trajectory, interval.end_step_index)
+    start_snapshot = trajectory.snapshot_at_or_before(interval.start_boundary_step_index)
+    end_snapshot = trajectory.snapshot_at_or_before(interval.end_step_index)
     if start_snapshot is None and end_snapshot is None:
         return {"available": False, "namespaces": {}}
     start_namespaces = start_snapshot.namespaces if start_snapshot is not None else {}
@@ -121,13 +120,6 @@ def _state_snapshot_delta_summary(trajectory: Trajectory, interval: StageInterva
         "changed_namespaces": [namespace for namespace, item in summaries.items() if isinstance(item, dict) and item.get("changed")],
         "namespaces": summaries,
     }
-
-
-def _latest_snapshot_at_or_before(trajectory: Trajectory, step_index: int) -> StateSnapshot | None:
-    snapshots = [snapshot for snapshot in trajectory.snapshots if snapshot.after_step_index <= step_index]
-    if not snapshots:
-        return None
-    return max(snapshots, key=lambda snapshot: (snapshot.after_step_index, snapshot.snapshot_id))
 
 
 def _constraint_goal_hint(constraint: Constraint | None) -> str:
@@ -262,6 +254,7 @@ def _score_value(value: object) -> float:
 
 def _pending_failure_diagnostics(
     milestone: Milestone,
+    topology: MilestoneTopology,
     blocker: str,
     common: JsonObject,
     best_entry: JsonObject | None,
@@ -361,7 +354,7 @@ def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
 def build_milestone_matching_detail(
     matched: dict[str, HarnessStageSettlement],
     milestone: Milestone,
-    boundary: Boundary,
+    scoring_step: TrajectoryStep,
     milestone_score: MilestoneScore,
     ready_milestone_ids_before_match: list[str],
 ) -> JsonObject:
@@ -369,11 +362,11 @@ def build_milestone_matching_detail(
         "mode": "runtime_checkpoint",
         "matched": True,
         "milestone": milestone_summary_to_dict(milestone),
-        "boundary": json_safe(boundary),
+        "boundary": {"boundary_id": f"runtime:b{scoring_step.index}", "step_index": scoring_step.index, "step_id": scoring_step.step_id},
         "score": json_safe(milestone_score),
         "ready_milestone_ids_before_match": list(ready_milestone_ids_before_match),
         "matched_milestone_ids_before_match": sorted(matched),
-        "predecessor_milestone_ids": list(milestone.dependency_predecessor_ids),
+        "predecessor_milestone_ids": list(topology.predecessors_by_id[milestone.milestone_id]),
     }
 
 
@@ -384,6 +377,9 @@ def build_final_milestone_diagnostics(
     termination: EvaluationTerminationState | None = None,
 ) -> list[JsonObject]:
     milestone_ids = {node.milestone_id for node in graph.nodes}
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
     attempts_by_milestone: dict[str, list[JsonObject]] = {milestone_id: [] for milestone_id in milestone_ids}
     ready_seen: set[str] = set()
     for attempt in match_attempts:
@@ -406,15 +402,15 @@ def build_final_milestone_diagnostics(
         scored_entries = [entry for entry in candidate_entries if isinstance(entry.get("score"), dict)]
         best_entry = max(scored_entries, key=lambda item: float(item["score"].get("score", 0.0)), default=None)
         last_entry = candidate_entries[-1] if candidate_entries else None
-        pending_predecessors = [item for item in node.dependency_predecessor_ids if item not in matched]
+        pending_predecessors = [item for item in topology.predecessors_by_id[node.milestone_id] if item not in matched]
         finally_ready = len(pending_predecessors) == 0
         best_score = best_entry.get("score") if isinstance(best_entry, dict) else None
         best_boundary = best_entry.get("boundary") if isinstance(best_entry, dict) else None
         common: JsonObject = {
             "milestone_id": node.milestone_id,
             "mandatory": True,
-            "dependency_predecessor_ids": list(node.dependency_predecessor_ids),
-            "stage_anchor_milestone_id": node.stage_anchor_predecessor_id,
+            "dependency_predecessor_ids": list(topology.predecessors_by_id[node.milestone_id]),
+            "stage_anchor_milestone_id": topology.stage_anchor_by_id[node.milestone_id],
             "ready_ever": node.milestone_id in ready_seen or finally_ready,
             "finally_ready": finally_ready,
             "attempt_count": len(candidate_entries),
@@ -551,7 +547,7 @@ def build_quality_diagnostics(steps: list[TrajectoryStep]) -> JsonObject:
             failed_tool_results.append(
                 {"step_index": step.index, "step_id": step.step_id, "tool_name": tool_name, "tool_call_id": call_id or None, "attribution_source": attribution_source, "attribution_status": "ambiguous" if tool_name is None else "matched", "exception": exception}
             )
-        if success and _is_empty_tool_content(content):
+        if success and _empty_tool_content(content):
             empty = {
                 "step_index": step.index,
                 "step_id": step.step_id,
@@ -629,16 +625,9 @@ def _classify_empty_tool_result(tool_name: str | None, content: object) -> JsonO
     normalized = str(tool_name).strip().lower()
     if normalized.startswith(STATE_MUTATION_TOOL_PREFIXES):
         return {"severity": "info", "result_category": "state_mutation_no_payload"}
-    if normalized.startswith(QUERY_TOOL_PREFIXES) and _is_empty_collection_content(content):
+    if normalized.startswith(QUERY_TOOL_PREFIXES) and _empty_tool_content(content, treat_null_as_empty=False):
         return {"severity": "info", "result_category": "query_no_match"}
     return {"severity": "warning", "result_category": "unknown_empty_payload"}
-
-
-def _is_empty_collection_content(value: object) -> bool:
-    """判断工具返回是否为明确的空集合，而不是语义不明的 None。"""
-    if isinstance(value, list | dict):
-        return len(value) == 0
-    return isinstance(value, str) and value.strip() in {"[]", "{}"}
 
 
 def _answer_claims_query_match(content: str | None) -> bool:
@@ -704,11 +693,12 @@ def _next_agent_message_by_index(steps: list[TrajectoryStep]) -> dict[int, Traje
     return result
 
 
-def _is_empty_tool_content(value: object) -> bool:
+def _empty_tool_content(value: object, *, treat_null_as_empty: bool = True) -> bool:
     if value is None:
-        return True
+        return treat_null_as_empty
     if isinstance(value, str):
-        return value.strip().lower() in {"", "none", "null", "[]", "{}"}
-    if isinstance(value, list | dict):
-        return len(value) == 0
-    return False
+        empty_values = {"", "[]", "{}"}
+        if treat_null_as_empty:
+            empty_values |= {"none", "null"}
+        return value.strip().lower() in empty_values
+    return isinstance(value, list | dict) and len(value) == 0

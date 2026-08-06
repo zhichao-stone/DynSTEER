@@ -6,7 +6,7 @@ from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
-from dynsteer.model import Boundary, Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, Operator, ScoringContext, StageStatus, StageGoalSemanticKind, StateSnapshot, Trajectory
+from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, Operator, ScoringContext, StageStatus, StageGoalSemanticKind, StateSnapshot, Trajectory, TrajectoryStep
 from dynsteer.utils import clamp
 import polars as pl
 
@@ -68,15 +68,16 @@ class ToolSandboxConstraintScorer(GeneralScorer):
     def __init__(self, module_loader: Callable[[str], Any] | None=None) -> None:
         self._module_loader = module_loader or load_toolsandbox_module
 
-    def score_milestone(self, milestone: Milestone, boundary: Boundary, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
+    def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
         if not any((isinstance(constraint.metadata.get("toolsandbox"), dict) for constraint in milestone.constraints)):
-            return super().score_milestone(milestone, boundary, trajectory, reference_snapshots, context=context)
+            return super().score_milestone(milestone, scoring_step, trajectory, reference_snapshots, context=context)
         constraint_scores: list[ConstraintScore] = []
         score_product = 1.0
         non_guardrail_count = 0
         hard_pass = True
+        stage_start_index = self._milestone_start_index(milestone, trajectory, context)
         for constraint in milestone.constraints:
-            source, reference = self.constraint_sources(constraint, boundary, trajectory, reference_snapshots, context=context)
+            source, reference = self.constraint_sources(constraint, scoring_step, trajectory, reference_snapshots, context=context, stage_start_index=stage_start_index)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
             constraint_score = clamp(float(result.score))
@@ -101,7 +102,7 @@ class ToolSandboxConstraintScorer(GeneralScorer):
         else:
             status = StageStatus.FAIL
         missing_count = sum((1 for item in constraint_scores if item.missing))
-        return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary.boundary_id, score=score, status=status, evidence=[line for item in constraint_scores for line in item.evidence], missing_ratio=missing_count / len(constraint_scores), hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
+        return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=f"runtime:b{scoring_step.index}", score=score, status=status, evidence=[line for item in constraint_scores for line in item.evidence], missing_ratio=missing_count / len(constraint_scores), hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
 
     def score_custom_constraint(self, constraint: Constraint, source: object, reference_source: object | None, actual: JsonValue, reference_value: JsonValue, context: ScoringContext | None=None) -> ConstraintScore:
         metadata = constraint.metadata.get("toolsandbox")

@@ -22,11 +22,12 @@ def generate_stage_evaluation_specs(task_case: TaskCase) -> dict[str, StageEvalu
         key 与真实 milestone stage key 对齐的 StageEvaluationSpec 字典。
     """
     graph = task_case.milestone_graph
+    topology = graph.topology
+    if topology is None:
+        raise ValueError("milestone graph 尚未 enrich")
     specs: dict[str, StageEvaluationSpec] = {}
     for milestone in graph.nodes:
-        anchor_id = milestone.stage_anchor_predecessor_id
-        if not isinstance(anchor_id, str) or not anchor_id:
-            raise ValueError(f"milestone 缺少 stage_anchor_predecessor_id: {milestone.milestone_id}")
+        anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
         key = stage_goal_key(anchor_id, milestone.milestone_id)
         specs[key] = _spec_for_milestone(milestone, task_case.stage_goals.get(key, ""))
     validate_stage_evaluation_specs(graph, task_case.stage_goals, specs)
