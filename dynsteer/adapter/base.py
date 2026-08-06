@@ -1,11 +1,14 @@
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
-import time
 from pathlib import Path
+
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
+from dynsteer.milestone.model import GeneratorTaskView
 from dynsteer.model import JsonObject, TaskCase
+
 
 @dataclass(frozen=True)
 class BenchmarkDefaultResult:
@@ -41,6 +44,15 @@ class BaseBenchmarkAdapter(ABC):
     @abstractmethod
     def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
         """将 benchmark 原生 case 转换为 DynSTEER TaskCase。"""
+
+    @abstractmethod
+    def generator_task_view(
+        self,
+        config: HarnessRunConfig,
+        task_case: TaskCase,
+        case_id: str,
+    ) -> GeneratorTaskView:
+        """投影 milestone 生成器可读取的公开任务字段。"""
 
     def refresh_task_case_for_experiment(
         self,

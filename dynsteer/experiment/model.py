@@ -1,8 +1,12 @@
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
+
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from dynsteer.milestone.model import MilestoneGenerationConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
+
 
 class ExperimentMethod(str, Enum):
     DEFAULT = "default"
@@ -53,6 +57,9 @@ class ExperimentRunSpec:
     threshold_profile: str | None = None
     thresholds: ThresholdConfig = field(default_factory=ThresholdConfig)
     strategy: EvaluationStrategyConfig = field(default_factory=EvaluationStrategyConfig)
+    milestone_generation: MilestoneGenerationConfig = field(
+        default_factory=MilestoneGenerationConfig
+    )
     metadata: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:

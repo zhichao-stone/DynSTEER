@@ -4,8 +4,17 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from dynsteer.experiment.model import EvaluationStrategyConfig, ExperimentMethod, ExperimentRunSpec
-from dynsteer.harness.config import evaluation_strategy_from_mapping, load_benchmark_manifest_metadata, threshold_config_from_mapping
+from dynsteer.experiment.model import (
+    EvaluationStrategyConfig,
+    ExperimentMethod,
+    ExperimentRunSpec,
+)
+from dynsteer.harness.config import (
+    evaluation_strategy_from_mapping,
+    load_benchmark_manifest_metadata,
+    milestone_generation_from_mapping,
+    threshold_config_from_mapping,
+)
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject, ThresholdConfig
 from dynsteer.utils import optional_str, read_json_file, required_str
@@ -59,6 +68,9 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
             manifest_metadata = load_benchmark_manifest_metadata(benchmark, data_root)
             manifest_metadata_cache[manifest_cache_key] = manifest_metadata
         benchmark_metadata = _metadata(benchmark_data)
+        milestone_generation = milestone_generation_from_mapping(
+            benchmark_data.get("milestone_generation")
+        )
 
         for model_spec in models:
             model_data = _spec_mapping(model_spec, "model_id")
@@ -104,6 +116,7 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
                                 threshold_profile=threshold_name,
                                 thresholds=thresholds,
                                 strategy=strategy,
+                                milestone_generation=milestone_generation,
                                 metadata=metadata,
                             )
                         )
@@ -124,6 +137,7 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
         results_dir=spec.results_dir,
         stop_on_stage_failure=spec.strategy.policy_stop,
         stop_on_minefield=spec.strategy.policy_stop,
+        milestone_generation=spec.milestone_generation,
         metadata=spec.to_metadata(),
     )
 

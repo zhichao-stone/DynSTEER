@@ -1,10 +1,21 @@
 import re
 
 from dynsteer.adapter.loader import parse_milestone_graph
-from dynsteer.adapter.toolsandbox.utils.trace import tool_call_from_agent_row, tool_trace_from_row
+from dynsteer.adapter.toolsandbox.utils.trace import (
+    tool_call_from_agent_row,
+    tool_trace_from_row,
+)
 from dynsteer.adapter.utils import callable_name, callable_spec, rows_from_dataframe
-from dynsteer.model import Actor, JsonObject, JsonValue, MilestoneGraph, StageGoalSemanticKind, TaskType
+from dynsteer.model import (
+    Actor,
+    JsonObject,
+    JsonValue,
+    MilestoneGraph,
+    StageGoalSemanticKind,
+    TaskType,
+)
 from dynsteer.utils import enum_name, json_safe
+
 
 def task_description_from_steps(steps: list[dict[str, JsonValue]], fallback: str, first_user_sandbox_message_index: int | None=None) -> str:
     if first_user_sandbox_message_index is not None:
@@ -142,7 +153,7 @@ def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
     evaluation = getattr(scenario, "evaluation", None)
     if evaluation is None:
         return parse_milestone_graph(
-            {"nodes": [], "edges": [], "minefields": [], "metadata": {"benchmark": "toolsandbox"}}
+            {"nodes": [], "edges": [], "minefields": [], "metadata": {"benchmark": "toolsandbox", "source": "origin"}}
         )
     milestone_matcher = getattr(evaluation, "milestone_matcher", None)
     minefield_matcher = getattr(evaluation, "minefield_matcher", None)
@@ -155,6 +166,7 @@ def milestone_graph_from_scenario(scenario: object) -> MilestoneGraph:
             "minefields": minefields,
             "metadata": {
                 "benchmark": "toolsandbox",
+                "source": "origin",
                 "constraint_semantics": "toolsandbox_custom_metadata",
                 "empty_graph_completion_basis": (
                     "minefield_only" if not nodes and minefields else "whole_trajectory"

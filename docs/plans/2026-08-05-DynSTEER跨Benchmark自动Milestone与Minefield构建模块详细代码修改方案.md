@@ -17,8 +17,6 @@ class MilestoneGenerationConfig:
     simulated_path_count: int = 6
     generator: JsonObject = field(default_factory=dict)
 
-    def digest(self) -> str: ...
-
 @dataclass(frozen=True)
 class PublicEvidence:
     evidence_id: str
@@ -66,7 +64,6 @@ class GenerationReport:
     leakage_count: int
     reasons: tuple[str, ...] = ()
     path_summaries: tuple[JsonObject, ...] = ()
-    online_stop_eligible: bool = False
 
     def to_dict(self) -> JsonObject: ...
 
@@ -76,7 +73,7 @@ class MilestoneGenerationError(ValueError):
 
 具体约束：
 
-- `MilestoneGenerationConfig.__post_init__()` 只校验 `simulated_path_count >= 3`、布尔值和 `generator` 类型；`digest()` 使用同一稳定 JSON + SHA-256 规则；不增加 reference policy、质量 profile 或兼容字段。
+- `MilestoneGenerationConfig.__post_init__()` 只校验 `simulated_path_count >= 3`、布尔值和 `generator` 类型；不增加 digest cache、reference policy、质量 profile 或兼容字段。
 - `GeneratorTaskView.digest()` 对上述公开字段做稳定 JSON 序列化和 SHA-256；adapter 不重复实现 hash。
 - instruction 固定使用 `source_ref="instruction"`；`public_assets`、tool、output contract 项都必须带唯一 `source_ref`，compiler 只接受这些已登记引用。
 - `PublicEvidence` 一条记录对应一个确定的 `target/selector/operator/evaluator_hint`，compiler 只能选择记录，不能让 LLM 自由发明 scorer 形状。
@@ -143,7 +140,7 @@ def compile_task_case(
 8. minefield 候选必须引用 `invariant_catalog` 和对应 `PublicEvidence`；LLM 不能提高 `PublicInvariant.severity`。无公开 invariant 或无可执行 detector 的候选直接删除。
 9. 使用现有 `Constraint`、`Milestone`、`Minefield`、`MilestoneGraph` 输出；不修改现有 scorer 接口。
 10. graph 必须至少包含一个可执行 milestone、所有 constraint selector 合法、DAG 合法且 hidden leakage 为 0，否则构造 `auto_rejected` report 并抛出 `MilestoneGenerationError`；失败 graph 不返回给 loader。
-11. 成功 graph metadata 只写 `source="generated"`、`compiler_version`、`view_digest`、`necessity_basis="synthetic_consensus"`、`online_stop_eligible=false`；完整 `GenerationReport` 不嵌套进 graph。
+11. 成功 graph metadata 只写 `source="generated"`、`compiler_version`、`view_digest` 和 `necessity_basis="synthetic_consensus"`；完整 `GenerationReport` 不嵌套进 graph。
 12. 核心步骤和异常使用结构化中文日志；不得记录完整 prompt、secret、gold、verifier 或 LLM reasoning。
 
 所有只被 compiler 使用的 `_Atom`、`_Path`、JSON 解析、DAG 校验、传递约简和泄漏扫描函数都留在本文件后半部分，按主函数到 helper 的顺序排列。
@@ -210,7 +207,7 @@ def milestone_generation_from_mapping(
 
 在 `ExperimentRunSpec` 增加同一个 `MilestoneGenerationConfig` 字段。
 
-`to_metadata()` 只写 `milestone_generation_digest`，不写完整 generator 配置，避免结果 metadata 成为第二配置来源。
+`to_metadata()` 不写 `milestone_generation` 或其副本；该对象只在 experiment config 转成 `HarnessRunConfig` 时传递，避免结果 metadata 成为第二配置来源。
 
 ### 2.4 `dynsteer/experiment/config.py`
 
@@ -238,25 +235,29 @@ def generator_task_view(
 
 现有三个 adapter 都必须实现；loader 只通过该接口获取生成输入，不按 benchmark 写条件分支。
 
-### 2.6 `dynsteer/adapter/loader.py`
+contract 的统一范围固定如下：
 
-新增唯一私有调度函数：
-
-```python
-def _apply_milestone_generation(
-    config: HarnessRunConfig,
-    adapter: BaseBenchmarkAdapter,
-    source_case: TaskCase,
-    cached_case: TaskCase | None,
-) -> TaskCase:
-    ...
+```text
+_adapt_task_case
+-> adapter.generator_task_view(config, task_case, case_id)
+-> benchmark contract.py 投影原始字段
+-> GeneratorTaskView
+-> compile_task_case
 ```
 
-修改后的非 Default 加载顺序固定为：
+- 对 loader 统一：所有 benchmark 都只暴露上述 `generator_task_view(config, task_case, case_id)`；
+- 对 compiler 统一：所有 adapter 都返回同一个 `GeneratorTaskView`，source ref、evidence 和 expected 校验只在 model/compiler 实现；
+- 对 benchmark 内部不强行统一：ToolSandbox 需要 context/tool conversion，AgentCompass 需要 PreparedTask 已核实字段，两者原始入参不同，各自 `contract.py` 只负责投影；
+- SWE-bench Pro 与 SkillsBench 的 ACTF evidence catalog 相同，因此集中在 `adapter/agentcompass/contract.py` 实现一次；
+- 不新增全局 contract registry、contract 基类或只转发参数的统一 builder。
+
+### 2.6 `dynsteer/adapter/loader.py`
+
+不新增第二个生成调度函数，直接扩展现有 `_adapt_task_case()`。只有创建/强制重建 adapted case 时允许进入生成流程：
 
 ```text
 adapter.adapt_task_case
--> _apply_milestone_generation
+-> 按 MilestoneGenerationConfig 选择 origin graph 或 compile_task_case
 -> enrich_milestone_graph
 -> _postprocess_task_case
 -> validate_stage_evaluation_specs
@@ -266,16 +267,17 @@ adapter.adapt_task_case
 具体规则：
 
 - Default 方法保持现有行为，不构造 milestone，不调用生成 LLM。
-- 非 Default 方法先获得新的 `source_case`；外部任务目录和 ToolSandbox scenario 已有缓存，因此不新增第二套 source cache。
-- `use_origin_milestone=true` 且原 graph 有 node 或 minefield：直接使用原 graph，metadata 写 `source="origin"`、`online_stop_eligible=true`，不构造 LLM。
-- 原 graph 为空，或 `use_origin_milestone=false`：调用 adapter 的 `generator_task_view()`。
-- cache key 只由 `view.digest()`、config digest 和 `COMPILER_VERSION` 组成，保存在 `TaskCase.metadata["milestone_generation"]`；不新增独立 cache 文件。
-- cached case 的三个 digest 全部一致时，把 cached graph、stage goal templates 和 generation report 复制到新的 `source_case`；不再次调用 LLM。
-- cache 不一致时用 `build_llm_from_config(config.milestone_generation.generator)` 构造 generator；未配置 generator 或编译失败时抛出结构化生成异常，不用空 graph 继续。
-- generated graph 替换 `source_case.milestone_graph`，report 只写入 `TaskCase.metadata["milestone_generation"]` 一次。
-- `refresh_task_cases_for_experiment()` 看到 `source="generated"` 时跳过 adapter 的 origin expected 刷新，只重新 materialize stage goals/specs；origin graph 继续调用现有 refresh。
+- `load_task_case()` 在 adapted case 文件存在且 `force_adapt=false` 时，直接 `parse_task_case()` 并使用文件中已经保存的 `MilestoneGraph`；不构造 view、不读取 `milestone_generation` 配置、不调用 LLM。
+- adapted case 文件不存在或 `force_adapt=true` 时进入 `_adapt_task_case()`；这是自动生成的唯一触发点。
+- `use_origin_milestone=true` 且 adapter 返回的原 graph 有 node 或 minefield：直接使用原 graph，并在 `MilestoneGraph.metadata` 写 `source="origin"`，不构造 LLM。
+- 原 graph 为空，或 `use_origin_milestone=false`：调用 adapter 的 `generator_task_view()`，再用 `build_llm_from_config(config.milestone_generation.generator)` 和 `compile_task_case()` 生成 graph。
+- 未配置 generator 或 compiler 抛出 `MilestoneGenerationError` 时适配失败，不保存空 graph。
+- generated graph 直接赋给 `task_case.milestone_graph`；`GenerationReport.to_dict()` 只作为适配审计信息写入 `TaskCase.metadata["milestone_generation"]`，后续 evaluator 不读取该字段。
+- 完成 enrich、stage goal/spec 后只调用现有 `save_task_case()` 一次；graph、stage goal 和 report 一起持久化到 adapted case 文件。
+- 后续修改 generator、路径数或 origin/generated 选择时，必须显式使用现有 `force_adapt=true` 重建；配置变化本身不触发隐式重生成。
+- `refresh_task_cases_for_experiment()` 只读取 `task_case.milestone_graph.metadata["source"]`：generated graph 跳过 adapter 的 origin expected 刷新，只重新 materialize stage goals/specs；origin graph 继续调用现有 refresh。
 - `_postprocess_task_case()` 仍是 enrich route、stage goal template、materialize 和 stage spec 的唯一入口；compiler 不复制这些逻辑。
-- 删除旧的“磁盘上 graph 非空就直接复用”判断，统一按上述 digest 判断；同一 case 每轮最多保存一次最终 TaskCase。
+- 不新增 digest cache、独立 cache 文件、fresh source/cached case 合并或“加载时检查是否需要重生成”的分支。
 
 ## 3. Benchmark 输入投影
 
@@ -378,33 +380,9 @@ def build_agentcompass_generator_view(
 - AgentCompass 当前 `PreparedTask.output` 为空，因此 `output_contract={}`，任务契约只来自公开 instruction；
 - 不读取 `tests_dir` 内容、`test.sh`、reward 或 verifier 输出。
 
-## 4. 生成图的运行期限制与审计字段
+## 4. API 文档与测试
 
-### 4.1 `dynsteer/evaluate/evaluator.py`
-
-只修改 `_apply_live_decision()`：
-
-- 当 `TaskCase.metadata["milestone_generation"]["online_stop_eligible"] is not True` 时，不调用 `harness.stop_case()`；
-- 在当前 stage result metadata 写入 `policy_stop_suppressed=true` 和 `policy_stop_suppressed_reason="generated_graph_not_online_eligible"`；
-- origin graph 的 metadata 为 true，保持现有在线停止行为；
-- `_record_replay_decision()` 不修改，generated graph 仍可记录 replay virtual stop。
-
-### 4.2 `dynsteer/evaluate/runtime.py`
-
-在 `task_case_snapshot()` 增加以下摘要字段：
-
-- `milestone_source`
-- `generation_status`
-- `necessity_basis`
-- `view_digest`
-- `compiler_version`
-- `online_stop_eligible`
-
-只从 `TaskCase.metadata["milestone_generation"]` 读取一次；不在 diagnostics、display 和 result writer 中重复拼装。
-
-## 5. API 文档与测试
-
-### 5.1 新增 `docs/apis/milestone.md`
+### 4.1 新增 `docs/apis/milestone.md`
 
 记录：
 
@@ -413,10 +391,12 @@ def build_agentcompass_generator_view(
 - `compile_task_case()` 输入、输出和异常；
 - 自动生成的固定算法：“一次多样化路径生成 → 共享 atom 对齐 → 三分之二契约共识 → DAG”；
 - `synthetic_consensus` 不代表真实必经；
-- generated graph 仅允许 replay/shadow，禁止 live stop；
+- generation config 只在适配时生效；adapted TaskCase 已存在时直接使用已存 graph，修改配置后必须 `force_adapt`；
+- graph 保存到 adapted TaskCase 后与原生 graph 使用同一评估流程；evaluator/runtime 只读取 `TaskCase.milestone_graph`，不读取 generation config/report；
+- 如实验不希望触发在线停止，继续使用现有 `strategy.policy_stop=false`，不增加 generation 专用策略；
 - ToolSandbox 动态 expected 只允许公开 literal，不支持 hidden/runtime-derived expected。
 
-### 5.2 新增 `tests/milestone/test_compiler.py`
+### 4.2 新增 `tests/milestone/test_compiler.py`
 
 使用 mock `BaseLLM` 覆盖：
 
@@ -429,20 +409,22 @@ def build_agentcompass_generator_view(
 - 成功 graph metadata 与 report 字段；
 - 核心 compiler 行覆盖率不低于 80%。
 
-### 5.3 新增 `tests/milestone/test_loader.py`
+### 4.3 新增 `tests/milestone/test_loader.py`
 
 覆盖：
 
 - origin graph + `use_origin_milestone=true` 不构造 LLM；
 - origin graph + false 进入 compiler；
 - 无 origin graph 自动生成；
-- view/config/compiler digest 命中时不重复生成；
-- digest 变化时只重新生成一次；
+- 首次适配生成 graph、stage goal 和 report，并写入 adapted case 文件；
+- adapted case 已存在且 `force_adapt=false` 时只反序列化 graph，不构造 view、不调用 LLM；
+- generator 配置变化但未设置 `force_adapt` 时仍使用已存 TaskCase；
+- `force_adapt=true` 时按当前配置重新适配并只生成、保存一次；
 - generated refresh 不复制 ToolSandbox origin expected；
 - stage goal/spec 仍只由 `_postprocess_task_case()` 生成；
 - Default 方法不调用生成模块。
 
-### 5.4 新增 `tests/adapter/test_generator_views.py`
+### 4.4 新增 `tests/adapter/test_generator_views.py`
 
 覆盖三个 adapter：
 
@@ -453,16 +435,7 @@ def build_agentcompass_generator_view(
 - AgentCompass view 不含 ground truth、tests、reward、verifier；
 - 两个 AgentCompass adapter 共用同一 evidence catalog builder。
 
-### 5.5 新增 `tests/evaluate/test_generated_graph_policy.py`
-
-覆盖：
-
-- generated graph live policy stop 被抑制；
-- origin graph live stop 保持原行为；
-- generated replay 仍记录 virtual stop；
-- task case snapshot 只输出生成摘要，不输出 generator 配置或 prompt。
-
-### 5.6 验收命令
+### 4.5 验收命令
 
 实施完成后执行：
 
@@ -475,22 +448,21 @@ uv run ruff check dynsteer tests
 
 测试产生的 `__pycache__`、`.pytest_cache`、coverage 临时文件在验收后清理；不删除测试源码和现有文档。
 
-## 6. 冗余与死代码验收
+## 5. 冗余与死代码验收
 
 代码完成前逐项确认：
 
-1. 自动生成只有 `compile_task_case()` 一个公开入口，loader 只有 `_apply_milestone_generation()` 一个调度点。
+1. 自动生成只有 `compile_task_case()` 一个公开入口，并且只由现有 `_adapt_task_case()` 在创建/强制重建 TaskCase 时调用；不新增 loader 调度包装函数。
 2. 配置只有 `MilestoneGenerationConfig` 和 `milestone_generation_from_mapping()`；metadata 不作为配置来源。
 3. LLM 每个 case 最多一次生成请求；不按路径调用，不增加第二个 judge/generator factory。
 4. 路径共享 atom ID，不实现 embedding 聚类、reference 分支、counterfactual proof 或独立 validator。
 5. ToolSandbox schema 只在 `contract.py` 提取；AgentCompass evidence catalog 只在共享 `contract.py` 定义。
 6. 不新增只调用另一函数的中转函数，不保留未被 loader/adapter/tests 调用的公开接口。
-7. 不修改现有 `MilestoneGraph`、scorer、ACTF converter、registry 和 stage goal/spec 算法。
-8. 不新增 origin/generated 双份 compiler、运行期 origin 语义审计、独立 cache 文件、profile registry、optional/OR 节点或 benchmark 占位 runner。
+7. 不修改 evaluator、runtime、现有 `MilestoneGraph`、scorer、ACTF converter、registry 和 stage goal/spec 算法；评估只消费持久化后的 graph。
+8. 不新增加载期 digest 检查、隐式重生成、origin/generated 双份 compiler、运行期 origin 语义审计、独立 cache 文件、profile registry、optional/OR 节点或 benchmark 占位 runner。
 9. 静态检查确认无未使用 import、未调用函数、多余接口参数和重复序列化/校验逻辑。
 10. 所有核心函数补充中文 docstring、关键步骤中文注释和结构化中文日志；API 文档与最终接口一致。
 
 ## 附录A. 项目中没有把握实现的模块部分
 
 - **多路径共识阈值的跨 benchmark 泛化效果**：`2/3` 的代码行为完全确定，但它是经验阈值，是否在所有 benchmark 上达到最佳 precision/recall 需要实验验证。实现中只保留这一固定阈值和报告字段，不预埋多套阈值算法或未使用配置分支。
-- **ToolSandbox 外部版本差异**：当前本地源码已核实 `get_available_tools(scrambling_allowed=True)` 和 `convert_to_openai_tools`，但未固定的外部版本可能改变接口。实现只支持当前依赖版本；接口不符时明确报错，不增加反射兼容层，也不修改 `../ToolSandbox`。

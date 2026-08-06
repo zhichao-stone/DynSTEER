@@ -5,9 +5,15 @@ from typing import Any, Mapping
 
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.milestone.model import MilestoneGenerationConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
-from dynsteer.utils import normalize_client_config, optional_str, parse_int_value, read_json_file, required_str
-
+from dynsteer.utils import (
+    normalize_client_config,
+    optional_str,
+    parse_int_value,
+    read_json_file,
+    required_str,
+)
 
 DEFAULT_READY_FRONTIER_PATIENCE = 8
 _CLIENT_CONFIG_KEYS = ("agent_client", "user_client")
@@ -17,7 +23,20 @@ _RUN_CONFIG_CONTROL_FIELDS = {
     "thresholds",
     "strategy",
     "name",
+    "milestone_generation",
     *_CLIENT_CONFIG_KEYS,
+}
+
+_GENERATOR_CONFIG_FIELDS = {
+    "provider",
+    "model",
+    "base_url",
+    "timeout_seconds",
+    "temperature",
+    "max_tokens",
+    "max_retries",
+    "retry_base_seconds",
+    "retry_max_seconds",
 }
 
 
@@ -125,6 +144,40 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None = None) -> E
     )
 
 
+def milestone_generation_from_mapping(
+    data: Mapping[str, Any] | None,
+) -> MilestoneGenerationConfig:
+    """从 JSON 映射生成唯一的 milestone 生成配置。"""
+    if data is None:
+        return MilestoneGenerationConfig()
+    if not isinstance(data, Mapping):
+        raise TypeError("milestone_generation 必须是 JSON 对象")
+    unknown = set(data) - {
+        "use_origin_milestone",
+        "simulated_path_count",
+        "generator",
+    }
+    if unknown:
+        raise ValueError(f"不支持的 milestone_generation 字段: {sorted(unknown)}")
+    use_origin = data.get("use_origin_milestone", True)
+    if not isinstance(use_origin, bool):
+        raise TypeError("milestone_generation.use_origin_milestone 必须是 bool")
+    path_count = data.get("simulated_path_count", 6)
+    if isinstance(path_count, bool) or not isinstance(path_count, int):
+        raise TypeError("milestone_generation.simulated_path_count 必须是整数")
+    generator = data.get("generator", {})
+    if not isinstance(generator, Mapping):
+        raise TypeError("milestone_generation.generator 必须是 JSON 对象")
+    unknown_generator = set(generator) - _GENERATOR_CONFIG_FIELDS
+    if unknown_generator:
+        raise ValueError(f"不支持的 milestone generator 字段: {sorted(unknown_generator)}")
+    return MilestoneGenerationConfig(
+        use_origin_milestone=use_origin,
+        simulated_path_count=path_count,
+        generator={str(key): value for key, value in generator.items()},
+    )
+
+
 def load_ready_frontier_patience_from_env(env: Mapping[str, str] | None = None) -> int:
     """从环境变量读取 ready frontier 无进展 patience。"""
     source = env if env is not None else os.environ
@@ -173,6 +226,9 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
             raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
         thresholds = threshold_config_from_mapping(raw_spec.get("thresholds") if isinstance(raw_spec.get("thresholds"), dict) else None)
         strategy = evaluation_strategy_from_mapping(raw_spec.get("strategy") if isinstance(raw_spec.get("strategy"), dict) else None)
+        milestone_generation = milestone_generation_from_mapping(
+            raw_spec.get("milestone_generation")
+        )
         metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key not in _RUN_CONFIG_CONTROL_FIELDS}
         metadata.update({key: normalize_client_config(raw_spec.get(key), f"run_configs.json 第 {index} 项的 {key}") for key in _CLIENT_CONFIG_KEYS if key in raw_spec})
         metadata.update(manifest_metadata)
@@ -210,6 +266,7 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
                 stop_on_ready_frontier_no_progress=stop_on_ready,
                 ready_frontier_patience=ready_frontier_patience,
                 ready_frontier_min_delta=ready_min_delta,
+                milestone_generation=milestone_generation,
                 metadata=metadata,
             )
         )

@@ -1,15 +1,54 @@
 import json
 import re
 from pathlib import Path
+
 from tqdm import tqdm
+
 from dynsteer.adapter.base import BaseBenchmarkAdapter
-from dynsteer.graph import enrich_milestone_graph
 from dynsteer.adapter.route import enrich_milestone_routes
+from dynsteer.graph import enrich_milestone_graph
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.llm import build_llm_from_env
-from dynsteer.model import Actor, Constraint, ConstraintTarget, EventType, JsonObject, Milestone, MilestoneGraph, Minefield, MinefieldPenalty, Operator, Dimension, StageEvaluationSpec, StateSnapshot, StepCost, TaskCase, TaskType, ToolCall, ToolResult, Trajectory, TrajectoryStep, ensure_json_object
-from dynsteer.stage import generate_stage_evaluation_specs, generate_stage_goal_templates, materialize_stage_goals, validate_stage_evaluation_specs
-from dynsteer.utils import enum_value, get_object, json_safe, normalize_actor, parse_int_value, read_json_file, required_str, unknown_fields
+from dynsteer.llm import build_llm_from_config, build_llm_from_env
+from dynsteer.milestone import compile_task_case
+from dynsteer.model import (
+    Actor,
+    Constraint,
+    ConstraintTarget,
+    Dimension,
+    EventType,
+    JsonObject,
+    Milestone,
+    MilestoneGraph,
+    Minefield,
+    MinefieldPenalty,
+    Operator,
+    StageEvaluationSpec,
+    StateSnapshot,
+    StepCost,
+    TaskCase,
+    TaskType,
+    ToolCall,
+    ToolResult,
+    Trajectory,
+    TrajectoryStep,
+    ensure_json_object,
+)
+from dynsteer.stage import (
+    generate_stage_evaluation_specs,
+    generate_stage_goal_templates,
+    materialize_stage_goals,
+    validate_stage_evaluation_specs,
+)
+from dynsteer.utils import (
+    enum_value,
+    get_object,
+    json_safe,
+    normalize_actor,
+    parse_int_value,
+    read_json_file,
+    required_str,
+    unknown_fields,
+)
 
 
 def safe_case_file_name(case_id: str) -> str:
@@ -34,7 +73,6 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
         与 `config.case_ids` 顺序一致的 TaskCase 列表。
     """
     case_ids = list(config.case_ids or ())
-    is_default = str(config.metadata.get("method") or "").strip().lower() == "default"
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
         path = adapted_case_path(config.data_root, case_id)
@@ -46,15 +84,6 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
             task_case = parse_task_case(data)
             if task_case.case_id != case_id:
                 raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
-            if not is_default:
-                if task_case.milestone_graph is None:
-                    task_case = _adapt_task_case(config, adapter, case_id)
-                    save_task_case(path, task_case)
-                else:
-                    before = json_safe(task_case)
-                    task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
-                    if json_safe(task_case) != before:
-                        save_task_case(path, task_case)
         task_cases.append(task_case)
     return task_cases
 
@@ -76,7 +105,13 @@ def refresh_task_cases_for_experiment(
         raise ValueError("config、adapter 和 task_cases 不能为空")
     refreshed: list[TaskCase] = []
     for task_case in task_cases:
-        current = adapter.refresh_task_case_for_experiment(config, task_case, task_case.case_id)
+        graph = task_case.milestone_graph
+        if graph is not None and graph.metadata.get("source") == "generated":
+            current = task_case
+        else:
+            current = adapter.refresh_task_case_for_experiment(
+                config, task_case, task_case.case_id
+            )
         current.stage_goals = materialize_stage_goals(current)
         current.stage_evaluation_specs = generate_stage_evaluation_specs(current)
         refreshed.append(current)
@@ -90,8 +125,21 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
         raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
     if str(config.metadata.get("method") or "").strip().lower() == "default":
         return task_case
-    if task_case.milestone_graph is None:
-        raise ValueError(f"TaskCase 缺少 milestone_graph: {case_id}")
+    graph = task_case.milestone_graph
+    has_origin_graph = graph is not None and bool(graph.nodes or graph.minefields)
+    generation = config.milestone_generation
+    if generation.use_origin_milestone and has_origin_graph:
+        graph.metadata["source"] = "origin"
+    else:
+        view = adapter.generator_task_view(config, task_case, case_id)
+        llm = build_llm_from_config(generation.generator)
+        if llm is None:
+            raise ValueError(
+                f"TaskCase 需要自动生成 milestone，但未配置 generator: {case_id}"
+            )
+        graph, report = compile_task_case(view, generation, llm)
+        task_case.metadata["milestone_generation"] = report.to_dict()
+    task_case.milestone_graph = graph
     task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
     task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
     validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)

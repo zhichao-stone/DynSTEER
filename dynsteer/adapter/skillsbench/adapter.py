@@ -1,7 +1,9 @@
+from dynsteer.adapter.agentcompass.contract import build_agentcompass_generator_view
 from dynsteer.adapter.agentcompass.runtime import load_task_records
 from dynsteer.adapter.base import BaseBenchmarkAdapter
 from dynsteer.adapter.skillsbench.utils.task import task_case_from_record
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.milestone.model import GeneratorTaskView
 from dynsteer.model import TaskCase
 
 
@@ -20,3 +22,16 @@ class SkillsBenchAdapter(BaseBenchmarkAdapter):
         except KeyError as exc:
             raise KeyError(f"SkillsBench case 不存在: {case_id}") from exc
         return task_case_from_record(record)
+
+    def generator_task_view(
+        self, config: HarnessRunConfig, task_case: TaskCase, case_id: str
+    ) -> GeneratorTaskView:
+        """投影 SkillsBench 的公开 workspace 和空输出契约。"""
+        if task_case.case_id != case_id:
+            raise ValueError("task_case.case_id 与 case_id 不一致")
+        return build_agentcompass_generator_view(
+            config,
+            task_case,
+            environment_schema={"workspace": "/root"},
+            output_contract={},
+        )

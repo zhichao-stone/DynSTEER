@@ -49,6 +49,14 @@ tests/*
 !tests/experiment/
 tests/experiment/*
 !tests/experiment/test_metrics.py
+!tests/milestone/
+tests/milestone/*
+!tests/milestone/test_compiler.py
+!tests/milestone/test_config.py
+!tests/milestone/test_loader.py
+!tests/adapter/
+tests/adapter/*
+!tests/adapter/test_generator_views.py
 results/
 *.zip
 

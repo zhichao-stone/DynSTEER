@@ -1,15 +1,29 @@
 from copy import deepcopy
 
 from dynsteer.adapter.base import BaseBenchmarkAdapter
-from dynsteer.adapter.toolsandbox.utils.scenario import milestone_graph_from_scenario, task_description_from_steps, task_types_from_categories
+from dynsteer.adapter.toolsandbox.utils.contract import (
+    agent_facing_tool_schema,
+    build_toolsandbox_generator_view,
+)
+from dynsteer.adapter.toolsandbox.utils.runtime import (
+    load_named_scenarios,
+    load_toolsandbox_module,
+    toolsandbox_project_root,
+)
+from dynsteer.adapter.toolsandbox.utils.scenario import (
+    milestone_graph_from_scenario,
+    task_description_from_steps,
+    task_types_from_categories,
+)
 from dynsteer.adapter.toolsandbox.utils.state import sandbox_rows_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_rows_to_step_dicts
-from dynsteer.adapter.toolsandbox.utils.runtime import load_named_scenarios, load_toolsandbox_module, toolsandbox_project_root
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.milestone.model import GeneratorTaskView
 from dynsteer.model import TaskCase
 from dynsteer.stage import generate_stage_evaluation_specs, materialize_stage_goals
 from dynsteer.utils import enum_name
+
 
 class ToolSandboxAdapter(BaseBenchmarkAdapter):
     """ToolSandbox 数据适配器。"""
@@ -30,7 +44,8 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
             raise ValueError("ToolSandbox scenario 缺少 starting_context")
         rows = sandbox_rows_from_context(context, module_loader)
         steps = sandbox_rows_to_step_dicts(rows)
-        graph = milestone_graph_from_scenario(scenario)
+        is_default = str(config.metadata.get("method") or "").strip().lower() == "default"
+        graph = None if is_default else milestone_graph_from_scenario(scenario)
         first_user_index = getattr(context, "first_user_sandbox_message_index", None)
         return TaskCase(
             task_id=f"toolsandbox::{case_id}",
@@ -42,8 +57,8 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
                 else None,
             ),
             case_id=case_id,
-            environment_schema={"source": "toolsandbox"},
-            tool_schema={"source": "toolsandbox"},
+            environment_schema={"source": "toolsandbox", "stateful": True},
+            tool_schema=agent_facing_tool_schema(context, module_loader),
             initial_state=None,
             milestone_graph=graph,
             task_types=task_types_from_categories(getattr(scenario, "categories", [])),
@@ -54,6 +69,20 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
                     enum_name(item) for item in getattr(scenario, "categories", [])
                 ],
             },
+        )
+
+    def generator_task_view(
+        self, config: HarnessRunConfig, task_case: TaskCase, case_id: str
+    ) -> GeneratorTaskView:
+        """从当前 ToolSandbox scenario 投影 Agent 可见公开输入。"""
+        scenarios = load_named_scenarios(config, load_toolsandbox_module)
+        if case_id not in scenarios:
+            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
+        context = getattr(scenarios[case_id], "starting_context", None)
+        if context is None:
+            raise ValueError("ToolSandbox scenario 缺少 starting_context")
+        return build_toolsandbox_generator_view(
+            config, task_case, context, load_toolsandbox_module
         )
 
     def refresh_task_case_for_experiment(

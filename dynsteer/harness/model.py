@@ -1,6 +1,17 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from dynsteer.model import EvaluationTerminationState, JsonObject, StateSnapshot, TaskCase, Trajectory, TrajectoryEvaluationReport, TrajectoryStep
+
+from dynsteer.milestone.model import MilestoneGenerationConfig
+from dynsteer.model import (
+    EvaluationTerminationState,
+    JsonObject,
+    StateSnapshot,
+    TaskCase,
+    Trajectory,
+    TrajectoryEvaluationReport,
+    TrajectoryStep,
+)
+
 
 @dataclass(frozen=True)
 class HarnessRunConfig:
@@ -15,6 +26,9 @@ class HarnessRunConfig:
     stop_on_ready_frontier_no_progress: bool = True
     ready_frontier_patience: int = 8
     ready_frontier_min_delta: float = 0.02
+    milestone_generation: MilestoneGenerationConfig = field(
+        default_factory=MilestoneGenerationConfig
+    )
     metadata: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:
