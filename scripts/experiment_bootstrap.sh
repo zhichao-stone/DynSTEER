@@ -82,3 +82,18 @@ for spec in benchmarks:
     seen.add(benchmark)
 PY
 }
+
+experiment_uses_agentcompass() {
+    local project_root="$1"
+    local experiment_config="$2"
+    local container_project_root="${3:-}"
+    local line
+    while IFS=$'\t' read -r line _; do
+        case "$line" in
+            swebench_pro|skillsbench)
+                return 0
+                ;;
+        esac
+    done < <(experiment_bootstrap_lines "$project_root" "$experiment_config" "$container_project_root")
+    return 1
+}

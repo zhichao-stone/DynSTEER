@@ -137,3 +137,11 @@ ToolSandbox 鐨勫師鐢熷伐鍏枫€乺ole 鍜?execution environment 閫氳�
 ## 闄勫姞璇存槑
 
 `data/{benchmark}/benchmark.json` 閲岀殑 `max_workers` 鐜板湪鏄彲閫夊瓧娈碉紱缂哄け鏃朵笉浼氬啓鍏?`benchmark_max_workers`銆俆oolSandbox 鐨?`agent_client` / `user_client` 杩樻敮鎸?`max_retries`銆乣retry_base_seconds` 鍜?`retry_max_seconds`锛岀敤浜庡師鐢?`respond()` 鐨勯噸璇曟帶鍒躲€?
+# AgentCompass Default harness
+
+| benchmark | 执行方式 | snapshots | 首版方法 |
+|---|---|---|---|
+| `swebench_pro` | 单次 `advance_case()` 完成 AgentCompass 整任务执行与原生评分 | `[]` | Default |
+| `skillsbench` | 单次 `advance_case()` 完成 AgentCompass 整任务执行与原生评分 | `[]` | Default |
+
+完整配置、安全边界和 ACTF 映射参见 `docs/apis/agentcompass.md`。

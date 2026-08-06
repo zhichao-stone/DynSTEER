@@ -75,8 +75,22 @@ ensure_uv_environment() {
     export UV_PROJECT_ENVIRONMENT="$venv_dir"
     export UV_CACHE_DIR="$cache_dir"
 
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+
     cd "$project_root"
     uv sync --frozen --no-dev --no-install-project --inexact
+}
+
+ensure_agentcompass_extra() {
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+    if experiment_uses_agentcompass "$1" "$2"; then
+        echo "Enabling optional AgentCompass bridge for experiment"
+        uv sync --frozen --no-dev --no-install-project --inexact --extra agentcompass
+    fi
 }
 
 project_python() {
@@ -234,6 +248,7 @@ main() {
 
     cd "$project_root"
     ensure_uv_environment "$project_root"
+    ensure_agentcompass_extra "$project_root" "$experiment_config"
     local python_executable
     python_executable="$(project_python)"
     if [[ -n "$source_path" ]]; then

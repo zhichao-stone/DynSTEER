@@ -1,0 +1,22 @@
+from dynsteer.adapter.agentcompass.runtime import load_task_records
+from dynsteer.adapter.base import BaseBenchmarkAdapter
+from dynsteer.adapter.skillsbench.utils.task import task_case_from_record
+from dynsteer.harness.model import HarnessRunConfig
+from dynsteer.model import TaskCase
+
+
+class SkillsBenchAdapter(BaseBenchmarkAdapter):
+    """将 SkillsBench 可见任务字段适配为 TaskCase。"""
+
+    benchmark = "skillsbench"
+
+    def adapt_task_case(self, config: HarnessRunConfig, case_id: str) -> TaskCase:
+        """按 case ID 执行 O(1) 查找并返回任务投影。"""
+        if config is None or not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError("config 和 case_id 不能为空")
+        records = load_task_records(self.benchmark, config)
+        try:
+            record = records[case_id]
+        except KeyError as exc:
+            raise KeyError(f"SkillsBench case 不存在: {case_id}") from exc
+        return task_case_from_record(record)

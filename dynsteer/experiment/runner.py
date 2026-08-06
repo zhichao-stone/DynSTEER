@@ -86,7 +86,7 @@ def run_experiment(
         prepared_task_cases, harness_config = prepare_task_cases(
             harness_config,
             force_adapt,
-            refresh_dynamic_targets=True,
+            refresh_dynamic_targets=spec.method != ExperimentMethod.DEFAULT,
         )
         task_cases = tuple(prepared_task_cases)
         spec_workers = effective_max_workers(workers, harness_config)

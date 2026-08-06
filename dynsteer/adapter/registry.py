@@ -1,12 +1,20 @@
 from dynsteer.adapter.base import BaseBenchmarkAdapter, BaseBenchmarkHarness
+from dynsteer.adapter.skillsbench.adapter import SkillsBenchAdapter
+from dynsteer.adapter.skillsbench.harness import SkillsBenchHarness
+from dynsteer.adapter.swebench_pro.adapter import SWEBenchProAdapter
+from dynsteer.adapter.swebench_pro.harness import SWEBenchProHarness
 from dynsteer.adapter.toolsandbox.adapter import ToolSandboxAdapter
 from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 
 _ADAPTERS: dict[str, type[BaseBenchmarkAdapter]] = {
     "toolsandbox": ToolSandboxAdapter,
+    "swebench_pro": SWEBenchProAdapter,
+    "skillsbench": SkillsBenchAdapter,
 }
 _HARNESSES: dict[str, type[BaseBenchmarkHarness]] = {
     "toolsandbox": ToolSandboxHarness,
+    "swebench_pro": SWEBenchProHarness,
+    "skillsbench": SkillsBenchHarness,
 }
 
 def get_adapter(benchmark: str) -> BaseBenchmarkAdapter:

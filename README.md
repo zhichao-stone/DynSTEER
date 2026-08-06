@@ -116,3 +116,49 @@ Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通�
 ```powershell
 ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
 ```
+# AgentCompass benchmark
+
+AgentCompass 是可选 benchmark 依赖。只运行 DynSTEER/ToolSandbox 时使用：
+
+```powershell
+uv sync --locked
+```
+
+选择 `swebench_pro` 或 `skillsbench` 时，先安装可选 extra：
+
+```powershell
+uv sync --locked --extra agentcompass
+```
+
+然后还必须按固定 AgentCompass commit `04d138a1c1decd2c9caa8c2659c698d7ffb677b4` 的 requirements 安装所选 benchmark、harness 和 environment 依赖。当前 AgentCompass 固定提交要求 `openai>=2.41.1`，而 DynSTEER/ToolSandbox 基础依赖仍固定 `openai==1.17.0`；因此不能把两个 benchmark 环境当作同一个已验证的 uv 环境，建议为 AgentCompass 单独创建 Python 3.12+ 虚拟环境，并以 `--no-deps` 安装 DynSTEER 源码后运行。模型 endpoint 与密钥分别通过 `MODEL_BASE_URL`、`MODEL_API_KEY` 配置。
+
+将 `data/experiments/agentcompass_cross_benchmark.json` 中的模型 ID、SWE-bench Pro instance ID 和 SkillsBench task ID 三个占位值替换后运行：
+
+```powershell
+./scripts/start_experiment_no_docker.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
+```
+
+Docker 路径使用同样的参数：
+
+```powershell
+./scripts/start_experiment.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
+```
+
+这些脚本会根据 benchmark 自动执行 `uv sync --extra agentcompass`；它们只负责启用 bridge extra，不会替您安装 AgentCompass 的完整上游 requirements。实际运行仍应使用下方的 Python 3.12 独立环境方案。
+
+该示例中的三个 ID 仍是占位符，必须替换为真实值。DynSTEER 通过 AgentCompass 加载数据、执行 agent 并采用原生评分，不需要本地 SWE-bench_Pro-os、SkillsBench 源仓库或 DynSTEER 自有官方评分脚本。
+
+在 Windows 上，针对当前 OpenAI SDK 版本冲突，推荐使用独立环境运行真实 AgentCompass 评估：
+
+```powershell
+uv venv .venv-agentcompass --python 3.12
+$agentPython = ".venv-agentcompass\Scripts\python.exe"
+uv pip install --python $agentPython -r ..\AgentCompass\requirements\app.txt -r ..\AgentCompass\requirements\swe.txt -r ..\AgentCompass\requirements\mini-swe-agent.txt -r ..\AgentCompass\requirements\openhands.txt
+uv pip install --python $agentPython --no-deps -e ..\AgentCompass -e .
+uv pip install --python $agentPython "polars==0.20.31"
+$env:UV_PROJECT_ENVIRONMENT = ".venv-agentcompass"
+$env:DYNSTEER_SKIP_UV_SYNC = "1"
+./scripts/start_experiment_no_docker.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
+```
+
+这会同时准备 SWE-bench Pro 的 `mini_swe_agent` 与 SkillsBench 的 `openhands`。如果只跑其中一个 benchmark，可以去掉另一套 requirements 和实验配置项。运行前仍需准备 AgentCompass 数据缓存、Docker 以及 `MODEL_BASE_URL`/`MODEL_API_KEY`。

@@ -34,6 +34,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
         与 `config.case_ids` 顺序一致的 TaskCase 列表。
     """
     case_ids = list(config.case_ids or ())
+    is_default = str(config.metadata.get("method") or "").strip().lower() == "default"
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
         path = adapted_case_path(config.data_root, case_id)
@@ -45,14 +46,15 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
             task_case = parse_task_case(data)
             if task_case.case_id != case_id:
                 raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
-            if task_case.milestone_graph is None:
-                task_case = _adapt_task_case(config, adapter, case_id)
-                save_task_case(path, task_case)
-            else:
-                before = json_safe(task_case)
-                task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
-                if json_safe(task_case) != before:
+            if not is_default:
+                if task_case.milestone_graph is None:
+                    task_case = _adapt_task_case(config, adapter, case_id)
                     save_task_case(path, task_case)
+                else:
+                    before = json_safe(task_case)
+                    task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
+                    if json_safe(task_case) != before:
+                        save_task_case(path, task_case)
         task_cases.append(task_case)
     return task_cases
 
@@ -86,6 +88,8 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
         raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
     if task_case.case_id != case_id:
         raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
+    if str(config.metadata.get("method") or "").strip().lower() == "default":
+        return task_case
     if task_case.milestone_graph is None:
         raise ValueError(f"TaskCase 缺少 milestone_graph: {case_id}")
     task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)

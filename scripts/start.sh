@@ -202,6 +202,10 @@ ensure_uv_environment() {
     export UV_PROJECT_ENVIRONMENT="$venv_dir"
     export UV_CACHE_DIR="$cache_dir"
 
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+
     if [[ ! -x "$venv_dir/bin/python" ]]; then
         mkdir -p "$venv_dir"
         if [[ -d "$bootstrap_dir" && -x "$bootstrap_dir/bin/python" ]]; then
@@ -212,6 +216,19 @@ ensure_uv_environment() {
     fi
 
     (cd "$project_root" && uv sync --frozen --no-dev --no-install-project --inexact)
+}
+
+ensure_agentcompass_extra() {
+    local benchmark="$1"
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+    case "$benchmark" in
+        swebench_pro|skillsbench)
+            echo "Enabling optional AgentCompass bridge for benchmark: $benchmark"
+            (cd "$project_root" && uv sync --frozen --no-dev --no-install-project --inexact --extra agentcompass)
+            ;;
+    esac
 }
 
 install_benchmark_source() {
@@ -385,6 +402,7 @@ main() {
 
     cd "$project_root"
     ensure_uv_environment "$project_root"
+    ensure_agentcompass_extra "$benchmark"
     if [[ -n "$source_path" ]]; then
         install_benchmark_source "$project_root" "$benchmark" "$source_path"
     else

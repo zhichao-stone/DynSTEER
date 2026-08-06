@@ -33,8 +33,8 @@ logs/
 # docs/plans
 # docs/constraints
 
-# Data
-data/
+# Data：默认忽略运行数据，仅保留可复现的 benchmark/experiment 配置。
+data/*
 display/data.js
 
 # Runtime
@@ -43,7 +43,9 @@ runs/
 
 # Test
 test/
+tests/
 results/
+*.zip
 
 # Agents
 .agents/
