@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
+from itertools import combinations
 from pathlib import Path
 from typing import Mapping, Sequence
 from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod
@@ -47,6 +48,151 @@ def model_scores(results: Sequence[ExperimentCaseResult]) -> JsonObject:
             raise ValueError("benchmark scores 类型异常")
         benchmark_scores[model_id] = sum(values) / len(values)
     return scores
+
+def repeat_model_scores(
+    results: Sequence[ExperimentCaseResult],
+) -> dict[tuple[str, str, int], dict[str, float]]:
+    """按方法、benchmark 和 repeat 汇总模型 case 均分。
+
+    入参：
+        results: case 级实验结果列表。
+    输出：
+        (method, benchmark, repeat_index) -> model_id -> average_score。
+        缺失、无法解析或非有限的分数不进入均值，由一致性汇总标记对应 pair 无效。
+    """
+    if results is None:
+        raise ValueError("results 不能为空")
+    buckets: dict[tuple[str, str, int, str], list[float]] = defaultdict(list)
+    for result in results:
+        if result is None:
+            raise ValueError("results 不能包含空结果")
+        score = _finite_case_score(result.score)
+        if score is not None:
+            buckets[result.method.value, result.benchmark, result.repeat_index, result.model_id].append(score)
+
+    output: dict[tuple[str, str, int], dict[str, float]] = defaultdict(dict)
+    for (method, benchmark, repeat, model), values in sorted(buckets.items()):
+        output[method, benchmark, repeat][model] = sum(values) / len(values)
+    return dict(output)
+
+def rank_models(model_scores: Mapping[str, float]) -> JsonObject:
+    """按模型均分降序生成稳定展示顺序和并列平均名次。
+
+    入参：
+        model_scores: model_id -> average_score。
+    输出：
+        包含模型均分、展示顺序和 mid-rank 的 JSON 对象。
+    """
+    if model_scores is None:
+        raise ValueError("model_scores 不能为空")
+    scores = {str(model): float(score) for model, score in model_scores.items()}
+    if any(not math.isfinite(score) for score in scores.values()):
+        raise ValueError("model_scores 不能包含非有限分数")
+
+    # 模型名只用于让 JSON 展示稳定；相同分数共享同一个 mid-rank。
+    order = sorted(scores, key=lambda model: (-scores[model], model))
+    ranks: dict[str, float] = {}
+    index = 0
+    while index < len(order):
+        end = index + 1
+        while end < len(order) and abs(scores[order[end]] - scores[order[index]]) < 1e-12:
+            end += 1
+        mid_rank = ((index + 1) + end) / 2
+        for model in order[index:end]:
+            ranks[model] = mid_rank
+        index = end
+    return {"model_scores": scores, "order": order, "ranks": ranks}
+
+def repeat_rank_consistency(results: Sequence[ExperimentCaseResult]) -> JsonObject:
+    """计算同一方法和 benchmark 内不同 repeat 的模型排名一致性。
+
+    入参：
+        results: case 级实验结果列表。
+    输出：
+        method -> benchmark 的 repeat 排名、pairwise 原子指标和汇总指标。
+    """
+    if results is None:
+        raise ValueError("results 不能为空")
+    scores = repeat_model_scores(results)
+    repeats: dict[tuple[str, str], set[int]] = defaultdict(set)
+    expected_models: dict[tuple[str, str], set[str]] = defaultdict(set)
+    invalid_score_models: dict[tuple[str, str, int], set[str]] = defaultdict(set)
+    for result in results:
+        if result is None:
+            raise ValueError("results 不能包含空结果")
+        group = result.method.value, result.benchmark
+        repeat = (*group, result.repeat_index)
+        repeats[group].add(result.repeat_index)
+        expected_models[group].add(result.model_id)
+        if _finite_case_score(result.score) is None:
+            invalid_score_models[repeat].add(result.model_id)
+
+    output: JsonObject = {}
+    for (method, benchmark), repeat_indices in sorted(repeats.items()):
+        models = expected_models[method, benchmark]
+        rankings = {
+            str(repeat): rank_models(scores.get((method, benchmark, repeat), {}))
+            for repeat in sorted(repeat_indices)
+        }
+        pairwise: list[JsonObject] = []
+        invalid_pairs: list[JsonObject] = []
+        for left_repeat, right_repeat in combinations(sorted(repeat_indices), 2):
+            left_ranking = rankings[str(left_repeat)]
+            right_ranking = rankings[str(right_repeat)]
+            left_scores = left_ranking["model_scores"]
+            right_scores = right_ranking["model_scores"]
+            invalid_reason = _invalid_repeat_pair_reason(
+                models,
+                left_repeat,
+                right_repeat,
+                left_scores,
+                right_scores,
+                invalid_score_models.get((method, benchmark, left_repeat), set()),
+                invalid_score_models.get((method, benchmark, right_repeat), set()),
+            )
+            tau = None if invalid_reason else _kendall_tau_b(left_scores, right_scores)
+            if invalid_reason is None and tau is None:
+                invalid_reason = "没有可用于 Kendall tau-b 的有效模型对"
+            if invalid_reason is not None:
+                invalid_pairs.append({
+                    "left_repeat": left_repeat,
+                    "right_repeat": right_repeat,
+                    "invalid_reason": invalid_reason,
+                })
+                continue
+
+            left_ranks = left_ranking["ranks"]
+            right_ranks = right_ranking["ranks"]
+            left_top = {model for model in models if left_ranks[model] == min(left_ranks.values())}
+            right_top = {model for model in models if right_ranks[model] == min(right_ranks.values())}
+            pairwise.append({
+                "left_repeat": left_repeat,
+                "right_repeat": right_repeat,
+                "kendall_tau_b": tau,
+                "exact_order_agreement": left_ranks == right_ranks,
+                "top1_agreement": left_top == right_top,
+                "mean_absolute_rank_displacement": _average([
+                    abs(left_ranks[model] - right_ranks[model]) for model in models
+                ]),
+            })
+
+        output.setdefault(method, {})[benchmark] = {
+            "repeat_count": len(repeat_indices),
+            "repeat_pair_count": len(repeat_indices) * (len(repeat_indices) - 1) // 2,
+            "valid_pair_count": len(pairwise),
+            "repeat_rankings": rankings,
+            "pairwise": pairwise,
+            "mean_pairwise_kendall_tau": _optional_average([item["kendall_tau_b"] for item in pairwise]),
+            "exact_order_agreement_rate": _optional_average([
+                int(item["exact_order_agreement"]) for item in pairwise
+            ]),
+            "top1_agreement_rate": _optional_average([int(item["top1_agreement"]) for item in pairwise]),
+            "mean_pairwise_absolute_rank_displacement": _optional_average([
+                item["mean_absolute_rank_displacement"] for item in pairwise
+            ]),
+            "invalid_pairs": invalid_pairs,
+        }
+    return output
 
 def discriminability_score(scores: Mapping[str, float], epsilon: float) -> JsonObject:
     """按模型总体离散度和显著模型对比例计算 Discriminability Score。"""
@@ -163,29 +309,7 @@ def kendall_tau(left: Mapping[str, float], right: Mapping[str, float]) -> float:
     """
     if left is None or right is None:
         raise ValueError("left 和 right 不能为空")
-    keys = sorted(set(left) & set(right))
-    if len(keys) < 2:
-        return 0.0
-    concordant, discordant = 0, 0
-    left_ties, right_ties = 0, 0
-    for left_index, first_key in enumerate(keys):
-        for second_key in keys[left_index + 1:]:
-            left_delta = _compare_score(left[first_key], left[second_key])
-            right_delta = _compare_score(right[first_key], right[second_key])
-            if left_delta == 0 or right_delta == 0:
-                if left_delta != 0:
-                    right_ties += 1
-                elif right_delta != 0:
-                    left_ties += 1
-            else:
-                if left_delta == right_delta:
-                    concordant += 1
-                else:
-                    discordant += 1
-    denominator = math.sqrt((concordant + discordant + left_ties) * (concordant + discordant + right_ties))
-    if denominator == 0:
-        return 0.0
-    return (concordant - discordant) / denominator
+    return _kendall_tau_b(left, right) or 0.0
 
 def repeat_statistics(results: Sequence[ExperimentCaseResult]) -> JsonObject:
     """按 repeat/case 聚合连续分，并计算总体标准差。"""
@@ -287,6 +411,7 @@ def write_metric_tables(results: Sequence[ExperimentCaseResult], output_dir: Pat
         **counts,
         "repeat_statistics": repeat_statistics(results),
         "rank_tau_by_repeat": rank_tau_by_repeat(results),
+        "repeat_rank_consistency": repeat_rank_consistency(results),
     }
     (output_dir / "scores.json").write_text(json.dumps(json_safe(scores), ensure_ascii=False, indent=4), encoding="utf-8")
     (output_dir / "metrics.json").write_text(json.dumps(json_safe(metrics), ensure_ascii=False, indent=4), encoding="utf-8")
@@ -300,6 +425,73 @@ def _compare_score(left: float, right: float) -> int:
 
 def _average(values: Sequence[int | float]) -> float:
     return float(sum(values)) / len(values) if values else 0.0
+
+def _finite_case_score(value: object) -> float | None:
+    """读取有限 case score，缺失、异常或非有限值返回空值。"""
+    if value is None or (
+        isinstance(value, int | float | bool) and not math.isfinite(float(value))
+    ):
+        return None
+    try:
+        score = case_score(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return score if math.isfinite(score) else None
+
+def _kendall_tau_b(left: Mapping[str, float], right: Mapping[str, float]) -> float | None:
+    """计算 Kendall tau-b；没有有效模型对时返回空值。"""
+    keys = sorted(set(left) & set(right))
+    if len(keys) < 2:
+        return None
+    concordant, discordant = 0, 0
+    left_ties, right_ties = 0, 0
+    for left_index, first_key in enumerate(keys):
+        for second_key in keys[left_index + 1:]:
+            left_delta = _compare_score(left[first_key], left[second_key])
+            right_delta = _compare_score(right[first_key], right[second_key])
+            if left_delta == 0 or right_delta == 0:
+                if left_delta != 0:
+                    right_ties += 1
+                elif right_delta != 0:
+                    left_ties += 1
+            elif left_delta == right_delta:
+                concordant += 1
+            else:
+                discordant += 1
+    denominator = math.sqrt(
+        (concordant + discordant + left_ties)
+        * (concordant + discordant + right_ties)
+    )
+    if denominator == 0:
+        return None
+    return (concordant - discordant) / denominator
+
+def _optional_average(values: Sequence[int | float]) -> float | None:
+    return float(sum(values)) / len(values) if values else None
+
+def _invalid_repeat_pair_reason(
+    expected_models: set[str],
+    left_repeat: int,
+    right_repeat: int,
+    left_scores: Mapping[str, float],
+    right_scores: Mapping[str, float],
+    left_invalid_models: set[str],
+    right_invalid_models: set[str],
+) -> str | None:
+    """返回 repeat pair 无效原因；有效时返回空值。"""
+    reasons: list[str] = []
+    if len(expected_models) < 2:
+        reasons.append("有效模型不足两个")
+    for repeat, repeat_scores, invalid_models in (
+        (left_repeat, left_scores, left_invalid_models),
+        (right_repeat, right_scores, right_invalid_models),
+    ):
+        missing = sorted(expected_models - set(repeat_scores))
+        if missing:
+            reasons.append(f"repeat {repeat} 缺少有效模型分数: {', '.join(missing)}")
+        if invalid_models:
+            reasons.append(f"repeat {repeat} 包含缺失或非有限 score: {', '.join(sorted(invalid_models))}")
+    return "；".join(reasons) or None
 
 def _discriminability_table(scores: JsonObject) -> JsonObject:
     result: JsonObject = {}

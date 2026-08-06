@@ -10,10 +10,11 @@
 - `score_delta`：按相同 benchmark/model/case/repeat 配对 DEFAULT 与 replay，输出连续分差的配对数和均值。
 - `coverage_counts`、`minefield_counts`、`termination_counts`：分别汇总 replay 覆盖状态、minefield 命中状态和结构化终止原因。
 - `score_rank_tau`：按模型连续均分计算 DEFAULT 与 replay 的排名一致性。
+- `repeat_rank_consistency`：按 method/benchmark 分别比较 repeat 内模型均分排名，输出 tau-b、完整顺序一致率、top-1 一致率和平均绝对名次位移。它衡量同一方法的重复运行稳定性，不与 `score_rank_tau` 合并为方法总分。
 
 `ExperimentCaseResult` 不包含 `resolved` 或 `successful`。`milestone_coverage` 仅表示 replay 的结构化覆盖状态，不转换为 benchmark success。
 
-实验 repeat 从 `0` 开始计数。只要存在 experiment metadata，case 输出位于 `<benchmark>/<model>/r<repeat_index>/<method>/<case>`，并在 metadata 中记录 `repeat_count`。`metrics.json` 额外包含 `repeat_statistics` 与 `rank_tau_by_repeat`，统计先按 repeat/case 聚合。
+实验 repeat 从 `0` 开始计数。只要存在 experiment metadata，case 输出位于 `<benchmark>/<model>/r<repeat_index>/<method>/<case>`，并在 metadata 中记录 `repeat_count`。`metrics.json` 额外包含 `repeat_statistics`、`rank_tau_by_repeat` 与 `repeat_rank_consistency`。前两者分别提供 repeat 分数统计和同 repeat 的 DEFAULT↔replay 排序关联；`repeat_rank_consistency` 只在同一方法内比较不同 repeat，并保留逐 repeat 排名与 pairwise 明细。缺失模型、缺失或非有限 score、有效模型不足两个时，对应 pair 记入 `invalid_pairs`，不足有效 pair 的汇总值为 `null`。
 
 ## Agent step 计数
 

@@ -1,306 +1,496 @@
-# DynSTEER 跨 Benchmark 自动 Milestone 与 Minefield 构建模块详细代码修改方案
+# DynSTEER 跨 Benchmark 自动 Milestone 与 Minefield 构建模块最终代码修改方案
 
-> 制定日期：2026-08-05  
-> 适用范围：ToolSandbox、AgentCompass 接入的 SWE-bench Pro/SkillsBench 以及后续 benchmark 适配器。  
-> 本文是对 `2026-08-05-DynSTEER跨Benchmark自动Milestone与Minefield构建模块代码方案.md` 的重新梳理和落地版。所有代码设计遵循 `docs/constraints/code.md`。
+> 最终修订日期：2026-08-06
+> 修改范围：仅限 DynSTEER；`../AgentCompass` 与 `../ToolSandbox` 只读，不修改。
+> 本方案只列需要新增或修改的文件、接口和验收内容。
 
-## 第 1 大节：算法流程
+## 1. 新增 `dynsteer/milestone` 模块
 
-### 1.1 目标、输入和两种运行模式
+### 1.1 `dynsteer/milestone/model.py`
 
-算法的目标不是猜测一条唯一的正确操作序列，而是把 Agent 能看到的任务契约编译为现有 DynSTEER `MilestoneGraph`：
-
-- milestone 表示可观察、与任务契约直接相关的必要进展；
-- milestone 之间的边只表示确定的语义前置关系；
-- minefield 表示有公开来源且有确定性 detector 的违规不变量；
-- 备选实现保留在生成报告中，不新增现有运行期不支持的 optional/OR 节点。
-
-每个 benchmark 适配器先提供统一的 `GeneratorTaskView`，包含任务说明、Agent 可见工具/环境 schema、公开起始观察、输出契约、证据目录和不变量目录。本文中的“profile”仅指 adapter 生成这些目录时使用的投影规则，不新增独立的 profile registry/class。隐藏测试、gold patch、原生 matcher、target dataframe 和 verifier 字段永远不进入该 view。
-
-配置写在 `benchmark.json`、`run_configs.json` 或 experiment 配置的 `milestone_generation` 对象中，关键参数如下：
-
-```json
-{
-  "milestone_generation": {
-    "use_origin_milestone": true,
-    "simulated_path_count": 6,
-    "reference_policy": "safe_primary",
-    "generator": {"provider": "openai_compatible", "model": "...", "temperature": 0}
-  }
-}
-```
-
-`use_origin_milestone` 默认为 `true`，含义是：只要适配器提供的原生 graph 有 milestone 或 minefield 标注，就原样使用原图，完全跳过自动生成。设为 `false` 时，即使 ToolSandbox 有人工 matcher，也必须走自动生成；原图只能在编译完成后作为盲测参考，不能进入生成 prompt。无原生 graph 时无论该参数取值如何都自动生成。自动图首版固定只允许 replay/shadow online，`online_stop_eligible` 由 compiler 固定输出 `false`；真实在线停止另立方案，不在本配置中预留未使用的开关。
-
-### 1.2 总体流程图
-
-![DynSTEER 跨 Benchmark 自动 Milestone 与 Minefield 构建流程](assets/2026-08-05-dynsteer-milestone-minefield-flow.png)
-
-### 1.3 分阶段算法
-
-#### 阶段 A：输入投影和模式判定
-
-1. adapter 从 benchmark 原始记录构造 `TaskCase`，并生成 `GeneratorTaskView`。view 中的字段必须有稳定 `source_ref`，只保留公开可复现内容。
-2. loader 保存 `origin_graph` 的内存引用和摘要 hash；之后先判断模式，再把 view 传给 compiler。compiler 的入参不包含 `origin_graph`。
-3. `use_origin_milestone=true` 且 `origin_graph.nodes` 或 `origin_graph.minefields` 非空：返回原图，metadata 标记 `milestone_source=origin`，不调用 LLM。
-4. 其他情况：进入阶段 B；`use_origin_milestone=false` 时，原图只在阶段 H 的审计函数中使用。
-
-#### 阶段 B：从可见契约提取 Acceptance Atom
-
-1. 先用确定性规则识别“必须产出、必须保持、必须调用/禁止调用、条件、数量、格式、用户沟通和安全策略”等显式条款。
-2. 用一次结构化 LLM 请求补充语义 atom、候选前置和证据通道；LLM 只能引用 view 中的 `source_ref`、`tool_schema` 和 `evidence_catalog`。
-3. 丢弃无来源、引用未知 selector/tool、只描述常见做法而不对应契约的 atom；合并同一 subject/predicate 的重复 atom。
-4. 每个 atom 记录 `atom_id/kind/source_refs/precondition_ids/candidate_channels/criticality/confidence`，这是后续路径和图的唯一事实锚点。
-
-#### 阶段 C：reference trajectory 准入（可选）
-
-只有适配器明确声明 `reference_policy=safe_primary`，且轨迹成功、步骤只包含 Agent 可见动作和公开效果时，才把它投影成 reference path。无法证明安全、失败或含 hidden-only 信息的轨迹转为 audit-only；reference answer、gold patch、checklist 不能冒充 action trajectory。
-
-reference path 的动作先按语义效果映射到 atom；不能回指 atom 或公开 schema 的动作标记为 `incidental`，不生成 milestone。参考路径是主锚点，不强制保留每次重试、探索和偶然顺序。
-
-#### 阶段 D：一次请求生成多条模拟路径
-
-一次请求固定输出 strategy slots，避免按路径循环调用 LLM：最短可行、状态优先、产物/接口优先、替代实现、保守条件分支以及 profile 自定义策略。每条路径描述 `intent -> precondition -> observable_effect`，而不是要求复现具体动作。
-
-- 有 reference path：保留 reference 主路径，再生成 2～4 条补充路径；补充路径用于发现遗漏必要节点、等价实现和风险分支。
-- 无 reference path：至少生成 3 条结构不同且能覆盖终态 atom 的有效路径，归纳出的 synthetic path 仅是工作参考，不称为 gold path。
-
-路径校验包括 JSON schema、atom/tool/channel 白名单、前置存在性、终态覆盖、无循环和环境可行性；失败路径不进入收束，并记录失败原因。
-
-#### 阶段 E：语义对齐、节点收束和 DAG
-
-1. 按覆盖 atom、可观察效果和前置语义聚类 route node；不同工具只要产生同一契约效果就进入同一 cluster。
-2. 参考主线节点优先保留；无参考时选择覆盖率高、置信度高且 leave-one-path-out 稳定的 synthetic 主线。
-3. 只有同时满足“回指显式/推导出的契约必要性、至少一个可执行证据、跨有效路径语义支配或明确硬前置”才升级为 mandatory milestone。仅多数路径出现但非契约必需的步骤降为 supporting/branch。
-4. 只保留已验证的前置边：去自环和未知节点边，删除仅由偶然轨迹顺序支持的边；相反顺序且无硬依赖的节点并行化；检测环并删除低置信度边，强环则生成失败；最后做传递约简。
-5. 用现有 `Milestone`、`Constraint`、`MilestoneGraph` 表达结果。替代实现不新增 `EvidenceGroup` 或 optional 节点（当前 scorer 不支持 OR 语义），仅写入 `generation_report.route_clusters` 和 milestone metadata。
-
-#### 阶段 F：证据绑定和 milestone 编译
-
-compiler 只从 adapter 提供的 `evidence_catalog` 选择已注册的 `(target, selector, operator, evaluator_hint)`。优先使用结构化 state/artifact/tool/message evidence；只能在轨迹终点观察的内容标记 `finish_only`，不能单独作为在线 milestone。动态参数必须来自公开初始观察或已命中前置 milestone 的结构化 snapshot，禁止把 reference-only 值直接写进 `expected`。
-
-ToolSandbox profile 绑定四类证据：工具调用语义、namespace 状态 delta、Agent→User 消息意图、信息不足时的 `UNCHANGED_SINCE` guardrail。side-effect descriptor 只在一个工具映射表中维护，按工具语义复用，不按 case_id 硬编码。
-
-#### 阶段 G：Minefield 编译
-
-候选来源仅限：公开禁止项、评估完整性规则、环境安全规则、产物一致性规则以及模拟路径发现的反事实风险。后者必须回指公开 policy/invariant，并由 profile 提供单一可执行 detector；没有来源、不可观测或高误报候选直接删除。
-
-- `fatal`：仅显式 policy 违规、修改 verifier/测试、secret 泄露或确定性破坏性越权；
-- `error`：finish 复查发现的产物缺失/构建失败；
-- `warn`：重复调用、长时间无进展等软诊断，不自动 fatal。
-
-每个 Minefield 只保留一个 detector 约束，复合 invariant 在 detector 内部返回结构化结果，以兼容现有 `evaluate_minefields_at_boundary()`。
-
-#### 阶段 H：质量门禁、降级和审计
-
-默认门槛：契约覆盖率 ≥0.95、可观测率 ≥0.90、结构化证据比例 ≥0.70、模拟路径有效率 ≥0.80、无 reference 时有效路径至少 3 条、DAG/selector 校验通过、hidden leakage=0、无孤立 mandatory 节点。失败时依次删除非法/重复路径、把不稳定节点降为 branch、把不可观测 atom 延后到 finish、删除高误报 minefield；仍失败则 `generation_status=needs_review`，loader 不得启用在线停止。
-
-当 `use_origin_milestone=false` 且原图存在，编译完成后才执行 `audit_generated_graph(generated, origin_graph)`：按 atom/状态效果/前置边/invariant 语义对齐计算 precision、recall、F1，不按 ID 或文本相等比较；审计结果写入 report，不反向修改生成图，也不进入生成 prompt。这样可直接检验自动图与 ToolSandbox 人工标注的一致性。
-
-### 1.4 易懂版伪代码
-
-```text
-function build_case(config, adapter, case_id):
-    task_case = adapter.adapt_task_case(config, case_id)
-    origin_graph = task_case.milestone_graph
-    view = adapter.generator_task_view(config, task_case, case_id)
-
-    if config.use_origin_milestone and has_any_label(origin_graph):
-        mark(task_case, source="origin")
-        return enrich_and_prepare(task_case)
-
-    if view is None:
-        raise GenerationError("未提供 GeneratorTaskView，无法自动生成")
-
-    atoms = extract_atoms(view)                         # A/B
-    reference = admit_reference(view.reference_trajectory)
-    paths = simulate_once(view, atoms, reference, config.simulated_path_count)
-    valid_paths = validate_paths(paths, view, atoms)
-    if reference is None and count_distinct(valid_paths) < 3:
-        return needs_review(task_case, "有效路径不足")
-
-    clusters = align_by_semantic_effect(valid_paths, atoms)
-    main_path = choose_reference_or_stable_synthetic(clusters, reference)
-    mandatory = select_contract_necessary_dominators(clusters, atoms, main_path)
-    edges = build_and_reduce_dag(mandatory, valid_paths)
-    constraints = bind_profile_evidence(mandatory, view.evidence_catalog)
-    minefields = compile_invariants(view.invariant_catalog, valid_paths)
-    graph = to_existing_milestone_graph(mandatory, edges, constraints, minefields)
-    report = quality_gate(graph, view, valid_paths, clusters)
-    if not report.ready_for_replay:
-        return needs_review(task_case, report.reasons)
-
-    if not config.use_origin_milestone and has_any_label(origin_graph):
-        report.audit = audit_generated_graph(graph, origin_graph)
-    task_case.milestone_graph = graph
-    task_case.metadata["milestone_generation"] = report.to_dict()
-    return enrich_and_prepare(task_case)
-```
-
-## 第 2 大节：基于算法的具体代码修改方案
-
-### 2.1 新增文件与唯一职责
-
-1. `dynsteer/milestone/__init__.py`：仅显式导出 `GeneratorTaskView`、`MilestoneGenerationConfig`、`GenerationReport` 和 `compile_task_case`；不使用动态 `__getattr__` 或字符串映射。
-2. `dynsteer/milestone/model.py`：集中定义生成期数据模型：`MilestoneGenerationConfig`、`GeneratorTaskView`、`PublicEvidence`、`PublicInvariant`、`AcceptanceAtom`、`PathHypothesis`、`PathNode`、`GenerationReport`。这些模型只描述生成期数据，不修改运行期 `dynsteer/model.py`。
-3. `dynsteer/milestone/compiler.py`：唯一公开入口 `compile_task_case(view, config, llm)`；负责按阶段编排 atom 提取、reference 准入、一次请求多路径、语义聚类、DAG、证据绑定、Minefield 和质量门禁，并调用 `validate.py`。质量门槛集中为该文件的一个不可变常量映射，不再增加第二个 quality profile parser。不要再拆出只被调用一次的 planner/path/compiler 转发文件。
-4. `dynsteer/milestone/validate.py`：唯一的校验实现位置，放可复用的纯函数：view 泄漏扫描、path schema、graph ID/DAG、selector 白名单和 origin/generated 语义审计。compiler 只编排调用，adapter、loader、scorer 不得复制校验逻辑。
-5. `dynsteer/adapter/toolsandbox/utils/contract.py`：集中把 ToolSandbox Agent-facing 工具、公开环境字段、起始观察、side-effect descriptor、消息和 guardrail 规则投影成 `GeneratorTaskView`；不读取 `scenario.evaluation`、target dataframe 或 matcher。
-6. `docs/apis/milestone.md`：记录配置、输入白名单、输出 report、`use_origin_milestone` 语义和 replay/shadow 限制。
-7. `tests/milestone/` 与 `tests/adapter/toolsandbox/test_generated_milestone.py`：覆盖核心算法和 ToolSandbox 投影；核心生成函数行覆盖率不低于 80%。
-
-其中两个入口模型的字段固定如下，避免后续 adapter 各自发明配置格式：
+新增以下冻结 dataclass；生成期模型只放在本文件，不修改运行期 `dynsteer/model.py`：
 
 ```python
 @dataclass(frozen=True)
 class MilestoneGenerationConfig:
     use_origin_milestone: bool = True
     simulated_path_count: int = 6
-    reference_policy: str = "safe_primary"
     generator: JsonObject = field(default_factory=dict)
+
+    def digest(self) -> str: ...
+
+@dataclass(frozen=True)
+class PublicEvidence:
+    evidence_id: str
+    target: ConstraintTarget
+    selector: str
+    operator: Operator
+    source_ref: str
+    evaluator_hint: str = "rule"
+    namespace: str | None = None
+    expected_policy: Literal["public_literal", "none"] = "public_literal"
+    metadata: JsonObject = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class PublicInvariant:
+    invariant_id: str
+    description: str
+    source_ref: str
+    evidence_id: str
+    severity: Literal["warning", "error", "fatal"] = "warning"
 
 @dataclass(frozen=True)
 class GeneratorTaskView:
     benchmark: str
     task_id: str
     case_id: str
+    language: str
     instruction: str
     public_assets: list[JsonObject]
     tool_schema: JsonObject
     environment_schema: JsonObject
-    initial_observation: JsonObject | None
     output_contract: JsonObject
-    evidence_catalog: list[PublicEvidence]
-    invariant_catalog: list[PublicInvariant]
-    reference_trajectory: JsonObject | None
-    source_digest: str
+    evidence_catalog: tuple[PublicEvidence, ...]
+    invariant_catalog: tuple[PublicInvariant, ...]
+
+    def digest(self) -> str: ...
+
+@dataclass(frozen=True)
+class GenerationReport:
+    generation_status: Literal["generated", "auto_rejected"]
+    valid_path_count: int
+    distinct_path_count: int
+    contract_atom_count: int
+    consensus_node_count: int
+    graph_valid: bool
+    leakage_count: int
+    reasons: tuple[str, ...] = ()
+    path_summaries: tuple[JsonObject, ...] = ()
+    online_stop_eligible: bool = False
+
+    def to_dict(self) -> JsonObject: ...
+
+class MilestoneGenerationError(ValueError):
+    report: GenerationReport
 ```
 
-`reference_trajectory` 在进入 compiler 前已经是安全投影；原始轨迹和 origin graph 不属于该模型。`generator` 只保存 provider/model/temperature/max_tokens 等非敏感配置，API key 由环境变量解析。质量门槛不做第二套配置，统一由 `compiler.py` 的常量和 `GenerationReport` 使用。
+具体约束：
 
-`compiler.py` 负责生成 graph/report，`loader.py` 负责一次调度和缓存，现有 `_postprocess_task_case()` 继续是唯一的 stage-goal/spec 生成入口；compiler 不再重复生成 stage goals，避免一次生成任务触发两套相同的目标模板流程。
+- `MilestoneGenerationConfig.__post_init__()` 只校验 `simulated_path_count >= 3`、布尔值和 `generator` 类型；`digest()` 使用同一稳定 JSON + SHA-256 规则；不增加 reference policy、质量 profile 或兼容字段。
+- `GeneratorTaskView.digest()` 对上述公开字段做稳定 JSON 序列化和 SHA-256；adapter 不重复实现 hash。
+- instruction 固定使用 `source_ref="instruction"`；`public_assets`、tool、output contract 项都必须带唯一 `source_ref`，compiler 只接受这些已登记引用。
+- `PublicEvidence` 一条记录对应一个确定的 `target/selector/operator/evaluator_hint`，compiler 只能选择记录，不能让 LLM 自由发明 scorer 形状。
+- `expected_policy="public_literal"` 时，expected 必须是 `source_ref` 指向公开值的直接标量或子结构，compiler 用结构相等校验，不接受 LLM 猜测或改写；`"none"` 只用于不需要 expected 的 operator。
+- 不定义 `ReferenceTrajectory`、optional milestone、OR evidence、profile registry 或第二套运行期 graph 模型。
 
-### 2.2 现有文件的明确修改点
+### 1.2 `dynsteer/milestone/compiler.py`
 
-#### `dynsteer/harness/model.py`
+只暴露一个公开入口：
 
-- 在 `HarnessRunConfig` 增加 `milestone_generation: MilestoneGenerationConfig = field(default_factory=MilestoneGenerationConfig)`。
-- `__post_init__` 校验 `simulated_path_count >= 3`，以及 `reference_policy` 取 `safe_primary/audit_only/disabled`；质量门槛由 compiler 内部唯一常量维护，在线停止资格固定由 compiler 设为 `false`。
-- 不再通过多个布尔字段分别控制 origin/generated；唯一决策字段是 `use_origin_milestone`。
-
-#### `dynsteer/harness/config.py`
-
-- 新增 `milestone_generation_from_mapping(data)`，解析上述对象并提供默认 `use_origin_milestone=True`。
-- 把 `milestone_generation` 加入 `_RUN_CONFIG_CONTROL_FIELDS`，从 manifest 和 run spec 合并一次，调用唯一的 `milestone_generation_from_mapping()` 解析后写入 `HarnessRunConfig`；不得把未校验的原始字典直接传给 compiler，也不得在 loader/evaluator 中再次从 metadata 解析同一配置。
-- `load_benchmark_manifest_metadata()` 读取可选 manifest 级默认值；`run_configs.json` 同名字段覆盖 manifest 默认值。
-- API key 仍只从环境变量读取，生成器和 Judge 的 provider/model 分开记录；不要把 key 写进 metadata 或 report。
-
-#### `dynsteer/experiment/model.py` 与 `dynsteer/experiment/config.py`
-
-- `ExperimentRunSpec` 增加 `milestone_generation: MilestoneGenerationConfig`，`build_harness_config()` 直接传递该对象；`to_metadata()` 不复制完整配置，只写入 `milestone_generation_digest` 供结果索引展示。
-- `expand_experiment_matrix()` 支持 benchmark、method 或顶层 `milestone_generation` 覆盖；覆盖结果在这里合并后只调用一次 `milestone_generation_from_mapping()`。
-- reliability 实验使用 `use_origin_milestone=false`；Default、DynSTEER replay 和 shadow online 的其它评估逻辑不改变。
-
-#### `dynsteer/adapter/base.py`
-
-- 新增可选接口：
-
-  ```python
-  def generator_task_view(
-      self, config: HarnessRunConfig, task_case: TaskCase, case_id: str
-  ) -> GeneratorTaskView | None: ...
-  ```
-
-- 默认返回 `None`，表示该 adapter 没有自动生成能力；loader 在 `use_origin_milestone=false` 时遇到 `None` 必须抛出带 benchmark/case_id 的错误，不得静默使用空图。
-- 不新增 `generate_milestone()`、`generate_minefield()` 两套 benchmark hook；二者由同一个 compiler 输出。
-
-#### `dynsteer/adapter/loader.py`
-
-- 将 `_adapt_task_case()` 改为：`adapt_task_case -> 读取 origin_graph -> 按 config 决策 -> (必要时) generator_task_view + compile_task_case -> enrich_milestone_graph -> _postprocess_task_case`。
-- 新增一个私有 `_apply_milestone_generation()` 作为唯一 loader 调度点；`load_task_case()` 和 `refresh_task_cases_for_experiment()` 都调用它，避免两条冗余流程。
-- 读取 adapted case 时必须比较当前 `MilestoneGenerationConfig`、view/reference hash 和 compiler 版本：origin/generated 模式切换或 hash 变化时重建，不能仅因磁盘上已有 `milestone_graph` 就直接复用旧图。
-- `use_origin_milestone=true`：保留原 graph，并写入 `metadata.milestone_generation={"source":"origin","generated":false,"online_stop_eligible":true}`，使现有在线策略保持原行为。
-- `use_origin_milestone=false`：先保存 origin graph 的 hash/内存对象供 audit，再以 compiler 返回的 graph 替换 `TaskCase.milestone_graph`；禁止把 origin graph 序列化到 `GeneratorTaskView`。
-- 生成结果的 `GenerationReport` 只写入 `TaskCase.metadata["milestone_generation"]` 一次；`MilestoneGraph.metadata` 只保留 `source`、版本和 digest，不嵌套完整 report。缓存 key 至少包含 view hash、reference projection hash、compiler 版本、generator model/temperature 和 config hash；缓存命中只反序列化 generated graph/report。
-- 生成失败应抛出结构化异常或返回 `needs_review`，不得用空 graph 继续运行。
-
-生成器 LLM 必须由 loader 根据 `config.milestone_generation.generator` 调用现有 `dynsteer.llm.factory.build_llm_from_config()` 构造；不能复用只面向 Judge 的 `build_llm_from_env()`，也不能在 compiler 内部临时读取环境变量。未配置 generator 时，若确实需要自动生成，应明确报错。
-
-#### `dynsteer/adapter/toolsandbox/adapter.py`
-
-- 保留 `milestone_graph_from_scenario()` 作为原生图读取函数，仅用于 `use_origin_milestone=true` 和 post-generation audit。
-- 新增 `generator_task_view()`，调用 `utils/contract.py` 提取实际 Agent-facing schema、公开环境字段、起始 observation、任务契约和证据/不变量目录。
-- `refresh_task_case_for_experiment()` 分支处理：origin 模式沿用当前 expected 刷新；generated 模式重新计算 view hash，变化时调用 loader 的同一生成调度点，不能按 constraint ID 从原生 matcher 拷贝 expected。
-- metadata 明确记录 `milestone_source`、`generation_status`、`origin_graph_digest`；不记录 target dataframe 内容。
-
-#### `dynsteer/adapter/toolsandbox/utils/scenario.py`
-
-- 不把自动生成算法塞进该文件；`milestone_graph_from_scenario()` 只负责原生 matcher -> `MilestoneGraph` 的已有转换。
-- 给 origin graph metadata 增加 `source="origin"`，供 loader 判断；删除任何可能把原生 matcher 结构伪装成 reference trajectory 的新逻辑。
-
-#### `dynsteer/adapter/toolsandbox/utils/contract.py`
-
-- `build_toolsandbox_generator_view(context, scenario, case_id)` 只读取公开 context、工具转换后的 schema 和用户首条任务消息。
-- `build_evidence_catalog()` 为 state/tool/message/guardrail 四类证据生成现有 `Constraint` 所需的 target、selector、operator 和 evaluator hint。
-- `build_invariant_catalog()` 仅登记公开 policy、安全和产物规则；模拟路径提出的风险只能作为候选回指这些规则。
-- side-effect descriptor 使用一个模块级只读映射；禁止按 scenario/case_id 写预期值。
-
-#### `dynsteer/adapter/toolsandbox/harness.py`、`dynsteer/adapter/toolsandbox/scorer.py`
-
-- 两个文件不承载生成算法；harness 继续只负责 session 生命周期，scorer 继续负责现有 `Constraint` 评分。
-- 只需用已有 scorer 支持的 `target/selector/operator/metadata` 形状编译 generated graph，并增加回归测试；若某证据无法由现有 scorer 观察，必须在 compiler 阶段降级为 finish/review，而不是在 scorer 中再造一套 matcher。
-
-#### `dynsteer/model.py`、`dynsteer/evaluate/*`
-
-- 本方案不新增 `EvidenceGroup`，也不修改 `Milestone`、`Minefield`、`GeneralScorer`、`evaluate_minefields_at_boundary()` 的接口；生成结果必须落到现有模型。
-- `dynsteer/graph.py`、`dynsteer/adapter/route.py`、stage goal/spec、settlement/scoring 继续复用现有 enrich 和评分流程。
-- `dynsteer/evaluate/evaluator.py` 仅在现有 `_apply_live_decision()` 增加一个统一安全门：当 `TaskCase.metadata["milestone_generation"].online_stop_eligible` 不是 `true` 时记录 `policy_stop_suppressed` 并继续运行；origin graph 不受影响，replay 仍沿用已有 virtual-stop 记录逻辑。
-- 仅在 `evaluate/diagnostics.py` 的运行报告中增加 `milestone_source`、`generation_status`、`virtual_stop` 等 metadata 展示字段；不复制生成器逻辑。
-
-#### `dynsteer/adapter/registry.py`
-
-- 不新增不存在的 AgentCompass adapter 占位注册。AgentCompass 的 SWE-bench Pro/SkillsBench 适配器到位后，只需实现 `adapt_task_case()` 和 `generator_task_view()`；通用 compiler、validator、scorer 不改。
-
-### 2.3 AgentCompass 等 benchmark 的接入契约
-
-AgentCompass 侧适配器把 `PreparedTask` 的 instruction、公开 files/workspace manifest、tools、messages 和 output expectations 投影为 `GeneratorTaskView`；gold patch、tests、reward/verifier 仍放在 audit side。若 benchmark 没有 action reference trajectory，直接走 consensus-synthetic；若明确提供安全的成功轨迹，按阶段 C 投影。新增 benchmark 只提供自己的 evidence/invariant catalog，不复制 atom 提取、路径模拟、DAG 或 minefield 流程。
-
-### 2.4 配置示例与输出
-
-`data/toolsandbox/run_configs.json` 可增加：
-
-```json
-{
-  "milestone_generation": {
-    "use_origin_milestone": false,
-    "simulated_path_count": 6,
-    "reference_policy": "audit_only"
-  }
-}
+```python
+def compile_task_case(
+    view: GeneratorTaskView,
+    config: MilestoneGenerationConfig,
+    llm: BaseLLM,
+) -> tuple[MilestoneGraph, GenerationReport]:
+    ...
 ```
 
-生成 case 的 metadata/report 至少包含：`source`、`use_origin_milestone`、`path_synthesis_mode`、`valid_path_count`、`atom_coverage`、`backbone_stability`、`graph_valid`、`leakage_count`、`generation_status`、`online_stop_eligible` 以及（有原图且 false 模式）`origin_audit`。原始 reference payload、LLM hidden reasoning 和 secret 不落盘。
+本文件同时保存私有生成模型、校验 helper 和以下固定常量，不再新增 `validate.py`、planner、path compiler 或 quality profile 文件：
 
-### 2.5 测试、验收和清理
+- `COMPILER_VERSION`；
+- `MIN_DISTINCT_PATHS = 3`；
+- `CONSENSUS_RATIO = 2 / 3`；
+- hidden-key 黑名单。
 
-- 单元测试：配置默认/覆盖、origin 分支不调用 LLM、false 分支即使有原图也调用 compiler、字段泄漏、atom/path 校验、路径收束、DAG 环检测、证据白名单、Minefield severity、缓存 key 和 replay 兼容。
-- ToolSandbox 集成：随机抽取同时有原生 milestone/minefield 的 case，分别运行 `use_origin_milestone=true/false`；比较 atom/状态效果/边/invariant 的 precision、recall、F1 和成功轨迹命中一致性。origin graph 只作为 audit 输入。
-- 无原生图 fixture：至少三条有效差异路径才能生成 synthetic path；常见但非契约必需步骤必须降级为 branch；替代工具不能导致额外 mandatory 节点。
-- 验收门槛：契约覆盖率 ≥0.95、可观测率 ≥0.90、路径有效率 ≥0.80、hidden leakage=0、核心测试覆盖率 ≥80%；未达标只允许 replay diagnostics，`online_stop_eligible=false`。
-- 按约束执行 `pytest` 和静态检查；测试结束后清理本次生成产生的 `__pycache__`、`.pytest_cache` 等中间目录，不删除 `docs/constraints` 或 `docs/plans` 中已有文档。
-- 不新增死代码：新公开接口必须由 loader、adapter 或测试调用；不实现 SWE-bench/SkillsBench 的空壳 runner；不在 scenario、loader、compiler、scorer 多处实现同一算法。
+`compile_task_case()` 的具体实现固定为：
 
-本次冗余复核后的结构约束如下：
+1. 把 `GeneratorTaskView`、证据 ID 白名单、请求路径数交给 LLM，一次请求返回共享 atom 目录、差异路径和 minefield 候选；禁止按路径循环调用 LLM。
 
-1. 配置只有一个 dataclass 和一个 mapping parser；experiment metadata 只保存 digest，不作为第二个配置来源。
-2. 自动生成只有 `compiler.compile_task_case()` 一个入口；loader 只有 `_apply_milestone_generation()` 一个调度点，刷新和首次加载共用它。
-3. 校验和 origin/generated 语义审计只有 `validate.py` 一份实现；ToolSandbox scorer 不新增 matcher。
-4. stage goals/specs 继续由现有 `_postprocess_task_case()` 生成；compiler 不复制该流程。
-5. 不添加 `EvidenceGroup`、optional milestone、profile registry、benchmark 占位 runner 或未启用的 online-stop 配置字段。
+   LLM 响应固定为以下最小 JSON 形状，不接受额外顶层结构：
 
-## 附录 A：当前没有把握实现的模块部分
+   ```json
+   {
+     "atoms": [
+       {
+         "atom_id": "a1",
+         "name": "...",
+         "description": "...",
+         "source_refs": ["instruction"],
+         "evidence_id": "...",
+         "expected": null,
+         "terminal": false
+       }
+     ],
+     "paths": [
+       {"strategy": "shortest", "atom_ids": ["a1"]}
+     ],
+     "minefields": [
+       {"minefield_id": "mf1", "invariant_id": "...", "expected": null}
+     ]
+   }
+   ```
 
-1. **AgentCompass 外部运行时的准确字段映射**：当前仓库没有 AgentCompass 源码和实际 `PreparedTask` 运行对象，无法确认 workspace、工具结果和公开 trajectory 的最终字段名。方案只固定 `GeneratorTaskView` 契约，拿到外部仓库后补 profile 投影并用 fixture 验证。
-2. **ToolSandbox Agent-facing schema 的完整提取**：当前 adapter 仅写入 `{"source":"toolsandbox"}`，需要在真实依赖版本中确认 `ExecutionContext.get_available_tools()` 或等价 API；若 API 不稳定，profile 必须使用现有 tool conversion 的公开结果，不读取 matcher/target dataframe。
-3. **无 reference 时的真实必经性**：LLM 多路径可能结构同质，路径多数不等于语义必经。若 backbone stability、mutation precision 或人工盲审未达门槛，生成图只能用于 replay，不能据此宣称可在线早停。
-4. **动态 expected 的公开来源**：如果某 benchmark 的 expected 只能由隐藏 verifier 计算，则该 atom 标记 `finish_only` 或 `needs_review`，不能在生成器中猜测具体值。
+2. LLM 输出中的每条路径只保存有序 atom ID。所有路径复用同一个 atom 目录，因此语义等价步骤在生成时即共享 atom，不再实现第二套 embedding/聚类流程。
+3. 校验 JSON 结构、`source_ref`、`evidence_id`、expected 来源、atom 引用和路径终态；每条路径必须以 `terminal=true` atom 结束，非法路径删除并记录原因。
+4. 用有序 atom ID 签名去重；去重后少于 3 条有效路径时构造 `auto_rejected` report 并抛出 `MilestoneGenerationError`。
+5. LLM 路径只用于增加解法、顺序和工具选择的多样性，不证明“真实必经性”。atom 同时满足以下三项才编译为 milestone：
+   - 回指显式公开任务契约；
+   - 选择的 `PublicEvidence` 能由现有 scorer 执行；
+   - 出现在至少三分之二的有效差异路径中。
+6. 三分之二是 compiler 内部固定常量，不新增配置项。生成节点写入 `metadata["necessity_basis"]="synthetic_consensus"`；低频替代步骤和无契约来源步骤只写入 `GenerationReport.path_summaries`，不进入 `MilestoneGraph.nodes`。
+7. 对保留 atom 构造边：只有在所有同时包含两个 atom 的有效路径中顺序一致时才保留前置关系；删除自环、冲突边和传递边，最终必须为 DAG。
+8. minefield 候选必须引用 `invariant_catalog` 和对应 `PublicEvidence`；LLM 不能提高 `PublicInvariant.severity`。无公开 invariant 或无可执行 detector 的候选直接删除。
+9. 使用现有 `Constraint`、`Milestone`、`Minefield`、`MilestoneGraph` 输出；不修改现有 scorer 接口。
+10. graph 必须至少包含一个可执行 milestone、所有 constraint selector 合法、DAG 合法且 hidden leakage 为 0，否则构造 `auto_rejected` report 并抛出 `MilestoneGenerationError`；失败 graph 不返回给 loader。
+11. 成功 graph metadata 只写 `source="generated"`、`compiler_version`、`view_digest`、`necessity_basis="synthetic_consensus"`、`online_stop_eligible=false`；完整 `GenerationReport` 不嵌套进 graph。
+12. 核心步骤和异常使用结构化中文日志；不得记录完整 prompt、secret、gold、verifier 或 LLM reasoning。
+
+所有只被 compiler 使用的 `_Atom`、`_Path`、JSON 解析、DAG 校验、传递约简和泄漏扫描函数都留在本文件后半部分，按主函数到 helper 的顺序排列。
+
+### 1.3 `dynsteer/milestone/__init__.py`
+
+仅显式导出：
+
+- `MilestoneGenerationConfig`
+- `PublicEvidence`
+- `PublicInvariant`
+- `GeneratorTaskView`
+- `GenerationReport`
+- `MilestoneGenerationError`
+- `compile_task_case`
+
+禁止 `__getattr__`、字符串模块映射和懒加载 re-export。
+
+### 1.4 `dynsteer/prompt/templates/milestone/generation.en.md` 与 `generation.zh.md`
+
+新增同一输出 schema 的中英文模板：
+
+- 要求一次返回共享 atom 目录、`simulated_path_count` 条策略不同的路径和 minefield 候选；
+- strategy 至少覆盖最短路径、状态优先、产物优先、替代工具/实现和保守路径；
+- 路径必须引用共享 atom ID，不输出思维链；
+- atom/minefield 必须引用输入中已有的 `source_ref` 和 `evidence_id`；
+- 明确路径多数只是 synthetic consensus，不得声称 gold path 或真实必经；
+- compiler 直接调用现有 `load_prompt_template("milestone", "generation")`，不新增只做转发的 prompt builder。
+
+## 2. 配置与唯一加载调度
+
+### 2.1 `dynsteer/harness/model.py`
+
+在 `HarnessRunConfig` 增加：
+
+```python
+milestone_generation: MilestoneGenerationConfig = field(
+    default_factory=MilestoneGenerationConfig
+)
+```
+
+该字段是运行期唯一配置来源；禁止再从 `metadata` 解析同名配置。
+
+### 2.2 `dynsteer/harness/config.py`
+
+新增唯一 parser：
+
+```python
+def milestone_generation_from_mapping(
+    data: Mapping[str, Any] | None,
+) -> MilestoneGenerationConfig:
+    ...
+```
+
+修改内容：
+
+- 把 `milestone_generation` 加入 `_RUN_CONFIG_CONTROL_FIELDS`；
+- `load_harness_run_configs()` 只调用上述 parser 一次并写入 `HarnessRunConfig`；
+- 仅接受 `use_origin_milestone`、`simulated_path_count`、`generator`，未知字段报错；
+- generator 中只保存 provider、model、temperature、timeout、max_tokens、retry 等非敏感字段；API key 继续由现有 `build_llm_from_config()` 从环境变量读取；
+- 不把配置复制到 `metadata`，不增加 manifest 级第二套默认值。
+
+### 2.3 `dynsteer/experiment/model.py`
+
+在 `ExperimentRunSpec` 增加同一个 `MilestoneGenerationConfig` 字段。
+
+`to_metadata()` 只写 `milestone_generation_digest`，不写完整 generator 配置，避免结果 metadata 成为第二配置来源。
+
+### 2.4 `dynsteer/experiment/config.py`
+
+修改内容：
+
+- `expand_experiment_matrix()` 从每个 benchmark spec 的 `milestone_generation` 调用 `milestone_generation_from_mapping()`，写入 `ExperimentRunSpec`；
+- `build_harness_config()` 直接把该对象传给 `HarnessRunConfig`；
+- 不在 `_merge_metadata()` 中合并或复制 `milestone_generation`；
+- direct harness 配置和 experiment 配置共用 `harness/config.py` 的同一个 parser。
+
+### 2.5 `dynsteer/adapter/base.py`
+
+在 `BaseBenchmarkAdapter` 增加抽象接口：
+
+```python
+@abstractmethod
+def generator_task_view(
+    self,
+    config: HarnessRunConfig,
+    task_case: TaskCase,
+    case_id: str,
+) -> GeneratorTaskView:
+    ...
+```
+
+现有三个 adapter 都必须实现；loader 只通过该接口获取生成输入，不按 benchmark 写条件分支。
+
+### 2.6 `dynsteer/adapter/loader.py`
+
+新增唯一私有调度函数：
+
+```python
+def _apply_milestone_generation(
+    config: HarnessRunConfig,
+    adapter: BaseBenchmarkAdapter,
+    source_case: TaskCase,
+    cached_case: TaskCase | None,
+) -> TaskCase:
+    ...
+```
+
+修改后的非 Default 加载顺序固定为：
+
+```text
+adapter.adapt_task_case
+-> _apply_milestone_generation
+-> enrich_milestone_graph
+-> _postprocess_task_case
+-> validate_stage_evaluation_specs
+-> save_task_case
+```
+
+具体规则：
+
+- Default 方法保持现有行为，不构造 milestone，不调用生成 LLM。
+- 非 Default 方法先获得新的 `source_case`；外部任务目录和 ToolSandbox scenario 已有缓存，因此不新增第二套 source cache。
+- `use_origin_milestone=true` 且原 graph 有 node 或 minefield：直接使用原 graph，metadata 写 `source="origin"`、`online_stop_eligible=true`，不构造 LLM。
+- 原 graph 为空，或 `use_origin_milestone=false`：调用 adapter 的 `generator_task_view()`。
+- cache key 只由 `view.digest()`、config digest 和 `COMPILER_VERSION` 组成，保存在 `TaskCase.metadata["milestone_generation"]`；不新增独立 cache 文件。
+- cached case 的三个 digest 全部一致时，把 cached graph、stage goal templates 和 generation report 复制到新的 `source_case`；不再次调用 LLM。
+- cache 不一致时用 `build_llm_from_config(config.milestone_generation.generator)` 构造 generator；未配置 generator 或编译失败时抛出结构化生成异常，不用空 graph 继续。
+- generated graph 替换 `source_case.milestone_graph`，report 只写入 `TaskCase.metadata["milestone_generation"]` 一次。
+- `refresh_task_cases_for_experiment()` 看到 `source="generated"` 时跳过 adapter 的 origin expected 刷新，只重新 materialize stage goals/specs；origin graph 继续调用现有 refresh。
+- `_postprocess_task_case()` 仍是 enrich route、stage goal template、materialize 和 stage spec 的唯一入口；compiler 不复制这些逻辑。
+- 删除旧的“磁盘上 graph 非空就直接复用”判断，统一按上述 digest 判断；同一 case 每轮最多保存一次最终 TaskCase。
+
+## 3. Benchmark 输入投影
+
+### 3.1 新增 `dynsteer/adapter/toolsandbox/utils/contract.py`
+
+只实现两个被真实调用的函数：
+
+```python
+def agent_facing_tool_schema(
+    context: object,
+    module_loader: Callable[[str], object],
+) -> JsonObject:
+    ...
+
+def build_toolsandbox_generator_view(
+    config: HarnessRunConfig,
+    task_case: TaskCase,
+    context: object,
+    module_loader: Callable[[str], object],
+) -> GeneratorTaskView:
+    ...
+```
+
+`agent_facing_tool_schema()`：
+
+- 调用当前 ToolSandbox 源码确认存在的 `context.get_available_tools(scrambling_allowed=True)`；
+- 按 callable 的 `visible_to` 过滤 Agent 不可见工具；
+- 使用 `tool_sandbox.common.tool_conversion.convert_to_openai_tools` 生成 `name/description/parameters`；
+- 保留 Agent-facing 扰动名称，不把 execution-facing 名称泄漏给 generator；
+- 输出 allow/deny/augmentation 生效后的最终 schema，不读取 evaluation matcher；schema digest 统一由 `GeneratorTaskView.digest()` 覆盖。
+
+`build_toolsandbox_generator_view()`：
+
+- instruction 使用现有 `task_description_from_steps()` 的结果；
+- public assets 只包含 Agent 可见的 system/user 消息；工具定义只放在 `tool_schema`，不重复复制；不包含 CONTACT、SETTING 等初始数据库行；
+- environment schema 只描述 `source="toolsandbox"` 和 `stateful=true`，不包含数据库 namespace、schema 或数据值；
+- evidence catalog 只登记现有 scorer 已支持的 tool call、tool result 和 Agent→User message；generated graph 不创建 state snapshot expected；
+- invariant catalog 只收录 Agent 可见 system/user 消息中的明确禁止项；
+- ToolSandbox 原生 `scenario.evaluation`、`milestone_matcher`、`minefield_matcher`、`target_dataframe` 永远不进入 view；
+- 如果 expected 只能来自 matcher、隐藏状态或运行后工具结果，则不生成该 constraint，并在 report 记录 `unsupported_dynamic_expected`；不实现运行期动态 expected binder。
+
+### 3.2 `dynsteer/adapter/toolsandbox/adapter.py`
+
+修改内容：
+
+- `adapt_task_case()` 调用 `agent_facing_tool_schema()`，替换当前 `tool_schema={"source":"toolsandbox"}` 占位值；
+- `environment_schema` 改为不含状态值的稳定公开 schema；
+- 新增 `generator_task_view()`，加载当前 case 的 cached scenario/context 后调用 `build_toolsandbox_generator_view()`；
+- 保留 `milestone_graph_from_scenario()` 和现有 `refresh_task_case_for_experiment()`，它们只服务 origin graph；
+- generated refresh 分支由 loader 统一跳过，本 adapter 不再增加第二个 mode parser。
+
+### 3.3 `dynsteer/adapter/toolsandbox/utils/scenario.py`
+
+只给 `milestone_graph_from_scenario()` 输出 metadata 增加 `source="origin"`。
+
+不在本文件加入自动生成、schema 提取或 generated expected 逻辑。
+
+### 3.4 新增 `dynsteer/adapter/agentcompass/contract.py`
+
+新增共享函数：
+
+```python
+def build_agentcompass_generator_view(
+    config: HarnessRunConfig,
+    task_case: TaskCase,
+    *,
+    environment_schema: JsonObject,
+    output_contract: JsonObject,
+) -> GeneratorTaskView:
+    ...
+```
+
+该函数由 SWE-bench Pro 与 SkillsBench 两个 adapter 共同调用，集中完成：
+
+- `TaskCase.task_description` 到 instruction 的映射；
+- ACTF 转换后已有的 message、tool call、tool result evidence catalog；
+- `PreparedTask.input.tools` 为空时输出空 tool list，不猜测 Codex/Claude CLI 内部工具 schema；
+- public asset、language、source ref 和 view digest 所需字段的统一构造；
+- invariant catalog 只收录 instruction/output contract 中明确出现的禁止项或输出限制，没有明确规则时返回空 tuple；
+- ground truth、patch、tests、reward、verifier、`RunResult.extra` 不进入 view。
+
+不得在两个 benchmark adapter 中各复制一份 evidence catalog 或 hash 逻辑。
+
+### 3.5 `dynsteer/adapter/swebench_pro/adapter.py`
+
+新增 `generator_task_view()`：
+
+- 调用共享 `build_agentcompass_generator_view()`；
+- environment schema 写当前已核实的 repo workspace：`/app/{case_id}/repo`；
+- output contract 写 `/app/{case_id}/patch.txt` 和“仅输出解决问题的 unified diff”；
+- 公开任务字段继续使用现有 `TaskCase.task_description`、`repo`、`base_commit`；
+- 不读取 `AgentCompassTaskRecord.ground_truth`、评测 patch 或 evaluation workspace。
+
+### 3.6 `dynsteer/adapter/skillsbench/adapter.py`
+
+新增 `generator_task_view()`：
+
+- 调用共享 `build_agentcompass_generator_view()`；
+- environment schema 写已核实的 workspace `/root`；
+- AgentCompass 当前 `PreparedTask.output` 为空，因此 `output_contract={}`，任务契约只来自公开 instruction；
+- 不读取 `tests_dir` 内容、`test.sh`、reward 或 verifier 输出。
+
+## 4. 生成图的运行期限制与审计字段
+
+### 4.1 `dynsteer/evaluate/evaluator.py`
+
+只修改 `_apply_live_decision()`：
+
+- 当 `TaskCase.metadata["milestone_generation"]["online_stop_eligible"] is not True` 时，不调用 `harness.stop_case()`；
+- 在当前 stage result metadata 写入 `policy_stop_suppressed=true` 和 `policy_stop_suppressed_reason="generated_graph_not_online_eligible"`；
+- origin graph 的 metadata 为 true，保持现有在线停止行为；
+- `_record_replay_decision()` 不修改，generated graph 仍可记录 replay virtual stop。
+
+### 4.2 `dynsteer/evaluate/runtime.py`
+
+在 `task_case_snapshot()` 增加以下摘要字段：
+
+- `milestone_source`
+- `generation_status`
+- `necessity_basis`
+- `view_digest`
+- `compiler_version`
+- `online_stop_eligible`
+
+只从 `TaskCase.metadata["milestone_generation"]` 读取一次；不在 diagnostics、display 和 result writer 中重复拼装。
+
+## 5. API 文档与测试
+
+### 5.1 新增 `docs/apis/milestone.md`
+
+记录：
+
+- `MilestoneGenerationConfig` 配置字段与默认值；
+- `GeneratorTaskView` 的公开输入白名单；
+- `compile_task_case()` 输入、输出和异常；
+- 自动生成的固定算法：“一次多样化路径生成 → 共享 atom 对齐 → 三分之二契约共识 → DAG”；
+- `synthetic_consensus` 不代表真实必经；
+- generated graph 仅允许 replay/shadow，禁止 live stop；
+- ToolSandbox 动态 expected 只允许公开 literal，不支持 hidden/runtime-derived expected。
+
+### 5.2 新增 `tests/milestone/test_compiler.py`
+
+使用 mock `BaseLLM` 覆盖：
+
+- 一次 LLM 调用产生多条路径；
+- atom ID 共享、路径去重和少于 3 条自动拒绝；
+- 三分之二边界：4/6 保留、3/6 删除；
+- 无契约 source、未知 evidence、hidden key、非法 expected 拒绝；
+- 稳定 DAG、冲突顺序不建边、传递边删除；
+- minefield 必须受 invariant severity 上限约束；
+- 成功 graph metadata 与 report 字段；
+- 核心 compiler 行覆盖率不低于 80%。
+
+### 5.3 新增 `tests/milestone/test_loader.py`
+
+覆盖：
+
+- origin graph + `use_origin_milestone=true` 不构造 LLM；
+- origin graph + false 进入 compiler；
+- 无 origin graph 自动生成；
+- view/config/compiler digest 命中时不重复生成；
+- digest 变化时只重新生成一次；
+- generated refresh 不复制 ToolSandbox origin expected；
+- stage goal/spec 仍只由 `_postprocess_task_case()` 生成；
+- Default 方法不调用生成模块。
+
+### 5.4 新增 `tests/adapter/test_generator_views.py`
+
+覆盖三个 adapter：
+
+- ToolSandbox tool allow/deny、工具名扰动和 Agent `visible_to`；
+- ToolSandbox view 不含 matcher、target dataframe 和初始数据库值；
+- SWE-bench Pro workspace/output contract 字段；
+- SkillsBench workspace 与空 output contract；
+- AgentCompass view 不含 ground truth、tests、reward、verifier；
+- 两个 AgentCompass adapter 共用同一 evidence catalog builder。
+
+### 5.5 新增 `tests/evaluate/test_generated_graph_policy.py`
+
+覆盖：
+
+- generated graph live policy stop 被抑制；
+- origin graph live stop 保持原行为；
+- generated replay 仍记录 virtual stop；
+- task case snapshot 只输出生成摘要，不输出 generator 配置或 prompt。
+
+### 5.6 验收命令
+
+实施完成后执行：
+
+```powershell
+uv run pytest --cov=dynsteer.milestone --cov-report=term-missing
+uv run pytest
+uv run python -m compileall dynsteer
+uv run ruff check dynsteer tests
+```
+
+测试产生的 `__pycache__`、`.pytest_cache`、coverage 临时文件在验收后清理；不删除测试源码和现有文档。
+
+## 6. 冗余与死代码验收
+
+代码完成前逐项确认：
+
+1. 自动生成只有 `compile_task_case()` 一个公开入口，loader 只有 `_apply_milestone_generation()` 一个调度点。
+2. 配置只有 `MilestoneGenerationConfig` 和 `milestone_generation_from_mapping()`；metadata 不作为配置来源。
+3. LLM 每个 case 最多一次生成请求；不按路径调用，不增加第二个 judge/generator factory。
+4. 路径共享 atom ID，不实现 embedding 聚类、reference 分支、counterfactual proof 或独立 validator。
+5. ToolSandbox schema 只在 `contract.py` 提取；AgentCompass evidence catalog 只在共享 `contract.py` 定义。
+6. 不新增只调用另一函数的中转函数，不保留未被 loader/adapter/tests 调用的公开接口。
+7. 不修改现有 `MilestoneGraph`、scorer、ACTF converter、registry 和 stage goal/spec 算法。
+8. 不新增 origin/generated 双份 compiler、运行期 origin 语义审计、独立 cache 文件、profile registry、optional/OR 节点或 benchmark 占位 runner。
+9. 静态检查确认无未使用 import、未调用函数、多余接口参数和重复序列化/校验逻辑。
+10. 所有核心函数补充中文 docstring、关键步骤中文注释和结构化中文日志；API 文档与最终接口一致。
+
+## 附录A. 项目中没有把握实现的模块部分
+
+- **多路径共识阈值的跨 benchmark 泛化效果**：`2/3` 的代码行为完全确定，但它是经验阈值，是否在所有 benchmark 上达到最佳 precision/recall 需要实验验证。实现中只保留这一固定阈值和报告字段，不预埋多套阈值算法或未使用配置分支。
+- **ToolSandbox 外部版本差异**：当前本地源码已核实 `get_available_tools(scrambling_allowed=True)` 和 `convert_to_openai_tools`，但未固定的外部版本可能改变接口。实现只支持当前依赖版本；接口不符时明确报错，不增加反射兼容层，也不修改 `../ToolSandbox`。

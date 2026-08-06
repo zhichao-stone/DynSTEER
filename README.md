@@ -88,6 +88,8 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 
 实验脚本会按实验配置中的 benchmark `data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数。`--source` 与 `--workers` 仍可作为临时覆盖项。
 
+`metrics.json.score_rank_tau` 与 `rank_tau_by_repeat` 用于审计 DEFAULT 和 replay 之间的模型排序关联；`repeat_rank_consistency` 则按评估方法分别衡量多次 repeat 的模型排名稳定性。后者包含 pairwise tau-b、完整顺序一致率、top-1 一致率和平均绝对名次位移，不应与模型平均分、成功/结构覆盖、质量分或成本合并为单一“方法总分”。
+
 脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text

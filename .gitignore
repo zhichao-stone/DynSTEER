@@ -44,6 +44,11 @@ runs/
 # Test
 test/
 tests/
+!tests/
+tests/*
+!tests/experiment/
+tests/experiment/*
+!tests/experiment/test_metrics.py
 results/
 *.zip
 
