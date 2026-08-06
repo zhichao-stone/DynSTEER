@@ -1,5 +1,8 @@
 import json
 import re
+import hashlib
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tqdm import tqdm
@@ -9,6 +12,7 @@ from dynsteer.adapter.route import enrich_milestone_routes
 from dynsteer.graph import enrich_milestone_graph
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.llm import build_llm_from_config, build_llm_from_env
+from dynsteer.metrics import activate_runtime_metrics_recorder, reset_runtime_metrics_recorder, summarize_llm_calls
 from dynsteer.milestone import compile_task_case
 from dynsteer.model import (
     Actor,
@@ -31,6 +35,7 @@ from dynsteer.model import (
     ToolResult,
     Trajectory,
     TrajectoryStep,
+    RuntimeMetricsRecorder,
     ensure_json_object,
 )
 from dynsteer.stage import (
@@ -84,6 +89,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
             task_case = parse_task_case(data)
             if task_case.case_id != case_id:
                 raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
+            task_case.metadata["adaptation_usage"] = {"generated_now": False, "cache_hit": True}
         task_cases.append(task_case)
     return task_cases
 
@@ -92,6 +98,8 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
         raise ValueError("path 和 task_case 不能为空")
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json_safe(task_case)
+    if isinstance(data.get("metadata"), dict):
+        data["metadata"].pop("adaptation_usage", None)
     data["initial_state"] = None
     path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
 
@@ -118,32 +126,47 @@ def refresh_task_cases_for_experiment(
     return refreshed
 
 def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, case_id: str) -> TaskCase:
-    task_case = adapter.adapt_task_case(config, case_id)
-    if not isinstance(task_case, TaskCase):
-        raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
-    if task_case.case_id != case_id:
-        raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
-    if str(config.metadata.get("method") or "").strip().lower() == "default":
+    recorder = RuntimeMetricsRecorder()
+    started = time.perf_counter()
+    token = activate_runtime_metrics_recorder(recorder)
+    try:
+        task_case = adapter.adapt_task_case(config, case_id)
+        if not isinstance(task_case, TaskCase):
+            raise TypeError("adapter.adapt_task_case 必须返回 TaskCase")
+        if task_case.case_id != case_id:
+            raise ValueError(f"TaskCase.case_id 与 case_id 不一致: {case_id}")
+        if str(config.metadata.get("method") or "").strip().lower() == "default":
+            return task_case
+        graph = task_case.milestone_graph
+        has_origin_graph = graph is not None and bool(graph.nodes or graph.minefields)
+        generation = config.milestone_generation
+        if generation.use_origin_milestone and has_origin_graph:
+            graph.metadata["source"] = "origin"
+        else:
+            view = adapter.generator_task_view(config, task_case, case_id)
+            llm = build_llm_from_config(generation.generator)
+            if llm is None:
+                raise ValueError(f"TaskCase 需要自动生成 milestone，但未配置 generator: {case_id}")
+            graph, report = compile_task_case(view, generation, llm)
+            task_case.metadata["milestone_generation"] = report.to_dict()
+        task_case.milestone_graph = enrich_milestone_graph(graph)
+        task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
+        validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
+        summary = summarize_llm_calls(recorder.llm_calls)
+        canonical = json_safe(task_case)
+        if isinstance(canonical.get("metadata"), dict):
+            canonical["metadata"].pop("adaptation_cost", None)
+            canonical["metadata"].pop("adaptation_usage", None)
+        artifact_id = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        task_case.metadata["adaptation_cost"] = {
+            "schema_version": 1, "artifact_id": artifact_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": max(time.perf_counter() - started, 0.0), **summary,
+        }
+        task_case.metadata["adaptation_usage"] = {"generated_now": True, "cache_hit": False}
         return task_case
-    graph = task_case.milestone_graph
-    has_origin_graph = graph is not None and bool(graph.nodes or graph.minefields)
-    generation = config.milestone_generation
-    if generation.use_origin_milestone and has_origin_graph:
-        graph.metadata["source"] = "origin"
-    else:
-        view = adapter.generator_task_view(config, task_case, case_id)
-        llm = build_llm_from_config(generation.generator)
-        if llm is None:
-            raise ValueError(
-                f"TaskCase 需要自动生成 milestone，但未配置 generator: {case_id}"
-            )
-        graph, report = compile_task_case(view, generation, llm)
-        task_case.metadata["milestone_generation"] = report.to_dict()
-    task_case.milestone_graph = graph
-    task_case.milestone_graph = enrich_milestone_graph(task_case.milestone_graph)
-    task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
-    validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
-    return task_case
+    finally:
+        reset_runtime_metrics_recorder(token)
 
 def _postprocess_task_case(task_case: TaskCase, goal_mode: str="auto") -> TaskCase:
     """对 TaskCase 执行通用适配后处理。"""

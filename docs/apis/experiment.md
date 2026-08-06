@@ -79,6 +79,9 @@ Default 杈撳嚭鐨?`trajectory.json` 浼氭惡甯︽湰娆?session 鐨?`runtim
 - `index.json`：按 benchmark、method、model、repeat 和 case 分层组织。
 - `scores.json`：`method -> benchmark -> model_id -> average_score`。
 - `metrics.json`：`efficiency`、`cost`、多阈值 `discriminability_score`、`score_rank_tau`、`score_delta`、coverage/minefield/termination 计数。
+- `costs.json`：严格配对后的逐 case 三段成本、终止分类/进度、两种适配分摊、相对 DEFAULT delta、证据路径和适配 artifact 账本。
+
+`metrics.json.cost_analysis` 保存 `full`、`early_stop_live`、`early_stop_virtual`、`by_case` 四类范围摘要，并用 `detail_path="costs.json"` 指向明细。配对键固定为 `(benchmark, model_id, repeat_index, case_id)`。token 缺失不补零；摘要同时提供可用配对数和适配、评估、合并额外开销三种 micro token share。
 `index.json` 鐨?repeat 鑺傜偣鍙繚鐣?`cases`锛宑ase 鍙跺瓙鍙繚鐣欑粨鏋滄湰韬紝涓嶅啀閲嶅鍐?`experiment_id`銆乣benchmark`銆乣case_id`銆乣model_id`銆?
 ```json
 {

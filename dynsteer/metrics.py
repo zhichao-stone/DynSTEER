@@ -34,7 +34,8 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     tool_call_count = sum((1 for step in trajectory.steps if step.tool_call is not None or step.event_type == EventType.TOOL_CALL))
     trajectory_tokens = [step.cost.tokens for step in trajectory.steps]
     trajectory_latency = [step.cost.latency_ms for step in trajectory.steps]
-    trajectory_cost_available = any((value is not None for value in trajectory_tokens))
+    trajectory_token_value_count = sum(value is not None for value in trajectory_tokens)
+    trajectory_cost_available = trajectory_token_value_count == raw_step_count if raw_step_count else True
     trajectory_latency_available = any((value is not None for value in trajectory_latency))
     execution_records = _execution_timing_records(trajectory)
     execution_total_latency_ms = sum(
@@ -57,6 +58,8 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "trajectory_total_tokens": _sum_optional_int(trajectory_tokens) or 0,
         "trajectory_total_latency_ms": _sum_optional_int(trajectory_latency) or 0,
         "trajectory_cost_available": trajectory_cost_available,
+        "trajectory_token_value_count": trajectory_token_value_count,
+        "trajectory_token_coverage": trajectory_token_value_count / raw_step_count if raw_step_count else 1.0,
         "trajectory_latency_available": trajectory_latency_available,
         "timing_schema_version": _timing_schema_version(trajectory),
         "execution_timing_available": _execution_timing_available(trajectory),
@@ -73,6 +76,46 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     }
     metrics.update(judge_cache_metrics or {})
     return metrics
+
+
+def summarize_llm_calls(llm_calls: list[LLMCallMetrics]) -> JsonObject:
+    """汇总一组 LLM 调用的耗时、失败数与 token 可用性。"""
+    if llm_calls is None:
+        raise ValueError("llm_calls 不能为空")
+    if not llm_calls:
+        prompt = completion = total = 0
+        token_available = True
+    else:
+        prompt = _sum_optional_int([call.prompt_tokens for call in llm_calls])
+        completion = _sum_optional_int([call.completion_tokens for call in llm_calls])
+        total = _sum_optional_int([call.total_tokens for call in llm_calls])
+        token_available = all(call.total_tokens is not None for call in llm_calls)
+    return {
+        "llm_call_count": len(llm_calls),
+        "llm_failed_call_count": sum(not call.success for call in llm_calls),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "token_available": token_available,
+        "llm_elapsed_seconds": sum(max(float(call.elapsed_seconds), 0.0) for call in llm_calls),
+    }
+
+
+def prefix_trajectory_cost(trajectory: Trajectory, stop_step_index: int | None = None) -> JsonObject:
+    """按 raw step 边界汇总 trajectory 前缀 token。"""
+    if trajectory is None:
+        raise ValueError("trajectory 不能为空")
+    steps = [step for step in trajectory.steps if stop_step_index is None or step.index <= stop_step_index]
+    values = [step.cost.tokens for step in steps]
+    count = sum(value is not None for value in values)
+    return {
+        "tokens": _sum_optional_int(values),
+        "token_value_count": count,
+        "token_available": count == len(values) if values else True,
+        "token_coverage": count / len(values) if values else 1.0,
+        "scanned_step_count": len(steps),
+        "reason": None if count == len(values) else "trajectory step token 缺失",
+    }
 
 
 def append_execution_timing(trajectory: Trajectory, advance: HarnessAdvanceResult) -> None:
@@ -204,6 +247,7 @@ def build_replay_timing_metrics(
             "source_full_execution_seconds": full.get("seconds") if full.get("timing_available") else None,
         }
     prefix = prefix_execution_timing(source_trajectory, stop_index)
+    prefix_cost = prefix_trajectory_cost(source_trajectory, stop_index)
     full = prefix_execution_timing(source_trajectory, None)
     available = bool(prefix.get("timing_available"))
     prefix_seconds = prefix.get("seconds") if available else None
@@ -218,6 +262,10 @@ def build_replay_timing_metrics(
         "source_execution_batch_count": len(_execution_timing_records(source_trajectory)),
         "prefix_execution_batch_count": prefix.get("batch_count") if available else None,
         "source_full_execution_seconds": full.get("seconds") if full.get("timing_available") else None,
+        "default_prefix_trajectory_tokens": prefix_cost.get("tokens"),
+        "prefix_token_available": prefix_cost.get("token_available"),
+        "prefix_token_coverage": prefix_cost.get("token_coverage"),
+        "prefix_token_unavailable_reason": prefix_cost.get("reason"),
     }
 
 

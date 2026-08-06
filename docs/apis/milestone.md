@@ -33,3 +33,7 @@ compile_task_case(
 生成 graph 保存到 adapted TaskCase 后与原生 graph 共用现有 enrich、stage goal/spec 和 evaluator/runtime 流程。评估期只读取 `TaskCase.milestone_graph`，不读取 generation config 或 report。若实验不希望在线停止，继续使用现有 `strategy.policy_stop=false`。
 
 ToolSandbox generated constraint 只支持公开 literal expected；不绑定 matcher、隐藏状态或运行后工具结果产生的动态 expected。
+
+## 适配成本
+
+新生成的 adapted case 在 `TaskCase.metadata.adaptation_cost` 中保存 schema 版本、稳定 artifact ID、生成时间、适配墙钟时间、LLM 调用/失败数及 prompt/completion/total token。`adaptation_usage` 是进程内字段，仅表示本次命令是否生成或命中缓存，保存 artifact 时会被剔除。历史 artifact 缽少成本字段时保持不可用，不能按零成本解释。

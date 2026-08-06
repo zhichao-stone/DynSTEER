@@ -9,6 +9,7 @@ from typing import Optional
 from dynsteer.adapter.loader import adapted_case_path, load_task_case
 from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
+from dynsteer.experiment.model import ExperimentMethod, ExperimentRunSpec
 from dynsteer.experiment.runner import run_experiment
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
@@ -85,22 +86,28 @@ def _adapt_only_experiment(config_path: Path | str, force_adapt: bool = False) -
     """仅适配统一实验配置中涉及的 benchmark 数据，并返回 adapted case 路径。"""
     config = load_experiment_config(config_path)
     specs = expand_experiment_matrix(config)
-    grouped: dict[tuple[str, str], tuple[HarnessRunConfig, list[str]]] = {}
+    grouped: dict[tuple[str, str], list[ExperimentRunSpec]] = {}
     for spec in specs:
-        harness_config = build_harness_config(spec)
-        key = (harness_config.benchmark, str(harness_config.data_root.resolve()))
-        if key not in grouped:
-            grouped[key] = (harness_config, [])
-        config_for_group, case_ids = grouped[key]
-        for case_id in harness_config.case_ids or ():
-            if case_id not in case_ids:
-                case_ids.append(case_id)
-        grouped[key] = (config_for_group, case_ids)
+        key = (spec.benchmark, str(spec.data_root.resolve()))
+        grouped.setdefault(key, []).append(spec)
+
+    prepared: list[HarnessRunConfig] = []
+    for group_specs in grouped.values():
+        representative = next(
+            (spec for spec in group_specs if spec.method != ExperimentMethod.DEFAULT),
+            group_specs[0],
+        )
+        harness_config = build_harness_config(representative)
+        case_ids: list[str] = []
+        for spec in group_specs:
+            for case_id in spec.case_ids or ():
+                if case_id not in case_ids:
+                    case_ids.append(case_id)
+        prepared.append(replace(harness_config, case_ids=tuple(case_ids) if case_ids else None))
 
     adapted_paths: list[Path] = []
-    for harness_config, case_ids in grouped.values():
-        grouped_config = replace(harness_config, case_ids=tuple(case_ids))
-        adapted_paths.extend(_adapt_only_configs([grouped_config], force_adapt=force_adapt))
+    for harness_config in prepared:
+        adapted_paths.extend(_adapt_only_configs([harness_config], force_adapt=force_adapt))
     return adapted_paths
 
 

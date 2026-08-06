@@ -28,7 +28,7 @@ class SWEBenchProHarness(BaseAgentCompassHarness):
             "evaluation_completed": summary["evaluation_completed"],
             "evaluation_timed_out": summary["evaluation_timed_out"],
         }
-        metrics: JsonObject = {}
+        metrics: JsonObject = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         if summary["returncode"] is not None:
             metrics["returncode"] = summary["returncode"]
         return AgentCompassRunData(

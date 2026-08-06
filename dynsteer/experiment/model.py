@@ -106,6 +106,9 @@ class ExperimentCaseResult:
     milestone_coverage: str | None = None
     minefield_match_count: int | None = None
     termination_code: str | None = None
+    termination_detail: JsonObject = field(default_factory=dict)
+    adaptation_cost: JsonObject = field(default_factory=dict)
+    adaptation_usage: JsonObject = field(default_factory=dict)
     runtime_metrics: JsonObject = field(default_factory=dict)
     output_paths: JsonObject = field(default_factory=dict)
 
@@ -121,6 +124,9 @@ class ExperimentCaseResult:
             "milestone_coverage": self.milestone_coverage,
             "minefield_match_count": self.minefield_match_count,
             "termination_code": self.termination_code,
+            "termination_detail": dict(self.termination_detail),
+            "adaptation_cost": dict(self.adaptation_cost),
+            "adaptation_usage": dict(self.adaptation_usage),
             "runtime_metrics": dict(self.runtime_metrics),
             "output_paths": dict(self.output_paths),
         }

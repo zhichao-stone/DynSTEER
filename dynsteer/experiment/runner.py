@@ -11,8 +11,8 @@ from typing import Callable, Sequence, TypeVar
 from tqdm import tqdm
 
 from dynsteer.adapter.base import BaseBenchmarkHarness
-from dynsteer.adapter.registry import get_harness
-from dynsteer.adapter.loader import load_trajectory
+from dynsteer.adapter.registry import get_adapter, get_harness
+from dynsteer.adapter.loader import load_trajectory, refresh_task_cases_for_experiment
 from dynsteer.adapter.toolsandbox.utils.runtime import clear_named_scenarios_cache
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
@@ -35,6 +35,7 @@ DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput]
 
 _METHODS_NEED_DEFAULT = {
     ExperimentMethod.DEFAULT,
+    ExperimentMethod.DYNSTEER_EVALUATE,
     ExperimentMethod.DYNSTEER_REPLAY,
     ExperimentMethod.DYNSTEER_REPLAY_STATIC,
     ExperimentMethod.DYNSTEER_REPLAY_STATIC_WEIGHTING,
@@ -75,6 +76,18 @@ def run_experiment(
     effective_force_eval = bool(force_eval or force_adapt)
 
     harness_configs = [build_harness_config(spec) for spec in specs]
+    static_cases: dict[tuple[object, ...], tuple[list[TaskCase], HarnessRunConfig]] = {}
+    for spec, harness_config in zip(specs, harness_configs, strict=True):
+        key = _static_adaptation_key(spec)
+        if key in static_cases:
+            continue
+        candidates = [item for item in specs if _static_adaptation_key(item) == key]
+        representative = next((item for item in candidates if item.method != ExperimentMethod.DEFAULT), spec)
+        representative_config = build_harness_config(representative)
+        templates, prepared_config = prepare_task_cases(
+            representative_config, force_adapt, refresh_dynamic_targets=False
+        )
+        static_cases[key] = (templates, prepared_config)
 
     results: list[ExperimentCaseResult] = []
     default_outputs: DefaultOutputCache = {}
@@ -83,11 +96,13 @@ def run_experiment(
         print(
             f"Info: benchmark={spec.benchmark}, model={spec.model_id}, method={spec.method.name}, repeat_index={spec.repeat_index}"
         )
-        prepared_task_cases, harness_config = prepare_task_cases(
-            harness_config,
-            force_adapt,
-            refresh_dynamic_targets=spec.method != ExperimentMethod.DEFAULT,
-        )
+        templates, prepared_config = static_cases[_static_adaptation_key(spec)]
+        harness_config = replace(harness_config, case_ids=prepared_config.case_ids)
+        prepared_task_cases = copy.deepcopy(templates)
+        if spec.method != ExperimentMethod.DEFAULT:
+            prepared_task_cases = refresh_task_cases_for_experiment(
+                harness_config, get_adapter(spec.benchmark), prepared_task_cases
+            )
         task_cases = tuple(prepared_task_cases)
         spec_workers = effective_max_workers(workers, harness_config)
 
@@ -104,27 +119,17 @@ def run_experiment(
                 results.append(_case_result_from_output(default_spec, task_case, output))
 
             if spec.method != ExperimentMethod.DEFAULT:
-                results.extend(
-                    _run_worker_group(
-                        task_cases,
-                        max_workers=spec_workers,
-                        runner=partial(
-                            _run_replay_case_entry, 
-                            spec=spec, default_outputs=default_outputs, force_eval=effective_force_eval
-                        ),
-                        progress_desc=f"执行 {spec.method.name} case",
+                if spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
+                    runner = partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval)
+                else:
+                    runner = partial(
+                        _run_replay_case_entry,
+                        spec=spec, default_outputs=default_outputs, force_eval=effective_force_eval,
                     )
-                )
-
-        elif spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
-            results.extend(
-                _run_worker_group(
-                    task_cases,
-                    max_workers=spec_workers,
-                    runner=partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval),
+                results.extend(_run_worker_group(
+                    task_cases, max_workers=spec_workers, runner=runner,
                     progress_desc=f"执行 {spec.method.name} case",
-                )
-            )
+                ))
         else:
             raise ValueError(f"不支持的 experiment method: {spec.method}")
 
@@ -138,6 +143,13 @@ def run_experiment(
 def _default_output_key(spec: ExperimentRunSpec, task_case: TaskCase) -> DefaultOutputKey:
     """生成 default_outputs 的缓存 key。"""
     return spec.experiment_id, spec.benchmark, spec.model_id, spec.repeat_index, task_case.case_id
+
+
+def _static_adaptation_key(spec: ExperimentRunSpec) -> tuple[object, ...]:
+    """生成与 model、method、repeat 无关的静态适配分组键。"""
+    generation = json.dumps(json_safe(asdict(spec.milestone_generation)), sort_keys=True)
+    stage_mode = str(spec.metadata.get("stage_goal_generation", "auto"))
+    return spec.benchmark, str(spec.data_root.resolve()), spec.case_ids, generation, stage_mode
 
 
 def _pending_default_case_items(
@@ -334,6 +346,7 @@ def _case_result_from_output(
     minefield_match_count = summary.get("minefield_match_count")
     termination = summary.get("termination")
     termination_code = termination.get("code") if isinstance(termination, dict) else None
+    termination_detail = termination.get("detail") if isinstance(termination, dict) else None
 
     return ExperimentCaseResult(
         experiment_id=spec.experiment_id,
@@ -346,6 +359,9 @@ def _case_result_from_output(
         milestone_coverage=milestone_coverage if isinstance(milestone_coverage, str) else None,
         minefield_match_count=minefield_match_count if isinstance(minefield_match_count, int) else None,
         termination_code=str(termination_code) if termination_code else None,
+        termination_detail=dict(termination_detail) if isinstance(termination_detail, dict) else {},
+        adaptation_cost=dict(task_case.metadata.get("adaptation_cost", {})),
+        adaptation_usage=dict(task_case.metadata.get("adaptation_usage", {})),
         runtime_metrics=dict(runtime_metrics),
         output_paths={
             k: str(v)

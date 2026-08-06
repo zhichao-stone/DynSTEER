@@ -29,7 +29,7 @@ class SkillsBenchHarness(BaseAgentCompassHarness):
             "test_error_present": summary["test_error_present"],
             "reward_error_present": summary["reward_error_present"],
         }
-        metrics: JsonObject = {}
+        metrics: JsonObject = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         if summary["test_return_code"] is not None:
             metrics["test_return_code"] = summary["test_return_code"]
         score = float(summary["score"]) if summary["reward_available"] else 0.0

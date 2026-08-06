@@ -140,6 +140,8 @@ w_next_d = normalize(w_d * exp(alpha * (1 - score_d) + beta * uncertainty_d))
 
 Replay 的 `runtime_metrics.elapsed_seconds` 仍只表示 replay evaluator 自身墙钟耗时。若 source trajectory 含新版 `execution_timing`，报告会额外写入 `default_prefix_execution_seconds`、`effective_elapsed_seconds`、`timing_available` 和 `virtual_stop_step_index`；有效耗时等于 replay 墙钟加虚拟早停边界前的 DEFAULT 执行前缀耗时。`replay_continue_after_virtual_stop=true` 时即使继续扫描完整轨迹，前缀仍截止虚拟停止 index。旧轨迹无法恢复真实批次耗时，`timing_available=false` 且 `effective_elapsed_seconds=null`，需使用 `force_eval=True` 重跑 DEFAULT。
 
+同一 raw step 边界还会输出 `default_prefix_trajectory_tokens`、`prefix_token_available`、`prefix_token_coverage` 和不可用原因。只要前缀中存在缺少 `StepCost.tokens` 的 step，完整前缀 token 就标记为不可用；不会把部分 token 当作完整成本。
+
 `HarnessRunResult.evaluation_report.stage_reports[]` 中每个 stage report 包含：
 
 - 阶段身份：`stage_id`、`milestone_id`

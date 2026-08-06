@@ -178,7 +178,10 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         return BenchmarkDefaultResult(
             score=score,
             raw=raw,
-            metrics={"turn_count": int(getattr(result, "turn_count", 0))},
+            metrics={
+                "turn_count": int(getattr(result, "turn_count", 0)),
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            },
         )
 
     def stop_case(self, session: object, reason: str) -> None:

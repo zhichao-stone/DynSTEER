@@ -28,7 +28,7 @@ from dynsteer.model import (
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import json_safe, read_json_file
 
-RESULT_SCHEMA_VERSION = 3
+RESULT_SCHEMA_VERSION = 4
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """把 Trajectory 转成 JSON 对象。"""
@@ -202,7 +202,9 @@ def write_default_case_outputs(
             on_finish,
             (lambda count: progress_reporter.case_advanced(case_id, count)) if progress_reporter is not None else None,
         )
+        native_started = time.perf_counter()
         default_result = harness.default_result_from_session(session)
+        native_evaluation_seconds = max(time.perf_counter() - native_started, 0.0)
         runtime_metrics = build_runtime_metrics(
             started_monotonic=metrics_recorder.started_monotonic,
             finished_monotonic=time.perf_counter(),
@@ -212,6 +214,15 @@ def write_default_case_outputs(
             llm_calls=metrics_recorder.llm_calls,
             agent_step_count=tracker.completed_count,
         )
+        runtime_metrics["native_evaluation_seconds"] = native_evaluation_seconds
+        native_metrics = default_result.metrics if isinstance(default_result.metrics, dict) else {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = native_metrics.get(key)
+            runtime_metrics[f"native_evaluation_{key}"] = value if isinstance(value, int) else None
+        runtime_metrics["native_evaluation_token_available"] = all(
+            isinstance(native_metrics.get(key), int) for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        )
+        runtime_metrics["native_evaluation_source"] = "benchmark_metrics"
         raw_summary = dict(harness.raw_summary_from_session(session))
         if runtime_initial_state_summary is not None:
             raw_summary["runtime_initial_state_source"] = "harness_session"
