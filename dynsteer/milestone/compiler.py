@@ -5,7 +5,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass
 from math import ceil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from dynsteer.language import normalize_task_language
 from dynsteer.milestone.model import (
@@ -34,8 +34,6 @@ if TYPE_CHECKING:
     from dynsteer.llm.base import BaseLLM
 
 
-COMPILER_VERSION = "1.0"
-MIN_DISTINCT_PATHS = 3
 CONSENSUS_RATIO = 2 / 3
 _HIDDEN_KEYS = frozenset(
     {
@@ -88,11 +86,35 @@ def compile_task_case(
         raise ValueError("view、config 和 llm 不能为空")
 
     # 生成器每个 case 只调用一次，同时返回共享 atom 和全部差异路径。
-    payload = _generator_payload(view, config.simulated_path_count)
+    minimum_valid_paths = config.simulated_path_count - 1
+    try:
+        source_values = _source_values(view)
+        evidence_by_id = _evidence_catalog(view, source_values)
+        payload = _generator_payload(
+            view, config.simulated_path_count, source_values
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        _reject(
+            str(exc),
+            requested_path_count=config.simulated_path_count,
+            minimum_valid_path_count=minimum_valid_paths,
+        )
+    evidence_summary = tuple(
+        {
+            "evidence_id": item["evidence_id"],
+            "source_ref": item["source_ref"],
+            "expected_policy": item["expected_policy"],
+            "allowed_literal_count": len(item["allowed_expected_literals"]),
+        }
+        for item in payload["evidence"]
+    )
     template = load_prompt_template("milestone", "generation")
     prompt = template.render(
         normalize_task_language(view.language),
-        payload=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        task=json.dumps(payload["task"], ensure_ascii=False, sort_keys=True),
+        evidence=json.dumps(payload["evidence"], ensure_ascii=False, sort_keys=True),
+        invariants=json.dumps(payload["invariants"], ensure_ascii=False, sort_keys=True),
+        path_count=payload["path_count"],
     )
     logger.info(
         "开始生成 milestone 候选",
@@ -108,29 +130,40 @@ def compile_task_case(
     try:
         response = _parse_response(raw_response)
     except (TypeError, ValueError) as exc:
-        _reject(str(exc), reasons=(str(exc),))
+        _reject(
+            str(exc),
+            requested_path_count=config.simulated_path_count,
+            minimum_valid_path_count=minimum_valid_paths,
+            reasons=(str(exc),),
+            evidence_allowlist_summary=evidence_summary,
+        )
     leakage_count = _count_hidden_leakage(response)
     if leakage_count:
-        _reject("LLM 输出包含隐藏字段", leakage_count=leakage_count)
+        _reject(
+            "LLM 输出包含隐藏字段",
+            leakage_count=leakage_count,
+            requested_path_count=config.simulated_path_count,
+            minimum_valid_path_count=minimum_valid_paths,
+            evidence_allowlist_summary=evidence_summary,
+        )
 
-    try:
-        source_values = _source_values(view)
-        evidence_by_id = _evidence_catalog(view, source_values)
-    except (TypeError, ValueError) as exc:
-        _reject(str(exc), leakage_count=leakage_count)
     atoms = _parse_atoms(response["atoms"], source_values, evidence_by_id, reasons)
     atom_by_id = {atom.atom_id: atom for atom in atoms}
     paths = _parse_paths(response["paths"], atom_by_id, reasons)
     distinct_paths = _distinct_paths(paths)
     path_summaries = _path_summaries(paths, distinct_paths, atom_by_id)
-    if len(distinct_paths) < MIN_DISTINCT_PATHS:
+    if len(distinct_paths) < minimum_valid_paths:
         _reject(
-            "有效差异路径少于 3 条",
+            "有效差异路径少于配置要求",
             valid_path_count=len(paths),
             distinct_path_count=len(distinct_paths),
+            requested_path_count=config.simulated_path_count,
+            minimum_valid_path_count=minimum_valid_paths,
+            actual_valid_distinct_path_count=len(distinct_paths),
             contract_atom_count=len(atoms),
             reasons=tuple(reasons),
             path_summaries=path_summaries,
+            evidence_allowlist_summary=evidence_summary,
         )
 
     # 只有达到固定三分之二路径共识的可执行契约 atom 才进入 graph。
@@ -158,8 +191,12 @@ def compile_task_case(
             distinct_path_count=len(distinct_paths),
             contract_atom_count=len(atoms),
             consensus_node_count=len(nodes),
+            requested_path_count=config.simulated_path_count,
+            minimum_valid_path_count=minimum_valid_paths,
+            actual_valid_distinct_path_count=len(distinct_paths),
             reasons=tuple(reasons),
             path_summaries=path_summaries,
+            evidence_allowlist_summary=evidence_summary,
         )
 
     graph = MilestoneGraph(
@@ -168,7 +205,6 @@ def compile_task_case(
         minefields=minefields,
         metadata={
             "source": "generated",
-            "compiler_version": COMPILER_VERSION,
             "view_digest": view.digest(),
             "necessity_basis": "synthetic_consensus",
         },
@@ -183,6 +219,10 @@ def compile_task_case(
         leakage_count=0,
         reasons=tuple(reasons),
         path_summaries=path_summaries,
+        requested_path_count=config.simulated_path_count,
+        minimum_valid_path_count=minimum_valid_paths,
+        actual_valid_distinct_path_count=len(distinct_paths),
+        evidence_allowlist_summary=evidence_summary,
     )
     logger.info(
         "milestone graph 生成完成",
@@ -196,13 +236,77 @@ def compile_task_case(
     return graph, report
 
 
-def _generator_payload(view: GeneratorTaskView, path_count: int) -> JsonObject:
+def _generator_payload(
+    view: GeneratorTaskView,
+    path_count: int,
+    source_values: dict[str, JsonValue] | None = None,
+) -> JsonObject:
+    evidence = []
+    values = source_values if source_values is not None else _source_values(view)
+    for item in view.evidence_catalog:
+        literals = _allowed_expected_literals(item, values)
+        evidence.append({
+            "evidence_id": item.evidence_id,
+            "source_ref": item.source_ref,
+            "target": item.target.value,
+            "selector": item.selector,
+            "operator": item.operator.value,
+            "expected_policy": item.expected_policy,
+            "allowed_expected_literals": literals,
+        })
+    invariants = [
+        {
+            "invariant_id": item.invariant_id,
+            "description": item.description,
+            "source_ref": item.source_ref,
+            "evidence_id": item.evidence_id,
+            "severity": item.severity,
+        }
+        for item in view.invariant_catalog
+    ]
     return {
-        "task": json_safe(view),
-        "allowed_evidence_ids": [item.evidence_id for item in view.evidence_catalog],
-        "allowed_invariant_ids": [item.invariant_id for item in view.invariant_catalog],
-        "simulated_path_count": path_count,
+        "task": _public_task_payload(view, values),
+        "evidence": evidence,
+        "invariants": invariants,
+        "path_count": path_count,
     }
+
+
+def _public_task_payload(
+    view: GeneratorTaskView, source_values: dict[str, JsonValue]
+) -> JsonObject:
+    tool_names = [
+        source_values[item.source_ref]
+        for item in view.evidence_catalog
+        if item.target == ConstraintTarget.TOOL_CALL
+        and isinstance(source_values.get(item.source_ref), str)
+    ]
+    return {
+        "user_objective": view.instruction,
+        "available_tool_names": list(dict.fromkeys(tool_names)),
+    }
+
+
+def _public_literals(value: object) -> list[JsonValue]:
+    if isinstance(value, (dict, list)):
+        result: list[JsonValue] = []
+        items = value.values() if isinstance(value, dict) else value
+        for item in items:
+            for literal in _public_literals(item):
+                if literal not in result:
+                    result.append(literal)
+        return result
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return [json_safe(value)]
+    return []
+
+
+def _allowed_expected_literals(
+    evidence: PublicEvidence, source_values: dict[str, JsonValue]
+) -> list[JsonValue]:
+    if evidence.expected_policy == "none":
+        return []
+    return _public_literals(source_values[evidence.source_ref])
 
 
 def _parse_response(raw: str) -> dict[str, list[object]]:
@@ -444,6 +548,10 @@ def _evidence_catalog(
             raise ValueError(f"constraint selector 不合法: {evidence.selector}")
         if not evidence.evaluator_hint.strip():
             raise ValueError(f"evaluator_hint 不能为空: {evidence.evidence_id}")
+        if evidence.expected_policy == "public_literal" and not _allowed_expected_literals(
+            evidence, source_values
+        ):
+            raise ValueError(f"evidence 缺少允许的公开值: {evidence.evidence_id}")
         result[evidence.evidence_id] = evidence
     invariant_ids: set[str] = set()
     for invariant in view.invariant_catalog:
@@ -481,18 +589,9 @@ def _validate_expected(
         return
     if evidence.source_ref not in source_values:
         raise ValueError("evidence source_ref 未登记")
-    if not _is_public_literal(expected, source_values[evidence.source_ref]):
-        raise ValueError("expected 不是 source_ref 的公开 literal")
-
-
-def _is_public_literal(expected: object, source: object) -> bool:
-    if expected == source:
-        return True
-    if isinstance(source, dict):
-        return any(_is_public_literal(expected, value) for value in source.values())
-    if isinstance(source, list):
-        return any(_is_public_literal(expected, value) for value in source)
-    return False
+    allowed = _allowed_expected_literals(evidence, source_values)
+    if expected not in allowed:
+        raise ValueError("expected 不在 evidence allowlist 中")
 
 
 def _consistent_reduced_edges(
@@ -593,7 +692,11 @@ def _reject(
     leakage_count: int = 0,
     reasons: tuple[str, ...] = (),
     path_summaries: tuple[JsonObject, ...] = (),
-) -> None:
+    requested_path_count: int = 0,
+    minimum_valid_path_count: int = 0,
+    actual_valid_distinct_path_count: int = 0,
+    evidence_allowlist_summary: tuple[JsonObject, ...] = (),
+) -> NoReturn:
     report = GenerationReport(
         generation_status="auto_rejected",
         valid_path_count=valid_path_count,
@@ -604,6 +707,10 @@ def _reject(
         leakage_count=leakage_count,
         reasons=(*reasons, message),
         path_summaries=path_summaries,
+        requested_path_count=requested_path_count,
+        minimum_valid_path_count=minimum_valid_path_count,
+        actual_valid_distinct_path_count=actual_valid_distinct_path_count,
+        evidence_allowlist_summary=evidence_allowlist_summary,
     )
     logger.error(
         "milestone 自动生成被拒绝", extra={"事件": "milestone生成拒绝", "原因": message}

@@ -185,7 +185,6 @@ def _run_reliability_experiment(
         ordered_results,
         case_files,
         options,
-        run_id,
         started_at,
         _utc_now(),
     )
@@ -684,7 +683,6 @@ def _write_report(
     results: list[_CaseResult],
     case_files: list[str],
     options: argparse.Namespace,
-    run_id: str,
     started_at: str,
     finished_at: str,
 ) -> None:
@@ -724,21 +722,11 @@ def _write_report(
         },
     }
     index = {
-        "schema_version": "milestone_reliability.index.v1",
         "experiment_id": config["experiment_id"],
-        "run_id": run_id,
         "experiment_config": str(config_path),
-        "experiment_config_sha256": _file_digest(config_path),
         "random_seed": options.random_seed,
         "started_at": started_at,
         "finished_at": finished_at,
-        "networkx_version": nx.__version__,
-        "ignored_matrix_dimensions": [
-            "model",
-            "method",
-            "repeat",
-            "threshold_profile",
-        ],
         "groups": [
             {
                 "benchmark": group.benchmark,
@@ -991,10 +979,6 @@ def _canonical_json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

@@ -24,8 +24,8 @@ class MilestoneGenerationConfig:
             self.simulated_path_count, int
         ):
             raise TypeError("simulated_path_count 必须是整数")
-        if self.simulated_path_count < 3:
-            raise ValueError("simulated_path_count 必须大于等于 3")
+        if self.simulated_path_count < 5:
+            raise ValueError("simulated_path_count 必须大于等于 5")
         if not isinstance(self.generator, dict):
             raise TypeError("generator 必须是 JSON 对象")
 
@@ -94,6 +94,10 @@ class GenerationReport:
     leakage_count: int
     reasons: tuple[str, ...] = ()
     path_summaries: tuple[JsonObject, ...] = ()
+    requested_path_count: int = 0
+    minimum_valid_path_count: int = 0
+    actual_valid_distinct_path_count: int = 0
+    evidence_allowlist_summary: tuple[JsonObject, ...] = ()
 
     def to_dict(self) -> JsonObject:
         """转换为 JSON 可序列化字典。"""
