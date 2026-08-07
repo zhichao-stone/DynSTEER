@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.scoring import GeneralScorer
-from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
+from dynsteer.harness.model import HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.milestone.model import GeneratorTaskView
 from dynsteer.model import JsonObject, TaskCase
 
@@ -61,8 +61,6 @@ class BaseBenchmarkAdapter(ABC):
         case_id: str,
     ) -> TaskCase:
         """按本次实验 source 更新动态 target 和 stage goal。"""
-        if config is None or task_case is None or not case_id:
-            raise ValueError("config、task_case 和 case_id 不能为空")
         return task_case
 
 class BaseBenchmarkHarness(ABC):
@@ -70,8 +68,8 @@ class BaseBenchmarkHarness(ABC):
     benchmark: str
 
     @abstractmethod
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
-        """列出可运行 case。"""
+    def list_case_ids(self, config: HarnessRunConfig) -> list[str]:
+        """列出可运行 case ID。"""
 
     @abstractmethod
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> object:
@@ -104,7 +102,7 @@ class BaseBenchmarkHarness(ABC):
     def prepare_config(self, config: HarnessRunConfig) -> None:
         """校验配置并准备 benchmark source_root。"""
         self._validate_config(config)
-        ensure_source_root(config.data_root, self._project_root(), self.benchmark)
+        ensure_source_root(config.data_root, Path(__file__).resolve().parents[2], self.benchmark)
 
     def metrics_from_session(self, session: object) -> JsonObject:
         """从 session 提取运行期 metrics。"""
@@ -122,11 +120,9 @@ class BaseBenchmarkHarness(ABC):
         """提取 benchmark 原生摘要。"""
         return {}
 
+    @abstractmethod
     def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:
         """从完整执行后的 session 提取 benchmark 原生 Default 结果。"""
-        if session is None:
-            raise ValueError("session 不能为空")
-        raise NotImplementedError(f"{self.benchmark} 尚未实现 default_result_from_session")
 
     def stop_case(self, session: object, reason: str) -> None:
         """按 DynSTEER 策略终止当前 benchmark session。"""
@@ -140,15 +136,7 @@ class BaseBenchmarkHarness(ABC):
         if session is None:
             return
 
-    def _project_root(self) -> Path:
-        """返回 DynSTEER 项目根目录。"""
-        return Path(__file__).resolve().parents[2]
-
     def _validate_config(self, config: HarnessRunConfig) -> None:
         """校验共享 harness 运行配置。"""
-        if config is None:
-            raise ValueError("config 不能为空")
         if config.benchmark.strip().lower() != self.benchmark:
             raise ValueError(f"benchmark 必须是 {self.benchmark}")
-        if config.data_root is None:
-            raise ValueError("data_root 不能为空")

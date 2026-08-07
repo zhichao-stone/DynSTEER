@@ -12,16 +12,11 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
     if topology is None:
         raise ValueError("milestone graph 尚未 enrich")
 
-    remaining_predecessor_count: dict[str, int] = {}
-    for milestone in graph.nodes:
-        remaining_count = len(topology.predecessors_by_id[milestone.milestone_id])
-        remaining_predecessor_count[milestone.milestone_id] = remaining_count
-
-    ready_ids: list[str] = []
-    for milestone in graph.nodes:
-        milestone_id = milestone.milestone_id
-        if remaining_predecessor_count[milestone_id] == 0:
-            ready_ids.append(milestone_id)
+    remaining_predecessor_count = {
+        milestone.milestone_id: len(topology.predecessors_by_id[milestone.milestone_id])
+        for milestone in graph.nodes
+    }
+    ready_ids = [milestone.milestone_id for milestone in graph.nodes if remaining_predecessor_count[milestone.milestone_id] == 0]
 
     return MilestoneFrontierState(
         topology=topology,
@@ -38,9 +33,9 @@ def advance_milestone_frontier(frontier: MilestoneFrontierState, matched_milesto
     输出：
         无返回值，函数会原地更新 frontier。
     """
-    _remove_id(frontier.ready_ids, matched_milestone_id)
-    for successor_id in frontier.topology.successors_by_id.get(matched_milestone_id, ()):
-        remaining = max(frontier.remaining_predecessor_count.get(successor_id, 0) - 1, 0)
+    frontier.ready_ids.remove(matched_milestone_id)
+    for successor_id in frontier.topology.successors_by_id[matched_milestone_id]:
+        remaining = frontier.remaining_predecessor_count[successor_id] - 1
         frontier.remaining_predecessor_count[successor_id] = remaining
         if remaining == 0:
             _insert_id_by_order(frontier.ready_ids, successor_id, frontier.topology.order_by_id)
@@ -70,16 +65,10 @@ def blocked_candidate_milestones(frontier: MilestoneFrontierState) -> tuple[Mile
     )
 
 def _insert_id_by_order(milestone_ids: list[str], milestone_id: str, order_by_id: dict[str, int]) -> None:
-    if milestone_id in milestone_ids:
-        return
-    order = order_by_id.get(milestone_id, len(order_by_id))
+    order = order_by_id[milestone_id]
     insert_index = len(milestone_ids)
     for index, current_id in enumerate(milestone_ids):
-        if order < order_by_id.get(current_id, len(order_by_id)):
+        if order < order_by_id[current_id]:
             insert_index = index
             break
     milestone_ids.insert(insert_index, milestone_id)
-
-def _remove_id(milestone_ids: list[str], milestone_id: str) -> None:
-    if milestone_id in milestone_ids:
-        milestone_ids.remove(milestone_id)

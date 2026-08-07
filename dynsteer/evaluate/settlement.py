@@ -9,11 +9,10 @@ from dynsteer.evaluate.matching.milestone import stage_start_for_ready_milestone
 from dynsteer.evaluate.policy import update_evaluation_policy
 from dynsteer.evaluate.runtime import JudgeConfigurationError, state_scoring_context
 from dynsteer.evaluate.scoring import GeneralScorer, stage_score_from_dimensions
-from dynsteer.evaluate.semantic import hard_failure_is_semantic_message_only
 from dynsteer.evaluate.weights import update_weights
 from dynsteer.experiment.model import EvaluationStrategyConfig
 from dynsteer.graph import FINISH_NODE_ID, START_NODE_ID
-from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
+from dynsteer.harness.model import HarnessStageSettlement
 from dynsteer.judges import CheapJudge, StandardJudge, ExpensiveJudge
 from dynsteer.model import (
     Dimension,
@@ -39,7 +38,6 @@ from dynsteer.utils import as_number, clean_evidence_items
 
 
 def evaluate_checkpoint(
-    config: HarnessRunConfig,
     task_case: TaskCase,
     trajectory: Trajectory,
     state: RuntimeEvaluationState,
@@ -52,12 +50,10 @@ def evaluate_checkpoint(
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
     strategy: EvaluationStrategyConfig | None = None,
-    force_standard_dimensions: list[Dimension] | None = None,
 ) -> RuntimeEvaluationDecision:
     """结算单个 milestone checkpoint 并返回运行期决策。
 
     入参：
-        config: 当前 run 配置。
         task_case: 当前 benchmark case。
         trajectory: 当前运行期轨迹。
         state: 当前运行期评估状态。
@@ -69,7 +65,6 @@ def evaluate_checkpoint(
         expensive_judge: expensive 层评估器。
         thresholds: 阶段阈值配置。
         weight_config: 动态权重配置。
-        force_standard_dimensions: 需要强制使用 standard judge 的维度。
     输出：
         本 checkpoint 的结算结果和可能的策略终止决策。
     """
@@ -95,7 +90,7 @@ def evaluate_checkpoint(
         milestone_score=milestone_score,
         ready_milestone_ids_before_match=ready_milestone_ids_before_match,
     )
-    stage_result, next_weights, next_policy, termination = _evaluate_stage(
+    stage_result, next_weights, next_policy = _evaluate_stage(
         interval,
         task_case,
         trajectory,
@@ -106,17 +101,7 @@ def evaluate_checkpoint(
         thresholds,
         weight_config,
         strategy=strategy,
-        force_standard_dimensions=force_standard_dimensions,
     )
-    semantic_review = stage_result.metadata.get("semantic_review")
-    review_accepts_checkpoint = not (
-        milestone_score.status != StageStatus.PASS
-        and (stage_result.status != StageStatus.PASS or stage_result.stage_score < thresholds.pass_threshold)
-    )
-    if isinstance(semantic_review, dict):
-        semantic_review["settlement_accepted"] = review_accepts_checkpoint
-        semantic_review["final_stage_status"] = stage_result.status.value
-        semantic_review["final_stage_score"] = stage_result.stage_score
     settlement = HarnessStageSettlement(
         settlement_id=f"st{len(state.settlements)}",
         stage_id=interval.stage_id,
@@ -141,7 +126,7 @@ def evaluate_checkpoint(
     ):
         return RuntimeEvaluationDecision(stage_result=stage_result)
 
-    _record_settlement(state, settlement)
+    record_settlement(state, settlement)
     matched_snapshot = trajectory.snapshot_at_or_before(scoring_step.index)
     if matched_snapshot is not None:
         state.reference_anchor_snapshots[milestone.milestone_id] = matched_snapshot
@@ -151,32 +136,16 @@ def evaluate_checkpoint(
     state.weights = next_weights
     state.evaluation_policy = next_policy
 
-    if termination.should_stop:
-        termination.termination_detail = {
-            "stage_score": stage_result.stage_score,
-            "stage_status": stage_result.status.value,
-            "next_policy": next_policy.to_dict(),
-        }
-        stage_result.metadata["evaluation_termination"] = termination.to_dict()
-        return RuntimeEvaluationDecision(settlement, stage_result, termination=termination)
     active_strategy = strategy or EvaluationStrategyConfig()
-    stop_termination = (
-        should_stop_after_stage(config, state, stage_result, thresholds)
-        if active_strategy.policy_stop
-        else EvaluationTerminationState()
-    )
+    stop_termination = termination_after_stage(stage_result, thresholds) if active_strategy.policy_stop else EvaluationTerminationState()
     if not stop_termination.should_stop:
         return RuntimeEvaluationDecision(settlement, stage_result)
     stage_result.metadata["evaluation_termination"] = stop_termination.to_dict()
     return RuntimeEvaluationDecision(settlement, stage_result, termination=stop_termination)
 
 
-def record_finish_settlement(state: RuntimeEvaluationState, settlement: HarnessStageSettlement) -> None:
-    """统一记录 finish settlement。"""
-    _record_settlement(state, settlement)
-
-
-def _record_settlement(state: RuntimeEvaluationState, settlement: HarnessStageSettlement) -> None:
+def record_settlement(state: RuntimeEvaluationState, settlement: HarnessStageSettlement) -> None:
+    """记录 settlement 并更新运行期索引。"""
     state.scoring_context_cache = None
     state.settlements.append(settlement)
     if settlement.kind == "milestone" and settlement.milestone_id is not None:
@@ -208,8 +177,7 @@ def refresh_reference_anchors(
             milestone,
             scoring_step,
             trajectory,
-            trajectory.snapshots,
-            context=context,
+            context,
         )
         if score.status == StageStatus.PASS:
             state.reference_anchor_snapshots[milestone_id] = snapshot
@@ -558,8 +526,7 @@ def _evaluate_stage(
     thresholds: ThresholdConfig,
     weight_config: DynamicWeightConfig,
     strategy: EvaluationStrategyConfig | None = None,
-    force_standard_dimensions: list[Dimension] | None = None,
-) -> tuple[StageEvaluationResult, dict[Dimension, float], EvaluationPolicyState, EvaluationTerminationState]:
+) -> tuple[StageEvaluationResult, dict[Dimension, float], EvaluationPolicyState]:
     """按当前评估粒度策略评估一个阶段。
 
     入参：
@@ -572,7 +539,6 @@ def _evaluate_stage(
         expensive_judge: expensive 层评估器。
         thresholds: 阶段阈值配置。
         weight_config: 动态权重配置。
-        force_standard_dimensions: 需要覆盖为 standard 粒度的维度。
     输出：
         阶段报告、新权重和策略更新。
     """
@@ -588,22 +554,8 @@ def _evaluate_stage(
         }
     else:
         dimension_levels = {dimension: active_strategy.fixed_judge_level for dimension in focus_dimensions}
-    requested_force_dimensions = list(dict.fromkeys(force_standard_dimensions or []))
-    forced_dimensions = [dimension for dimension in requested_force_dimensions if dimension in focus_dimensions]
-    for dimension in forced_dimensions:
-        dimension_levels[dimension] = EvaluationLevel.STANDARD
     stage_result = cheap_judge.evaluate_stage(interval, task_case, trajectory, focus_dimensions)
     judge_results = [_judge_result_metadata(stage_result, focus_dimensions, weights)]
-    semantic_review_metadata: JsonObject | None = None
-    if requested_force_dimensions:
-        semantic_review_metadata = {
-            "status": "forced_standard" if forced_dimensions else "skipped_no_focus_dimension",
-            "candidate_cheap_score": interval.milestone_score.score if interval.milestone_score is not None else None,
-            "requested_dimensions": [dimension.value for dimension in requested_force_dimensions],
-            "forced_dimensions": [dimension.value for dimension in forced_dimensions],
-            "standard_judge_available": standard_judge is not None,
-        }
-        stage_result.metadata["semantic_review"] = semantic_review_metadata
 
     for level, judge, label in (
         (EvaluationLevel.STANDARD, standard_judge, "standard"),
@@ -618,28 +570,7 @@ def _evaluate_stage(
         _merge_dimension_result(stage_result, result, dimensions)
         judge_results.append(_judge_result_metadata(result, dimensions, weights))
 
-    semantic_review_passed = bool(forced_dimensions) and all(
-        as_number(stage_result.dimension_scores.get(dimension), 0.0) >= thresholds.pass_threshold
-        for dimension in forced_dimensions
-    )
-    semantic_review_clears_structural_failure = semantic_review_passed and _semantic_only_hard_failure(
-        interval, task_case
-    )
-    if semantic_review_clears_structural_failure:
-        stage_result.hard_constraints_all_pass = True
-        stage_result.required_fields_missing_ratio = 0.0
-        stage_result.diagnosis = [
-            item
-            for item in stage_result.diagnosis
-            if item not in {"阶段未达成预期 milestone", "阶段完成度偏低"}
-        ]
-        stage_result.evidence = clean_evidence_items(
-            [*stage_result.evidence, "semantic review 确认消息语义等价，解除结构化文本相似度失败。"]
-        )
-
     stage_result.stage_score = stage_score_from_dimensions(stage_result.dimension_scores, weights)
-    if semantic_review_clears_structural_failure and stage_result.stage_score < thresholds.pass_threshold:
-        stage_result.stage_score = thresholds.pass_threshold
     structural_failure = interval.status in {StageStatus.MISSING, StageStatus.INVALID} or (
         stage_result.hard_constraints_all_pass is False
     )
@@ -686,17 +617,6 @@ def _evaluate_stage(
     )
     if low_score_dimensions:
         stage_result.metadata["low_score_dimensions"] = low_score_dimensions
-    if semantic_review_metadata is not None:
-        semantic_review_metadata["standard_judge_status"] = (
-            "called" if forced_dimensions else "not_called_no_matching_focus_dimension"
-        )
-        semantic_review_metadata["semantic_review_passed"] = semantic_review_passed
-        semantic_review_metadata["structural_failure_cleared"] = semantic_review_clears_structural_failure
-        semantic_review_metadata["dimension_levels_after_review"] = {
-            dimension.value: stage_result.dimension_levels.get(dimension, EvaluationLevel.CHEAP).value
-            for dimension in forced_dimensions
-        }
-
     stage_result.metadata["weight_update_diagnostics"] = {
         "formula": "w_next = normalize(w * exp(alpha * (1 - score) + beta * uncertainty))",
         "alpha": weight_config.alpha,
@@ -712,19 +632,15 @@ def _evaluate_stage(
         },
     }
     if active_strategy.dynamic_routing:
-        next_policy, termination = update_evaluation_policy(
-            evaluation_policy, stage_result, thresholds, allow_stop=active_strategy.policy_stop
-        )
+        next_policy = update_evaluation_policy(evaluation_policy, stage_result, thresholds)
     else:
         next_policy = EvaluationPolicyState(
             base_level=active_strategy.fixed_judge_level,
             dimension_levels={dimension: active_strategy.fixed_judge_level for dimension in Dimension},
             reason="static_routing",
         )
-        termination = EvaluationTerminationState()
     stage_result.metadata["next_evaluation_policy"] = next_policy.to_dict()
-    stage_result.metadata["evaluation_termination"] = termination.to_dict()
-    return stage_result, next_weights, next_policy, termination
+    return stage_result, next_weights, next_policy
 
 
 def _merge_dimension_result(
@@ -737,21 +653,6 @@ def _merge_dimension_result(
                 base_attr[dimension] = update_attr[dimension]
     base.evidence = clean_evidence_items([*base.evidence, *update.evidence])
     base.diagnosis.extend(item for item in update.diagnosis if item not in base.diagnosis)
-
-
-def _semantic_only_hard_failure(interval: StageInterval, task_case: TaskCase) -> bool:
-    score = interval.milestone_score
-    if score is None or score.hard_constraints_all_pass:
-        return False
-    milestone = None
-    if interval.milestone_id is not None and task_case.milestone_graph is not None:
-        milestone = next(
-            (node for node in task_case.milestone_graph.nodes if node.milestone_id == interval.milestone_id),
-            None,
-        )
-    if milestone is None:
-        return False
-    return hard_failure_is_semantic_message_only(milestone, score.constraint_scores)
 
 
 def _judge_result_metadata(
@@ -786,50 +687,24 @@ def _judge_result_metadata(
     }
 
 
-def should_stop_after_stage(
-    config: HarnessRunConfig,
-    state: RuntimeEvaluationState,
+def termination_after_stage(
     stage_result: StageEvaluationResult,
     thresholds: ThresholdConfig,
 ) -> EvaluationTerminationState:
     """根据阶段结果和运行期状态判断是否需要策略终止。
 
     入参：
-        config: 当前 run 配置。
-        state: 当前运行期评估状态。
         stage_result: 当前阶段评估结果。
         thresholds: 阶段阈值配置。
     输出：
         统一终止状态；不需要终止时 `should_stop=False`。
     """
-    if config.stop_on_minefield:
-        if state.minefield_matches and state.fatal_minefield:
-            minefield_id = str(state.minefield_matches[0].get("minefield_id", "minefield"))
-            return EvaluationTerminationState(
-                termination_code=f"minefield:{minefield_id}",
-                termination_reason=f"触发 fatal minefield，提前终止执行：{minefield_id}",
-            )
-        if state.minefield_matches and state.max_minefield_score >= thresholds.fatal_minefield_threshold:
-            return EvaluationTerminationState(
-                termination_code=f"minefield_score:{state.max_minefield_score:.3f}",
-                termination_reason=f"minefield 分数 {state.max_minefield_score:.3f} 达到停止阈值，提前终止执行",
-            )
-    if config.stop_on_stage_failure:
-        milestone_id = stage_result.milestone_id or "unknown"
-        if stage_result.metadata.get("structural_failure") is True:
-            return EvaluationTerminationState(
-                termination_code=f"stage_failure:{milestone_id}",
-                termination_reason=f"阶段存在结构性失败，提前终止执行：{milestone_id}",
-                termination_detail={
-                    "stage_score": stage_result.stage_score,
-                    "stage_status": stage_result.status.value,
-                    "structural_failure": True,
-                },
-            )
-        if stage_result.stage_score < thresholds.fail_threshold:
-            return EvaluationTerminationState(
-                termination_code=f"stage_score:{milestone_id}",
-                termination_reason=f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}",
-                termination_detail={"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value},
-            )
+    milestone_id = stage_result.milestone_id or "unknown"
+    detail = {"stage_score": stage_result.stage_score, "stage_status": stage_result.status.value}
+    if stage_result.metadata.get("structural_failure") is True:
+        return EvaluationTerminationState(termination_code=f"stage_failure:{milestone_id}", termination_reason=f"阶段存在结构性失败，提前终止执行：{milestone_id}", termination_detail={**detail, "structural_failure": True})
+    if stage_result.fatal_minefield_score >= thresholds.fatal_minefield_threshold:
+        return EvaluationTerminationState(termination_code=f"minefield_score:{stage_result.fatal_minefield_score:.3f}", termination_reason=f"minefield 分数 {stage_result.fatal_minefield_score:.3f} 达到停止阈值，提前终止执行", termination_detail=detail)
+    if stage_result.stage_score < thresholds.fail_threshold:
+        return EvaluationTerminationState(termination_code=f"stage_score:{milestone_id}", termination_reason=f"阶段评估分数 {stage_result.stage_score:.3f} 低于失败阈值，提前终止执行：{milestone_id}", termination_detail=detail)
     return EvaluationTerminationState()

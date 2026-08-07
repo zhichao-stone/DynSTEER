@@ -119,13 +119,8 @@ def existing_case_output(
     if summary.get("result_schema_version") != RESULT_SCHEMA_VERSION:
         return None
     return HarnessEvaluationOutput(
-        run_dir=result_dir,
         raw_run_dir=raw_case_dir,
         result_dir=result_dir,
-        report_path=report_path,
-        summary_path=summary_path,
-        raw_summary_path=raw_summary_path,
-        trajectory_path=trajectory_path,
     )
 
 
@@ -335,8 +330,6 @@ def _evaluation_payloads(
 ) -> tuple[JsonObject, JsonObject, JsonObject]:
     """组装 live/replay 共用的 v3 评估产物。"""
     report = harness_result.evaluation_report
-    if report is None:
-        raise ValueError("评估结果必须包含 evaluation_report")
     termination = harness_result.termination.to_dict()
     raw_summary = {
         **harness_result.raw_summary,
@@ -388,13 +381,8 @@ def _write_output_payloads(
     raw_summary_path.write_text(json.dumps(json_safe(raw_summary), ensure_ascii=False, indent=4), encoding="utf-8")
     trajectory_path.write_text(json.dumps(trajectory_to_json(trajectory), ensure_ascii=False, indent=4), encoding="utf-8")
     return HarnessEvaluationOutput(
-        run_dir=result_dir,
         raw_run_dir=raw_run_dir,
         result_dir=result_dir,
-        report_path=report_path,
-        summary_path=summary_path,
-        raw_summary_path=raw_summary_path,
-        trajectory_path=trajectory_path,
     )
 
 
@@ -419,7 +407,9 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
     coverage_counts: dict[str, int] = {}
     score_sum = 0.0
     for output in outputs:
-        summary_data = read_json_file(output.summary_path, f"场景摘要: {output.summary_path}", dict)
+        summary_path = output.result_dir / "summary.json"
+        report_path = output.result_dir / "report.json"
+        summary_data = read_json_file(summary_path, f"场景摘要: {summary_path}", dict)
         coverage = str(summary_data.get("milestone_coverage", "unknown"))
         coverage_counts[coverage] = coverage_counts.get(coverage, 0) + 1
         score_sum += float(summary_data.get("score", 0.0))
@@ -432,8 +422,8 @@ def _build_method_level_summary(method_dir: Path, outputs: list[HarnessEvaluatio
             "milestone_coverage": summary_data.get("milestone_coverage"),
             "minefield_match_count": summary_data.get("minefield_match_count"),
             "termination_code": termination.get("code") if isinstance(termination, dict) else None,
-            "summary_path": output.summary_path.relative_to(method_dir).as_posix(),
-            "report_path": output.report_path.relative_to(method_dir).as_posix(),
+            "summary_path": summary_path.relative_to(method_dir).as_posix(),
+            "report_path": report_path.relative_to(method_dir).as_posix(),
         }
         cases.append(case_summary)
     case_count = len(cases)

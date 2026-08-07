@@ -9,7 +9,7 @@ from dynsteer.adapter.registry import get_adapter, get_harness
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.outputs import write_method_level_summaries
 from dynsteer.harness.scheduler import run_case_tasks
-from dynsteer.harness.selection import select_case_ids, validate_loaded_task_cases
+from dynsteer.harness.selection import select_case_ids
 from dynsteer.log import configure_logger
 from dynsteer.model import HarnessCaseTask, HarnessEvaluationOutput, TaskCase
 
@@ -51,13 +51,12 @@ def prepare_task_cases(
     """加载 TaskCase，并在实验边界刷新动态 target。"""
     adapter = get_adapter(config.benchmark)
     harness = get_harness(config.benchmark)
-    case_ids = select_case_ids(config, harness, run_all=True)
+    case_ids = select_case_ids(config, harness)
     run_config = replace(config, case_ids=tuple(case_ids))
     harness.prepare_config(run_config)
     task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
     if refresh_dynamic_targets:
         task_cases = refresh_task_cases_for_experiment(run_config, adapter, task_cases)
-    validate_loaded_task_cases(case_ids, task_cases)
     return task_cases, run_config
 
 
@@ -83,7 +82,7 @@ def _run_config(
         },
     )
     tasks = [
-        HarnessCaseTask(order=index, config=run_config, case_id=task_case.case_id, task_case=task_case)
+        HarnessCaseTask(order=index, config=run_config, task_case=task_case)
         for index, task_case in enumerate(task_cases)
     ]
     outputs = run_case_tasks(tasks, max_workers=max_workers, logger=logger, force_eval=force_eval)
@@ -133,6 +132,3 @@ def _get_or_configure_harness_logger(log_dir: Path) -> logging.Logger:
     if logger.handlers:
         return logger
     return configure_logger(log_dir)
-
-
-__all__ = ["HarnessEvaluationOutput", "effective_max_workers", "run_harness_configs"]

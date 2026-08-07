@@ -20,8 +20,6 @@ class HarnessRunConfig:
     case_ids: tuple[str, ...] | None = None
     runs_dir: Path = Path("runs")
     results_dir: Path = Path("results")
-    stop_on_stage_failure: bool = True
-    stop_on_minefield: bool = True
     stop_on_ready_frontier_no_progress: bool = True
     ready_frontier_patience: int = 8
     ready_frontier_min_delta: float = 0.02
@@ -56,35 +54,11 @@ class HarnessRunConfig:
             raise ValueError("ready_frontier_min_delta 不能为负数")
 
 @dataclass(frozen=True)
-class BenchmarkCase:
-    """benchmark 中的单个测试任务描述。"""
-    benchmark: str
-    case_id: str
-    categories: list[str] = field(default_factory=list)
-    metadata: JsonObject = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not self.benchmark or not self.benchmark.strip():
-            raise ValueError("benchmark 不能为空")
-        if not self.case_id or not self.case_id.strip():
-            raise ValueError("case_id 不能为空")
-
-    def to_dict(self) -> JsonObject:
-        """转换为 JSON 可序列化字典。"""
-        return {
-            "benchmark": self.benchmark,
-            "case_id": self.case_id,
-            "categories": list(self.categories),
-            "metadata": dict(self.metadata),
-        }
-
-@dataclass(frozen=True)
 class HarnessAdvanceResult:
     """benchmark 单次推进结果。"""
     steps: list[TrajectoryStep]
     snapshots: list[StateSnapshot]
     continue_running: bool
-    reason: str | None = None
     execution_latency_ms: int | None = None
 
     def __post_init__(self) -> None:
@@ -94,8 +68,6 @@ class HarnessAdvanceResult:
             raise ValueError("snapshots 不能为空")
         if not isinstance(self.continue_running, bool):
             raise TypeError("continue_running 必须是 bool")
-        if self.reason is not None and (not self.reason.strip()):
-            raise ValueError("reason 不能是空字符串")
         if self.execution_latency_ms is not None:
             if isinstance(self.execution_latency_ms, bool) or not isinstance(self.execution_latency_ms, int):
                 raise TypeError("execution_latency_ms 必须是非负整数或 None")
@@ -151,7 +123,7 @@ class HarnessStageSettlement:
 class HarnessRunResult:
     """benchmark harness 运行结果。"""
     trajectory: Trajectory
+    evaluation_report: TrajectoryEvaluationReport
     raw_summary: JsonObject = field(default_factory=dict)
     stage_settlements: list[HarnessStageSettlement] = field(default_factory=list)
-    evaluation_report: TrajectoryEvaluationReport | None = None
     termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)

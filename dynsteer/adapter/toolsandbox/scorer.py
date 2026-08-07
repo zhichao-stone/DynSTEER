@@ -6,7 +6,7 @@ from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
-from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, MilestoneScore, Operator, ScoringContext, StageStatus, StageGoalSemanticKind, StateSnapshot, Trajectory, TrajectoryStep
+from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, ScoringContext, StageGoalSemanticKind
 from dynsteer.utils import clamp
 import polars as pl
 
@@ -68,18 +68,14 @@ class ToolSandboxConstraintScorer(GeneralScorer):
     def __init__(self, module_loader: Callable[[str], Any] | None=None) -> None:
         self._module_loader = module_loader or load_toolsandbox_module
 
-    def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
+    def _aggregate_constraints(self, milestone: Milestone, scores: list[ConstraintScore]) -> tuple[float, bool]:
+        """按 ToolSandbox 几何聚合规则返回分数与 hard constraint 状态。"""
         if not any((isinstance(constraint.metadata.get("toolsandbox"), dict) for constraint in milestone.constraints)):
-            return super().score_milestone(milestone, scoring_step, trajectory, reference_snapshots, context=context)
-        constraint_scores: list[ConstraintScore] = []
+            return super()._aggregate_constraints(milestone, scores)
         score_product = 1.0
         non_guardrail_count = 0
         hard_pass = True
-        stage_start_index = self._milestone_start_index(milestone, trajectory, context)
-        for constraint in milestone.constraints:
-            source, reference = self.constraint_sources(constraint, scoring_step, trajectory, reference_snapshots, context=context, stage_start_index=stage_start_index)
-            result = self.score_constraint(constraint, source, reference, context=context)
-            constraint_scores.append(result)
+        for constraint, result in zip(milestone.constraints, scores, strict=True):
             constraint_score = clamp(float(result.score))
             score_product *= constraint_score
             metadata = constraint.metadata.get("toolsandbox")
@@ -91,25 +87,12 @@ class ToolSandboxConstraintScorer(GeneralScorer):
                 if constraint.hard and (result.missing or constraint_score < constraint.threshold) and (not (is_semantic_emit_message_constraint(constraint) and (not result.missing))):
                     hard_pass = False
         score = score_product ** (1.0 / non_guardrail_count) if non_guardrail_count > 0 else score_product
-        score = 0.0 if not hard_pass else clamp(score)
-        threshold = milestone.pass_threshold if milestone.pass_threshold is not None else 0.8
-        if not hard_pass:
-            status = StageStatus.FAIL
-        elif score >= threshold:
-            status = StageStatus.PASS
-        elif score >= 0.6:
-            status = StageStatus.WARN
-        else:
-            status = StageStatus.FAIL
-        missing_count = sum((1 for item in constraint_scores if item.missing))
-        return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=f"runtime:b{scoring_step.index}", score=score, status=status, evidence=[line for item in constraint_scores for line in item.evidence], missing_ratio=missing_count / len(constraint_scores), hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
+        return (clamp(score) if hard_pass else 0.0, hard_pass)
 
     def score_custom_constraint(self, constraint: Constraint, source: object, reference_source: object | None, actual: JsonValue, reference_value: JsonValue, context: ScoringContext | None=None) -> ConstraintScore:
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return super().score_custom_constraint(constraint, source, reference_source, actual, reference_value, context=context)
-        if constraint.operator != Operator.CUSTOM:
-            return super().score_constraint(constraint, source, reference_source, context=context)
         measure_name = str(metadata.get("snapshot_constraint") or "")
         try:
             score, reference_summary = self._score_toolsandbox_snapshot_constraint(measure_name=measure_name, constraint=constraint, actual=actual, context=context)

@@ -165,7 +165,7 @@ def _terminal_state_checks(task_case: TaskCase, trajectory: Trajectory, matched:
         if not constraints:
             continue
         recheck = Milestone(milestone_id=milestone.milestone_id, name=milestone.name, description=milestone.description, constraints=constraints, pass_threshold=milestone.pass_threshold, metadata=dict(milestone.metadata))
-        score = scorer.score_milestone(recheck, final_step, trajectory, trajectory.snapshots, context=context)
+        score = scorer.score_milestone(recheck, final_step, trajectory, context)
         constraint_by_id = {constraint.constraint_id: constraint for constraint in constraints}
         constraint_evidence = []
         for constraint_score in score.constraint_scores:

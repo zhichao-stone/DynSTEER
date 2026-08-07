@@ -8,11 +8,10 @@ from dynsteer.model import AgentStepClosure, JsonObject, EvaluationTerminationSt
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.evaluate.settlement import refresh_reference_anchors
 
-def evaluate_step_minefields(config: HarnessRunConfig, task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, step: TrajectoryStep, scorer: GeneralScorer) -> RuntimeEvaluationDecision | None:
+def evaluate_step_minefields(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, step: TrajectoryStep, scorer: GeneralScorer, policy_stop: bool) -> RuntimeEvaluationDecision | None:
     """对单条 step 执行 minefield 即时安全检查。
 
     入参：
-        config: 当前 run 配置。
         task_case: 当前 benchmark case。
         trajectory: 已追加当前 step 的完整轨迹。
         state: 当前运行期评估状态。
@@ -34,7 +33,7 @@ def evaluate_step_minefields(config: HarnessRunConfig, task_case: TaskCase, traj
             state.minefield_matches.append(match)
     state.max_minefield_score = max(state.max_minefield_score, minefield_score)
     state.fatal_minefield = state.fatal_minefield or fatal_minefield
-    if not fatal_minefield or not config.stop_on_minefield:
+    if not fatal_minefield or not policy_stop:
         return None
     minefield_id = str(minefield_matches[0].get("minefield_id", "minefield"))
     termination_code = f"minefield:{minefield_id}"
@@ -50,7 +49,7 @@ def evaluate_step_minefields(config: HarnessRunConfig, task_case: TaskCase, traj
         ),
     )
 
-def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, closure: AgentStepClosure, scorer: GeneralScorer, standard_judge: object | None, thresholds: ThresholdConfig, evaluate_checkpoint: Callable[..., RuntimeEvaluationDecision]) -> RuntimeEvaluationDecision | None:
+def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, closure: AgentStepClosure, scorer: GeneralScorer, standard_judge: object | None, thresholds: ThresholdConfig, policy_stop: bool, evaluate_checkpoint: Callable[..., RuntimeEvaluationDecision]) -> RuntimeEvaluationDecision | None:
     """处理一个已闭合 agent step，返回可能的策略终止决策。
 
     入参：
@@ -66,7 +65,6 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
     输出：
         需要提前终止时返回决策，否则返回 None。
     """
-    step = closure.end_step
     context = state_scoring_context(task_case, trajectory, state)
     analysis = analyze_milestone_step(trajectory, closure, state.matched_settlements, state.milestone_frontier, scorer, context=context)
     if analysis.hit is None:
@@ -77,7 +75,7 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
                 return no_progress_decision
         if analysis.blocked_detail is not None:
             state.match_attempts.append(analysis.blocked_detail)
-            if config.stop_on_stage_failure:
+            if policy_stop:
                 selected_candidate = selected_candidate_from_attempt(analysis.blocked_detail)
                 milestone_id = str(selected_candidate.get("milestone_id") if selected_candidate is not None else "unknown")
                 termination_code = f"milestone_predecessor_gap:{milestone_id}"
@@ -97,7 +95,7 @@ def evaluate_agent_step(config: HarnessRunConfig, task_case: TaskCase, trajector
                 return None
             state.match_attempts.append(analysis.attempt_detail)
             return _ready_frontier_no_progress_decision(config, state, analysis.attempt_detail, thresholds)
-    decision = evaluate_checkpoint(config=config, task_case=task_case, trajectory=trajectory, state=state, milestone=milestone, scoring_step=scoring_step, milestone_score=milestone_score)
+    decision = evaluate_checkpoint(task_case=task_case, trajectory=trajectory, state=state, milestone=milestone, scoring_step=scoring_step, milestone_score=milestone_score)
     if semantic_review_detail is not None:
         semantic_review_detail["settlement_accepted"] = decision.checkpoint is not None
         if decision.stage_result is not None:

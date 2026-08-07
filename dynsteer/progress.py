@@ -11,7 +11,6 @@ from dynsteer.model import CaseProgressEvent, CaseProgressState
 
 
 DEFAULT_PROGRESS_TOTAL = 1000
-DEFAULT_VISIBLE_PROGRESS_BARS = 5
 TERMINAL_LOG_SILENT_LEVEL = logging.CRITICAL + 1
 
 
@@ -34,7 +33,7 @@ class QueueProgressReporter:
             raise ValueError("case_id 不能为空")
         if step_count <= 0:
             raise ValueError("step_count 必须大于 0")
-        self._events.put(CaseProgressEvent("case_advanced", case_id, step_count=step_count))
+        self._events.put(CaseProgressEvent(case_id, step_count=step_count))
 
 
 class TqdmCaseProgressManager:
@@ -44,10 +43,8 @@ class TqdmCaseProgressManager:
         self,
         max_workers: int,
         bar_factory: Callable[..., Any] | None = None,
-        line_writer: Callable[[str], object] | None = None,
         estimated_total: int = DEFAULT_PROGRESS_TOTAL,
         time_fn: Callable[[], float] | None = None,
-        max_visible_bars: int = DEFAULT_VISIBLE_PROGRESS_BARS,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers 必须大于 0")
@@ -76,7 +73,6 @@ class TqdmCaseProgressManager:
             self.case_states[case_id] = state
         elif case_index is not None:
             state.case_index = case_index
-        state.finished = False
         self.active_order.append(case_id)
         self.bars[case_id] = self._create_bar(state)
 
@@ -104,7 +100,6 @@ class TqdmCaseProgressManager:
         if state is None:
             return
         self._refresh_state(state)
-        state.finished = True
         if case_id in self.active_order:
             self.active_order.remove(case_id)
         bar = self.bars.pop(case_id, None)

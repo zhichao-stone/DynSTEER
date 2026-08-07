@@ -151,7 +151,6 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
             task_case.metadata["milestone_generation"] = report.to_dict()
         task_case.milestone_graph = enrich_milestone_graph(graph)
         task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
-        validate_stage_evaluation_specs(task_case.milestone_graph, task_case.stage_goals, task_case.stage_evaluation_specs)
         summary = summarize_llm_calls(recorder.llm_calls)
         canonical = json_safe(task_case)
         if isinstance(canonical.get("metadata"), dict):
@@ -230,7 +229,8 @@ def parse_milestone_graph(data: JsonObject) -> MilestoneGraph:
         ],
         metadata=_optional_object(graph_data, "metadata"),
     )
-    return graph
+    enrich_milestone_graph(graph)
+    return enrich_milestone_routes(graph)
 
 def parse_stage_evaluation_spec(data: JsonObject) -> StageEvaluationSpec:
     spec_data = ensure_json_object(data)

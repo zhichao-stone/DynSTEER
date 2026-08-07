@@ -498,17 +498,19 @@ def _is_public_literal(expected: object, source: object) -> bool:
 def _consistent_reduced_edges(
     paths: list[_Path], retained_ids: set[str]
 ) -> list[tuple[str, str]] | None:
-    ordered_ids = sorted(retained_ids)
-    edges: set[tuple[str, str]] = set()
-    positions = [{atom_id: index for index, atom_id in enumerate(path.atom_ids)} for path in paths]
-    for left_index, left in enumerate(ordered_ids):
-        for right in ordered_ids[left_index + 1 :]:
-            containing = [position for position in positions if left in position and right in position]
-            if not containing:
-                continue
-            orders = {position[left] < position[right] for position in containing}
-            if len(orders) == 1:
-                edges.add((left, right) if orders.pop() else (right, left))
+    pair_orders: dict[tuple[str, str], int] = {}
+    for path in paths:
+        retained_path = [atom_id for atom_id in path.atom_ids if atom_id in retained_ids]
+        for left_index, source in enumerate(retained_path):
+            for target in retained_path[left_index + 1 :]:
+                pair = tuple(sorted((source, target)))
+                direction = 1 if pair == (source, target) else 2
+                pair_orders[pair] = pair_orders.get(pair, 0) | direction
+    edges = {
+        pair if direction == 1 else (pair[1], pair[0])
+        for pair, direction in pair_orders.items()
+        if direction in {1, 2}
+    }
     if not _is_dag(retained_ids, sorted(edges)):
         return None
     return sorted(_transitive_reduction(edges))

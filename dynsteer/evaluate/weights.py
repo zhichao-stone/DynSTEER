@@ -25,21 +25,13 @@ def select_initial_weights(task_case: TaskCase) -> dict[Dimension, float]:
     输出：
         当前 case 的初始维度权重。
     """
-    task_types = task_case.task_types or []
-    if not task_types:
-        task_types = [next(iter(TASK_TYPE_WEIGHTS))]
+    task_types = task_case.task_types or [next(iter(TASK_TYPE_WEIGHTS))]
     merged = {dimension: 0.0 for dimension in Dimension}
-    valid_count = 0
     for task_type in task_types:
-        weights = TASK_TYPE_WEIGHTS.get(task_type)
-        if weights is None:
-            continue
-        valid_count += 1
+        weights = TASK_TYPE_WEIGHTS[task_type]
         for dimension in Dimension:
             merged[dimension] += weights.get(dimension, 0.0)
-    if valid_count == 0:
-        return normalize_weights(TASK_TYPE_WEIGHTS[next(iter(TASK_TYPE_WEIGHTS))])
-    return normalize_weights({dimension: value / valid_count for dimension, value in merged.items()})
+    return normalize_weights(merged)
 
 def update_weights(current: dict[Dimension, float], scores: dict[Dimension, float], dimension_uncertainty: dict[Dimension, float], config: DynamicWeightConfig) -> dict[Dimension, float]:
     """根据阶段维度分数和不确定性更新动态权重。

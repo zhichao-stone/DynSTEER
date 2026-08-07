@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Mapping, TYPE_CHECKING
 
-from dynsteer.config import default_dynamic_weight_config
 from dynsteer.evaluate.runtime import (
     HarnessTeardownError,
     pending_milestone_stage_results,
@@ -15,8 +14,7 @@ from dynsteer.evaluate.runtime import (
     initial_reference_snapshots,
     task_case_snapshot,
 )
-from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement, record_finish_settlement, referenced_milestone_ids
-from dynsteer.evaluate.judge_cache import JudgeCache
+from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement, record_settlement, referenced_milestone_ids
 from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
 from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
@@ -80,19 +78,13 @@ class DynSTEEREvaluator:
         thresholds: ThresholdConfig | None = None,
         weight_config: DynamicWeightConfig | None = None,
         strategy: EvaluationStrategyConfig | None = None,
-        judge_cache: JudgeCache | None = None,
     ) -> None:
         self._cheap_judge = cheap_judge or CheapJudge()
         self._standard_judge = standard_judge
         self._expensive_judge = expensive_judge
         self._thresholds = thresholds or ThresholdConfig()
-        self._weight_config = weight_config or default_dynamic_weight_config()
+        self._weight_config = weight_config or DynamicWeightConfig()
         self._strategy = strategy or EvaluationStrategyConfig()
-        self._judge_cache = judge_cache or getattr(standard_judge, "_cache", None) or JudgeCache()
-        if self._standard_judge is not None:
-            self._standard_judge._cache = self._judge_cache
-        if self._expensive_judge is not None:
-            self._expensive_judge._cache = self._judge_cache
 
     @classmethod
     def from_config(
@@ -139,14 +131,12 @@ class DynSTEEREvaluator:
             default=3,
             min_value=1,
         )
-        judge_cache = JudgeCache()
         return cls(
             cheap_judge=CheapJudge(),
-            standard_judge=StandardJudge(llm=llm, passes=standard_passes, cache=judge_cache),
-            expensive_judge=ExpensiveJudge(llm=llm, passes=expensive_passes, cache=judge_cache),
+            standard_judge=StandardJudge(llm=llm, passes=standard_passes),
+            expensive_judge=ExpensiveJudge(llm=llm, passes=expensive_passes),
             thresholds=thresholds,
             strategy=active_strategy,
-            judge_cache=judge_cache,
         )
 
     def evaluate(
@@ -157,7 +147,6 @@ class DynSTEEREvaluator:
         progress_reporter: CaseProgressReporter | None = None,
     ) -> HarnessRunResult:
         """执行 benchmark case，并进行阶段式动态评估。"""
-        self._judge_cache.clear()
         case_id = task_case.case_id
         harness.prepare_config(config)
         raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_evaluate") / "raw"
@@ -246,7 +235,6 @@ class DynSTEEREvaluator:
         """
         if task_case is None or trajectory is None or scorer is None or config is None:
             raise ValueError("task_case、trajectory、scorer 和 config 不能为空")
-        self._judge_cache.clear()
         case_id = task_case.case_id
         raw_output_dir = case_output_dir(config.runs_dir, config, case_id, "dynsteer_replay") / "raw"
         raw_output_dir.mkdir(parents=True, exist_ok=True)
@@ -319,8 +307,6 @@ class DynSTEEREvaluator:
                 metadata=self._report_metadata(config, method_fallback="dynsteer_replay"),
             )
             report = result.evaluation_report
-            if report is None:
-                raise RuntimeError("replay 结果缺少 evaluation_report")
             replay_execution = build_replay_execution_summary(
                 trajectory,
                 replay_trajectory,
@@ -390,6 +376,7 @@ class DynSTEEREvaluator:
             scorer=scorer,
             standard_judge=self._standard_judge,
             thresholds=self._thresholds,
+            policy_stop=self._strategy.policy_stop,
             evaluate_checkpoint=self._evaluate_checkpoint_for_strategy,
         )
 
@@ -403,7 +390,7 @@ class DynSTEEREvaluator:
         scorer: GeneralScorer,
     ) -> tuple[RuntimeEvaluationDecision | None, bool]:
         """评估已追加的 raw step，并在 agent step 闭合时执行阶段评估。"""
-        decision = evaluate_step_minefields(config, task_case, trajectory, state, step, scorer)
+        decision = evaluate_step_minefields(task_case, trajectory, state, step, scorer, self._strategy.policy_stop)
         if decision is not None:
             return decision, False
         closure = state.agent_step_tracker.ingest(step)
@@ -446,7 +433,7 @@ class DynSTEEREvaluator:
             standard_judge=self._standard_judge,
             thresholds=self._thresholds,
         )
-        record_finish_settlement(state, settlement)
+        record_settlement(state, settlement)
         state.stage_reports.append(stage_result)
 
     def _build_runtime_metrics(
@@ -464,7 +451,6 @@ class DynSTEEREvaluator:
             trajectory=trajectory,
             llm_calls=metrics_recorder.llm_calls,
             agent_step_count=agent_step_count,
-            judge_cache_metrics=self._judge_cache.telemetry(),
         )
 
     def _build_runtime_result(

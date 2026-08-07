@@ -13,7 +13,7 @@ from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context,
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
 from dynsteer.adapter.utils import rows_from_dataframe, retry_call
-from dynsteer.harness.model import BenchmarkCase, HarnessAdvanceResult, HarnessRunConfig
+from dynsteer.harness.model import HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.model import JsonObject, ToolSandboxSession
 from dynsteer.utils import clamp, enum_name, json_safe
 
@@ -28,15 +28,10 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """返回 ToolSandbox 专用约束评分器。"""
         return ToolSandboxConstraintScorer(module_loader=load_toolsandbox_module)
 
-    def list_cases(self, config: HarnessRunConfig) -> list[BenchmarkCase]:
+    def list_case_ids(self, config: HarnessRunConfig) -> list[str]:
         """列出 ToolSandbox 场景。"""
         self.prepare_config(config)
-        scenarios = self._named_scenarios(config)
-        cases: list[BenchmarkCase] = []
-        for case_id, scenario in sorted(scenarios.items()):
-            categories = [enum_name(item) for item in getattr(scenario, "categories", [])]
-            cases.append(BenchmarkCase(benchmark=self.benchmark, case_id=str(case_id), categories=categories, metadata={"source": "toolsandbox"}))
-        return cases
+        return sorted(str(case_id) for case_id in self._named_scenarios(config))
 
     def start_case(self, config: HarnessRunConfig, case_id: str, raw_output_dir: Path) -> ToolSandboxSession:
         """初始化 ToolSandbox 原生 session。"""
@@ -59,7 +54,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             context=context,
             initial_state=None,
             case_id=case_id,
-            raw_output_dir=raw_output_dir,
             initial_max_sandbox_message_index=initial_max,
             last_sandbox_message_index=initial_max,
             max_messages=max_messages,
@@ -72,7 +66,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         """推进一个原生 benchmark 步并返回新增步骤。"""
         session = self._require_session(session)
         if session.finished:
-            return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False, reason="benchmark 已自然完成")
+            return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False)
         self._advance_native_session(session)
         all_rows = rows_from_dataframe(
             self._sandbox_database(session.context, get_all_history_snapshots=True)
@@ -107,7 +101,6 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             steps=trajectory.steps,
             snapshots=trajectory.snapshots,
             continue_running=not session.finished,
-            reason=session.stop_reason if session.finished else None,
         )
 
     def metrics_from_session(self, session: object) -> JsonObject:

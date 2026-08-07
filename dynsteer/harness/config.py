@@ -73,36 +73,6 @@ def load_benchmark_manifest_metadata(benchmark: str, data_root: Path) -> JsonObj
     return metadata
 
 
-def load_judge_config_from_env(env: Mapping[str, str] | None = None) -> JsonObject:
-    """从环境变量读取 LLMJudge 配置。"""
-    source = env or os.environ
-    provider = source.get("DYNSTEER_JUDGE_PROVIDER")
-    if provider is None or not provider.strip():
-        return {}
-    model = source.get("DYNSTEER_JUDGE_MODEL")
-    if model is None or not model.strip():
-        raise ValueError("DYNSTEER_JUDGE_MODEL 不能为空")
-    return {
-        "provider": provider.strip(),
-        "model": model.strip(),
-        "base_url": source.get("DYNSTEER_JUDGE_BASE_URL"),
-        "timeout_seconds": float(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS", "60")),
-        "temperature": float(source.get("DYNSTEER_JUDGE_TEMPERATURE", "0")),
-        "max_tokens": parse_int_value(
-            source.get("DYNSTEER_JUDGE_MAX_TOKENS"),
-            "DYNSTEER_JUDGE_MAX_TOKENS",
-            default=None,
-            min_value=1,
-        ),
-        "max_retries": int(source.get("DYNSTEER_JUDGE_MAX_RETRIES", "3")),
-        "retry_base_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS", "1.0")),
-        "retry_max_seconds": float(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS", "8.0")),
-        "standard_passes": int(source.get("DYNSTEER_STANDARD_JUDGE_PASSES", "3")),
-        "expensive_passes": int(source.get("DYNSTEER_EXPENSIVE_JUDGE_PASSES", "3")),
-        "api_key_configured": bool(source.get("DYNSTEER_JUDGE_API_KEY")),
-    }
-
-
 def threshold_config_from_mapping(data: Mapping[str, Any] | None = None) -> ThresholdConfig:
     """从 JSON 映射生成 ThresholdConfig。"""
     if data is None:
@@ -135,11 +105,11 @@ def evaluation_strategy_from_mapping(data: Mapping[str, Any] | None = None) -> E
     if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("strategy.metadata 必须是 JSON 对象")
     return EvaluationStrategyConfig(
-        dynamic_routing=_bool_from_mapping(data, "dynamic_routing", True),
-        dynamic_weighting=_bool_from_mapping(data, "dynamic_weighting", True),
-        policy_stop=_bool_from_mapping(data, "policy_stop", True),
+        dynamic_routing=data.get("dynamic_routing", True),
+        dynamic_weighting=data.get("dynamic_weighting", True),
+        policy_stop=data.get("policy_stop", True),
         fixed_judge_level=fixed_level,
-        replay_continue_after_virtual_stop=_bool_from_mapping(data, "replay_continue_after_virtual_stop", False),
+        replay_continue_after_virtual_stop=data.get("replay_continue_after_virtual_stop", False),
         metadata={str(key): value for key, value in dict(metadata or {}).items()},
     )
 
@@ -159,12 +129,6 @@ def milestone_generation_from_mapping(
     }
     if unknown:
         raise ValueError(f"不支持的 milestone_generation 字段: {sorted(unknown)}")
-    use_origin = data.get("use_origin_milestone", True)
-    if not isinstance(use_origin, bool):
-        raise TypeError("milestone_generation.use_origin_milestone 必须是 bool")
-    path_count = data.get("simulated_path_count", 6)
-    if isinstance(path_count, bool) or not isinstance(path_count, int):
-        raise TypeError("milestone_generation.simulated_path_count 必须是整数")
     generator = data.get("generator", {})
     if not isinstance(generator, Mapping):
         raise TypeError("milestone_generation.generator 必须是 JSON 对象")
@@ -172,8 +136,8 @@ def milestone_generation_from_mapping(
     if unknown_generator:
         raise ValueError(f"不支持的 milestone generator 字段: {sorted(unknown_generator)}")
     return MilestoneGenerationConfig(
-        use_origin_milestone=use_origin,
-        simulated_path_count=path_count,
+        use_origin_milestone=data.get("use_origin_milestone", True),
+        simulated_path_count=data.get("simulated_path_count", 6),
         generator={str(key): value for key, value in generator.items()},
     )
 
@@ -219,7 +183,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
     if not raw_specs:
         raise ValueError("run_configs.json 至少需要包含一组运行配置")
     configs: list[HarnessRunConfig] = []
-    judge_config = load_judge_config_from_env()
     ready_frontier_patience = load_ready_frontier_patience_from_env()
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
@@ -243,8 +206,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         name = optional_str(raw_spec.get("name"))
         if name is not None:
             metadata["run_config_name"] = name
-        if judge_config:
-            metadata["judge"] = judge_config
         metadata["thresholds"] = {field.name: getattr(thresholds, field.name) for field in fields(ThresholdConfig)}
         metadata["strategy"] = strategy.to_dict()
         stop_on_ready = raw_spec.get("stop_on_ready_frontier_no_progress", True)
@@ -263,14 +224,6 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
             )
         )
     return configs
-
-
-def _bool_from_mapping(data: Mapping[str, Any], key: str, default: bool) -> bool:
-    """从 JSON 映射读取 bool 字段。"""
-    value = data.get(key, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"strategy.{key} 必须是 bool")
-    return value
 
 
 def _evaluation_level(value: object, default: EvaluationLevel) -> EvaluationLevel:

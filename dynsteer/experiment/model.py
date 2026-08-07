@@ -112,14 +112,8 @@ class ExperimentCaseResult:
     runtime_metrics: JsonObject = field(default_factory=dict)
     output_paths: JsonObject = field(default_factory=dict)
 
-    def to_dict(self) -> JsonObject:
-        return self._payload(True)
-
     def to_index_dict(self) -> JsonObject:
-        return self._payload(False)
-
-    def _payload(self, include_identity: bool) -> JsonObject:
-        payload: JsonObject = {
+        return {
             "score": self.score,
             "milestone_coverage": self.milestone_coverage,
             "minefield_match_count": self.minefield_match_count,
@@ -130,13 +124,3 @@ class ExperimentCaseResult:
             "runtime_metrics": dict(self.runtime_metrics),
             "output_paths": dict(self.output_paths),
         }
-        if include_identity:
-            payload.update({
-                "experiment_id": self.experiment_id,
-                "benchmark": self.benchmark,
-                "case_id": self.case_id,
-                "model_id": self.model_id,
-                "repeat_index": self.repeat_index,
-                "method": self.method.value,
-            })
-        return payload

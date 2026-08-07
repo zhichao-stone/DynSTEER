@@ -92,7 +92,6 @@ def enrich_milestone_graph(graph: MilestoneGraph) -> MilestoneGraph:
         successors_by_id=actual_successors,
         stage_anchor_by_id={node_id: idom.get(node_id, START_NODE_ID) for node_id in actualnode_ids},
         order_by_id={node.milestone_id: index for index, node in enumerate(graph.nodes)},
-        root_ids=tuple(node_id for node_id in order if node_id in actualnode_ids and not actual_predecessors[node_id]),
         terminal_ids=tuple(node_id for node_id in order if node_id in actualnode_ids and not actual_successors[node_id]),
         finish_anchor_id=finish_anchor if isinstance(finish_anchor, str) else START_NODE_ID,
     )

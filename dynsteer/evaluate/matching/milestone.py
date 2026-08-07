@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from dynsteer.utils import json_safe
 from dynsteer.evaluate.matching.frontier import blocked_candidate_milestones, ready_milestones
 from dynsteer.evaluate.semantic import hard_failure_is_semantic_message_only, is_semantic_emit_message_constraint
@@ -26,7 +28,7 @@ def stage_start_for_ready_milestone(milestone: Milestone, topology: MilestoneTop
         raise ValueError(f"stage anchor 尚未结算: milestone={milestone.milestone_id}, anchor={anchor_id}")
     return (anchor_id, boundary_index)
 
-def analyze_milestone_step(trajectory: Trajectory, closure: AgentStepClosure, matched: dict[str, HarnessStageSettlement], frontier: MilestoneFrontierState, scorer: GeneralScorer, context: ScoringContext | None=None) -> MilestoneStepAnalysis:
+def analyze_milestone_step(trajectory: Trajectory, closure: AgentStepClosure, matched: dict[str, HarnessStageSettlement], frontier: MilestoneFrontierState, scorer: GeneralScorer, context: ScoringContext) -> MilestoneStepAnalysis:
     """分析单个新增 step 是否命中 ready milestone 或 blocked 诊断候选。
 
     入参：
@@ -44,7 +46,7 @@ def analyze_milestone_step(trajectory: Trajectory, closure: AgentStepClosure, ma
     step = closure.end_step
     matched_ids = set(matched)
     ready = list(ready_milestones(frontier))
-    steps = list(closure.steps)
+    steps = closure.steps
     route_steps = {(item.actor, item.recipient): item for item in closure.steps}
     ready_candidate_details, candidate_by_milestone, ready_hit, ready_llm_review_hit = _analyze_ready_candidates(ready=ready, topology=frontier.topology, scoring_step=step, steps=steps, route_steps=route_steps, trajectory=trajectory, matched=matched, matched_ids=matched_ids, scorer=scorer, context=context)
     blocked_candidate_details, blocked_best = _analyze_blocked_candidates(frontier=frontier, steps=steps, route_steps=route_steps, trajectory=trajectory, matched_ids=matched_ids, scorer=scorer, context=context, candidate_by_milestone=candidate_by_milestone)
@@ -84,15 +86,13 @@ def analyze_milestone_step(trajectory: Trajectory, closure: AgentStepClosure, ma
         },
     )
 
-def _analyze_ready_candidates(ready: list[Milestone], topology: MilestoneTopology, scoring_step: TrajectoryStep, steps: list[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep], trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], matched_ids: set[str], scorer: GeneralScorer, context: ScoringContext | None) -> tuple[list[JsonObject], dict[str, JsonObject], tuple[Milestone, TrajectoryStep, MilestoneScore] | None, tuple[Milestone, TrajectoryStep, MilestoneScore] | None]:
+def _analyze_ready_candidates(ready: list[Milestone], topology: MilestoneTopology, scoring_step: TrajectoryStep, steps: Sequence[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep], trajectory: Trajectory, matched: dict[str, HarnessStageSettlement], matched_ids: set[str], scorer: GeneralScorer, context: ScoringContext) -> tuple[list[JsonObject], dict[str, JsonObject], tuple[Milestone, TrajectoryStep, MilestoneScore] | None, tuple[Milestone, TrajectoryStep, MilestoneScore] | None]:
     ready_candidate_details: list[JsonObject] = []
     candidate_by_milestone: dict[str, JsonObject] = {}
     ready_hit: tuple[Milestone, TrajectoryStep, MilestoneScore] | None = None
     ready_llm_review_hit: tuple[Milestone, TrajectoryStep, MilestoneScore] | None = None
     for milestone in ready:
         milestone_id = milestone.milestone_id
-        if milestone_id in matched_ids:
-            continue
         _, predecessor_start = stage_start_for_ready_milestone(milestone, topology, matched, trajectory)
         if scoring_step.index <= predecessor_start and predecessor_start > 0:
             detail = {
@@ -120,12 +120,10 @@ def _analyze_ready_candidates(ready: list[Milestone], topology: MilestoneTopolog
             ready_llm_review_hit = (milestone, candidate_step, score)
     return (ready_candidate_details, candidate_by_milestone, ready_hit, ready_llm_review_hit)
 
-def _analyze_blocked_candidates(frontier: MilestoneFrontierState, steps: list[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep], trajectory: Trajectory, matched_ids: set[str], scorer: GeneralScorer, context: ScoringContext | None, candidate_by_milestone: dict[str, JsonObject]) -> tuple[list[JsonObject], tuple[Milestone, TrajectoryStep, MilestoneScore, list[str]] | None]:
+def _analyze_blocked_candidates(frontier: MilestoneFrontierState, steps: Sequence[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep], trajectory: Trajectory, matched_ids: set[str], scorer: GeneralScorer, context: ScoringContext, candidate_by_milestone: dict[str, JsonObject]) -> tuple[list[JsonObject], tuple[Milestone, TrajectoryStep, MilestoneScore, list[str]] | None]:
     blocked_candidate_details: list[JsonObject] = []
     blocked_best: tuple[Milestone, TrajectoryStep, MilestoneScore, list[str]] | None = None
     for milestone in blocked_candidate_milestones(frontier):
-        if milestone.milestone_id in matched_ids:
-            continue
         missing_predecessors = [predecessor_id for predecessor_id in frontier.topology.predecessors_by_id[milestone.milestone_id] if predecessor_id not in matched_ids]
         if not missing_predecessors:
             continue
@@ -141,14 +139,14 @@ def _analyze_blocked_candidates(frontier: MilestoneFrontierState, steps: list[Tr
 
 def _score_candidate(
     milestone: Milestone,
-    steps: list[TrajectoryStep],
+    steps: Sequence[TrajectoryStep],
     route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep],
     trajectory: Trajectory,
     scorer: GeneralScorer,
-    context: ScoringContext | None,
+    context: ScoringContext,
 ) -> tuple[TrajectoryStep, MilestoneScore, JsonObject]:
     scoring_step = milestone_scoring_step(milestone, steps, route_steps)
-    score = scorer.score_milestone(milestone, scoring_step, trajectory, trajectory.snapshots, context=context)
+    score = scorer.score_milestone(milestone, scoring_step, trajectory, context)
     return (
         scoring_step,
         score,
@@ -161,7 +159,7 @@ def _score_candidate(
         },
     )
 
-def milestone_scoring_step(milestone: Milestone, steps: list[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep]) -> TrajectoryStep:
+def milestone_scoring_step(milestone: Milestone, steps: Sequence[TrajectoryStep], route_steps: dict[tuple[Actor, Actor | None], TrajectoryStep]) -> TrajectoryStep:
     """基于预计算 route metadata 从闭包中选择 milestone 评分 step。
 
     入参：
@@ -170,8 +168,6 @@ def milestone_scoring_step(milestone: Milestone, steps: list[TrajectoryStep], ro
     输出：
         用于构造评分 boundary 的 raw step。
     """
-    if milestone is None or not steps:
-        raise ValueError("milestone 和 steps 不能为空")
     default_step = steps[-1]
     route = milestone.matching_route
     return route_steps.get(route, default_step) if route is not None else default_step
@@ -179,15 +175,10 @@ def milestone_scoring_step(milestone: Milestone, steps: list[TrajectoryStep], ro
 def _build_predecessor_diagnostics(frontier: MilestoneFrontierState, missing_predecessors: list[str], candidate_by_milestone: dict[str, JsonObject]) -> list[JsonObject]:
     predecessor_diagnostics: list[JsonObject] = []
     for predecessor_id in missing_predecessors:
-        predecessor = frontier.topology.milestone_by_id.get(predecessor_id)
-        if predecessor is None:
-            predecessor_diagnostics.append(
-                {"milestone_id": predecessor_id, "missing_node": True, "best_candidate": None}
-            )
-            continue
+        frontier.topology.milestone_by_id[predecessor_id]
         best_predecessor = candidate_by_milestone.get(predecessor_id)
         predecessor_diagnostics.append(
-            {"milestone_id": predecessor_id, "missing_node": False, "best_candidate": best_predecessor}
+            {"milestone_id": predecessor_id, "best_candidate": best_predecessor}
         )
     return predecessor_diagnostics
 

@@ -78,27 +78,19 @@ class GeneralScorer:
             evidence.append(f"selector 未命中: {constraint.selector}")
         return ConstraintScore(constraint_id=constraint.constraint_id, score=score, missing=missing, evidence=evidence, actual=actual)
 
-    def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, reference_snapshots: list[StateSnapshot], context: ScoringContext | None=None) -> MilestoneScore:
+    def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, context: ScoringContext) -> MilestoneScore:
         boundary_id = f"runtime:b{scoring_step.index}"
         if len(milestone.constraints) == 0:
             return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary_id, score=0.0, status=StageStatus.INVALID, evidence=["milestone 缺少 constraints"], missing_ratio=1.0, hard_constraints_all_pass=False)
         constraint_scores: list[ConstraintScore] = []
-        weighted_sum = 0.0
-        weight_sum = 0.0
-        hard_pass = True
         stage_start_index = self._milestone_start_index(milestone, trajectory, context)
         for constraint in milestone.constraints:
-            source, reference = self.constraint_sources(constraint, scoring_step, trajectory, reference_snapshots, context=context, stage_start_index=stage_start_index)
+            source, reference = self.constraint_sources(constraint, scoring_step, trajectory, context, stage_start_index=stage_start_index)
             result = self.score_constraint(constraint, source, reference, context=context)
             constraint_scores.append(result)
-            weight = max(float(constraint.weight), 0.0)
-            weighted_sum += result.score * weight
-            weight_sum += weight
-            if constraint.hard and result.score < constraint.threshold:
-                hard_pass = False
+        score, hard_pass = self._aggregate_constraints(milestone, constraint_scores)
         missing_count = sum((1 for item in constraint_scores if item.missing))
         missing_ratio = missing_count / len(constraint_scores)
-        score = 0.0 if not hard_pass else weighted_sum / weight_sum if weight_sum > 0 else 0.0
         threshold = milestone.pass_threshold if milestone.pass_threshold is not None else 0.8
         if not hard_pass:
             status = StageStatus.FAIL
@@ -110,6 +102,17 @@ class GeneralScorer:
             status = StageStatus.FAIL
         evidence = [line for item in constraint_scores for line in item.evidence]
         return MilestoneScore(milestone_id=milestone.milestone_id, boundary_id=boundary_id, score=clamp(score), status=status, evidence=evidence, missing_ratio=missing_ratio, hard_constraints_all_pass=hard_pass, constraint_scores=constraint_scores)
+
+    def _aggregate_constraints(self, milestone: Milestone, scores: list[ConstraintScore]) -> tuple[float, bool]:
+        """返回约束加权分数和 hard constraints 是否全部通过。"""
+        weights = [max(float(constraint.weight), 0.0) for constraint in milestone.constraints]
+        weight_sum = sum(weights)
+        hard_pass = all(
+            not constraint.hard or score.score >= constraint.threshold
+            for constraint, score in zip(milestone.constraints, scores, strict=True)
+        )
+        weighted_sum = sum(score.score * weight for score, weight in zip(scores, weights, strict=True))
+        return (weighted_sum / weight_sum if hard_pass and weight_sum > 0 else 0.0, hard_pass)
 
     def _resolve_source(self, constraint: Constraint, source: object | None) -> JsonValue:
         if source is None:
@@ -144,7 +147,7 @@ class GeneralScorer:
             return source
         return None
 
-    def constraint_sources(self, constraint: Constraint, scoring_step: TrajectoryStep, trajectory: Trajectory, snapshots: list[StateSnapshot], context: ScoringContext | None=None, stage_start_index: int | None=None) -> tuple[object, StateSnapshot | None]:
+    def constraint_sources(self, constraint: Constraint, scoring_step: TrajectoryStep, trajectory: Trajectory, context: ScoringContext, stage_start_index: int | None=None) -> tuple[object, StateSnapshot | None]:
         """按约束目标解析 boundary 上的评分 source 与 reference。"""
         if constraint.target == ConstraintTarget.STATE_SNAPSHOT:
             source: object = trajectory.snapshot_at_or_before(scoring_step.index)
@@ -156,14 +159,7 @@ class GeneralScorer:
             source = scoring_step
         if constraint.reference_milestone_id is None:
             return (source, None)
-        if context is not None:
-            snapshot = context.matched_snapshots.get(constraint.reference_milestone_id)
-            if snapshot is not None:
-                return (source, snapshot)
-        for snapshot in snapshots:
-            if snapshot.snapshot_id == constraint.reference_milestone_id:
-                return (source, snapshot)
-        return (source, None)
+        return (source, context.matched_snapshots.get(constraint.reference_milestone_id))
 
     def _interval_step_source(self, constraint: Constraint, scoring_step: TrajectoryStep, trajectory: Trajectory, stage_start_index: int | None) -> TrajectoryStep | None:
         """在当前 milestone 阶段区间中寻找最近的目标 step。"""
@@ -177,11 +173,9 @@ class GeneralScorer:
                 return step
         return scoring_step
 
-    def _milestone_start_index(self, milestone: Milestone, trajectory: Trajectory, context: ScoringContext | None) -> int:
-        graph = context.task_case.milestone_graph if context is not None and context.task_case is not None else None
-        topology = graph.topology if graph is not None else None
-        if topology is None:
-            return trajectory.first_step_index - 1
+    def _milestone_start_index(self, milestone: Milestone, trajectory: Trajectory, context: ScoringContext) -> int:
+        graph = context.task_case.milestone_graph
+        topology = graph.topology
         anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
         return trajectory.first_step_index - 1 if anchor_id == START_NODE_ID else context.matched_step_indexes.get(anchor_id, trajectory.first_step_index - 1)
 

@@ -3,7 +3,7 @@ from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.model import JsonObject, MilestoneGraph, ScoringContext, StateSnapshot, Trajectory, TrajectoryStep
 from dynsteer.utils import clamp
 
-def evaluate_minefields_at_boundary(graph: MilestoneGraph, trajectory: Trajectory, scoring_step: TrajectoryStep, scorer: GeneralScorer, context: ScoringContext | None, evaluated_sources: set[str]) -> tuple[list[JsonObject], float, bool]:
+def evaluate_minefields_at_boundary(graph: MilestoneGraph, trajectory: Trajectory, scoring_step: TrajectoryStep, scorer: GeneralScorer, context: ScoringContext, evaluated_sources: set[str]) -> tuple[list[JsonObject], float, bool]:
     """在单个运行期 boundary 上扫描 minefield 命中情况。"""
     matches: list[JsonObject] = []
     max_score = 0.0
@@ -11,7 +11,7 @@ def evaluate_minefields_at_boundary(graph: MilestoneGraph, trajectory: Trajector
     for minefield in graph.minefields:
         if minefield is None or not minefield.constraints:
             continue
-        sources = [scorer.constraint_sources(constraint, scoring_step, trajectory, trajectory.snapshots) for constraint in minefield.constraints]
+        sources = [scorer.constraint_sources(constraint, scoring_step, trajectory, context) for constraint in minefield.constraints]
         source_identity = "|".join(f"{_source_identity(source, scoring_step)}@{_source_identity(reference, scoring_step)}" for source, reference in sources)
         fingerprint = f"{minefield.minefield_id}:{source_identity}"
         if fingerprint in evaluated_sources:

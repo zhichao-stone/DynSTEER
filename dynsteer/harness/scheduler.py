@@ -11,7 +11,6 @@ from dynsteer.progress import (
     CaseProgressEvent,
     CaseProgressReporter,
     DEFAULT_PROGRESS_TOTAL,
-    DEFAULT_VISIBLE_PROGRESS_BARS,
     QueueProgressReporter,
     TqdmCaseProgressManager,
     progress_logging_redirect,
@@ -49,11 +48,6 @@ def run_case_tasks(
     return _run_tasks_parallel(tasks, max_workers=max_workers, logger=logger, force_eval=force_eval)
 
 
-def _progress_visible_bars(max_workers: int) -> int:
-    """根据并发数计算终端可见进度条数量。"""
-    return max(DEFAULT_VISIBLE_PROGRESS_BARS, max_workers)
-
-
 def _run_case(
     task: HarnessCaseTask,
     progress_reporter: CaseProgressReporter | None = None,
@@ -75,7 +69,7 @@ def _run_case(
     except HarnessCaseExecutionError:
         raise
     except Exception as exc:
-        raise HarnessCaseExecutionError(task.config.benchmark, task.case_id, exc) from exc
+        raise HarnessCaseExecutionError(task.config.benchmark, task.task_case.case_id, exc) from exc
 
 
 def _progress_total_from_tasks(tasks: list[HarnessCaseTask]) -> int:
@@ -96,17 +90,16 @@ def _run_tasks_serial(
     manager = TqdmCaseProgressManager(
         max_workers=1,
         estimated_total=_progress_total_from_tasks(tasks),
-        max_visible_bars=_progress_visible_bars(1),
     )
     outputs: list[HarnessEvaluationOutput] = []
     with progress_logging_redirect(logger):
         try:
             for task in tasks:
-                manager.case_started(task.case_id, case_index=task.order + 1)
+                manager.case_started(task.task_case.case_id, case_index=task.order + 1)
                 try:
                     outputs.append(_run_case(task, progress_reporter=manager, force_eval=force_eval))
                 finally:
-                    manager.case_finished(task.case_id)
+                    manager.case_finished(task.task_case.case_id)
         finally:
             manager.close_all()
     return outputs
@@ -123,7 +116,6 @@ def _run_tasks_parallel(
     manager = TqdmCaseProgressManager(
         max_workers=max_workers,
         estimated_total=_progress_total_from_tasks(tasks),
-        max_visible_bars=_progress_visible_bars(max_workers),
     )
     events: Queue[CaseProgressEvent] = Queue()
     outputs_by_order: dict[int, HarnessEvaluationOutput] = {}
@@ -137,7 +129,7 @@ def _run_tasks_parallel(
                 return
             task = tasks[next_index]
             next_index += 1
-            manager.case_started(task.case_id, case_index=task.order + 1)
+            manager.case_started(task.task_case.case_id, case_index=task.order + 1)
             futures[executor.submit(_run_case, task, QueueProgressReporter(events), force_eval)] = task
 
         for _ in range(min(max_workers, len(tasks))):
@@ -151,7 +143,7 @@ def _run_tasks_parallel(
                         event = events.get(timeout=0.05)
                     except Empty:
                         continue
-                    _apply_progress_event(event, manager)
+                    manager.case_advanced(event.case_id, event.step_count)
                     continue
                 for future in done_futures:
                     task = futures.pop(future)
@@ -159,7 +151,7 @@ def _run_tasks_parallel(
                     try:
                         outputs_by_order[task.order] = future.result()
                     finally:
-                        manager.case_finished(task.case_id)
+                        manager.case_finished(task.task_case.case_id)
                     submit_next()
         finally:
             _drain_progress_events(events, manager)
@@ -174,14 +166,4 @@ def _drain_progress_events(events: Queue[CaseProgressEvent], manager: TqdmCasePr
             event = events.get_nowait()
         except Empty:
             return
-        _apply_progress_event(event, manager)
-
-
-def _apply_progress_event(event: CaseProgressEvent, manager: TqdmCaseProgressManager) -> None:
-    """把单个进度事件应用到 progress manager。"""
-    if event.kind == "case_advanced":
         manager.case_advanced(event.case_id, event.step_count)
-    elif event.kind == "case_started":
-        manager.case_started(event.case_id)
-    elif event.kind == "case_finished":
-        manager.case_finished(event.case_id)

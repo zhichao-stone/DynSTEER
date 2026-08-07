@@ -6,7 +6,7 @@ from dynsteer.adapter.agentcompass.harness import (
 from dynsteer.adapter.base import BenchmarkDefaultResult
 from dynsteer.adapter.skillsbench.utils.artifact import artifact_manifest
 from dynsteer.adapter.skillsbench.utils.result import native_result_summary
-from dynsteer.model import JsonObject, TrajectoryStep
+from dynsteer.model import JsonObject
 
 
 class SkillsBenchHarness(BaseAgentCompassHarness):
@@ -14,7 +14,7 @@ class SkillsBenchHarness(BaseAgentCompassHarness):
 
     benchmark = "skillsbench"
 
-    def _build_run_data(self, detail: JsonObject, steps: list[TrajectoryStep]) -> AgentCompassRunData:
+    def _build_run_data(self, detail: JsonObject) -> AgentCompassRunData:
         """构造 SkillsBench 脱敏运行结果。"""
         summary = native_result_summary(detail)
         attempt = detail["attempt"]
@@ -34,7 +34,6 @@ class SkillsBenchHarness(BaseAgentCompassHarness):
             metrics["test_return_code"] = summary["test_return_code"]
         score = float(summary["score"]) if summary["reward_available"] else 0.0
         return AgentCompassRunData(
-            steps=steps,
             default_result=BenchmarkDefaultResult(score=score, raw=default_raw, metrics=metrics),
             final_state={"artifacts": artifacts},
             raw_summary=agentcompass_run_summary(detail, summary, "agentcompass_skillsbench"),

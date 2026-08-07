@@ -1,8 +1,8 @@
 import hashlib
-from dynsteer.model import JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, TrajectoryStep
+from dynsteer.model import JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, TrajectoryStep, ValidatedJudgePayload
 from dynsteer.stage import stage_trajectory_steps
 from dynsteer.stage import resolve_stage_goal
-from dynsteer.utils import compact_text, first_text, string_list
+from dynsteer.utils import compact_text, first_text
 
 def judge_input_metadata(interval: StageInterval, task_case: TaskCase, trajectory: Trajectory, prompt: str, prompt_type: str | None=None) -> JsonObject:
     """构造 LLM judge 调用前输入快照元数据。"""
@@ -51,23 +51,17 @@ def judge_result_output_metadata(result: StageEvaluationResult, input_metadata: 
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
     }
 
-def judge_payload_output_metadata(payload: JsonObject, input_metadata: JsonObject) -> JsonObject:
+def judge_payload_output_metadata(payload: ValidatedJudgePayload, input_metadata: JsonObject) -> JsonObject:
     """根据已校验 payload 构造中间轮次输出快照。"""
     if payload is None or input_metadata is None:
         raise ValueError("judge payload 输出快照参数不能为空")
     return {
-        "judge_status": str(payload.get("status")),
-        "judge_dimension_scores": _payload_dimension_scores(payload),
-        "judge_first_diagnosis": first_text(string_list(payload.get("diagnosis")), 240),
-        "judge_first_evidence": first_text(string_list(payload.get("evidence")), 240),
+        "judge_status": payload.status.value,
+        "judge_dimension_scores": {dimension.value: score for dimension, score in payload.dimension_scores.items()},
+        "judge_first_diagnosis": first_text(payload.diagnosis, 240),
+        "judge_first_evidence": first_text(payload.evidence, 240),
         "prompt_context_digest": input_metadata.get("prompt_context_digest"),
     }
-
-def _payload_dimension_scores(payload: JsonObject) -> JsonObject:
-    value = payload.get("dimension_scores")
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): item for key, item in value.items() if isinstance(item, int | float)}
 
 def _average_confidence(result: StageEvaluationResult) -> float | None:
     if result.dimension_confidence is None or not result.dimension_confidence:

@@ -13,7 +13,9 @@ from dynsteer.experiment.model import ExperimentMethod, ExperimentRunSpec
 from dynsteer.experiment.runner import run_experiment
 from dynsteer.harness.config import load_harness_run_configs
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.harness.runner import HarnessEvaluationOutput, run_harness_configs
+from dynsteer.harness.runner import run_harness_configs
+from dynsteer.harness.selection import select_case_ids
+from dynsteer.model import HarnessEvaluationOutput
 from dynsteer.log import configure_logger
 
 DEFAULT_RANDOM_SEED = 202608
@@ -61,23 +63,13 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
         if not force_adapt and _adapted_case_files_exist(config):
             case_ids = list(config.case_ids)
         else:
-            cases = harness.list_cases(config)
-            if not cases:
-                raise ValueError("benchmark 没有可适配场景")
-            known_case_ids = {case.case_id for case in cases}
             if config.case_ids is not None:
-                missing = [case_id for case_id in config.case_ids if case_id not in known_case_ids]
-                if missing:
-                    raise KeyError(f"benchmark 场景不存在: {missing[0]}")
                 case_ids = list(config.case_ids)
             else:
-                case_ids = [case.case_id for case in cases]
+                case_ids = select_case_ids(config, harness)
         run_config = replace(config, case_ids=tuple(case_ids))
         harness.prepare_config(run_config)
-        task_cases = load_task_case(run_config, adapter, force_adapt=force_adapt)
-        loaded_case_ids = [task_case.case_id for task_case in task_cases]
-        if loaded_case_ids != case_ids:
-            raise ValueError(f"加载的 TaskCase 顺序与配置不一致: {loaded_case_ids}")
+        load_task_case(run_config, adapter, force_adapt=force_adapt)
         adapted_paths.extend(adapted_case_path(run_config.data_root, case_id) for case_id in case_ids)
     return adapted_paths
 

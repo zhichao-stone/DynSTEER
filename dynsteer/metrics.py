@@ -1,4 +1,5 @@
 from contextvars import ContextVar, Token
+from collections.abc import Sequence
 from dynsteer.model import (
     EventType,
     EvaluationTerminationState,
@@ -6,6 +7,7 @@ from dynsteer.model import (
     LLMCallMetrics,
     RuntimeMetricsRecorder,
     Trajectory,
+    TrajectoryStep,
 )
 from dynsteer.harness.model import HarnessAdvanceResult
 
@@ -24,7 +26,7 @@ def current_runtime_metrics_recorder() -> RuntimeMetricsRecorder | None:
     """返回当前上下文中的运行统计 recorder。"""
     return _CURRENT_RECORDER.get()
 
-def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float, started_at: str, finished_at: str, trajectory: Trajectory, llm_calls: list[LLMCallMetrics], agent_step_count: int, judge_cache_metrics: JsonObject | None = None) -> JsonObject:
+def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float, started_at: str, finished_at: str, trajectory: Trajectory, llm_calls: list[LLMCallMetrics], agent_step_count: int) -> JsonObject:
     """聚合 trajectory 与 LLM 调用，生成运行统计 JSON。"""
     if agent_step_count < 0:
         raise ValueError("agent_step_count 不能为负数")
@@ -32,18 +34,27 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     raw_step_count = len(trajectory.steps)
     snapshot_count = len(trajectory.snapshots)
     tool_call_count = sum((1 for step in trajectory.steps if step.tool_call is not None or step.event_type == EventType.TOOL_CALL))
-    trajectory_tokens = [step.cost.tokens for step in trajectory.steps]
+    token_summary = _trajectory_token_summary(trajectory.steps)
     trajectory_latency = [step.cost.latency_ms for step in trajectory.steps]
-    trajectory_token_value_count = sum(value is not None for value in trajectory_tokens)
-    trajectory_cost_available = trajectory_token_value_count == raw_step_count if raw_step_count else True
     trajectory_latency_available = any((value is not None for value in trajectory_latency))
     execution_records = _execution_timing_records(trajectory)
+    unattributed_execution_seconds = _unattributed_execution_seconds(trajectory)
+    raw_execution_records = trajectory.raw.get("execution_timing")
+    execution_timing_available = _timing_schema_version(trajectory) >= 1 and (
+        not trajectory.steps
+        or (
+            isinstance(raw_execution_records, list)
+            and len(raw_execution_records) == len(execution_records)
+            and _execution_timing_records_valid(execution_records)
+            and all(isinstance(step.cost.latency_ms, int) and step.cost.latency_ms >= 0 for step in trajectory.steps)
+        )
+    )
     execution_total_latency_ms = sum(
         int(record["latency_ms"])
         for record in execution_records
         if isinstance(record.get("latency_ms"), int)
     )
-    execution_total_latency_ms += int(round(_unattributed_execution_seconds(trajectory) * 1000))
+    execution_total_latency_ms += int(round(unattributed_execution_seconds * 1000))
     llm_prompt_tokens = _sum_optional_int([call.prompt_tokens for call in llm_calls])
     llm_completion_tokens = _sum_optional_int([call.completion_tokens for call in llm_calls])
     llm_total_tokens = _sum_optional_int([call.total_tokens for call in llm_calls])
@@ -55,18 +66,18 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "raw_step_count": raw_step_count,
         "snapshot_count": snapshot_count,
         "tool_call_count": tool_call_count,
-        "trajectory_total_tokens": _sum_optional_int(trajectory_tokens) or 0,
+        "trajectory_total_tokens": token_summary["tokens"] or 0,
         "trajectory_total_latency_ms": _sum_optional_int(trajectory_latency) or 0,
-        "trajectory_cost_available": trajectory_cost_available,
-        "trajectory_token_value_count": trajectory_token_value_count,
-        "trajectory_token_coverage": trajectory_token_value_count / raw_step_count if raw_step_count else 1.0,
+        "trajectory_cost_available": token_summary["available"],
+        "trajectory_token_value_count": token_summary["value_count"],
+        "trajectory_token_coverage": token_summary["coverage"],
         "trajectory_latency_available": trajectory_latency_available,
         "timing_schema_version": _timing_schema_version(trajectory),
-        "execution_timing_available": _execution_timing_available(trajectory),
+        "execution_timing_available": execution_timing_available,
         "execution_batch_count": len(execution_records),
         "execution_total_latency_ms": execution_total_latency_ms,
         "execution_total_seconds": execution_total_latency_ms / 1000,
-        "unattributed_execution_seconds": _unattributed_execution_seconds(trajectory),
+        "unattributed_execution_seconds": unattributed_execution_seconds,
         "llm_call_count": len(llm_calls),
         "llm_failed_call_count": sum((1 for call in llm_calls if not call.success)),
         "llm_prompt_tokens": llm_prompt_tokens,
@@ -74,7 +85,6 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "llm_total_tokens": llm_total_tokens,
         "llm_calls": [call.to_dict() for call in llm_calls],
     }
-    metrics.update(judge_cache_metrics or {})
     return metrics
 
 
@@ -106,15 +116,26 @@ def prefix_trajectory_cost(trajectory: Trajectory, stop_step_index: int | None =
     if trajectory is None:
         raise ValueError("trajectory 不能为空")
     steps = [step for step in trajectory.steps if stop_step_index is None or step.index <= stop_step_index]
+    summary = _trajectory_token_summary(steps)
+    return {
+        "tokens": summary["tokens"],
+        "token_value_count": summary["value_count"],
+        "token_available": summary["available"],
+        "token_coverage": summary["coverage"],
+        "scanned_step_count": len(steps),
+        "reason": None if summary["available"] else "trajectory step token 缺失",
+    }
+
+
+def _trajectory_token_summary(steps: Sequence[TrajectoryStep]) -> JsonObject:
+    """聚合一组 trajectory steps 的 token 可用性。"""
     values = [step.cost.tokens for step in steps]
     count = sum(value is not None for value in values)
     return {
         "tokens": _sum_optional_int(values),
-        "token_value_count": count,
-        "token_available": count == len(values) if values else True,
-        "token_coverage": count / len(values) if values else 1.0,
-        "scanned_step_count": len(steps),
-        "reason": None if count == len(values) else "trajectory step token 缺失",
+        "value_count": count,
+        "available": count == len(values) if values else True,
+        "coverage": count / len(values) if values else 1.0,
     }
 
 
@@ -139,13 +160,9 @@ def append_execution_timing(trajectory: Trajectory, advance: HarnessAdvanceResul
         return
     step_count = len(advance.steps)
     base, remainder = divmod(latency_ms, step_count)
-    allocated = []
     for position, step in enumerate(advance.steps):
         value = base + (1 if position < remainder else 0)
         step.cost.latency_ms = value
-        allocated.append(value)
-    if sum(allocated) != latency_ms:
-        raise AssertionError("execution timing 分摊总和必须等于批次耗时")
     batch_index = len(records)
     step_indices = [step.index for step in advance.steps]
     records.append(
@@ -297,10 +314,6 @@ def _execution_timing_records_valid(records: list[dict[str, object]]) -> bool:
 def _timing_schema_version(trajectory: Trajectory) -> int:
     value = trajectory.raw.get("timing_schema_version")
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
-def _execution_timing_available(trajectory: Trajectory) -> bool:
-    return bool(prefix_execution_timing(trajectory, None).get("timing_available")) if trajectory.steps else _timing_schema_version(trajectory) >= 1
 
 
 def _unattributed_execution_seconds(trajectory: Trajectory) -> float:

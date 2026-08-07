@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, replace
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
@@ -32,16 +32,6 @@ DefaultOutputKey = tuple[str, str, str, int, str]
 DefaultOutputCache = dict[DefaultOutputKey, HarnessEvaluationOutput]
 DefaultCaseItem = tuple[DefaultOutputKey, TaskCase]
 DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput]
-
-_METHODS_NEED_DEFAULT = {
-    ExperimentMethod.DEFAULT,
-    ExperimentMethod.DYNSTEER_EVALUATE,
-    ExperimentMethod.DYNSTEER_REPLAY,
-    ExperimentMethod.DYNSTEER_REPLAY_STATIC,
-    ExperimentMethod.DYNSTEER_REPLAY_STATIC_WEIGHTING,
-    ExperimentMethod.DYNSTEER_REPLAY_STATIC_ROUTING,
-}
-
 
 class ExperimentCaseExecutionError(RuntimeError):
     """单个 experiment case 运行失败时抛出。"""
@@ -77,12 +67,11 @@ def run_experiment(
 
     harness_configs = [build_harness_config(spec) for spec in specs]
     static_cases: dict[tuple[object, ...], tuple[list[TaskCase], HarnessRunConfig]] = {}
-    for spec, harness_config in zip(specs, harness_configs, strict=True):
-        key = _static_adaptation_key(spec)
-        if key in static_cases:
-            continue
-        candidates = [item for item in specs if _static_adaptation_key(item) == key]
-        representative = next((item for item in candidates if item.method != ExperimentMethod.DEFAULT), spec)
+    static_spec_groups: dict[tuple[object, ...], list[ExperimentRunSpec]] = {}
+    for spec in specs:
+        static_spec_groups.setdefault(_static_adaptation_key(spec), []).append(spec)
+    for key, candidates in static_spec_groups.items():
+        representative = next((item for item in candidates if item.method != ExperimentMethod.DEFAULT), candidates[0])
         representative_config = build_harness_config(representative)
         templates, prepared_config = prepare_task_cases(
             representative_config, force_adapt, refresh_dynamic_targets=False
@@ -106,32 +95,29 @@ def run_experiment(
         task_cases = tuple(prepared_task_cases)
         spec_workers = effective_max_workers(workers, harness_config)
 
-        if spec.method in _METHODS_NEED_DEFAULT:
-            default_spec = spec if spec.method == ExperimentMethod.DEFAULT else replace(spec, method=ExperimentMethod.DEFAULT)
-            default_entries = _run_worker_group(
-                _pending_default_case_items(spec, task_cases, default_outputs),
-                max_workers=spec_workers,
-                runner=partial(_run_default_case_entry, spec=default_spec, force_eval=effective_force_eval),
-                progress_desc="执行 DEFAULT case",
-            )
-            for key, task_case, output in default_entries:
-                default_outputs[key] = output
-                results.append(_case_result_from_output(default_spec, task_case, output))
+        default_spec = spec if spec.method == ExperimentMethod.DEFAULT else replace(spec, method=ExperimentMethod.DEFAULT)
+        default_entries = _run_worker_group(
+            _pending_default_case_items(spec, task_cases, default_outputs),
+            max_workers=spec_workers,
+            runner=partial(_run_default_case_entry, spec=default_spec, force_eval=effective_force_eval),
+            progress_desc="执行 DEFAULT case",
+        )
+        for key, task_case, output in default_entries:
+            default_outputs[key] = output
+            results.append(_case_result_from_output(default_spec, task_case, output))
 
-            if spec.method != ExperimentMethod.DEFAULT:
-                if spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
-                    runner = partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval)
-                else:
-                    runner = partial(
-                        _run_replay_case_entry,
-                        spec=spec, default_outputs=default_outputs, force_eval=effective_force_eval,
-                    )
-                results.extend(_run_worker_group(
-                    task_cases, max_workers=spec_workers, runner=runner,
-                    progress_desc=f"执行 {spec.method.name} case",
-                ))
-        else:
-            raise ValueError(f"不支持的 experiment method: {spec.method}")
+        if spec.method != ExperimentMethod.DEFAULT:
+            if spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
+                runner = partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval)
+            else:
+                runner = partial(
+                    _run_replay_case_entry,
+                    spec=spec, default_outputs=default_outputs, force_eval=effective_force_eval,
+                )
+            results.extend(_run_worker_group(
+                task_cases, max_workers=spec_workers, runner=runner,
+                progress_desc=f"执行 {spec.method.name} case",
+            ))
 
     if results and not no_sum:
         output_dir = specs[0].results_dir
@@ -147,9 +133,18 @@ def _default_output_key(spec: ExperimentRunSpec, task_case: TaskCase) -> Default
 
 def _static_adaptation_key(spec: ExperimentRunSpec) -> tuple[object, ...]:
     """生成与 model、method、repeat 无关的静态适配分组键。"""
-    generation = json.dumps(json_safe(asdict(spec.milestone_generation)), sort_keys=True)
+    generation = spec.milestone_generation
+    generator = json.dumps(generation.generator, sort_keys=True)
     stage_mode = str(spec.metadata.get("stage_goal_generation", "auto"))
-    return spec.benchmark, str(spec.data_root.resolve()), spec.case_ids, generation, stage_mode
+    return (
+        spec.benchmark,
+        str(spec.data_root.resolve()),
+        spec.case_ids,
+        generation.use_origin_milestone,
+        generation.simulated_path_count,
+        generator,
+        stage_mode,
+    )
 
 
 def _pending_default_case_items(
@@ -170,7 +165,8 @@ def _run_default_case_entry(item: DefaultCaseItem, *, spec: ExperimentRunSpec, f
     """执行单个 default case 并返回可缓存结果。"""
     key, task_case = item
     try:
-        output = run_default_case(spec, task_case, force_eval=force_eval)
+        task_case, harness, config = _prepare_for_run_case(spec, task_case)
+        output = write_default_case_outputs(config=config, harness=harness, task_case=task_case, force_eval=force_eval)
     except Exception as exc:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
     return key, task_case, output
@@ -189,12 +185,14 @@ def _run_replay_case_entry(
     if cached is None:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, KeyError(f"缺少 default output: {key}"))
     try:
-        output = run_replay_case(
-            spec,
-            task_case,
-            cached,
-            force_eval=force_eval,
-        )
+        task_case, harness, config = _prepare_for_run_case(spec, task_case)
+        trajectory_path = cached.raw_run_dir / "trajectory.json"
+        trajectory = load_trajectory(read_json_file(trajectory_path, str(trajectory_path), dict))
+        runtime_initial_state = trajectory.raw.get("runtime_initial_state")
+        if isinstance(runtime_initial_state, dict):
+            apply_runtime_initial_state(task_case, runtime_initial_state, "default_trajectory")
+        evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
+        output = write_replay_case_outputs(config=config, evaluator=evaluator, task_case=task_case, trajectory=trajectory, harness=harness, force_eval=force_eval)
     except Exception as exc:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
     return _case_result_from_output(spec, task_case, output)
@@ -203,7 +201,9 @@ def _run_replay_case_entry(
 def _run_evaluate_case_entry(task_case: TaskCase, *, spec: ExperimentRunSpec, force_eval: bool) -> ExperimentCaseResult:
     """执行单个在线 evaluate case。"""
     try:
-        output = run_evaluate_case(spec, task_case, force_eval=force_eval)
+        task_case, harness, config = _prepare_for_run_case(spec, task_case)
+        evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
+        output = write_case_outputs(config=config, harness=harness, evaluator=evaluator, task_case=task_case, force_eval=force_eval)
     except Exception as exc:
         raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
     return _case_result_from_output(spec, task_case, output)
@@ -245,62 +245,6 @@ def _prepare_for_run_case(spec: ExperimentRunSpec, task_case_template: TaskCase)
     return task_case, harness, config
 
 
-def run_default_case(
-    spec: ExperimentRunSpec,
-    task_case_template: TaskCase,
-    force_eval: bool = False,
-) -> HarnessEvaluationOutput:
-    """执行原生 Default case。"""
-    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
-    return write_default_case_outputs(
-        config=config,
-        harness=harness,
-        task_case=task_case,
-        force_eval=force_eval,
-    )
-
-
-def run_replay_case(
-    spec: ExperimentRunSpec,
-    task_case_template: TaskCase,
-    default_output: HarnessEvaluationOutput,
-    force_eval: bool = False,
-) -> HarnessEvaluationOutput:
-    """读取 Default 轨迹并执行 replay。"""
-    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
-    trajectory_data = read_json_file(default_output.trajectory_path, str(default_output.trajectory_path), dict)
-    trajectory = load_trajectory(trajectory_data)
-    runtime_initial_state = trajectory.raw.get("runtime_initial_state")
-    if isinstance(runtime_initial_state, dict):
-        apply_runtime_initial_state(task_case, runtime_initial_state, "default_trajectory")
-    evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
-    return write_replay_case_outputs(
-        config=config,
-        evaluator=evaluator,
-        task_case=task_case,
-        trajectory=trajectory,
-        harness=harness,
-        force_eval=force_eval,
-    )
-
-
-def run_evaluate_case(
-    spec: ExperimentRunSpec,
-    task_case_template: TaskCase,
-    force_eval: bool = False,
-) -> HarnessEvaluationOutput:
-    """直接调用 DynSTEEREvaluator.evaluate() 执行在线评估。"""
-    task_case, harness, config = _prepare_for_run_case(spec, task_case_template)
-    evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
-    return write_case_outputs(
-        config=config,
-        harness=harness,
-        evaluator=evaluator,
-        task_case=task_case,
-        force_eval=force_eval,
-    )
-
-
 def write_experiment_index(results: list[ExperimentCaseResult], output_dir: Path) -> None:
     """写出分层 experiment index。"""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -338,7 +282,8 @@ def _case_result_from_output(
     output: HarnessEvaluationOutput,
 ) -> ExperimentCaseResult:
     """从输出文件中抽取 ExperimentCaseResult。"""
-    summary: dict = read_json_file(output.summary_path, str(output.summary_path), dict)
+    summary_path = output.result_dir / "summary.json"
+    summary: dict = read_json_file(summary_path, str(summary_path), dict)
     runtime_metrics = summary.get("runtime_metrics") if isinstance(summary.get("runtime_metrics"), dict) else {}
 
     score = as_number(summary.get("score"))
@@ -364,8 +309,10 @@ def _case_result_from_output(
         adaptation_usage=dict(task_case.metadata.get("adaptation_usage", {})),
         runtime_metrics=dict(runtime_metrics),
         output_paths={
-            k: str(v)
-            for k, v in asdict(output).items()
-            if k in ["result_dir", "raw_run_dir", "summary_path", "report_path", "trajectory_path"]
+            "result_dir": str(output.result_dir),
+            "raw_run_dir": str(output.raw_run_dir),
+            "summary_path": str(output.result_dir / "summary.json"),
+            "report_path": str(output.result_dir / "report.json"),
+            "trajectory_path": str(output.raw_run_dir / "trajectory.json"),
         },
     )

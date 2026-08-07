@@ -6,7 +6,7 @@ from dynsteer.adapter.agentcompass.harness import (
 from dynsteer.adapter.base import BenchmarkDefaultResult
 from dynsteer.adapter.swebench_pro.utils.patch import patch_summary
 from dynsteer.adapter.swebench_pro.utils.result import native_result_summary
-from dynsteer.model import JsonObject, TrajectoryStep
+from dynsteer.model import JsonObject
 
 
 class SWEBenchProHarness(BaseAgentCompassHarness):
@@ -14,7 +14,7 @@ class SWEBenchProHarness(BaseAgentCompassHarness):
 
     benchmark = "swebench_pro"
 
-    def _build_run_data(self, detail: JsonObject, steps: list[TrajectoryStep]) -> AgentCompassRunData:
+    def _build_run_data(self, detail: JsonObject) -> AgentCompassRunData:
         """构造 SWE-bench Pro 脱敏运行结果。"""
         summary = native_result_summary(detail)
         attempt = detail["attempt"]
@@ -32,7 +32,6 @@ class SWEBenchProHarness(BaseAgentCompassHarness):
         if summary["returncode"] is not None:
             metrics["returncode"] = summary["returncode"]
         return AgentCompassRunData(
-            steps=steps,
             default_result=BenchmarkDefaultResult(score=1.0 if summary["resolved"] else 0.0, raw=default_raw, metrics=metrics),
             final_state={"patch": patch},
             raw_summary=agentcompass_run_summary(detail, summary, "agentcompass_swebench_pro"),

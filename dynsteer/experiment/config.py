@@ -121,7 +121,6 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
                             )
                         )
 
-    validate_experiment_matrix(specs)
     return specs
 
 
@@ -135,18 +134,9 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
         case_ids=spec.case_ids,
         runs_dir=spec.runs_dir,
         results_dir=spec.results_dir,
-        stop_on_stage_failure=spec.strategy.policy_stop,
-        stop_on_minefield=spec.strategy.policy_stop,
         milestone_generation=spec.milestone_generation,
         metadata=spec.to_metadata(),
     )
-
-
-def validate_experiment_matrix(specs: list[ExperimentRunSpec]) -> None:
-    """检查实验矩阵输出路径唯一性与基础字段合法性。"""
-    for spec in specs:
-        if spec is None:
-            raise ValueError("specs 不能包含空配置")
 
 
 def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None = None) -> list[object]:

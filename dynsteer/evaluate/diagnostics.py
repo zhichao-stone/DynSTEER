@@ -254,7 +254,6 @@ def _score_value(value: object) -> float:
 
 def _pending_failure_diagnostics(
     milestone: Milestone,
-    topology: MilestoneTopology,
     blocker: str,
     common: JsonObject,
     best_entry: JsonObject | None,
@@ -353,6 +352,7 @@ def build_milestone_graph_summary(graph: MilestoneGraph) -> JsonObject:
 
 def build_milestone_matching_detail(
     matched: dict[str, HarnessStageSettlement],
+    topology: MilestoneTopology,
     milestone: Milestone,
     scoring_step: TrajectoryStep,
     milestone_score: MilestoneScore,

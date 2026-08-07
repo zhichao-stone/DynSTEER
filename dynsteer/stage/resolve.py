@@ -46,9 +46,9 @@ def resolve_stage_goal(interval: StageInterval, task_case: TaskCase) -> str:
     language = language_from_task(task_case)
     milestone_id = interval.milestone_id
     if milestone_id is None:
-        return _finish_stage_goal(language)
-    if milestone_id == FINISH_NODE_ID and _empty_milestone_graph(task_case):
-        return _whole_trajectory_stage_goal(language)
+        return _FINISH_STAGE_GOALS.get(language, _FINISH_STAGE_GOALS[TaskLanguage.ENGLISH])
+    if milestone_id == FINISH_NODE_ID and not task_case.milestone_graph.nodes:
+        return _WHOLE_TRAJECTORY_STAGE_GOALS.get(language, _WHOLE_TRAJECTORY_STAGE_GOALS[TaskLanguage.ENGLISH])
     anchor_id = interval.stage_anchor_milestone_id
     if isinstance(anchor_id, str) and anchor_id.strip():
         key = stage_goal_key(anchor_id, milestone_id)
@@ -58,18 +58,5 @@ def resolve_stage_goal(interval: StageInterval, task_case: TaskCase) -> str:
         if milestone_id != FINISH_NODE_ID:
             raise ValueError(f"TaskCase 缺少预生成 stage_goal: {key}")
     if milestone_id == FINISH_NODE_ID:
-        return _finish_stage_goal(language)
+        return _FINISH_STAGE_GOALS.get(language, _FINISH_STAGE_GOALS[TaskLanguage.ENGLISH])
     raise ValueError(f"milestone 阶段缺少 stage_anchor_milestone_id: {milestone_id}")
-
-def _finish_stage_goal(language: TaskLanguage) -> str:
-    """返回指定语言的 finish 阶段默认目标。"""
-    return _FINISH_STAGE_GOALS.get(language, _FINISH_STAGE_GOALS[TaskLanguage.ENGLISH])
-
-def _whole_trajectory_stage_goal(language: TaskLanguage) -> str:
-    """返回指定语言的完整轨迹 finish 阶段目标。"""
-    return _WHOLE_TRAJECTORY_STAGE_GOALS.get(language, _WHOLE_TRAJECTORY_STAGE_GOALS[TaskLanguage.ENGLISH])
-
-def _empty_milestone_graph(task_case: TaskCase) -> bool:
-    """判断当前 case 是否没有固定 milestone 节点。"""
-    graph = task_case.milestone_graph
-    return graph is not None and (not graph.nodes)

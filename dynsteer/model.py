@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Union
 
 if TYPE_CHECKING:
     from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
 JsonObject = dict[str, JsonValue]
 MISSING = object()
+DEFAULT_JUDGE_TEMPERATURE = 0.2
 
 class Actor(str, Enum):
     SYSTEM = "system"
@@ -345,7 +346,6 @@ class MilestoneTopology:
     successors_by_id: Mapping[str, tuple[str, ...]]
     stage_anchor_by_id: Mapping[str, str]
     order_by_id: Mapping[str, int]
-    root_ids: tuple[str, ...]
     terminal_ids: tuple[str, ...]
     finish_anchor_id: str
 
@@ -447,16 +447,19 @@ class Trajectory:
 
     def extend_snapshots(self, snapshots: list[StateSnapshot]) -> None:
         """按 snapshot_id 去重追加状态快照。"""
-        out_of_order = False
+        needs_sort = False
         for snapshot in snapshots:
             position = self._snapshot_positions.get(snapshot.snapshot_id)
             if position is not None:
                 self.snapshots[position] = snapshot
+                key = _snapshot_key(snapshot)
+                needs_sort |= position > 0 and key < _snapshot_key(self.snapshots[position - 1])
+                needs_sort |= position + 1 < len(self.snapshots) and key > _snapshot_key(self.snapshots[position + 1])
             else:
-                out_of_order |= bool(self.snapshots and _snapshot_key(snapshot) < _snapshot_key(self.snapshots[-1]))
+                needs_sort |= bool(self.snapshots and _snapshot_key(snapshot) < _snapshot_key(self.snapshots[-1]))
                 self._snapshot_positions[snapshot.snapshot_id] = len(self.snapshots)
                 self.snapshots.append(snapshot)
-        if out_of_order:
+        if needs_sort:
             self.snapshots.sort(key=_snapshot_key)
             self._rebuild_snapshot_positions()
 
@@ -588,7 +591,6 @@ class TrajectoryEvaluationReport:
     overall_score: float
     stage_reports: list[StageEvaluationResult] = field(default_factory=list)
     minefield_matches: list[JsonObject] = field(default_factory=list)
-    evaluated_minefield_sources: set[str] = field(default_factory=set)
     first_failure_stage_id: Optional[str] = None
     runtime_metrics: JsonObject = field(default_factory=dict)
     metadata: JsonObject = field(default_factory=dict)
@@ -705,6 +707,7 @@ class RuntimeEvaluationState:
     final_milestone_diagnostics: list[JsonObject] | None = None
     evaluation_policy: EvaluationPolicyState = field(default_factory=initial_evaluation_policy)
     minefield_matches: list[JsonObject] = field(default_factory=list)
+    evaluated_minefield_sources: set[str] = field(default_factory=set)
     max_minefield_score: float = 0.0
     fatal_minefield: bool = False
     ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
@@ -757,7 +760,6 @@ class RuntimeMetricsRecorder:
 @dataclass(frozen=True)
 class CaseProgressEvent:
     """跨线程传递的 case 进度事件。"""
-    kind: Literal["case_started", "case_advanced", "case_finished"]
     case_id: str
     step_count: int = 0
 
@@ -786,7 +788,7 @@ class LLMConfig:
     api_key: str | None = None
     base_url: str | None = None
     timeout_seconds: float = 60.0
-    temperature: float = 0.0
+    temperature: float = DEFAULT_JUDGE_TEMPERATURE
     max_tokens: int | None = None
     max_retries: int = 3
     retry_base_seconds: float = 1.0
@@ -804,20 +806,14 @@ class ValidatedJudgePayload:
 @dataclass(frozen=True)
 class HarnessEvaluationOutput:
     """harness 运行与 DynSTEER 评估输出路径。"""
-    run_dir: Path
     raw_run_dir: Path
     result_dir: Path
-    report_path: Path
-    summary_path: Path
-    raw_summary_path: Path
-    trajectory_path: Path
 
 @dataclass(frozen=True)
 class HarnessCaseTask:
     """已加载 TaskCase 后的单 case 执行任务。"""
     order: int
     config: HarnessRunConfig
-    case_id: str
     task_case: TaskCase
 
 @dataclass
@@ -828,12 +824,10 @@ class ToolSandboxSession:
     context: object | None
     initial_state: JsonObject | None
     case_id: str
-    raw_output_dir: Path
     initial_max_sandbox_message_index: int
     last_sandbox_message_index: int
     max_messages: int
     system_environment_messages_prepared: bool = False
-    finished: bool = False
     stop_reason: str | None = None
     termination_reason: str | None = None
 

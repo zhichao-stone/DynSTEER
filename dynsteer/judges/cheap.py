@@ -4,7 +4,7 @@ from dynsteer.judges.base import BaseJudge
 from dynsteer.judges.confidence import cheap_dimension_confidence, uncertainty_from_confidence
 from dynsteer.model import Dimension, EvaluationLevel, JsonObject, StageEvaluationResult, StageInterval, StageStatus, TaskCase, Trajectory
 from dynsteer.stage import stage_trajectory_steps
-from dynsteer.utils import clamp
+from dynsteer.utils import clamp, validated_target_dimensions
 
 class CheapJudge(BaseJudge):
     """仅用于 cheap 层的本地结构化评估器。"""
@@ -28,7 +28,7 @@ class CheapJudge(BaseJudge):
         else:
             score = 0.0
         diagnostics = build_quality_diagnostics(stage_trajectory_steps(interval, trajectory))
-        target_dimensions = self._target_dimensions(dimensions)
+        target_dimensions = validated_target_dimensions(dimensions)
         diagnosis = []
         if interval.status in {StageStatus.FAIL, StageStatus.MISSING, StageStatus.INVALID}:
             diagnosis.append("阶段未达成预期 milestone")

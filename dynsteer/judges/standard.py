@@ -5,37 +5,33 @@ from dynsteer.evaluate.semantic import SemanticMessageReview, SemanticMessageRev
 from dynsteer.prompt.judge import build_judge_prompt, build_semantic_message_equivalence_prompt
 from dynsteer.judges.telemetry import judge_input_metadata, judge_result_output_metadata
 from dynsteer.language import language_from_task
-from dynsteer.model import Dimension, EvaluationLevel, JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory
+from dynsteer.model import Dimension, EvaluationLevel, JsonObject, StageEvaluationResult, StageInterval, TaskCase, Trajectory, ValidatedJudgePayload
+from dynsteer.utils import validated_target_dimensions
 
 class StandardJudge(LLMJudge):
-    """standard 粒度的单轮 LLM-as-a-Judge。"""
+    """standard 粒度的多轮独立 LLM-as-a-Judge。"""
 
     def evaluate_stage(self, interval: StageInterval, task_case: TaskCase, trajectory: Trajectory, dimensions: Iterable[Dimension] | None=None) -> StageEvaluationResult:
-        """在单轮 LLM 调用中完成 standard 阶段评估。"""
+        """通过多轮独立 LLM 调用完成 standard 阶段评估。"""
         language = language_from_task(task_case)
-        target_dimensions = self._target_dimensions(dimensions)
+        target_dimensions = validated_target_dimensions(dimensions)
         prompt = build_judge_prompt("standard", interval, task_case, trajectory, language=language, target_dimensions=target_dimensions)
         input_metadata = judge_input_metadata(interval, task_case, trajectory, prompt)
         input_metadata["target_dimensions"] = [dimension.value for dimension in target_dimensions]
-        cache_context = {
-            "case_id": task_case.case_id,
-            "model_id": self._model_id(),
-            "prompt_type": "standard",
-            "stage_id": interval.stage_id,
-            "milestone_id": interval.milestone_id,
-            "trajectory_prefix": [interval.start_step_index, interval.end_step_index],
-            "boundary": interval.end_step_index,
-            "focus_dimensions": [dimension.value for dimension in target_dimensions],
-            "language": language.value,
-        }
-        payloads = [
-            self._cached_call_json(prompt, cache_context, language=language)
-            for _ in range(self._passes)
-        ]
-        for payload in payloads:
-            self._validate_payload(payload, target_dimensions)
+        payloads = []
+        for pass_index in range(1, self._passes + 1):
+            validated = self._validate_payload(self._call_json(prompt, language=language), target_dimensions)
+            payloads.append(
+                ValidatedJudgePayload(
+                    status=validated.status,
+                    dimension_scores=validated.dimension_scores,
+                    evidence=validated.evidence,
+                    diagnosis=validated.diagnosis,
+                    metadata={**validated.metadata, "judge_pass_index": pass_index},
+                )
+            )
         payload = aggregate_judge_payload(payloads, target_dimensions)
-        result = self._result_from_payload(interval, EvaluationLevel.STANDARD, payload, metadata=input_metadata, dimensions=target_dimensions, dimension_confidence=agreement_confidence(payloads, target_dimensions))
+        result = self._result_from_payload(interval, EvaluationLevel.STANDARD, payload, metadata=input_metadata, dimension_confidence=agreement_confidence(payloads, target_dimensions))
         output_metadata = judge_result_output_metadata(result, input_metadata)
         result.metadata.update(output_metadata)
         return result
@@ -54,31 +50,7 @@ class StandardJudge(LLMJudge):
         language = language_from_task(task_case)
         target_data = target.to_dict()
         prompt = build_semantic_message_equivalence_prompt(task_case, target_data, language=language)
-        recent_steps = target.supporting_context.get("recent_steps")
-        boundary = (
-            recent_steps[-1].get("index")
-            if isinstance(recent_steps, list) and recent_steps and isinstance(recent_steps[-1], dict)
-            else None
-        )
-        cache_context = {
-            "case_id": task_case.case_id,
-            "model_id": self._model_id(),
-            "prompt_type": "semantic_message_equivalence",
-            "stage_id": None,
-            "milestone_id": target.constraint_id,
-            "trajectory_prefix": target_data,
-            "boundary": boundary,
-            "focus_dimensions": ["message_semantics"],
-            "language": language.value,
-        }
-        payload = self._semantic_payload(
-            self._cached_call_json(
-                prompt,
-                cache_context,
-                language=language,
-                semantic_review=True,
-            )
-        )
+        payload = self._semantic_payload(self._call_json(prompt, language=language))
         return SemanticMessageReview(constraint_id=target.constraint_id, equivalent=bool(payload["equivalent"]), confidence=float(payload["confidence"]), reason=str(payload.get("reason") or ""), raw_payload=payload)
 
     def _semantic_payload(self, payload: JsonObject) -> JsonObject:

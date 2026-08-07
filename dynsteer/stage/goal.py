@@ -74,8 +74,9 @@ def materialize_stage_goals(
     goals: dict[str, str] = {}
     for key, template in source.items():
         materialized = template
-        for placeholder, expected in replacements.items():
-            materialized = materialized.replace(placeholder, expected)
+        for placeholder in _placeholders_in_goal(template):
+            if placeholder in replacements:
+                materialized = materialized.replace(placeholder, replacements[placeholder])
         goals[key] = materialized
     return goals
 

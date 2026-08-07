@@ -3,7 +3,7 @@ from typing import Any, Mapping
 from dynsteer.llm.base import BaseLLM, LLMConfigurationError
 from dynsteer.llm.anthropic import AnthropicLLM
 from dynsteer.llm.openai import OpenaiLLM
-from dynsteer.model import LLMConfig
+from dynsteer.model import DEFAULT_JUDGE_TEMPERATURE, LLMConfig
 from dynsteer.utils import normalize_str_from_source, optional_str, parse_float_value, parse_int_value
 
 
@@ -37,7 +37,7 @@ def build_llm_from_env(env: Mapping[str, str] | None=None) -> BaseLLM | None:
         api_key=_provider_setting(source, provider, "API_KEY"),
         base_url=_provider_setting(source, provider, "BASE_URL"),
         timeout_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_TIMEOUT_SECONDS"), "DYNSTEER_JUDGE_TIMEOUT_SECONDS", default=60.0, error_type=LLMConfigurationError),
-        temperature=parse_float_value(source.get("DYNSTEER_JUDGE_TEMPERATURE"), "DYNSTEER_JUDGE_TEMPERATURE", default=0.0, error_type=LLMConfigurationError),
+        temperature=parse_float_value(source.get("DYNSTEER_JUDGE_TEMPERATURE"), "DYNSTEER_JUDGE_TEMPERATURE", default=DEFAULT_JUDGE_TEMPERATURE, error_type=LLMConfigurationError),
         max_tokens=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_TOKENS"), "DYNSTEER_JUDGE_MAX_TOKENS", default=None, min_value=1, error_type=LLMConfigurationError),
         max_retries=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_RETRIES"), "DYNSTEER_JUDGE_MAX_RETRIES", default=3, min_value=1, error_type=LLMConfigurationError),
         retry_base_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"), "DYNSTEER_JUDGE_RETRY_BASE_SECONDS", default=1.0, min_value=0.0, error_type=LLMConfigurationError),
@@ -74,7 +74,7 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
         api_key=_provider_setting(source, provider, "API_KEY"),
         base_url=optional_str(config.get("base_url")) or _provider_setting(source, provider, "BASE_URL"),
         timeout_seconds=parse_float_value(config.get("timeout_seconds"), "timeout_seconds", default=60.0, error_type=LLMConfigurationError),
-        temperature=parse_float_value(config.get("temperature"), "temperature", default=0.0, error_type=LLMConfigurationError),
+        temperature=parse_float_value(config.get("temperature"), "temperature", default=DEFAULT_JUDGE_TEMPERATURE, error_type=LLMConfigurationError),
         max_tokens=parse_int_value(config.get("max_tokens"), "max_tokens", default=None, min_value=1, error_type=LLMConfigurationError),
         max_retries=parse_int_value(config.get("max_retries"), "max_retries", default=3, min_value=1, error_type=LLMConfigurationError),
         retry_base_seconds=parse_float_value(config.get("retry_base_seconds"), "retry_base_seconds", default=1.0, min_value=0.0, error_type=LLMConfigurationError),

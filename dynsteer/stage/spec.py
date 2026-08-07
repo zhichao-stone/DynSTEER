@@ -23,8 +23,6 @@ def generate_stage_evaluation_specs(task_case: TaskCase) -> dict[str, StageEvalu
     """
     graph = task_case.milestone_graph
     topology = graph.topology
-    if topology is None:
-        raise ValueError("milestone graph 尚未 enrich")
     specs: dict[str, StageEvaluationSpec] = {}
     for milestone in graph.nodes:
         anchor_id = topology.stage_anchor_by_id[milestone.milestone_id]
@@ -57,7 +55,7 @@ def validate_stage_evaluation_specs(
 
 
 def resolve_stage_evaluation_spec(interval: StageInterval, task_case: TaskCase) -> StageEvaluationSpec:
-    """读取当前阶段的聚焦评估维度；内存 case 缺失时按公共语义即时生成。"""
+    """读取当前阶段预生成的聚焦评估维度。"""
     if interval.milestone_id == FINISH_NODE_ID:
         graph = task_case.milestone_graph
         if graph is not None and not graph.nodes:
@@ -65,12 +63,6 @@ def resolve_stage_evaluation_spec(interval: StageInterval, task_case: TaskCase) 
         return _normal_finish_spec()
     key = interval.stage_id
     spec = task_case.stage_evaluation_specs.get(key)
-    if spec is not None:
-        _validate_spec(key, spec)
-        return spec
-    generated = generate_stage_evaluation_specs(task_case)
-    task_case.stage_evaluation_specs = generated
-    spec = generated.get(key)
     if spec is None:
         raise ValueError(f"TaskCase 缺少 stage_evaluation_specs: {key}")
     return spec
@@ -181,9 +173,9 @@ def _validate_spec(key: str, spec: StageEvaluationSpec) -> None:
         raise ValueError("stage_evaluation_specs key 必须是非空字符串")
     if spec is None or not isinstance(spec, StageEvaluationSpec):
         raise ValueError(f"stage_evaluation_specs.{key} 必须是 StageEvaluationSpec")
-    dimensions = list(dict.fromkeys(spec.focus_dimensions))
-    if set(dimensions) != set(spec.focus_dimensions):
-        spec.focus_dimensions = dimensions
+    dimensions = spec.focus_dimensions
+    if len(set(dimensions)) != len(dimensions):
+        raise ValueError(f"stage_evaluation_specs.{key} 不能包含重复维度")
     if Dimension.PROGRESS not in dimensions or Dimension.EFFICIENCY not in dimensions:
         raise ValueError(f"stage_evaluation_specs.{key} 必须包含 progress 和 efficiency")
     for dimension in dimensions:

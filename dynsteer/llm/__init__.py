@@ -1,3 +1,4 @@
-from dynsteer.llm.factory import build_llm_from_config, build_llm_from_env
+from dynsteer.llm.factory import build_llm_from_config as _build_llm_from_config, build_llm_from_env as _build_llm_from_env
 
-__all__ = ["build_llm_from_config", "build_llm_from_env"]
+build_llm_from_config = _build_llm_from_config
+build_llm_from_env = _build_llm_from_env
