@@ -9,7 +9,25 @@
 - 路径共识只是 synthetic consensus，不得声称 gold path 或真实必经。
 
 输出形状：
-{{"atoms":[{{"atom_id":"a1","name":"...","description":"...","source_refs":["instruction"],"evidence_id":"...","expected":null,"terminal":false}}],"paths":[{{"strategy":"shortest","atom_ids":["a1"]}}],"minefields":[{{"minefield_id":"mf1","invariant_id":"...","expected":null}}]}}
+{{
+    "atoms": [
+        {{
+            "atom_id":"a1",
+            "name":"...",
+            "description":"...",
+            "source_refs": ["instruction"],
+            "evidence_id":"...",
+            "expected": null, 
+            "terminal": false
+        }}
+    ],
+    "paths": [
+        {{"strategy": "shortest", "atom_ids": ["a1"]}}
+    ],
+    "minefields": [
+        {{"minefield_id": "mf1", "invariant_id": "...", "expected": null}}
+    ]
+}}
 
 公开输入：
 {payload}

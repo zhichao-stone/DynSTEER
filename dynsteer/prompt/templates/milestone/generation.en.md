@@ -9,7 +9,25 @@ Requirements:
 - Path consensus is synthetic consensus, not a gold path or proof of real necessity.
 
 Output shape:
-{{"atoms":[{{"atom_id":"a1","name":"...","description":"...","source_refs":["instruction"],"evidence_id":"...","expected":null,"terminal":false}}],"paths":[{{"strategy":"shortest","atom_ids":["a1"]}}],"minefields":[{{"minefield_id":"mf1","invariant_id":"...","expected":null}}]}}
+{{
+    "atoms": [
+        {{
+            "atom_id":"a1",
+            "name":"...",
+            "description":"...",
+            "source_refs": ["instruction"],
+            "evidence_id":"...",
+            "expected": null, 
+            "terminal": false
+        }}
+    ],
+    "paths": [
+        {{"strategy": "shortest", "atom_ids": ["a1"]}}
+    ],
+    "minefields": [
+        {{"minefield_id": "mf1", "invariant_id": "...", "expected": null}}
+    ]
+}}
 
 Public input:
 {payload}

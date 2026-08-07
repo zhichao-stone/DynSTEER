@@ -133,6 +133,20 @@ case 浜х墿浠嶅鐢?harness 鐩綍锛?
 
 `run_experiment(config_path, workers=1, force_adapt=False, force_eval=False, no_sum=False)` 鐜板湪浼氭帴鏀?CLI 鐨?`--workers`銆傚疄闄呭苟鍙戞暟鎸夋瘡涓?spec 鐨?`workers` 涓庡搴?benchmark 鐨?`benchmark_max_workers` 鍙栬緝灏忓€硷紱褰?`benchmark.json` 娌℃湁鎻愪緵 `max_workers` 鏃讹紝瀹為獙灞備細鐩存帴浣跨敤 CLI 鐨?`workers`銆?
 
+## Milestone reliability 实验
+
+`milestone_reliability.py` 是独立的 milestone 生成可靠性入口，只接受 `--exp PATH`
+（别名 `--experiment-config`），不写 adapted case，也不运行 evaluator。它把原生
+milestone graph 作为 reference、生成 graph 作为 prediction，在
+`results/milestone/<experiment_id>/` 下按 `<benchmark>/<case_id>.json` 写出逐 case 结果，并在根目录
+写出 `index.json` 与 `summary.json`。主配置含 509 个 case，partial 配置含 25 个 case；GED 输出包括
+`ged_distance`、`ged_base`、`ged_similarity`、`solver_mode`、`edit_path` 和 `strict_v1`
+edit-cost profile。`--fgw` 仅作为可选交叉验证，POT 不可用时记录 unavailable。
+
+```bash
+python milestone_reliability.py --exp data/experiments/toolsandbox_milestone_reliability_partial_main.json
+```
+
 ## Replay 消融方法
 
 实验 `metrics.json.efficiency` 在保留 `average_elapsed_seconds`（replay evaluator 墙钟语义）的同时，增加 `average_default_prefix_execution_seconds`、`average_effective_elapsed_seconds` 与 `effective_timing_available_case_count`。只有 `timing_available=true` 的 replay case 才参与新增平均值；历史不可用 case 不按 0 秒纳入。

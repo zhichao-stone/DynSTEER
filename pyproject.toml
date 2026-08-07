@@ -9,6 +9,7 @@ dependencies = [
     "httpx==0.27.2",
     "anthropic==0.112.0",
     "polars==0.20.31",
+    "networkx>=3.2",
     "tqdm>=4.66.0",
 ]
 
