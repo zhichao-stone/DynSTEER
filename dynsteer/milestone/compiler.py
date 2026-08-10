@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import Counter
 from dataclasses import dataclass
 from math import ceil
+from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 from dynsteer.language import normalize_task_language
@@ -28,175 +30,186 @@ from dynsteer.model import (
     Operator,
 )
 from dynsteer.prompt.template import load_prompt_template
-from dynsteer.utils import json_safe
 
 if TYPE_CHECKING:
     from dynsteer.llm.base import BaseLLM
 
 
 CONSENSUS_RATIO = 2 / 3
-_HIDDEN_KEYS = frozenset(
-    {
-        "secret",
-        "api_key",
-        "password",
-        "token",
-        "gold",
-        "ground_truth",
-        "verifier",
-        "reward",
-        "matcher",
-        "milestone_matcher",
-        "minefield_matcher",
-        "target_dataframe",
-    }
+PATH_STRATEGIES = (
+    "direct-shortest",
+    "prerequisite-first",
+    "state-check-first",
+    "artifact-or-result-first",
+    "alternative-tool",
+    "verification-first",
+    "conservative",
 )
-_TOP_LEVEL_KEYS = frozenset({"atoms", "paths", "minefields"})
 logger = logging.getLogger(__name__)
+
+_PathSignature = tuple[str, str, int]
 
 
 @dataclass(frozen=True)
-class _Atom:
-    atom_id: str
+class _PathAtom:
     name: str
     description: str
-    source_refs: tuple[str, ...]
     evidence_id: str
     expected: JsonValue
     terminal: bool
 
 
 @dataclass(frozen=True)
-class _Path:
+class _PathCandidate:
+    path_index: int
     strategy: str
-    atom_ids: tuple[str, ...]
+    atoms: tuple[_PathAtom, ...]
+    minefield_invariant_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _AlignedPath:
+    path_index: int
+    strategy: str
+    atoms: tuple[_PathAtom, ...]
+    signatures: tuple[_PathSignature, ...]
+    minefield_invariant_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ConsensusCluster:
+    representative: _PathAtom
+    support_count: int
+    terminal_support_count: int
+
+
+class _RecordedPathResponseError(ValueError):
+    """单路径响应已落盘、但后续解析或校验失败。"""
+
+    def __init__(self, message: str, response_record: JsonObject | None) -> None:
+        super().__init__(message)
+        self.response_record = response_record
 
 
 def compile_task_case(
     view: GeneratorTaskView,
     config: MilestoneGenerationConfig,
     llm: BaseLLM,
+    response_output_dir: Path | None = None,
 ) -> tuple[MilestoneGraph, GenerationReport]:
-    """基于公开任务契约一次生成并编译 milestone graph。
+    """基于公开任务契约独立模拟路径并编译 milestone graph。
 
-    入参：公开任务视图、生成配置和 LLM。
+    入参：公开任务视图、生成配置、LLM 和可选原始响应目录。
     输出：可执行 MilestoneGraph 与生成审计报告。
     """
     if view is None or config is None or llm is None:
         raise ValueError("view、config 和 llm 不能为空")
 
-    # 生成器每个 case 只调用一次，同时返回共享 atom 和全部差异路径。
-    minimum_valid_paths = config.simulated_path_count - 1
+    requested = config.simulated_path_count
+    minimum = _minimum_valid_path_count(requested)
     try:
         source_values = _source_values(view)
         evidence_by_id = _evidence_catalog(view, source_values)
-        payload = _generator_payload(
-            view, config.simulated_path_count, source_values
-        )
+        payload = _generator_payload(view, source_values)
     except (KeyError, TypeError, ValueError) as exc:
         _reject(
             str(exc),
-            requested_path_count=config.simulated_path_count,
-            minimum_valid_path_count=minimum_valid_paths,
+            requested_path_count=requested,
+            minimum_valid_path_count=minimum,
         )
-    evidence_summary = tuple(
-        {
-            "evidence_id": item["evidence_id"],
-            "source_ref": item["source_ref"],
-            "expected_policy": item["expected_policy"],
-            "allowed_literal_count": len(item["allowed_expected_literals"]),
-        }
-        for item in payload["evidence"]
-    )
-    template = load_prompt_template("milestone", "generation")
-    prompt = template.render(
-        normalize_task_language(view.language),
-        task=json.dumps(payload["task"], ensure_ascii=False, sort_keys=True),
-        evidence=json.dumps(payload["evidence"], ensure_ascii=False, sort_keys=True),
-        invariants=json.dumps(payload["invariants"], ensure_ascii=False, sort_keys=True),
-        path_count=payload["path_count"],
-    )
-    logger.info(
-        "开始生成 milestone 候选",
-        extra={
-            "事件": "milestone生成开始",
-            "benchmark": view.benchmark,
-            "case_id": view.case_id,
-        },
-    )
-    raw_response = llm.chat([LLMMessage(role="user", content=prompt)])
 
+    # 每条路径使用独立调用，单条失败只淘汰自身。
+    valid_paths: list[_PathCandidate] = []
+    path_summaries: list[JsonObject] = []
     reasons: list[str] = []
+    logger.info(
+        "开始独立生成 milestone 路径",
+        extra={"事件": "milestone生成开始", "case_id": view.case_id, "路径数": requested},
+    )
+    for path_index in range(requested):
+        strategy = PATH_STRATEGIES[path_index % len(PATH_STRATEGIES)]
+        try:
+            candidate, response_record = _simulate_path(
+                payload,
+                path_index,
+                requested,
+                strategy,
+                llm,
+                evidence_by_id,
+                source_values,
+                view,
+                response_output_dir,
+            )
+        except _RecordedPathResponseError as exc:
+            reason = f"path[{path_index}] rejected: {exc}"
+            reasons.append(reason)
+            path_summaries.append(
+                _rejected_path_summary(
+                    path_index,
+                    strategy,
+                    reason,
+                    exc.response_record,
+                )
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            reason = f"path[{path_index}] rejected: {exc}"
+            reasons.append(reason)
+            path_summaries.append(_rejected_path_summary(path_index, strategy, reason))
+        else:
+            valid_paths.append(candidate)
+            path_summaries.append(_valid_path_summary(candidate, response_record))
+
+    aligned_paths = [_align_path(path) for path in valid_paths]
+    distinct_paths = _distinct_aligned_paths(aligned_paths)
+    path_summaries = _mark_duplicate_summaries(path_summaries, distinct_paths)
+    candidate_atom_count = sum(len(path.atoms) for path in valid_paths)
+    aligned_atom_count = len(
+        {signature for path in distinct_paths for signature in path.signatures}
+    )
+    if len(distinct_paths) < minimum:
+        _reject(
+            f"有效差异路径不足: requested={requested}, minimum={minimum}, "
+            f"actual={len(distinct_paths)}",
+            requested_path_count=requested,
+            minimum_valid_path_count=minimum,
+            valid_path_count=len(valid_paths),
+            distinct_path_count=len(distinct_paths),
+            candidate_atom_count=candidate_atom_count,
+            aligned_atom_count=aligned_atom_count,
+            reasons=tuple(reasons),
+            path_summaries=tuple(path_summaries),
+        )
+
+    # 所有共识图错误由这一处统一转换为带报告的自动拒绝。
+    threshold = ceil(len(distinct_paths) * CONSENSUS_RATIO)
     try:
-        response = _parse_response(raw_response)
-    except (TypeError, ValueError) as exc:
+        clusters = _consensus_clusters(distinct_paths, threshold)
+        if not clusters or not any(
+            cluster.terminal_support_count >= threshold
+            for cluster in clusters.values()
+        ):
+            raise ValueError("三分之二共识未产生可执行 terminal milestone")
+        nodes = _milestones_from_clusters(clusters, evidence_by_id)
+        edges = _consensus_edges(distinct_paths, set(clusters), threshold)
+        minefields = _consensus_minefields(
+            distinct_paths,
+            threshold,
+            view,
+            evidence_by_id,
+            source_values,
+        )
+    except ValueError as exc:
         _reject(
             str(exc),
-            requested_path_count=config.simulated_path_count,
-            minimum_valid_path_count=minimum_valid_paths,
-            reasons=(str(exc),),
-            evidence_allowlist_summary=evidence_summary,
-        )
-    leakage_count = _count_hidden_leakage(response)
-    if leakage_count:
-        _reject(
-            "LLM 输出包含隐藏字段",
-            leakage_count=leakage_count,
-            requested_path_count=config.simulated_path_count,
-            minimum_valid_path_count=minimum_valid_paths,
-            evidence_allowlist_summary=evidence_summary,
-        )
-
-    atoms = _parse_atoms(response["atoms"], source_values, evidence_by_id, reasons)
-    atom_by_id = {atom.atom_id: atom for atom in atoms}
-    paths = _parse_paths(response["paths"], atom_by_id, reasons)
-    distinct_paths = _distinct_paths(paths)
-    path_summaries = _path_summaries(paths, distinct_paths, atom_by_id)
-    if len(distinct_paths) < minimum_valid_paths:
-        _reject(
-            "有效差异路径少于配置要求",
-            valid_path_count=len(paths),
+            requested_path_count=requested,
+            minimum_valid_path_count=minimum,
+            valid_path_count=len(valid_paths),
             distinct_path_count=len(distinct_paths),
-            requested_path_count=config.simulated_path_count,
-            minimum_valid_path_count=minimum_valid_paths,
-            actual_valid_distinct_path_count=len(distinct_paths),
-            contract_atom_count=len(atoms),
+            candidate_atom_count=candidate_atom_count,
+            aligned_atom_count=aligned_atom_count,
+            consensus_node_count=len(clusters) if "clusters" in locals() else 0,
             reasons=tuple(reasons),
-            path_summaries=path_summaries,
-            evidence_allowlist_summary=evidence_summary,
-        )
-
-    # 只有达到固定三分之二路径共识的可执行契约 atom 才进入 graph。
-    threshold = ceil(len(distinct_paths) * CONSENSUS_RATIO)
-    occurrences = Counter(
-        atom_id for path in distinct_paths for atom_id in set(path.atom_ids)
-    )
-    retained_ids = {
-        atom.atom_id for atom in atoms if occurrences[atom.atom_id] >= threshold
-    }
-    retained_atoms = [atom for atom in atoms if atom.atom_id in retained_ids]
-    nodes = [
-        _milestone_from_atom(atom, evidence_by_id[atom.evidence_id])
-        for atom in retained_atoms
-    ]
-    edges = _consistent_reduced_edges(distinct_paths, retained_ids)
-    minefields = _compile_minefields(
-        response["minefields"], view, source_values, evidence_by_id, reasons
-    )
-    graph_valid = bool(nodes) and edges is not None and _is_dag(retained_ids, edges)
-    if not graph_valid:
-        _reject(
-            "生成 graph 缺少可执行 milestone 或不是 DAG",
-            valid_path_count=len(paths),
-            distinct_path_count=len(distinct_paths),
-            contract_atom_count=len(atoms),
-            consensus_node_count=len(nodes),
-            requested_path_count=config.simulated_path_count,
-            minimum_valid_path_count=minimum_valid_paths,
-            actual_valid_distinct_path_count=len(distinct_paths),
-            reasons=tuple(reasons),
-            path_summaries=path_summaries,
-            evidence_allowlist_summary=evidence_summary,
+            path_summaries=tuple(path_summaries),
         )
 
     graph = MilestoneGraph(
@@ -211,49 +224,52 @@ def compile_task_case(
     )
     report = GenerationReport(
         generation_status="generated",
-        valid_path_count=len(paths),
+        requested_path_count=requested,
+        minimum_valid_path_count=minimum,
+        valid_path_count=len(valid_paths),
         distinct_path_count=len(distinct_paths),
-        contract_atom_count=len(atoms),
+        candidate_atom_count=candidate_atom_count,
+        aligned_atom_count=aligned_atom_count,
         consensus_node_count=len(nodes),
         graph_valid=True,
-        leakage_count=0,
         reasons=tuple(reasons),
-        path_summaries=path_summaries,
-        requested_path_count=config.simulated_path_count,
-        minimum_valid_path_count=minimum_valid_paths,
-        actual_valid_distinct_path_count=len(distinct_paths),
-        evidence_allowlist_summary=evidence_summary,
+        path_summaries=tuple(path_summaries),
     )
     logger.info(
         "milestone graph 生成完成",
         extra={
             "事件": "milestone生成完成",
             "case_id": view.case_id,
-            "有效路径数": len(distinct_paths),
+            "有效去重路径数": len(distinct_paths),
             "共识节点数": len(nodes),
         },
     )
     return graph, report
 
 
+def _minimum_valid_path_count(requested_path_count: int) -> int:
+    """返回 N−2 且不低于 3 的有效去重路径下限。"""
+    return max(requested_path_count - 2, 3)
+
+
 def _generator_payload(
     view: GeneratorTaskView,
-    path_count: int,
-    source_values: dict[str, JsonValue] | None = None,
+    source_values: dict[str, JsonValue],
 ) -> JsonObject:
-    evidence = []
-    values = source_values if source_values is not None else _source_values(view)
-    for item in view.evidence_catalog:
-        literals = _allowed_expected_literals(item, values)
-        evidence.append({
+    evidence = [
+        {
             "evidence_id": item.evidence_id,
             "source_ref": item.source_ref,
             "target": item.target.value,
             "selector": item.selector,
             "operator": item.operator.value,
             "expected_policy": item.expected_policy,
-            "allowed_expected_literals": literals,
-        })
+            "allowed_expected_literals": _allowed_expected_literals(
+                item, source_values
+            ),
+        }
+        for item in view.evidence_catalog
+    ]
     invariants = [
         {
             "invariant_id": item.invariant_id,
@@ -265,256 +281,404 @@ def _generator_payload(
         for item in view.invariant_catalog
     ]
     return {
-        "task": _public_task_payload(view, values),
+        "task": _public_task_payload(view),
         "evidence": evidence,
         "invariants": invariants,
-        "path_count": path_count,
     }
 
 
-def _public_task_payload(
-    view: GeneratorTaskView, source_values: dict[str, JsonValue]
-) -> JsonObject:
-    tool_names = [
-        source_values[item.source_ref]
-        for item in view.evidence_catalog
-        if item.target == ConstraintTarget.TOOL_CALL
-        and isinstance(source_values.get(item.source_ref), str)
-    ]
+def _public_task_payload(view: GeneratorTaskView) -> JsonObject:
     return {
-        "user_objective": view.instruction,
-        "available_tool_names": list(dict.fromkeys(tool_names)),
+        "instruction": view.instruction,
+        "public_assets": [
+            asset
+            for asset in view.public_assets
+            if asset.get("kind") != "invariant_source"
+        ],
+        "tool_schema": view.tool_schema,
+        "environment_schema": view.environment_schema,
+        "output_contract": view.output_contract,
     }
 
 
-def _public_literals(value: object) -> list[JsonValue]:
-    if isinstance(value, (dict, list)):
-        result: list[JsonValue] = []
-        items = value.values() if isinstance(value, dict) else value
-        for item in items:
-            for literal in _public_literals(item):
-                if literal not in result:
-                    result.append(literal)
-        return result
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return [json_safe(value)]
-    return []
+def _simulate_path(
+    payload: JsonObject,
+    path_index: int,
+    path_count: int,
+    strategy: str,
+    llm: BaseLLM,
+    evidence_by_id: dict[str, PublicEvidence],
+    source_values: dict[str, JsonValue],
+    view: GeneratorTaskView,
+    response_output_dir: Path | None,
+) -> tuple[_PathCandidate, JsonObject | None]:
+    """独立生成并解析一条候选路径。"""
+    template = load_prompt_template("milestone", "generation")
+    prompt = template.render(
+        normalize_task_language(view.language),
+        task=json.dumps(payload["task"], ensure_ascii=False, sort_keys=True),
+        evidence=json.dumps(payload["evidence"], ensure_ascii=False, sort_keys=True),
+        invariants=json.dumps(payload["invariants"], ensure_ascii=False, sort_keys=True),
+        path_index=path_index,
+        path_count=path_count,
+        strategy=strategy,
+    )
+    raw = llm.chat([LLMMessage(role="user", content=prompt)])
+    response_record = _record_raw_response(
+        raw,
+        response_output_dir,
+        path_index,
+        strategy,
+    )
+    try:
+        candidate = _parse_path_response(
+            raw,
+            path_index,
+            strategy,
+            evidence_by_id,
+            source_values,
+            view,
+        )
+    except (TypeError, ValueError) as exc:
+        raise _RecordedPathResponseError(str(exc), response_record) from exc
+    return candidate, response_record
 
 
-def _allowed_expected_literals(
-    evidence: PublicEvidence, source_values: dict[str, JsonValue]
-) -> list[JsonValue]:
-    if evidence.expected_policy == "none":
-        return []
-    return _public_literals(source_values[evidence.source_ref])
+def _record_raw_response(
+    raw: str,
+    output_dir: Path | None,
+    path_index: int,
+    strategy: str,
+) -> JsonObject | None:
+    """把单次 LLM 原始响应写入独立 UTF-8 文件并返回审计摘要。"""
+    if output_dir is None:
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"path_{path_index:02d}_{strategy}.txt"
+    output_path.write_text(raw, encoding="utf-8")
+    stripped = raw.lstrip()
+    return {
+        "path": str(output_path.resolve()),
+        "character_count": len(raw),
+        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "starts_with_json_fence": stripped.lower().startswith("```json"),
+        "starts_with_object": stripped.startswith("{"),
+    }
 
 
-def _parse_response(raw: str) -> dict[str, list[object]]:
+def _parse_path_response(
+    raw: str,
+    path_index: int,
+    strategy: str,
+    evidence_by_id: dict[str, PublicEvidence],
+    source_values: dict[str, JsonValue],
+    view: GeneratorTaskView,
+) -> _PathCandidate:
+    """按精确 schema 解析并完整校验单条路径响应。"""
     try:
         data = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("LLM milestone 返回必须是 JSON 对象") from exc
-    if not isinstance(data, dict) or set(data) != _TOP_LEVEL_KEYS:
-        raise ValueError("LLM milestone 顶层字段必须且只能是 atoms、paths、minefields")
-    if any(not isinstance(data[key], list) for key in _TOP_LEVEL_KEYS):
-        raise ValueError("LLM milestone 顶层字段必须是数组")
-    return data
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "LLM milestone JSON 解析失败: "
+            f"{exc.msg}; line={exc.lineno}, column={exc.colno}, position={exc.pos}"
+        ) from exc
+    except TypeError as exc:
+        raise TypeError("LLM milestone 返回必须是 JSON 文本") from exc
+    if not isinstance(data, dict):
+        raise ValueError("LLM milestone 顶层必须是 JSON 对象")
+    if set(data) != {
+        "atoms",
+        "minefield_invariant_ids",
+    }:
+        raise ValueError("顶层字段必须且只能是 atoms、minefield_invariant_ids")
+    values = data["atoms"]
+    if not isinstance(values, list) or not values:
+        raise ValueError("atoms 必须是非空数组")
 
-
-def _parse_atoms(
-    values: list[object],
-    source_values: dict[str, JsonValue],
-    evidence_by_id: dict[str, PublicEvidence],
-    reasons: list[str],
-) -> list[_Atom]:
-    atoms: list[_Atom] = []
-    seen: set[str] = set()
-    required = {
-        "atom_id",
+    atoms: list[_PathAtom] = []
+    atom_keys = {
         "name",
         "description",
-        "source_refs",
         "evidence_id",
-        "expected",
+        "expected_literal_index",
         "terminal",
     }
-    for index, value in enumerate(values):
-        try:
-            if not isinstance(value, dict) or set(value) != required:
-                raise ValueError("schema 不合法")
-            atom_id = _nonempty(value["atom_id"], "atom_id")
-            if atom_id in seen:
-                raise ValueError("atom_id 重复")
-            source_refs = value["source_refs"]
-            if not isinstance(source_refs, list) or not source_refs:
-                raise ValueError("source_refs 必须是非空数组")
-            normalized_refs = tuple(
-                _nonempty(item, "source_ref") for item in source_refs
-            )
-            if any(ref not in source_values for ref in normalized_refs):
-                raise ValueError("引用未知 source_ref")
-            evidence_id = _nonempty(value["evidence_id"], "evidence_id")
-            evidence = evidence_by_id.get(evidence_id)
-            if evidence is None or evidence.source_ref not in normalized_refs:
-                raise ValueError("引用未知或不匹配的 evidence_id")
-            _validate_expected(value["expected"], evidence, source_values)
-            if not isinstance(value["terminal"], bool):
-                raise TypeError("terminal 必须是 bool")
-            atoms.append(
-                _Atom(
-                    atom_id=atom_id,
-                    name=_nonempty(value["name"], "name"),
-                    description=_nonempty(value["description"], "description"),
-                    source_refs=normalized_refs,
-                    evidence_id=evidence_id,
-                    expected=value["expected"],
-                    terminal=value["terminal"],
-                )
-            )
-            seen.add(atom_id)
-        except (TypeError, ValueError) as exc:
-            reasons.append(f"atom[{index}] rejected: {exc}")
-    return atoms
+    for atom_index, value in enumerate(values):
+        if not isinstance(value, dict) or set(value) != atom_keys:
+            raise ValueError(f"atom[{atom_index}] schema 不合法")
+        name = _nonempty(value["name"], "name")
+        description = _nonempty(value["description"], "description")
+        evidence_id = _nonempty(value["evidence_id"], "evidence_id")
+        evidence = evidence_by_id.get(evidence_id)
+        if evidence is None:
+            raise ValueError(f"atom[{atom_index}] 引用未知 evidence_id")
+        literal_index = value["expected_literal_index"]
+        if isinstance(literal_index, bool) or not isinstance(literal_index, int):
+            raise TypeError(f"atom[{atom_index}] expected_literal_index 必须是整数")
+        if evidence.expected_policy == "none":
+            if literal_index != 0:
+                raise ValueError("expected_policy=none 时 index 必须为 0")
+            expected: JsonValue = None
+        else:
+            allowed = _allowed_expected_literals(evidence, source_values)
+            if literal_index < 0 or literal_index >= len(allowed):
+                raise ValueError(f"atom[{atom_index}] expected_literal_index 越界")
+            expected = allowed[literal_index]
+        terminal = value["terminal"]
+        if not isinstance(terminal, bool):
+            raise TypeError(f"atom[{atom_index}] terminal 必须是 bool")
+        if terminal != (atom_index == len(values) - 1):
+            raise ValueError("只有最后一个 atom 的 terminal 可以为 true")
+        atoms.append(_PathAtom(name, description, evidence_id, expected, terminal))
+
+    invariant_ids = data["minefield_invariant_ids"]
+    if not isinstance(invariant_ids, list):
+        raise TypeError("minefield_invariant_ids 必须是数组")
+    normalized_ids = tuple(
+        _nonempty(value, "invariant_id") for value in invariant_ids
+    )
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise ValueError("minefield_invariant_ids 不能重复")
+    known_ids = {item.invariant_id for item in view.invariant_catalog}
+    if any(invariant_id not in known_ids for invariant_id in normalized_ids):
+        raise ValueError("minefield_invariant_ids 引用未知 invariant")
+    return _PathCandidate(
+        path_index,
+        strategy,
+        tuple(atoms),
+        normalized_ids,
+    )
 
 
-def _parse_paths(
-    values: list[object], atom_by_id: dict[str, _Atom], reasons: list[str]
-) -> list[_Path]:
-    paths: list[_Path] = []
-    for index, value in enumerate(values):
-        try:
-            if not isinstance(value, dict) or set(value) != {"strategy", "atom_ids"}:
-                raise ValueError("schema 不合法")
-            atom_ids = value["atom_ids"]
-            if not isinstance(atom_ids, list) or not atom_ids:
-                raise ValueError("atom_ids 必须是非空数组")
-            normalized_ids = tuple(_nonempty(item, "atom_id") for item in atom_ids)
-            if len(set(normalized_ids)) != len(normalized_ids):
-                raise ValueError("路径包含重复 atom")
-            if any(atom_id not in atom_by_id for atom_id in normalized_ids):
-                raise ValueError("路径引用未知 atom")
-            if not atom_by_id[normalized_ids[-1]].terminal:
-                raise ValueError("路径未以 terminal atom 结束")
-            paths.append(
-                _Path(_nonempty(value["strategy"], "strategy"), normalized_ids)
-            )
-        except ValueError as exc:
-            reasons.append(f"path[{index}] rejected: {exc}")
-    return paths
+def _align_path(path: _PathCandidate) -> _AlignedPath:
+    occurrences: Counter[tuple[str, str]] = Counter()
+    signatures: list[_PathSignature] = []
+    for atom in path.atoms:
+        base = (atom.evidence_id, _canonical_json(atom.expected))
+        occurrence_index = occurrences[base]
+        signatures.append((base[0], base[1], occurrence_index))
+        occurrences[base] += 1
+    return _AlignedPath(
+        path.path_index,
+        path.strategy,
+        path.atoms,
+        tuple(signatures),
+        path.minefield_invariant_ids,
+    )
 
 
-def _distinct_paths(paths: list[_Path]) -> list[_Path]:
-    result: list[_Path] = []
-    seen: set[tuple[str, ...]] = set()
-    for path in paths:
-        if path.atom_ids not in seen:
+def _distinct_aligned_paths(paths: list[_AlignedPath]) -> list[_AlignedPath]:
+    result: list[_AlignedPath] = []
+    seen: set[tuple[_PathSignature, ...]] = set()
+    for path in sorted(paths, key=lambda item: item.path_index):
+        if path.signatures not in seen:
             result.append(path)
-            seen.add(path.atom_ids)
+            seen.add(path.signatures)
     return result
 
 
-def _path_summaries(
-    paths: list[_Path], distinct_paths: list[_Path], atom_by_id: dict[str, _Atom]
-) -> tuple[JsonObject, ...]:
-    distinct = {path.atom_ids for path in distinct_paths}
-    return tuple(
-        {
-            "strategy": path.strategy,
-            "atom_ids": list(path.atom_ids),
-            "distinct": path.atom_ids in distinct,
-            "terminal": bool(path.atom_ids and atom_by_id[path.atom_ids[-1]].terminal),
-        }
-        for path in paths
-    )
+def _consensus_clusters(
+    paths: list[_AlignedPath], threshold: int
+) -> dict[_PathSignature, _ConsensusCluster]:
+    support: Counter[_PathSignature] = Counter()
+    terminal_support: Counter[_PathSignature] = Counter()
+    representatives: dict[_PathSignature, tuple[int, int, _PathAtom]] = {}
+    for path in paths:
+        seen: set[_PathSignature] = set()
+        for position, (signature, atom) in enumerate(zip(path.signatures, path.atoms)):
+            candidate = (path.path_index, position, atom)
+            if signature not in representatives or candidate[:2] < representatives[signature][:2]:
+                representatives[signature] = candidate
+            if signature in seen:
+                continue
+            seen.add(signature)
+            support[signature] += 1
+            terminal_support[signature] += int(atom.terminal)
+    return {
+        signature: _ConsensusCluster(
+            representative=representatives[signature][2],
+            support_count=count,
+            terminal_support_count=terminal_support[signature],
+        )
+        for signature, count in support.items()
+        if count >= threshold
+    }
 
 
-def _milestone_from_atom(atom: _Atom, evidence: PublicEvidence) -> Milestone:
-    constraint = Constraint(
-        constraint_id=f"{atom.atom_id}_constraint",
-        target=evidence.target,
-        selector=evidence.selector,
-        operator=evidence.operator,
-        expected=atom.expected,
-        namespace=evidence.namespace,
-        hard=True,
-        evaluator_hint=evidence.evaluator_hint,
-        metadata={"evidence_id": evidence.evidence_id, **dict(evidence.metadata)},
-    )
-    return Milestone(
-        milestone_id=atom.atom_id,
-        name=atom.name,
-        description=atom.description,
-        constraints=[constraint],
-        metadata={
-            "source_refs": list(atom.source_refs),
-            "evidence_id": atom.evidence_id,
-            "necessity_basis": "synthetic_consensus",
-        },
-    )
-
-
-def _compile_minefields(
-    values: list[object],
-    view: GeneratorTaskView,
-    source_values: dict[str, JsonValue],
+def _milestones_from_clusters(
+    clusters: dict[_PathSignature, _ConsensusCluster],
     evidence_by_id: dict[str, PublicEvidence],
-    reasons: list[str],
-) -> list[Minefield]:
-    invariant_by_id = {item.invariant_id: item for item in view.invariant_catalog}
-    result: list[Minefield] = []
-    seen: set[str] = set()
-    for index, value in enumerate(values):
-        try:
-            if not isinstance(value, dict) or set(value) != {
-                "minefield_id",
-                "invariant_id",
-                "expected",
-            }:
-                raise ValueError("schema 不合法")
-            minefield_id = _nonempty(value["minefield_id"], "minefield_id")
-            if minefield_id in seen:
-                raise ValueError("minefield_id 重复")
-            invariant_id = _nonempty(value["invariant_id"], "invariant_id")
-            invariant = invariant_by_id.get(invariant_id)
-            if invariant is None:
-                raise ValueError("引用未知 invariant")
-            evidence = evidence_by_id.get(invariant.evidence_id)
-            if evidence is None or evidence.source_ref != invariant.source_ref:
-                raise ValueError("invariant 缺少可执行 evidence")
-            _validate_expected(value["expected"], evidence, source_values)
-            constraint = Constraint(
-                constraint_id=f"{minefield_id}_constraint",
-                target=evidence.target,
-                selector=evidence.selector,
-                operator=evidence.operator,
-                expected=value["expected"],
-                namespace=evidence.namespace,
-                hard=True,
-                evaluator_hint=evidence.evaluator_hint,
+) -> list[Milestone]:
+    nodes: list[Milestone] = []
+    for signature, cluster in sorted(clusters.items(), key=lambda item: item[0]):
+        atom = cluster.representative
+        evidence = evidence_by_id[atom.evidence_id]
+        milestone_id = _milestone_id(signature)
+        constraint = Constraint(
+            constraint_id=f"{milestone_id}_constraint",
+            target=evidence.target,
+            selector=evidence.selector,
+            operator=evidence.operator,
+            expected=atom.expected,
+            namespace=evidence.namespace,
+            hard=True,
+            evaluator_hint=evidence.evaluator_hint,
+            metadata={"evidence_id": evidence.evidence_id, **dict(evidence.metadata)},
+        )
+        nodes.append(
+            Milestone(
+                milestone_id=milestone_id,
+                name=atom.name,
+                description=atom.description,
+                constraints=[constraint],
                 metadata={
-                    "evidence_id": evidence.evidence_id,
-                    **dict(evidence.metadata),
+                    "evidence_id": atom.evidence_id,
+                    "signature": list(signature),
+                    "support_count": cluster.support_count,
+                    "necessity_basis": "synthetic_consensus",
                 },
             )
-            penalty = {"warning": 0.25, "error": 0.5, "fatal": 1.0}[invariant.severity]
-            result.append(
-                Minefield(
-                    minefield_id=minefield_id,
-                    name=invariant.description,
-                    description=invariant.description,
-                    severity=invariant.severity,
-                    constraints=[constraint],
-                    penalty=MinefieldPenalty(mode="fixed", value=penalty),
-                    metadata={
-                        "invariant_id": invariant_id,
-                        "source_ref": invariant.source_ref,
-                    },
-                )
+        )
+    return nodes
+
+
+def _milestone_id(signature: _PathSignature) -> str:
+    digest = hashlib.sha256(
+        _canonical_json(signature).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"m_{digest}"
+
+
+def _consensus_edges(
+    paths: list[_AlignedPath],
+    retained: set[_PathSignature],
+    threshold: int,
+) -> list[tuple[str, str]]:
+    support: Counter[tuple[_PathSignature, _PathSignature]] = Counter()
+    for path in paths:
+        ordered = [signature for signature in path.signatures if signature in retained]
+        for left_index, source in enumerate(ordered):
+            support.update((source, target) for target in ordered[left_index + 1 :])
+    signature_edges = {
+        pair for pair, count in support.items() if count >= threshold
+    }
+    edges = sorted(
+        (_milestone_id(source), _milestone_id(target))
+        for source, target in signature_edges
+    )
+    node_ids = {_milestone_id(signature) for signature in retained}
+    if not _is_dag(node_ids, edges):
+        raise ValueError("共识 precedence 关系形成环")
+    return sorted(_transitive_reduction(set(edges)))
+
+
+def _consensus_minefields(
+    paths: list[_AlignedPath],
+    threshold: int,
+    view: GeneratorTaskView,
+    evidence_by_id: dict[str, PublicEvidence],
+    source_values: dict[str, JsonValue],
+) -> list[Minefield]:
+    support = Counter(
+        invariant_id
+        for path in paths
+        for invariant_id in set(path.minefield_invariant_ids)
+    )
+    invariant_by_id = {item.invariant_id: item for item in view.invariant_catalog}
+    result: list[Minefield] = []
+    for invariant_id in sorted(
+        key for key, count in support.items() if count >= threshold
+    ):
+        invariant = invariant_by_id[invariant_id]
+        evidence = evidence_by_id[invariant.evidence_id]
+        if evidence.source_ref != invariant.source_ref:
+            raise ValueError(f"invariant evidence 不匹配: {invariant_id}")
+        if evidence.expected_policy == "none":
+            expected: JsonValue = None
+        else:
+            literals = _allowed_expected_literals(evidence, source_values)
+            if len(literals) != 1:
+                raise ValueError(f"invariant 必须只关联一个公开 literal: {invariant_id}")
+            expected = literals[0]
+        digest = hashlib.sha256(invariant_id.encode("utf-8")).hexdigest()[:12]
+        minefield_id = f"mf_{digest}"
+        constraint = Constraint(
+            constraint_id=f"{minefield_id}_constraint",
+            target=evidence.target,
+            selector=evidence.selector,
+            operator=evidence.operator,
+            expected=expected,
+            namespace=evidence.namespace,
+            hard=True,
+            evaluator_hint=evidence.evaluator_hint,
+            metadata={"evidence_id": evidence.evidence_id, **dict(evidence.metadata)},
+        )
+        penalty = {"warning": 0.25, "error": 0.5, "fatal": 1.0}[
+            invariant.severity
+        ]
+        result.append(
+            Minefield(
+                minefield_id=minefield_id,
+                name=invariant.description,
+                description=invariant.description,
+                severity=invariant.severity,
+                constraints=[constraint],
+                penalty=MinefieldPenalty(mode="fixed", value=penalty),
+                metadata={
+                    "invariant_id": invariant_id,
+                    "source_ref": invariant.source_ref,
+                    "support_count": support[invariant_id],
+                },
             )
-            seen.add(minefield_id)
-        except ValueError as exc:
-            reasons.append(f"minefield[{index}] rejected: {exc}")
+        )
     return result
+
+
+def _valid_path_summary(
+    path: _PathCandidate, response_record: JsonObject | None
+) -> JsonObject:
+    return {
+        "path_index": path.path_index,
+        "strategy": path.strategy,
+        "status": "valid",
+        "distinct": True,
+        "atom_count": len(path.atoms),
+        "minefield_count": len(path.minefield_invariant_ids),
+        "reason": None,
+        "response_record": response_record,
+    }
+
+
+def _rejected_path_summary(
+    path_index: int,
+    strategy: str,
+    reason: str,
+    response_record: JsonObject | None = None,
+) -> JsonObject:
+    return {
+        "path_index": path_index,
+        "strategy": strategy,
+        "status": "rejected",
+        "distinct": False,
+        "atom_count": 0,
+        "minefield_count": 0,
+        "reason": reason,
+        "response_record": response_record,
+    }
+
+
+def _mark_duplicate_summaries(
+    summaries: list[JsonObject], distinct_paths: list[_AlignedPath]
+) -> list[JsonObject]:
+    distinct_indexes = {path.path_index for path in distinct_paths}
+    return [
+        {
+            **summary,
+            "distinct": summary["status"] == "valid"
+            and summary["path_index"] in distinct_indexes,
+        }
+        for summary in summaries
+    ]
 
 
 def _source_values(view: GeneratorTaskView) -> dict[str, JsonValue]:
@@ -559,6 +723,8 @@ def _evidence_catalog(
             raise ValueError(f"invariant_id 重复: {invariant.invariant_id}")
         if invariant.source_ref not in source_values:
             raise ValueError(f"invariant source_ref 未登记: {invariant.source_ref}")
+        if invariant.evidence_id not in result:
+            raise ValueError(f"invariant evidence 未登记: {invariant.evidence_id}")
         invariant_ids.add(invariant.invariant_id)
     return result
 
@@ -580,39 +746,38 @@ def _collect_source_values(value: object, result: dict[str, JsonValue]) -> None:
             _collect_source_values(item, result)
 
 
-def _validate_expected(
-    expected: object, evidence: PublicEvidence, source_values: dict[str, JsonValue]
-) -> None:
+def _public_literals(value: object) -> list[JsonValue]:
+    if isinstance(value, (dict, list)):
+        result: list[JsonValue] = []
+        items = value.values() if isinstance(value, dict) else value
+        for item in items:
+            for literal in _public_literals(item):
+                if literal not in result:
+                    result.append(literal)
+        return result
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return [value]
+    return []
+
+
+def _allowed_expected_literals(
+    evidence: PublicEvidence, source_values: dict[str, JsonValue]
+) -> list[JsonValue]:
     if evidence.expected_policy == "none":
-        if expected is not None:
-            raise ValueError("expected_policy=none 时 expected 必须为 null")
-        return
-    if evidence.source_ref not in source_values:
-        raise ValueError("evidence source_ref 未登记")
-    allowed = _allowed_expected_literals(evidence, source_values)
-    if expected not in allowed:
-        raise ValueError("expected 不在 evidence allowlist 中")
+        return []
+    return _public_literals(source_values[evidence.source_ref])
 
 
-def _consistent_reduced_edges(
-    paths: list[_Path], retained_ids: set[str]
-) -> list[tuple[str, str]] | None:
-    pair_orders: dict[tuple[str, str], int] = {}
-    for path in paths:
-        retained_path = [atom_id for atom_id in path.atom_ids if atom_id in retained_ids]
-        for left_index, source in enumerate(retained_path):
-            for target in retained_path[left_index + 1 :]:
-                pair = tuple(sorted((source, target)))
-                direction = 1 if pair == (source, target) else 2
-                pair_orders[pair] = pair_orders.get(pair, 0) | direction
-    edges = {
-        pair if direction == 1 else (pair[1], pair[0])
-        for pair, direction in pair_orders.items()
-        if direction in {1, 2}
-    }
-    if not _is_dag(retained_ids, sorted(edges)):
-        return None
-    return sorted(_transitive_reduction(edges))
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _nonempty(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} 必须是非空字符串")
+    return value.strip()
 
 
 def _transitive_reduction(
@@ -664,55 +829,34 @@ def _is_dag(node_ids: set[str], edges: list[tuple[str, str]]) -> bool:
     return visited == len(node_ids)
 
 
-def _count_hidden_leakage(value: object, parent_key: str = "") -> int:
-    count = 0
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized = str(key).strip().lower()
-            count += int(normalized in _HIDDEN_KEYS)
-            count += _count_hidden_leakage(item, normalized)
-    elif isinstance(value, list):
-        count += sum(_count_hidden_leakage(item, parent_key) for item in value)
-    return count
-
-
-def _nonempty(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} 必须是非空字符串")
-    return value.strip()
-
-
 def _reject(
     message: str,
     *,
-    valid_path_count: int = 0,
-    distinct_path_count: int = 0,
-    contract_atom_count: int = 0,
-    consensus_node_count: int = 0,
-    leakage_count: int = 0,
-    reasons: tuple[str, ...] = (),
-    path_summaries: tuple[JsonObject, ...] = (),
     requested_path_count: int = 0,
     minimum_valid_path_count: int = 0,
-    actual_valid_distinct_path_count: int = 0,
-    evidence_allowlist_summary: tuple[JsonObject, ...] = (),
+    valid_path_count: int = 0,
+    distinct_path_count: int = 0,
+    candidate_atom_count: int = 0,
+    aligned_atom_count: int = 0,
+    consensus_node_count: int = 0,
+    reasons: tuple[str, ...] = (),
+    path_summaries: tuple[JsonObject, ...] = (),
 ) -> NoReturn:
     report = GenerationReport(
         generation_status="auto_rejected",
-        valid_path_count=valid_path_count,
-        distinct_path_count=distinct_path_count,
-        contract_atom_count=contract_atom_count,
-        consensus_node_count=consensus_node_count,
-        graph_valid=False,
-        leakage_count=leakage_count,
-        reasons=(*reasons, message),
-        path_summaries=path_summaries,
         requested_path_count=requested_path_count,
         minimum_valid_path_count=minimum_valid_path_count,
-        actual_valid_distinct_path_count=actual_valid_distinct_path_count,
-        evidence_allowlist_summary=evidence_allowlist_summary,
+        valid_path_count=valid_path_count,
+        distinct_path_count=distinct_path_count,
+        candidate_atom_count=candidate_atom_count,
+        aligned_atom_count=aligned_atom_count,
+        consensus_node_count=consensus_node_count,
+        graph_valid=False,
+        reasons=(*reasons, message),
+        path_summaries=path_summaries,
     )
     logger.error(
-        "milestone 自动生成被拒绝", extra={"事件": "milestone生成拒绝", "原因": message}
+        "milestone 自动生成被拒绝",
+        extra={"事件": "milestone生成拒绝", "原因": message},
     )
     raise MilestoneGenerationError(message, report)

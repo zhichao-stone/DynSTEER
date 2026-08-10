@@ -10,8 +10,10 @@ import itertools
 import json
 import logging
 import math
+import shutil
 import statistics
 import time
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -75,6 +77,8 @@ class _CaseResult:
     generation_report: JsonObject
     reference_count: int | None
     prediction_count: int | None
+    reference_summary: JsonObject
+    prediction_summary: JsonObject
     diagnostics: tuple[str, ...] = ()
     elapsed_ms: int = 0
 
@@ -96,6 +100,11 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--ged-timeout-seconds", type=float)
     parser.add_argument("--fgw", action="store_true", default=None)
     parser.add_argument("--random-seed", type=int, default=202608)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="删除并重建已存在的同名实验结果目录",
+    )
     args = parser.parse_args(argv)
     if args.workers is not None and args.workers < 1:
         parser.error("--workers 必须大于等于 1")
@@ -138,15 +147,13 @@ def _run_reliability_experiment(
     if not groups:
         raise ValueError("可靠性实验没有可执行的 benchmark")
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    # 可靠性结果使用稳定、可人工定位的路径，不按 run_id 或 hash 分层。
-    # 配置文件通常位于 <project>/data/experiments 下，因此结果根目录固定为
-    # <project>/results/milestone/<experiment_id>。
+    # 可靠性结果使用稳定、可人工定位的路径；默认拒绝覆盖同名实验。
     project_root = config_path.parents[2] if len(config_path.parents) > 2 else Path.cwd()
-    run_dir = project_root / "results" / "milestone" / str(config["experiment_id"])
-    try:
-        run_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise _InfrastructureError(f"结果目录不可写: {run_dir}") from exc
+    run_dir = _prepare_run_dir(
+        project_root,
+        str(config["experiment_id"]),
+        options.force,
+    )
 
     started_at = _utc_now()
     ordered_results: list[_CaseResult] = []
@@ -161,7 +168,10 @@ def _run_reliability_experiment(
         for group in groups:
             for case_id in group.case_ids:
                 case_path = _case_output_path(run_dir, group.benchmark, case_id)
-                result = _run_case(group, case_id, options)
+                response_output_dir = _response_output_dir(
+                    run_dir, run_id, group.benchmark, case_id
+                )
+                result = _run_case(group, case_id, options, response_output_dir)
                 result = replace(result, output_path=case_path)
                 _write_case_json(
                     case_path,
@@ -191,6 +201,44 @@ def _run_reliability_experiment(
     return run_dir
 
 
+def _prepare_run_dir(
+    project_root: Path,
+    experiment_id: str,
+    force: bool,
+) -> Path:
+    """校验并准备实验结果目录；仅在显式 force 时删除旧结果。"""
+    if project_root is None or not experiment_id.strip():
+        raise ValueError("project_root 和 experiment_id 不能为空")
+    safe_experiment_id = Path(safe_case_file_name(experiment_id)).stem
+    if safe_experiment_id != experiment_id:
+        raise ValueError(
+            "experiment_id 只能包含字母、数字、点、下划线和连字符，"
+            "且不能包含路径分隔符"
+        )
+
+    # 删除前确认目标严格位于 results/milestone 的直接子级。
+    results_root = (project_root / "results" / "milestone").resolve()
+    run_dir = (results_root / safe_experiment_id).resolve()
+    if run_dir == results_root or run_dir.parent != results_root:
+        raise ValueError(f"实验结果目录越界: {run_dir}")
+
+    try:
+        results_root.mkdir(parents=True, exist_ok=True)
+        if run_dir.exists():
+            if not force:
+                raise ValueError(
+                    f"实验结果目录已存在，默认拒绝覆盖: {run_dir}；"
+                    "请更换 experiment_id，或显式传入 --force"
+                )
+            if not run_dir.is_dir():
+                raise _InfrastructureError(f"实验结果路径不是目录: {run_dir}")
+            shutil.rmtree(run_dir)
+        run_dir.mkdir()
+    except OSError as exc:
+        raise _InfrastructureError(f"结果目录不可写: {run_dir}") from exc
+    return run_dir
+
+
 def _configure_logging() -> None:
     """配置低噪声终端日志，运行进度由 tqdm 统一展示。"""
     logging.basicConfig(
@@ -204,6 +252,18 @@ def _configure_logging() -> None:
 def _case_output_path(run_dir: Path, benchmark: str, case_id: str) -> Path:
     """生成稳定的 benchmark/case 输出路径，文件名保留完整 case ID。"""
     return run_dir / benchmark / safe_case_file_name(case_id)
+
+
+def _response_output_dir(
+    run_dir: Path,
+    run_id: str,
+    benchmark: str,
+    case_id: str,
+) -> Path:
+    """返回单个 case 的 milestone LLM 原始响应目录。"""
+    benchmark_dir = Path(safe_case_file_name(benchmark)).stem
+    case_dir = Path(safe_case_file_name(case_id)).stem
+    return run_dir / "llm_outputs" / run_id / benchmark_dir / case_dir
 
 
 def _group_reliability_specs(
@@ -273,6 +333,7 @@ def _run_case(
     group: _ReliabilitySpecGroup,
     case_id: str,
     options: argparse.Namespace,
+    response_output_dir: Path,
 ) -> _CaseResult:
     """不写 adapted cache，分别构造原生 reference 与生成 prediction。"""
     started = time.perf_counter()
@@ -306,7 +367,10 @@ def _run_case(
         if llm is None:
             raise ValueError("milestone generator LLM 未配置")
         prediction, generation_report = compile_task_case(
-            view, group.milestone_generation, llm
+            view,
+            group.milestone_generation,
+            llm,
+            response_output_dir=response_output_dir,
         )
         report = generation_report.to_dict()
         prediction_count = len(prediction.nodes)
@@ -320,6 +384,7 @@ def _run_case(
             reference_count,
             None,
             exc.report.to_dict(),
+            reference_summary=_descriptor_summary(reference),
         )
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         return _failed_case(
@@ -330,36 +395,41 @@ def _run_case(
             started,
             reference_count,
             None,
+            reference_summary=_descriptor_summary(reference),
         )
 
     try:
-        predicted_graph = _graph_descriptor(prediction)
-        reference_graph = _graph_descriptor(reference)
+        strict_prediction = _graph_descriptor(prediction, structural=False)
+        strict_reference = _graph_descriptor(reference, structural=False)
+        structural_prediction = _graph_descriptor(prediction, structural=True)
+        structural_reference = _graph_descriptor(reference, structural=True)
         profile = group.reliability_metadata["edit_cost_profile"]
         solver_mode = options.ged_solver or group.reliability_metadata["ged_solver"]
         timeout = (
             options.ged_timeout_seconds
             or group.reliability_metadata["ged_timeout_seconds"]
         )
-        metrics = _compute_ged(
-            predicted_graph,
-            reference_graph,
-            profile,
-            solver_mode,
-            timeout,
-        )
-        metrics["node_set_f1"] = _node_set_f1(
-            predicted_graph,
-            reference_graph,
-            metrics.pop("vertex_path"),
-        )
+        metrics = {
+            "strict": _graph_metric_bundle(
+                strict_prediction, strict_reference, profile, solver_mode, timeout
+            ),
+            "structural": _graph_metric_bundle(
+                structural_prediction,
+                structural_reference,
+                profile,
+                solver_mode,
+                timeout,
+            ),
+            "node_count_delta": len(prediction.nodes) - len(reference.nodes),
+            "edge_count_delta": len(prediction.edges) - len(reference.edges),
+        }
         fgw_enabled = (
             options.fgw
             if options.fgw is not None
             else group.reliability_metadata["fgw"]
         )
         metrics["fgw"] = (
-            _compute_fgw_optional(predicted_graph, reference_graph, alpha=0.5)
+            _compute_fgw_optional(strict_prediction, strict_reference, alpha=0.5)
             if fgw_enabled
             else _disabled_fgw()
         )
@@ -373,6 +443,8 @@ def _run_case(
             reference_count,
             prediction_count,
             report,
+            reference_summary=_descriptor_summary(reference),
+            prediction_summary=_descriptor_summary(prediction),
         )
 
     return _CaseResult(
@@ -384,11 +456,15 @@ def _run_case(
         generation_report=report,
         reference_count=reference_count,
         prediction_count=prediction_count,
+        reference_summary=_descriptor_summary(reference),
+        prediction_summary=_descriptor_summary(prediction),
         elapsed_ms=_elapsed_ms(started),
     )
 
 
-def _graph_descriptor(graph: MilestoneGraph | nx.DiGraph) -> nx.DiGraph:
+def _graph_descriptor(
+    graph: MilestoneGraph | nx.DiGraph, structural: bool = False
+) -> nx.DiGraph:
     """将 milestone graph 转为包含稳定节点/边标签的 DiGraph。"""
     if isinstance(graph, (nx.DiGraph, nx.Graph)):
         if not graph.is_directed():
@@ -406,31 +482,98 @@ def _graph_descriptor(graph: MilestoneGraph | nx.DiGraph) -> nx.DiGraph:
         if not any(source == node.milestone_id for source, _ in graph.edges)
     }
     for node in graph.nodes:
-        constraints = [
+        constraint_shapes = [
             {
                 "target": getattr(item.target, "value", item.target),
                 "selector": item.selector,
                 "operator": getattr(item.operator, "value", item.operator),
                 "namespace": item.namespace,
                 "evaluator_hint": item.evaluator_hint,
-                "expected": item.expected,
-                "stage_goal_semantics": item.stage_goal_semantics,
             }
             for item in node.constraints
         ]
-        label = {
-            "name": node.name,
-            "description": node.description,
-            "route": [getattr(value, "value", value) for value in node.matching_route]
-            if node.matching_route
-            else None,
-            "terminal": node.milestone_id in terminal_ids,
-            "constraints": constraints,
-        }
+        constraint_shapes.sort(key=_canonical_json)
+        label = (
+            {
+                "terminal": node.milestone_id in terminal_ids,
+                "constraint_shapes": constraint_shapes,
+            }
+            if structural
+            else {
+                "name": node.name,
+                "description": node.description,
+                "route": [
+                    getattr(value, "value", value) for value in node.matching_route
+                ]
+                if node.matching_route
+                else None,
+                "terminal": node.milestone_id in terminal_ids,
+                "constraints": [
+                    {
+                        **shape,
+                        "expected": item.expected,
+                        "stage_goal_semantics": item.stage_goal_semantics,
+                    }
+                    for shape, item in zip(constraint_shapes, sorted(
+                        node.constraints,
+                        key=lambda value: _canonical_json({
+                            "target": getattr(value.target, "value", value.target),
+                            "selector": value.selector,
+                            "operator": getattr(value.operator, "value", value.operator),
+                            "namespace": value.namespace,
+                            "evaluator_hint": value.evaluator_hint,
+                        }),
+                    ))
+                ],
+            }
+        )
         descriptor.add_node(node.milestone_id, label=_canonical_json(label))
     for source, target in graph.edges:
         descriptor.add_edge(source, target, label="directed_precedence")
     return descriptor
+
+
+def _descriptor_summary(graph: MilestoneGraph) -> JsonObject:
+    """返回不含任务文本和期望值的图结构摘要。"""
+    terminal_ids = {
+        node.milestone_id
+        for node in graph.nodes
+        if not any(source == node.milestone_id for source, _ in graph.edges)
+    }
+    shape_counts: Counter[str] = Counter()
+    for node in graph.nodes:
+        for constraint in node.constraints:
+            target = getattr(constraint.target, "value", constraint.target)
+            operator = getattr(constraint.operator, "value", constraint.operator)
+            shape_counts[f"{target}:{operator}"] += 1
+    return {
+        "node_count": len(graph.nodes),
+        "edge_count": len(graph.edges),
+        "terminal_count": len(terminal_ids),
+        "constraint_shape_counts": dict(sorted(shape_counts.items())),
+    }
+
+
+def _graph_metric_bundle(
+    predicted_graph: nx.DiGraph,
+    reference_graph: nx.DiGraph,
+    profile: Mapping[str, Any],
+    solver_mode: str,
+    timeout_seconds: float,
+) -> JsonObject:
+    """一次 GED 求解同时产出 GED 审计字段与节点集合 F1。"""
+    result = _compute_ged(
+        predicted_graph,
+        reference_graph,
+        profile,
+        solver_mode,
+        timeout_seconds,
+    )
+    vertex_path = result.pop("vertex_path")
+    result["node_set_f1"] = _node_set_f1(
+        predicted_graph, reference_graph, vertex_path
+    )
+    return result
 
 
 def _compute_ged(
@@ -699,26 +842,73 @@ def _write_report(
         for status in statuses
     }
     completed = [result for result in results if result.status == "completed"]
-    similarities = [float(result.metrics["ged_similarity"]) for result in completed]
-    f1_values = [float(result.metrics["node_set_f1"]["f1"]) for result in completed]
+    strict_similarities = [
+        float(result.metrics["strict"]["ged_similarity"]) for result in completed
+    ]
+    structural_similarities = [
+        float(result.metrics["structural"]["ged_similarity"])
+        for result in completed
+    ]
+    strict_f1 = [
+        float(result.metrics["strict"]["node_set_f1"]["f1"])
+        for result in completed
+    ]
+    structural_f1 = [
+        float(result.metrics["structural"]["node_set_f1"]["f1"])
+        for result in completed
+    ]
+    generation_fields = (
+        "requested_path_count",
+        "minimum_valid_path_count",
+        "valid_path_count",
+        "distinct_path_count",
+    )
     summary = {
         "schema_version": "milestone_reliability.summary.v1",
         "status_counts": status_counts,
         "failed_case_count": len(results) - status_counts["completed"],
-        "ged_similarity": _statistics(similarities),
-        "node_set_f1": _statistics(f1_values),
+        "strict": {
+            "ged_similarity": _statistics(strict_similarities),
+            "node_set_f1": _statistics(strict_f1),
+        },
+        "structural": {
+            "ged_similarity": _statistics(structural_similarities),
+            "node_set_f1": _statistics(structural_f1),
+        },
+        "absolute_node_count_delta": _statistics(
+            [abs(float(result.metrics["node_count_delta"])) for result in completed]
+        ),
+        "absolute_edge_count_delta": _statistics(
+            [abs(float(result.metrics["edge_count_delta"])) for result in completed]
+        ),
+        "generation": {
+            field: _statistics(
+                [
+                    float(result.generation_report[field])
+                    for result in results
+                    if isinstance(result.generation_report.get(field), (int, float))
+                    and not isinstance(result.generation_report.get(field), bool)
+                ]
+            )
+            for field in generation_fields
+        },
         "exact_count": sum(
-            result.metrics.get("solver_mode") == "exact" for result in completed
+            result.metrics["strict"].get("solver_mode") == "exact"
+            for result in completed
         ),
         "approximate_count": sum(
-            result.metrics.get("solver_mode") == "approximate"
+            result.metrics["strict"].get("solver_mode") == "approximate"
             for result in completed
         ),
         "case_files": case_files,
         "metric_definition": {
-            "primary": "ged_similarity",
-            "ged_similarity": "max(0, 1 - ged_distance / ged_base)",
-            "node_set_f1": "zero-cost GED node substitutions",
+            "primary": "strict.ged_similarity",
+            "strict.ged_similarity": "max(0, 1 - ged_distance / ged_base)",
+            "structural.ged_similarity": "同公式，仅比较 terminal 与 constraint shape",
+            "strict.node_set_f1.f1": "strict GED 的零代价节点替换",
+            "structural.node_set_f1.f1": "structural GED 的零代价节点替换",
+            "node_count_delta": "prediction node count - reference node count",
+            "edge_count_delta": "prediction edge count - reference edge count",
         },
     }
     index = {
@@ -761,12 +951,8 @@ def _write_case_json(
         "status": result.status,
         "finished_at": finished_at,
         "elapsed_ms": result.elapsed_ms,
-        "reference": {
-            "node_count": result.reference_count,
-        },
-        "prediction": {
-            "node_count": result.prediction_count,
-        },
+        "reference": result.reference_summary,
+        "prediction": result.prediction_summary,
         "metrics": result.metrics,
         "generation_report": result.generation_report,
         "diagnostics": list(result.diagnostics),
@@ -889,6 +1075,8 @@ def _failed_case(
     reference_count: int | None,
     prediction_count: int | None,
     report: JsonObject | None = None,
+    reference_summary: JsonObject | None = None,
+    prediction_summary: JsonObject | None = None,
 ) -> _CaseResult:
     return _CaseResult(
         benchmark=group.benchmark,
@@ -899,6 +1087,8 @@ def _failed_case(
         generation_report=report or {},
         reference_count=reference_count,
         prediction_count=prediction_count,
+        reference_summary=reference_summary or {},
+        prediction_summary=prediction_summary or {},
         diagnostics=(_safe_error(exc),),
         elapsed_ms=_elapsed_ms(started),
     )

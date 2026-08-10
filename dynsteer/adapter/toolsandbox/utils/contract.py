@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 
+from dynsteer.adapter.contract import (
+    base_public_evidence,
+    build_public_invariants,
+    normalize_tool_contract,
+)
 from dynsteer.adapter.toolsandbox.utils.state import sandbox_rows_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_rows_to_step_dicts
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.milestone.model import GeneratorTaskView, PublicEvidence, PublicInvariant
-from dynsteer.model import Actor, ConstraintTarget, JsonObject, Operator, TaskCase
+from dynsteer.milestone.model import GeneratorTaskView
+from dynsteer.model import Actor, JsonObject, TaskCase
 from dynsteer.utils import enum_name, json_safe
 
 
@@ -65,46 +69,22 @@ def build_toolsandbox_generator_view(
             }
         )
 
-    tool_schema = agent_facing_tool_schema(context, module_loader)
-    evidence: list[PublicEvidence] = [
-        PublicEvidence(
-            evidence_id="agent_message_instruction",
-            target=ConstraintTarget.STEP,
-            selector="$.content",
-            operator=Operator.FUZZY_MATCH,
-            source_ref="instruction",
-        ),
-        PublicEvidence(
-            evidence_id="tool_result_present",
-            target=ConstraintTarget.TOOL_RESULT,
-            selector="$",
-            operator=Operator.ADDED,
-            source_ref="instruction",
-            expected_policy="none",
-        ),
+    raw_tool_schema = agent_facing_tool_schema(context, module_loader)
+    tool_schema, tool_evidence = normalize_tool_contract(raw_tool_schema)
+    public_texts = [
+        str(asset["value"])
+        for asset in public_assets
+        if isinstance(asset.get("value"), str)
     ]
-    tools = tool_schema.get("tools")
-    if isinstance(tools, list):
-        for index, tool in enumerate(tools):
-            if not isinstance(tool, dict):
-                continue
-            function = tool.get("function")
-            name = function.get("name") if isinstance(function, dict) else None
-            if not isinstance(name, str) or not name.strip():
-                continue
-            source_ref = f"tool:{index}:name"
-            tool["source_ref"] = source_ref
-            tool["value"] = name
-            evidence.append(
-                PublicEvidence(
-                    evidence_id=f"tool_call_{index}",
-                    target=ConstraintTarget.TOOL_CALL,
-                    selector="$.name",
-                    operator=Operator.EQUALS,
-                    source_ref=source_ref,
-                )
-            )
-    invariants = _public_invariants(public_assets, evidence)
+    invariant_assets, invariant_evidence, invariants = build_public_invariants(
+        [task_case.task_description, *public_texts]
+    )
+    public_assets.extend(invariant_assets)
+    evidence = [
+        *base_public_evidence(),
+        *tool_evidence,
+        *invariant_evidence,
+    ]
     return GeneratorTaskView(
         benchmark="toolsandbox",
         task_id=task_case.task_id,
@@ -135,43 +115,3 @@ def _message_visible_to_agent(value: object) -> bool:
     return isinstance(value, list) and any(
         str(item).upper().endswith("AGENT") for item in value
     )
-
-
-def _public_invariants(
-    assets: list[JsonObject], evidence: list[PublicEvidence]
-) -> list[PublicInvariant]:
-    result: list[PublicInvariant] = []
-    for asset in tuple(assets):
-        content = asset.get("value")
-        if not isinstance(content, str):
-            continue
-        rules = [
-            line.strip(" -\t")
-            for line in content.splitlines()
-            if re.search(
-                r"\b(?:must not|do not|never)\b|禁止|不得|严禁", line, re.IGNORECASE
-            )
-        ]
-        for rule in rules:
-            index = len(result)
-            source_ref = f"invariant:{index}"
-            assets.append({"source_ref": source_ref, "value": rule, "actor": "system"})
-            evidence_id = f"invariant_message_{index}"
-            evidence.append(
-                PublicEvidence(
-                    evidence_id=evidence_id,
-                    target=ConstraintTarget.STEP,
-                    selector="$.content",
-                    operator=Operator.CONTAINS,
-                    source_ref=source_ref,
-                )
-            )
-            result.append(
-                PublicInvariant(
-                    invariant_id=f"invariant_{index}",
-                    description=rule,
-                    source_ref=source_ref,
-                    evidence_id=evidence_id,
-                )
-            )
-    return result

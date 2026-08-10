@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-usage() { echo "Usage: $0 --exp PATH [--workers NUM] [--ged-solver MODE] [--fgw]"; }
+usage() { echo "Usage: $0 --exp PATH [--force] [--workers NUM] [--ged-solver MODE] [--fgw]"; }
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
 [[ $# -gt 0 ]] || { usage >&2; exit 64; }
