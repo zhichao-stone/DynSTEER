@@ -168,10 +168,10 @@ def _run_reliability_experiment(
         for group in groups:
             for case_id in group.case_ids:
                 case_path = _case_output_path(run_dir, group.benchmark, case_id)
-                response_output_dir = _response_output_dir(
-                    run_dir, run_id, group.benchmark, case_id
+                response_output_file = _response_output_file(
+                    run_dir, group.benchmark, case_id
                 )
-                result = _run_case(group, case_id, options, response_output_dir)
+                result = _run_case(group, case_id, options, response_output_file)
                 result = replace(result, output_path=case_path)
                 _write_case_json(
                     case_path,
@@ -254,16 +254,14 @@ def _case_output_path(run_dir: Path, benchmark: str, case_id: str) -> Path:
     return run_dir / benchmark / safe_case_file_name(case_id)
 
 
-def _response_output_dir(
+def _response_output_file(
     run_dir: Path,
-    run_id: str,
     benchmark: str,
     case_id: str,
 ) -> Path:
-    """返回单个 case 的 milestone LLM 原始响应目录。"""
+    """返回 benchmark 目录下单个 case 的 LLM 响应 JSON 文件。"""
     benchmark_dir = Path(safe_case_file_name(benchmark)).stem
-    case_dir = Path(safe_case_file_name(case_id)).stem
-    return run_dir / "llm_outputs" / run_id / benchmark_dir / case_dir
+    return run_dir / benchmark_dir / "llm_outputs" / safe_case_file_name(case_id)
 
 
 def _group_reliability_specs(
@@ -333,7 +331,7 @@ def _run_case(
     group: _ReliabilitySpecGroup,
     case_id: str,
     options: argparse.Namespace,
-    response_output_dir: Path,
+    response_output_file: Path,
 ) -> _CaseResult:
     """不写 adapted cache，分别构造原生 reference 与生成 prediction。"""
     started = time.perf_counter()
@@ -370,7 +368,7 @@ def _run_case(
             view,
             group.milestone_generation,
             llm,
-            response_output_dir=response_output_dir,
+            response_output_file=response_output_file,
         )
         report = generation_report.to_dict()
         prediction_count = len(prediction.nodes)

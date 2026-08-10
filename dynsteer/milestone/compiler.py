@@ -95,7 +95,7 @@ def compile_task_case(
     view: GeneratorTaskView,
     config: MilestoneGenerationConfig,
     llm: BaseLLM,
-    response_output_dir: Path | None = None,
+    response_output_file: Path | None = None,
 ) -> tuple[MilestoneGraph, GenerationReport]:
     """基于公开任务契约独立模拟路径并编译 milestone graph。
 
@@ -121,6 +121,7 @@ def compile_task_case(
     # 每条路径使用独立调用，单条失败只淘汰自身。
     valid_paths: list[_PathCandidate] = []
     path_summaries: list[JsonObject] = []
+    raw_responses: dict[str, str] = {}
     reasons: list[str] = []
     logger.info(
         "开始独立生成 milestone 路径",
@@ -138,7 +139,8 @@ def compile_task_case(
                 evidence_by_id,
                 source_values,
                 view,
-                response_output_dir,
+                response_output_file,
+                raw_responses,
             )
         except _RecordedPathResponseError as exc:
             reason = f"path[{path_index}] rejected: {exc}"
@@ -310,7 +312,8 @@ def _simulate_path(
     evidence_by_id: dict[str, PublicEvidence],
     source_values: dict[str, JsonValue],
     view: GeneratorTaskView,
-    response_output_dir: Path | None,
+    response_output_file: Path | None,
+    raw_responses: dict[str, str],
 ) -> tuple[_PathCandidate, JsonObject | None]:
     """独立生成并解析一条候选路径。"""
     template = load_prompt_template("milestone", "generation")
@@ -326,9 +329,10 @@ def _simulate_path(
     raw = llm.chat([LLMMessage(role="user", content=prompt)])
     response_record = _record_raw_response(
         raw,
-        response_output_dir,
+        response_output_file,
         path_index,
         strategy,
+        raw_responses,
     )
     try:
         candidate = _parse_path_response(
@@ -346,19 +350,27 @@ def _simulate_path(
 
 def _record_raw_response(
     raw: str,
-    output_dir: Path | None,
+    output_file: Path | None,
     path_index: int,
     strategy: str,
+    responses: dict[str, str],
 ) -> JsonObject | None:
-    """把单次 LLM 原始响应写入独立 UTF-8 文件并返回审计摘要。"""
-    if output_dir is None:
+    """把单次 LLM 原始响应写入当前 case 的聚合 JSON 文件。"""
+    if output_file is None:
         return None
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"path_{path_index:02d}_{strategy}.txt"
-    output_path.write_text(raw, encoding="utf-8")
+    response_key = f"path_{path_index:02d}_{strategy}"
+    responses[response_key] = raw
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = output_file.with_suffix(f"{output_file.suffix}.tmp")
+    temporary_file.write_text(
+        json.dumps(responses, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_file.replace(output_file)
     stripped = raw.lstrip()
     return {
-        "path": str(output_path.resolve()),
+        "path": str(output_file.resolve()),
+        "key": response_key,
         "character_count": len(raw),
         "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         "starts_with_json_fence": stripped.lower().startswith("```json"),

@@ -65,17 +65,19 @@ compile_task_case(
     view: GeneratorTaskView,
     config: MilestoneGenerationConfig,
     llm: BaseLLM,
-    response_output_dir: Path | None = None,
+    response_output_file: Path | None = None,
 ) -> tuple[MilestoneGraph, GenerationReport]
 ```
 
-`response_output_dir` 用于诊断性记录每条独立路径的 LLM 原始文本。配置后，响应会在 JSON 解析前以 UTF-8 写入：
+`response_output_file` 用于把一个 case 的全部独立路径 LLM 原始文本聚合为一个 UTF-8 JSON 对象。Reliability 实验固定写入：
 
 ```text
-<response_output_dir>/path_<两位序号>_<strategy>.txt
+results/milestone/<experiment_id>/<benchmark>/llm_outputs/<case_id>.json
 ```
 
-对应 `path_summaries[].response_record` 保存绝对文件路径、字符数、SHA-256、是否以 JSON Markdown 围栏开头，以及首个非空字符是否为 `{`。因此，即使响应随后发生 JSON 或 schema 校验错误，原始文本仍可审计。未配置目录时不写文件，`response_record` 为 `null`。
+文件 key 为 `path_<两位序号>_<strategy>`，value 为未经修改的原始响应。每次返回后都会以临时文件原子更新聚合 JSON，因此即使响应随后发生 JSON 或 schema 校验错误，已经完成的路径仍可审计。
+
+对应 `path_summaries[].response_record` 保存聚合文件绝对路径、当前响应 key、字符数、SHA-256、是否以 JSON Markdown 围栏开头，以及首个非空字符是否为 `{`。未配置文件时不写出响应，`response_record` 为 `null`。
 
 原始响应可能复述任务中的用户数据，只应写入受控实验目录，不应直接输出到终端日志或提交到公开仓库。
 
