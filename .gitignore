@@ -45,6 +45,7 @@ runs/
 test/
 tests/*
 results/*
+outputs/*
 *.zip
 
 # Agents

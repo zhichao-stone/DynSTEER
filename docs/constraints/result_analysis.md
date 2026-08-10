@@ -277,6 +277,36 @@ DEFAULT 若存在原生 scorer/evaluator 成本，应计入 DEFAULT 的 `evaluat
 2. **因 Agent 执行不力而提前终止的配对子集**：使用 3.4 的同一判据和配对集合，仅与这些样本各自配对的 DEFAULT 行比较，报告相同的时间/token 指标，并结合 `progress` 解释节省的执行成本与新增评估成本；
 3. **逐 case 汇总**：按 case_id 报告配对样本数、提前终止数、各成本总量/均值及相对 DEFAULT 的差值，不能只给方法级总均值。
 
+##### 提前终止节省量分析（强制步骤）
+
+对“阶段得分不足或持续无进展而中途终止”的效率分析，必须执行以下步骤：
+
+1. **先固定停止集合**：严格低分停止仅指阶段得分低于失败阈值触发的 stop code（例如 `evaluation_policy_stop`）；广义执行不力停止可进一步包含 `milestone_no_progress:*`、`ready_frontier_no_progress:*` 等持续无进展 stop code。两种集合必须分别计数，不得与 minefield、正常完成、系统/评估异常或未造成轨迹截断的 virtual stop 混合。
+2. **区分两种 case 数**：同时报告完整主键 `(benchmark, model_id, method, repeat_index, case_id)` 的配对样本数，以及去重后的 `case_id` 数。不得把 model×repeat 配对样本数简写成互不重复的场景数。
+3. **只使用同键 DEFAULT 配对**：每条停止样本必须与相同 `(benchmark, model_id, repeat_index, case_id)` 的 DEFAULT 完整轨迹配对；DEFAULT 缺失、未完整运行或计数口径不一致时，该条节省量记为缺失并说明原因。
+4. **计算进度与未执行比例**：
+
+```text
+progress = stop_step / default_total_step
+saved_progress = 1 - progress
+```
+
+`saved_progress` 表示因停止而未继续执行的轨迹比例。必须报告 `progress` 和 `saved_progress` 的 mean/median/P10/P90；不得把平均 `progress` 的补数冒充逐样本比例之外的其他口径。
+
+5. **分别计算毛节省与净节省**：
+
+```text
+gross_execution_time_saved = default_full_execution_time
+                             - dynsteer_prefix_execution_time
+
+net_pipeline_time_saved = default_pipeline_time
+                          - dynsteer_pipeline_time
+```
+
+`gross_execution_time_saved` 只衡量未执行后缀带来的轨迹执行时间减少；`net_pipeline_time_saved` 必须计入 prefix execution、case adaptation、DynSTEER evaluation/Judge/stop policy 和 DEFAULT 原生 evaluator 的同边界成本。节省值为正表示 DynSTEER 更快，为负表示 DynSTEER 更慢；若同时报告 `dynsteer_pipeline_time - default_pipeline_time`，必须明确其符号方向与节省量相反。
+6. **报告总量、均值和分布**：严格低分停止集合与广义执行不力停止集合均须报告时间节省的 total、mean、median、P90/P95，并给出净节省为正、为零和为负的样本数/比例。若均值节省但中位数不节省，必须明确说明收益由少数长轨迹贡献，不能用均值代表典型 case。
+7. **说明 replay 与真实在线停止的差异**：若停止来自 `DYNSTEER_REPLAY` 对 DEFAULT source trajectory 的反事实截断，必须称为 virtual/counterfactual saving，不得写成已实现的线上 Agent 成本节省。adaptation、Agent token 或其他成本缺失时，净节省必须标注为当前可比范围，缺失项不得补 0。
+
 case 适配若在多个 model、method 或 repeat 间共享/缓存，实验总量必须按实际调用次数计费，不能给每个配对样本重复记账。逐样本或逐 case 表中应单列共享成本及其分摊规则；同时优先报告“实际实验总成本”和“按明确规则分摊后的配对成本”，不得将分摊值伪装成实际调用成本。
 
 当 Agent 执行 token 可统计且三类 token 的边界可比时，对实验全量数据和提前终止子集分别报告以下占 DynSTEER 全流程 token 的比例：
