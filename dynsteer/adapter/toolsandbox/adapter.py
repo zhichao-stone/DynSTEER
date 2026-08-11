@@ -15,12 +15,12 @@ from dynsteer.adapter.toolsandbox.utils.scenario import (
     task_description_from_steps,
     task_types_from_categories,
 )
-from dynsteer.adapter.toolsandbox.utils.state import sandbox_rows_from_context
+from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, sandbox_rows_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_rows_to_step_dicts
 from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.milestone.model import GeneratorTaskView
-from dynsteer.model import TaskCase
+from dynsteer.model import MilestoneGraph, TaskCase
 from dynsteer.stage import generate_stage_evaluation_specs, materialize_stage_goals
 from dynsteer.utils import enum_name
 
@@ -59,7 +59,7 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
             case_id=case_id,
             environment_schema={"source": "toolsandbox", "stateful": True},
             tool_schema=agent_facing_tool_schema(context, module_loader),
-            initial_state=None,
+            initial_state=initial_state_from_context(context, module_loader),
             milestone_graph=graph,
             task_types=task_types_from_categories(getattr(scenario, "categories", [])),
             metadata={
@@ -84,6 +84,21 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
         return build_toolsandbox_generator_view(
             config, task_case, context, load_toolsandbox_module
         )
+
+    def reliability_tool_aliases(
+        self, config: HarnessRunConfig, case_id: str
+    ) -> dict[str, str]:
+        """将 reference 的 execution-facing 工具名映射到 Agent 可见名称。"""
+        scenarios = load_named_scenarios(config, load_toolsandbox_module)
+        if case_id not in scenarios:
+            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
+        context = getattr(scenarios[case_id], "starting_context", None)
+        if context is None:
+            raise ValueError("ToolSandbox scenario 缺少 starting_context")
+        mapping = context.get_agent_to_execution_facing_tool_name()
+        if not isinstance(mapping, dict):
+            raise TypeError("ToolSandbox tool name mapping 必须是字典")
+        return {str(actual): str(agent) for agent, actual in mapping.items()}
 
     def refresh_task_case_for_experiment(
         self,
@@ -111,7 +126,15 @@ class ToolSandboxAdapter(BaseBenchmarkAdapter):
                 constraint.expected = deepcopy(source.expected)
                 constraint.stage_goal_semantics = deepcopy(source.stage_goal_semantics)
                 constraint.metadata = deepcopy(source.metadata)
-        task_case.initial_state = None
         task_case.stage_goals = materialize_stage_goals(task_case)
         task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
         return task_case
+
+    def reference_milestone_graph(
+        self, config: HarnessRunConfig, case_id: str
+    ) -> MilestoneGraph | None:
+        """返回 ToolSandbox 完整 origin graph，仅供 reliability 比较。"""
+        scenarios = load_named_scenarios(config, load_toolsandbox_module)
+        if case_id not in scenarios:
+            raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
+        return milestone_graph_from_scenario(scenarios[case_id])

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import re
 from collections.abc import Iterable, Mapping
@@ -16,6 +17,25 @@ _ACTOR_ALIASES = {
     "ENVIRONMENT": Actor.ENVIRONMENT,
     "EVALUATOR": Actor.EVALUATOR,
 }
+
+
+def record_raw_response(
+    raw: str,
+    output_file: Path | None,
+    key: str,
+    records: dict[str, JsonObject],
+) -> None:
+    """增量记录实际 LLM 原始响应及其 SHA-256。"""
+    if output_file is None:
+        return
+    records[key] = {
+        "response": raw,
+        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+    }
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(
+        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def normalize_actor(value: object, field_name: str = "actor", required: bool = False) -> Actor | None:
@@ -345,6 +365,18 @@ def json_safe(value: object) -> JsonValue:
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     return str(value)
+
+
+def canonical_json(value: object) -> str:
+    """将对象转换为稳定、紧凑的 JSON 文本。"""
+    return json.dumps(
+        json_safe(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def stable_json_digest(value: object) -> str:
+    """返回对象稳定 JSON 表示的 SHA-256 摘要。"""
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _detailed_step_indexes(values: list[str]) -> set[int]:

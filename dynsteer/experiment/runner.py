@@ -141,7 +141,8 @@ def _static_adaptation_key(spec: ExperimentRunSpec) -> tuple[object, ...]:
         str(spec.data_root.resolve()),
         spec.case_ids,
         generation.use_origin_milestone,
-        generation.simulated_path_count,
+        generation.max_candidate_path_count,
+        generation.enable_repair,
         generator,
         stage_mode,
     )

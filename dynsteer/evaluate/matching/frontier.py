@@ -11,7 +11,6 @@ def initialize_milestone_frontier(graph: MilestoneGraph) -> MilestoneFrontierSta
     topology = graph.topology
     if topology is None:
         raise ValueError("milestone graph 尚未 enrich")
-
     remaining_predecessor_count = {
         milestone.milestone_id: len(topology.predecessors_by_id[milestone.milestone_id])
         for milestone in graph.nodes

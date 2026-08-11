@@ -1,9 +1,110 @@
+from __future__ import annotations
+
 from collections import deque
-from dynsteer.model import MilestoneGraph, MilestoneTopology
+from typing import TYPE_CHECKING
+
+from dynsteer.model import (
+    Constraint,
+    Milestone,
+    MilestoneGraph,
+    MilestoneTopology,
+    Minefield,
+    MinefieldPenalty,
+    StageGoalSemanticKind,
+)
+from dynsteer.utils import stable_json_digest
+
+
+if TYPE_CHECKING:
+    from dynsteer.milestone.model import PublicEvidence
 
 
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
+
+
+def milestones_from_occurrences(
+    occurrences: list[tuple[str, str, int]],
+    evidence: dict[str, PublicEvidence],
+) -> list[Milestone]:
+    """将已排序的共同工具 occurrence 编译为 operation milestones。"""
+    result: list[Milestone] = []
+    for turn_id, evidence_id, occurrence_index in occurrences:
+        item = evidence[evidence_id]
+        tool_name = _evidence_tool_name(item)
+        milestone_id = f"m_{stable_json_digest((turn_id, evidence_id, occurrence_index))[:16]}"
+        result.append(Milestone(
+            milestone_id=milestone_id,
+            name=f"执行 {tool_name}",
+            description=f"{turn_id} 中第 {occurrence_index + 1} 次执行 {tool_name}",
+            constraints=[Constraint(
+                constraint_id=f"{milestone_id}_tool",
+                target=item.target,
+                selector=item.selector,
+                operator=item.operator,
+                expected=tool_name,
+                namespace=item.namespace,
+                hard=True,
+                evaluator_hint=item.evaluator_hint,
+                stage_goal_semantics={
+                    "kind": StageGoalSemanticKind.TOOL_CALL.value,
+                    "tool_name": tool_name,
+                    "evidence_source": "trajectory_or_structured_scorer",
+                    "user_visible_required": False,
+                },
+                metadata={"evidence_id": evidence_id},
+            )],
+            matching_route=item.matching_route,
+            metadata={
+                "turn_id": turn_id,
+                "evidence_id": evidence_id,
+                "occurrence_index": occurrence_index,
+                "necessity_basis": "path_intersection",
+            },
+        ))
+    return result
+
+
+def minefields_from_forbidden(
+    forbidden_by_turn: dict[str, set[str]],
+    evidence: dict[str, PublicEvidence],
+) -> list[Minefield]:
+    """将逐 turn 的共同 forbidden evidence 编译为 fatal minefields。"""
+    result: list[Minefield] = []
+    for turn_id, forbidden in forbidden_by_turn.items():
+        for evidence_id in sorted(forbidden):
+            item = evidence[evidence_id]
+            tool_name = _evidence_tool_name(item)
+            minefield_id = f"mf_{stable_json_digest((turn_id, evidence_id))[:16]}"
+            result.append(Minefield(
+                minefield_id=minefield_id,
+                name=f"禁止 {tool_name}",
+                description=f"{turn_id} 的全部可模拟路径均禁止调用 {tool_name}",
+                severity="fatal",
+                constraints=[Constraint(
+                    constraint_id=f"{minefield_id}_trigger",
+                    target=item.target,
+                    selector=item.selector,
+                    operator=item.operator,
+                    expected=tool_name,
+                    hard=True,
+                    evaluator_hint=item.evaluator_hint,
+                    stage_goal_semantics={
+                        "kind": StageGoalSemanticKind.TOOL_CALL.value,
+                        "tool_name": tool_name,
+                    },
+                )],
+                penalty=MinefieldPenalty(mode="fixed", value=1.0),
+                metadata={"turn_id": turn_id, "evidence_id": evidence_id},
+            ))
+    return result
+
+
+def _evidence_tool_name(evidence: PublicEvidence) -> str:
+    value = evidence.metadata.get("tool_name")
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"TOOL_CALL evidence 缺少真实 tool_name: {evidence.evidence_id}")
+    return value
 
 def augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
     ids = {node.milestone_id for node in graph.nodes}
@@ -46,6 +147,40 @@ def topological_order(predecessors: dict[str, list[str]], successors: dict[str, 
     if len(order) != len(predecessors):
         raise ValueError("milestone graph 存在环")
     return (order, depths)
+
+
+def transitive_reduction(
+    node_ids: set[str], edges: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """校验 DAG 并删除可由其他路径推导出的传递边。"""
+    predecessors, successors = build_adjacency(node_ids, edges)
+    topological_order(predecessors, successors)
+    reduced: list[tuple[str, str]] = []
+    for source, target in sorted(set(edges)):
+        if not _reachable_without_edge(source, target, successors, (source, target)):
+            reduced.append((source, target))
+    return reduced
+
+
+def _reachable_without_edge(
+    source: str,
+    target: str,
+    successors: dict[str, list[str]],
+    excluded: tuple[str, str],
+) -> bool:
+    pending = [source]
+    visited = {source}
+    while pending:
+        current = pending.pop()
+        for successor in successors[current]:
+            if (current, successor) == excluded:
+                continue
+            if successor == target:
+                return True
+            if successor not in visited:
+                visited.add(successor)
+                pending.append(successor)
+    return False
 
 def _lca(left: str, right: str, idom: dict[str, str], depths: dict[str, int]) -> str:
     """基于直接支配关系和深度信息，获取两个节点的最近公共祖先（LCA）。"""

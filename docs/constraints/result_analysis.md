@@ -242,6 +242,7 @@ repeat_rank_consistency.<method>.<benchmark>
 报告 Discriminability Score 时必须包括：
 
 - epsilon 网格（至少 0.01、0.02、0.03、0.04、0.05）；
+- 跨方法比较表必须以 epsilon 为主分组、method 为次分组，或采用“一行一个 epsilon、不同方法并列”的宽表；不得先连续列完某个方法的全部 epsilon，再列另一个方法，导致同 epsilon 难以直接比较；
 - mean score、population stddev；
 - 显著模型对数量/比例；
 - 每个模型对的 absolute difference 和 significant 标记；

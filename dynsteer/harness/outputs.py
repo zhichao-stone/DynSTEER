@@ -28,8 +28,6 @@ from dynsteer.model import (
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import json_safe, read_json_file
 
-RESULT_SCHEMA_VERSION = 4
-
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """把 Trajectory 转成 JSON 对象。"""
     raw_fields = {str(key): json_safe(value) for key, value in trajectory.raw.items()}
@@ -116,8 +114,6 @@ def existing_case_output(
     ):
         return None
     summary = read_json_file(summary_path, f"场景摘要: {summary_path}", dict)
-    if summary.get("result_schema_version") != RESULT_SCHEMA_VERSION:
-        return None
     return HarnessEvaluationOutput(
         raw_run_dir=raw_case_dir,
         result_dir=result_dir,
@@ -224,7 +220,6 @@ def write_default_case_outputs(
             raw_summary["runtime_initial_state_summary"] = runtime_initial_state_summary
         raw_summary.update(
             {
-                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "benchmark": config.benchmark,
                 "experiment_id": config.metadata.get("experiment_id"),
                 "method": str(config.metadata.get("method") or "default"),
@@ -256,7 +251,6 @@ def write_default_case_outputs(
         ).to_dict()
         raw_summary["termination"] = termination
         summary = {
-            "result_schema_version": RESULT_SCHEMA_VERSION,
             "task_id": task_case.task_id,
             "score": default_result.score,
             "score_components": score_components,
@@ -328,12 +322,11 @@ def _evaluation_payloads(
     harness_result: HarnessRunResult,
     config: HarnessRunConfig,
 ) -> tuple[JsonObject, JsonObject, JsonObject]:
-    """组装 live/replay 共用的 v3 评估产物。"""
+    """组装 live/replay 共用的评估产物。"""
     report = harness_result.evaluation_report
     termination = harness_result.termination.to_dict()
     raw_summary = {
         **harness_result.raw_summary,
-        "result_schema_version": RESULT_SCHEMA_VERSION,
         "benchmark": config.benchmark,
         "experiment_id": config.metadata.get("experiment_id"),
         "method": config.metadata.get("method"),
@@ -343,7 +336,6 @@ def _evaluation_payloads(
     }
     summary = {
         **report.to_summary_dict(),
-        "result_schema_version": RESULT_SCHEMA_VERSION,
         "score": report.overall_score,
         "score_components": {
             "stage_scores": {stage.stage_id: stage.stage_score for stage in report.stage_reports},
@@ -354,7 +346,6 @@ def _evaluation_payloads(
     summary.pop("overall_score", None)
     full_report = {
         **report.to_dict(),
-        "result_schema_version": RESULT_SCHEMA_VERSION,
         "termination": termination,
     }
     return raw_summary, summary, full_report

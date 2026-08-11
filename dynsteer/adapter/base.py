@@ -7,7 +7,7 @@ from dynsteer.adapter.utils import ensure_source_root
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.harness.model import HarnessAdvanceResult, HarnessRunConfig
 from dynsteer.milestone.model import GeneratorTaskView
-from dynsteer.model import JsonObject, TaskCase
+from dynsteer.model import JsonObject, MilestoneGraph, TaskCase
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,18 @@ class BaseBenchmarkAdapter(ABC):
         case_id: str,
     ) -> GeneratorTaskView:
         """投影 milestone 生成器可读取的公开任务字段。"""
+
+    def reference_milestone_graph(
+        self, config: HarnessRunConfig, case_id: str
+    ) -> MilestoneGraph | None:
+        """返回仅供 reliability 使用的完整人工参考图。"""
+        return None
+
+    def reliability_tool_aliases(
+        self, config: HarnessRunConfig, case_id: str
+    ) -> dict[str, str]:
+        """返回仅供 reliability 使用的 reference→Agent 工具名映射。"""
+        return {}
 
     def refresh_task_case_for_experiment(
         self,

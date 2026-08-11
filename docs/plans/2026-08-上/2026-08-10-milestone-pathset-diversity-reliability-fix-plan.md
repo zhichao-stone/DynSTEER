@@ -929,10 +929,6 @@ data/experiments/toolsandbox_milestone_reliability_partial_main_pathset_v2.json
 
 四个人工 reference 是空图，而 `remove_contact...` 是 response-only 一节点图。方案给出了 `needs_clarification/no_action/response_only` 三类，但模型能否仅根据公开工具和对话稳定区分，仍需 5 个信息不足 case 的真实复跑确认。若结果不稳定，应先由 benchmark 维护者明确标注原则，不能通过 case ID 特判。
 
-### 两轮方案的实际 token 收益
-
-调用数从 6 到 2 是确定的，但总 token 收益取决于工具 schema 长度、路径内联 operation 的重复输出和第二轮完整输出长度。现有 reliability 批次未记录 generation usage，无法在实施前给出真实节省比例。本方案要求先补 usage 观测，再以同模型同 case A/B 数据确认；25% 只是目标，不是未经实测的结论。
-
 ### 可执行任务无共识节点时的评价语义
 
 本方案允许 executable 但无共同公开 atom 的合法空图，此时 DynSTEER 会在 finish 阶段评价完整任务，而不是做中途 milestone 路由。这在当前 stage 逻辑中可运行，但是否符合所有 benchmark 的期望，需要用真实轨迹比较 coverage、virtual stop 和最终排序后确认。

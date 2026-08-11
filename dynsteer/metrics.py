@@ -40,7 +40,7 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     execution_records = _execution_timing_records(trajectory)
     unattributed_execution_seconds = _unattributed_execution_seconds(trajectory)
     raw_execution_records = trajectory.raw.get("execution_timing")
-    execution_timing_available = _timing_schema_version(trajectory) >= 1 and (
+    execution_timing_available = (
         not trajectory.steps
         or (
             isinstance(raw_execution_records, list)
@@ -72,7 +72,6 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "trajectory_token_value_count": token_summary["value_count"],
         "trajectory_token_coverage": token_summary["coverage"],
         "trajectory_latency_available": trajectory_latency_available,
-        "timing_schema_version": _timing_schema_version(trajectory),
         "execution_timing_available": execution_timing_available,
         "execution_batch_count": len(execution_records),
         "execution_total_latency_ms": execution_total_latency_ms,
@@ -152,7 +151,6 @@ def append_execution_timing(trajectory: Trajectory, advance: HarnessAdvanceResul
         return
     records = _execution_timing_records(trajectory)
     if not advance.steps:
-        trajectory.raw["timing_schema_version"] = 1
         trajectory.raw["execution_timing"] = records
         trajectory.raw["unattributed_execution_seconds"] = (
             _unattributed_execution_seconds(trajectory) + latency_ms / 1000
@@ -176,7 +174,6 @@ def append_execution_timing(trajectory: Trajectory, advance: HarnessAdvanceResul
             "allocation": "uniform_ms_with_leading_remainder",
         }
     )
-    trajectory.raw["timing_schema_version"] = 1
     trajectory.raw["execution_timing"] = records
 
 
@@ -203,7 +200,7 @@ def prefix_execution_timing(trajectory: Trajectory, stop_step_index: int | None 
         for step_index in record.get("step_indices", [])
         if isinstance(step_index, int)
     }
-    available = _timing_schema_version(trajectory) >= 1 and records_valid and all(
+    available = records_valid and all(
         step.index in record_steps and isinstance(step.cost.latency_ms, int) and step.cost.latency_ms >= 0
         for step in target_steps
     )
@@ -309,11 +306,6 @@ def _execution_timing_records_valid(records: list[dict[str, object]]) -> bool:
         ):
             return False
     return True
-
-
-def _timing_schema_version(trajectory: Trajectory) -> int:
-    value = trajectory.raw.get("timing_schema_version")
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _unattributed_execution_seconds(trajectory: Trajectory) -> float:

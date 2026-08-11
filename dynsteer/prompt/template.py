@@ -1,7 +1,11 @@
 import logging
+import json
 from pathlib import Path
 import re
-from dynsteer.language import TaskLanguage
+from dynsteer.language import TaskLanguage, normalize_task_language
+from dynsteer.milestone.model import GeneratorTaskView, MilestoneGenerationConfig
+from dynsteer.model import JsonObject
+from dynsteer.utils import json_safe
 logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 
@@ -62,3 +66,51 @@ def load_prompt_template(domain: str, name: str) -> PromptTemplate:
         template_pattern = _TEMPLATE_DIR / domain / f"{name}.<language>.md"
         raise FileNotFoundError(f"缺少 prompt 模板: {template_pattern}")
     return PromptTemplate(**templates)
+
+
+class MilestonePromptBuilder:
+    """集中构造多路径 generation/refinement 提示词与公开 payload。"""
+
+    def __init__(
+        self, view: GeneratorTaskView, config: MilestoneGenerationConfig
+    ) -> None:
+        self.view = view
+        self.config = config
+        self.payload: JsonObject = {
+            "benchmark": view.benchmark,
+            "task_id": view.task_id,
+            "case_id": view.case_id,
+            "language": view.language,
+            "turns": json_safe(view.turns),
+            "public_assets": view.public_assets,
+            "initial_state": view.initial_state,
+            "tool_schema": view.tool_schema,
+            "environment_rules": view.environment_rules,
+            "evidence_catalog": json_safe(view.evidence_catalog),
+        }
+
+    def generation(self) -> str:
+        """渲染第一轮多样化路径生成提示词。"""
+        return load_prompt_template("milestone", "generation").render(
+            normalize_task_language(self.view.language),
+            max_candidate_path_count=self.config.max_candidate_path_count,
+            task=json.dumps(self.payload, ensure_ascii=False, sort_keys=True),
+        )
+
+    def refinement(
+        self,
+        original_response: str,
+        violations: list[JsonObject],
+        simulated_paths: list[object],
+        common_operations: list[str],
+    ) -> str:
+        """渲染结构修复与共同 operation 反例搜索提示词。"""
+        return load_prompt_template("milestone", "refinement").render(
+            normalize_task_language(self.view.language),
+            max_candidate_path_count=self.config.max_candidate_path_count,
+            task=json.dumps(self.payload, ensure_ascii=False, sort_keys=True),
+            original_response=original_response,
+            validation_violations=json.dumps(violations, ensure_ascii=False),
+            simulated_paths=json.dumps(simulated_paths, ensure_ascii=False),
+            common_operations=json.dumps(common_operations, ensure_ascii=False),
+        )

@@ -1,94 +1,50 @@
 from __future__ import annotations
 
-import hashlib
+import copy
 import json
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from math import ceil
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
-from dynsteer.language import normalize_task_language
+from dynsteer.graph import milestones_from_occurrences, minefields_from_forbidden, transitive_reduction
 from dynsteer.milestone.model import (
-    GenerationReport,
-    GeneratorTaskView,
-    MilestoneGenerationConfig,
-    MilestoneGenerationError,
-    PublicEvidence,
+    GenerationReport, GeneratorTaskView, MilestoneGenerationConfig, PublicEvidence, TurnDisposition,
 )
-from dynsteer.model import (
-    Constraint,
-    ConstraintTarget,
-    JsonObject,
-    JsonValue,
-    LLMMessage,
-    Milestone,
-    MilestoneGraph,
-    Minefield,
-    MinefieldPenalty,
-    Operator,
-)
-from dynsteer.prompt.template import load_prompt_template
+from dynsteer.model import ConstraintTarget, JsonObject, LLMMessage, MilestoneGraph
+from dynsteer.prompt.template import MilestonePromptBuilder
+from dynsteer.utils import json_safe, record_raw_response, stable_json_digest
 
 if TYPE_CHECKING:
     from dynsteer.llm.base import BaseLLM
 
 
-CONSENSUS_RATIO = 2 / 3
-PATH_STRATEGIES = (
-    "direct-shortest",
-    "prerequisite-first",
-    "state-check-first",
-    "artifact-or-result-first",
-    "alternative-tool",
-    "verification-first",
-    "conservative",
-)
 logger = logging.getLogger(__name__)
-
-_PathSignature = tuple[str, str, int]
+_DISPOSITIONS = {"executable", "needs_clarification", "no_action", "response_only"}
+_FORBIDDEN_KEYS = {
+    "milestone_matcher", "minefield_matcher", "evaluation", "verifier",
+    "reference_graph", "trajectory", "final_state",
+}
 
 
 @dataclass(frozen=True)
-class _PathAtom:
-    name: str
-    description: str
+class _OperationCandidate:
     evidence_id: str
-    expected: JsonValue
-    terminal: bool
+    arguments: JsonObject
+
+
+@dataclass(frozen=True)
+class _TurnCandidate:
+    turn_id: str
+    disposition: TurnDisposition
+    operations: tuple[_OperationCandidate, ...]
+    forbidden_evidence_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class _PathCandidate:
-    path_index: int
-    strategy: str
-    atoms: tuple[_PathAtom, ...]
-    minefield_invariant_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _AlignedPath:
-    path_index: int
-    strategy: str
-    atoms: tuple[_PathAtom, ...]
-    signatures: tuple[_PathSignature, ...]
-    minefield_invariant_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _ConsensusCluster:
-    representative: _PathAtom
-    support_count: int
-    terminal_support_count: int
-
-
-class _RecordedPathResponseError(ValueError):
-    """单路径响应已落盘、但后续解析或校验失败。"""
-
-    def __init__(self, message: str, response_record: JsonObject | None) -> None:
-        super().__init__(message)
-        self.response_record = response_record
+    turns: tuple[_TurnCandidate, ...]
 
 
 def compile_task_case(
@@ -97,778 +53,594 @@ def compile_task_case(
     llm: BaseLLM,
     response_output_file: Path | None = None,
 ) -> tuple[MilestoneGraph, GenerationReport]:
-    """基于公开任务契约独立模拟路径并编译 milestone graph。
+    """生成多条完整路径，经环境模拟后聚合共同 milestone graph。
 
-    入参：公开任务视图、生成配置、LLM 和可选原始响应目录。
-    输出：可执行 MilestoneGraph 与生成审计报告。
+    入参：公开任务视图、生成配置、LLM 和可选原始响应文件。
+    输出：始终合法的 graph（允许为空）及完整生成报告。
     """
     if view is None or config is None or llm is None:
         raise ValueError("view、config 和 llm 不能为空")
+    evidence = _evidence_catalog(view)
+    prompts = MilestonePromptBuilder(view, config)
+    _assert_no_forbidden_generation_inputs(prompts.payload)
+    raw_records: dict[str, JsonObject] = {}
 
-    requested = config.simulated_path_count
-    minimum = _minimum_valid_path_count(requested)
-    try:
-        source_values = _source_values(view)
-        evidence_by_id = _evidence_catalog(view, source_values)
-        payload = _generator_payload(view, source_values)
-    except (KeyError, TypeError, ValueError) as exc:
-        _reject(
-            str(exc),
-            requested_path_count=requested,
-            minimum_valid_path_count=minimum,
-        )
-
-    # 每条路径使用独立调用，单条失败只淘汰自身。
-    valid_paths: list[_PathCandidate] = []
-    path_summaries: list[JsonObject] = []
-    raw_responses: dict[str, str] = {}
-    reasons: list[str] = []
-    logger.info(
-        "开始独立生成 milestone 路径",
-        extra={"事件": "milestone生成开始", "case_id": view.case_id, "路径数": requested},
+    # 第一轮生成并逐路径解析、模拟，单条坏路径不影响同轮其他路径。
+    generation_prompt = prompts.generation()
+    draft = _run_round(
+        [LLMMessage(role="user", content=generation_prompt)], 1, "generation",
+        view, config, llm, evidence, response_output_file, raw_records,
     )
-    for path_index in range(requested):
-        strategy = PATH_STRATEGIES[path_index % len(PATH_STRATEGIES)]
-        try:
-            candidate, response_record = _simulate_path(
-                payload,
-                path_index,
-                requested,
-                strategy,
-                llm,
-                evidence_by_id,
-                source_values,
-                view,
-                response_output_file,
-                raw_responses,
-            )
-        except _RecordedPathResponseError as exc:
-            reason = f"path[{path_index}] rejected: {exc}"
-            reasons.append(reason)
-            path_summaries.append(
-                _rejected_path_summary(
-                    path_index,
-                    strategy,
-                    reason,
-                    exc.response_record,
-                )
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            reason = f"path[{path_index}] rejected: {exc}"
-            reasons.append(reason)
-            path_summaries.append(_rejected_path_summary(path_index, strategy, reason))
-        else:
-            valid_paths.append(candidate)
-            path_summaries.append(_valid_path_summary(candidate, response_record))
+    draft_paths = draft["simulated_paths"]
+    preliminary = _mandatory_occurrences(draft_paths, view)
 
-    aligned_paths = [_align_path(path) for path in valid_paths]
-    distinct_paths = _distinct_aligned_paths(aligned_paths)
-    path_summaries = _mark_duplicate_summaries(path_summaries, distinct_paths)
-    candidate_atom_count = sum(len(path.atoms) for path in valid_paths)
-    aligned_atom_count = len(
-        {signature for path in distinct_paths for signature in path.signatures}
+    # 第二轮同时修复错误并主动寻找初步必经 operation 的反例路径。
+    repair_triggered = config.enable_repair and bool(
+        draft["violations"] or len(draft_paths) < 2 or preliminary
     )
-    if len(distinct_paths) < minimum:
-        _reject(
-            f"有效差异路径不足: requested={requested}, minimum={minimum}, "
-            f"actual={len(distinct_paths)}",
-            requested_path_count=requested,
-            minimum_valid_path_count=minimum,
-            valid_path_count=len(valid_paths),
-            distinct_path_count=len(distinct_paths),
-            candidate_atom_count=candidate_atom_count,
-            aligned_atom_count=aligned_atom_count,
-            reasons=tuple(reasons),
-            path_summaries=tuple(path_summaries),
+    refined: JsonObject | None = None
+    if repair_triggered:
+        prompt = prompts.refinement(
+            str(draft["raw_response"]),
+            list(draft["violations"]),
+            [_normalized_path(path) for path in draft_paths],
+            [_occurrence_label(item) for item in sorted(preliminary)],
         )
-
-    # 所有共识图错误由这一处统一转换为带报告的自动拒绝。
-    threshold = ceil(len(distinct_paths) * CONSENSUS_RATIO)
-    try:
-        clusters = _consensus_clusters(distinct_paths, threshold)
-        if not clusters or not any(
-            cluster.terminal_support_count >= threshold
-            for cluster in clusters.values()
-        ):
-            raise ValueError("三分之二共识未产生可执行 terminal milestone")
-        nodes = _milestones_from_clusters(clusters, evidence_by_id)
-        edges = _consensus_edges(distinct_paths, set(clusters), threshold)
-        minefields = _consensus_minefields(
-            distinct_paths,
-            threshold,
-            view,
-            evidence_by_id,
-            source_values,
+        refined = _run_round(
+            [
+                LLMMessage(role="user", content=generation_prompt),
+                LLMMessage(role="assistant", content=str(draft["raw_response"])),
+                LLMMessage(role="user", content=prompt),
+            ],
+            2, "refinement", view, config, llm, evidence,
+            response_output_file, raw_records,
         )
-    except ValueError as exc:
-        _reject(
-            str(exc),
-            requested_path_count=requested,
-            minimum_valid_path_count=minimum,
-            valid_path_count=len(valid_paths),
-            distinct_path_count=len(distinct_paths),
-            candidate_atom_count=candidate_atom_count,
-            aligned_atom_count=aligned_atom_count,
-            consensus_node_count=len(clusters) if "clusters" in locals() else 0,
-            reasons=tuple(reasons),
-            path_summaries=tuple(path_summaries),
-        )
-
+    selected = refined if refined is not None and refined["simulated_paths"] else draft
+    paths = selected["simulated_paths"]
+    mandatory = _mandatory_occurrences(paths, view)
+    nodes = milestones_from_occurrences(
+        _ordered_occurrences(mandatory, paths, view), evidence
+    )
+    edges = _common_precedence(paths, mandatory, view)
+    minefields = minefields_from_forbidden(
+        _forbidden_intersection(paths, view), evidence
+    )
+    dispositions = _turn_dispositions(paths, view)
+    empty_reason = _empty_reason(paths, mandatory, draft, refined)
     graph = MilestoneGraph(
         nodes=nodes,
-        edges=edges,
+        edges=transitive_reduction({node.milestone_id for node in nodes}, edges),
         minefields=minefields,
         metadata={
             "source": "generated",
             "view_digest": view.digest(),
-            "necessity_basis": "synthetic_consensus",
+            "turn_dispositions": dispositions,
+            "disposition": next(iter(dispositions.values()), "no_action"),
+            "empty_reason": empty_reason,
         },
     )
+    removed = tuple(sorted(_occurrence_label(item) for item in preliminary - mandatory))
+    rounds = [draft, *([refined] if refined is not None else [])]
     report = GenerationReport(
         generation_status="generated",
-        requested_path_count=requested,
-        minimum_valid_path_count=minimum,
-        valid_path_count=len(valid_paths),
-        distinct_path_count=len(distinct_paths),
-        candidate_atom_count=candidate_atom_count,
-        aligned_atom_count=aligned_atom_count,
-        consensus_node_count=len(nodes),
-        graph_valid=True,
-        reasons=tuple(reasons),
-        path_summaries=tuple(path_summaries),
+        turn_dispositions=dispositions,
+        max_candidate_path_count=config.max_candidate_path_count,
+        returned_path_count=sum(int(item["returned_path_count"]) for item in rounds),
+        parsed_path_count=sum(int(item["parsed_path_count"]) for item in rounds),
+        simulatable_path_count=sum(int(item["simulatable_path_count"]) for item in rounds),
+        final_path_count=len(paths),
+        selected_round=int(selected["round_index"]) if paths else None,
+        graph_returned=True,
+        graph_empty=not nodes,
+        empty_reason=empty_reason,
+        minefield_count=len(minefields),
+        repair_triggered=repair_triggered,
+        counterexample_removed_operations=removed,
+        round_summaries=tuple(_round_summary(item) for item in rounds),
+        path_summaries=tuple(
+            summary for item in rounds for summary in item["path_summaries"]
+        ),
+        reasons=tuple(
+            str(violation.get("message") or violation.get("kind"))
+            for item in rounds for violation in item["violations"]
+        ),
     )
     logger.info(
         "milestone graph 生成完成",
         extra={
-            "事件": "milestone生成完成",
-            "case_id": view.case_id,
-            "有效去重路径数": len(distinct_paths),
-            "共识节点数": len(nodes),
+            "事件": "milestone生成完成", "case_id": view.case_id,
+            "有效路径数": len(paths), "节点数": len(nodes),
+            "边数": len(graph.edges), "minefield数": len(minefields),
+            "空图原因": empty_reason,
         },
     )
     return graph, report
 
-
-def _minimum_valid_path_count(requested_path_count: int) -> int:
-    """返回 N−2 且不低于 3 的有效去重路径下限。"""
-    return max(requested_path_count - 2, 3)
-
-
-def _generator_payload(
+def _run_round(
+    messages: list[LLMMessage],
+    round_index: int,
+    stage: str,
     view: GeneratorTaskView,
-    source_values: dict[str, JsonValue],
+    config: MilestoneGenerationConfig,
+    llm: BaseLLM,
+    evidence: dict[str, PublicEvidence],
+    response_output_file: Path | None,
+    raw_records: dict[str, JsonObject],
 ) -> JsonObject:
-    evidence = [
-        {
-            "evidence_id": item.evidence_id,
-            "source_ref": item.source_ref,
-            "target": item.target.value,
-            "selector": item.selector,
-            "operator": item.operator.value,
-            "expected_policy": item.expected_policy,
-            "allowed_expected_literals": _allowed_expected_literals(
-                item, source_values
-            ),
-        }
-        for item in view.evidence_catalog
-    ]
-    invariants = [
-        {
-            "invariant_id": item.invariant_id,
-            "description": item.description,
-            "source_ref": item.source_ref,
-            "evidence_id": item.evidence_id,
-            "severity": item.severity,
-        }
-        for item in view.invariant_catalog
-    ]
+    violations: list[JsonObject] = []
+    planner_failed = False
+    try:
+        raw = llm.chat(messages, response_format="json_object")
+    except Exception as exc:  # LLM provider 边界：所有失败均转为可审计空路径轮次。
+        raw = ""
+        planner_failed = True
+        violations.append(_violation("planner_failed", str(exc)))
+    record_raw_response(
+        raw, response_output_file, f"round_{round_index:02d}_{stage}", raw_records
+    )
+    parsed, returned_count, parse_violations = _parse_response(raw, config)
+    violations.extend(parse_violations)
+    simulated: list[_PathCandidate] = []
+    summaries: list[JsonObject] = []
+    for index, path in enumerate(parsed):
+        result, path_violations = _simulate_path(path, view, evidence, index)
+        violations.extend(path_violations)
+        summaries.append({
+            "round_index": round_index,
+            "path_index": index,
+            "simulatable": result is not None,
+            "violations": path_violations,
+            "before": _normalized_path(path),
+            "after": _normalized_path(result) if result is not None else None,
+        })
+        if result is not None:
+            simulated.append(result)
+    simulated = _deduplicate_paths(simulated)
     return {
-        "task": _public_task_payload(view),
-        "evidence": evidence,
-        "invariants": invariants,
+        "round_index": round_index,
+        "stage": stage,
+        "raw_response": raw,
+        "returned_path_count": returned_count,
+        "parsed_path_count": len(parsed),
+        "simulatable_path_count": len(simulated),
+        "simulated_paths": simulated,
+        "violations": violations,
+        "path_summaries": summaries,
+        "planner_failed": planner_failed,
     }
 
+def _parse_response(
+    raw: str, config: MilestoneGenerationConfig
+) -> tuple[list[_PathCandidate], int, list[JsonObject]]:
+    violations: list[JsonObject] = []
+    if not raw:
+        return [], 0, violations
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return [], 0, [_violation("invalid_response", str(exc))]
+    if not isinstance(payload, dict):
+        return [], 0, [_violation("invalid_response", "顶层必须是 JSON object")]
+    extra = sorted(set(payload) - {"paths"})
+    if extra:
+        violations.append(_violation("ignored_fields", f"忽略顶层字段: {extra}"))
+    raw_paths = payload.get("paths")
+    if not isinstance(raw_paths, list):
+        return [], 0, [*violations, _violation("invalid_response", "paths 必须是 list")]
+    returned_count = len(raw_paths)
+    if returned_count > config.max_candidate_path_count:
+        violations.append(_violation(
+            "paths_truncated",
+            f"路径数 {returned_count} 超过上限 {config.max_candidate_path_count}",
+        ))
+    parsed: list[_PathCandidate] = []
+    for index, value in enumerate(raw_paths[:config.max_candidate_path_count]):
+        if isinstance(value, dict):
+            ignored = set(value) - {"turns"}
+            for turn in value.get("turns", []) if isinstance(value.get("turns"), list) else []:
+                if not isinstance(turn, dict):
+                    continue
+                ignored.update(set(turn) - {
+                    "turn_id", "disposition", "operations", "forbidden_evidence_ids",
+                })
+                for operation in turn.get("operations", []) if isinstance(turn.get("operations"), list) else []:
+                    if isinstance(operation, dict):
+                        ignored.update(set(operation) - {"evidence_id", "arguments"})
+            if ignored:
+                violations.append(_violation(
+                    "ignored_fields", f"path[{index}] 忽略字段: {sorted(ignored)}",
+                    path_index=index,
+                ))
+        try:
+            parsed.append(_parse_path(value))
+        except (TypeError, ValueError) as exc:
+            violations.append(_violation("invalid_path", str(exc), path_index=index))
+    return parsed, returned_count, violations
 
-def _public_task_payload(view: GeneratorTaskView) -> JsonObject:
-    return {
-        "instruction": view.instruction,
-        "public_assets": [
-            asset
-            for asset in view.public_assets
-            if asset.get("kind") != "invariant_source"
-        ],
-        "tool_schema": view.tool_schema,
-        "environment_schema": view.environment_schema,
-        "output_contract": view.output_contract,
-    }
-
+def _parse_path(value: object) -> _PathCandidate:
+    if not isinstance(value, dict) or not isinstance(value.get("turns"), list):
+        raise TypeError("path.turns 必须是 list")
+    turns: list[_TurnCandidate] = []
+    for turn_index, raw_turn in enumerate(value["turns"]):
+        if not isinstance(raw_turn, dict):
+            raise TypeError(f"turns[{turn_index}] 必须是 object")
+        turn_id = raw_turn.get("turn_id")
+        disposition = raw_turn.get("disposition")
+        raw_operations = raw_turn.get("operations")
+        raw_forbidden = raw_turn.get("forbidden_evidence_ids", [])
+        if not isinstance(turn_id, str) or disposition not in _DISPOSITIONS:
+            raise ValueError(f"turns[{turn_index}] turn_id/disposition 非法")
+        if not isinstance(raw_operations, list) or not isinstance(raw_forbidden, list):
+            raise TypeError(f"turns[{turn_index}] operations/forbidden 必须是 list")
+        operations: list[_OperationCandidate] = []
+        for operation_index, raw_operation in enumerate(raw_operations):
+            if not isinstance(raw_operation, dict):
+                raise TypeError(f"operations[{operation_index}] 必须是 object")
+            evidence_id = raw_operation.get("evidence_id")
+            arguments = raw_operation.get("arguments", {})
+            if not isinstance(evidence_id, str) or not isinstance(arguments, dict):
+                raise TypeError(f"operations[{operation_index}] evidence_id/arguments 非法")
+            operations.append(_OperationCandidate(evidence_id, json_safe(arguments)))
+        if any(not isinstance(item, str) for item in raw_forbidden):
+            raise TypeError(f"turns[{turn_index}] forbidden evidence 必须是 string")
+        turns.append(_TurnCandidate(
+            turn_id, disposition, tuple(operations), tuple(sorted(set(raw_forbidden)))
+        ))
+    return _PathCandidate(tuple(turns))
 
 def _simulate_path(
-    payload: JsonObject,
-    path_index: int,
-    path_count: int,
-    strategy: str,
-    llm: BaseLLM,
-    evidence_by_id: dict[str, PublicEvidence],
-    source_values: dict[str, JsonValue],
+    path: _PathCandidate,
     view: GeneratorTaskView,
-    response_output_file: Path | None,
-    raw_responses: dict[str, str],
-) -> tuple[_PathCandidate, JsonObject | None]:
-    """独立生成并解析一条候选路径。"""
-    template = load_prompt_template("milestone", "generation")
-    prompt = template.render(
-        normalize_task_language(view.language),
-        task=json.dumps(payload["task"], ensure_ascii=False, sort_keys=True),
-        evidence=json.dumps(payload["evidence"], ensure_ascii=False, sort_keys=True),
-        invariants=json.dumps(payload["invariants"], ensure_ascii=False, sort_keys=True),
-        path_index=path_index,
-        path_count=path_count,
-        strategy=strategy,
-    )
-    raw = llm.chat([LLMMessage(role="user", content=prompt)])
-    response_record = _record_raw_response(
-        raw,
-        response_output_file,
-        path_index,
-        strategy,
-        raw_responses,
-    )
-    try:
-        candidate = _parse_path_response(
-            raw,
-            path_index,
-            strategy,
-            evidence_by_id,
-            source_values,
-            view,
-        )
-    except (TypeError, ValueError) as exc:
-        raise _RecordedPathResponseError(str(exc), response_record) from exc
-    return candidate, response_record
-
-
-def _record_raw_response(
-    raw: str,
-    output_file: Path | None,
+    evidence: dict[str, PublicEvidence],
     path_index: int,
-    strategy: str,
-    responses: dict[str, str],
-) -> JsonObject | None:
-    """把单次 LLM 原始响应写入当前 case 的聚合 JSON 文件。"""
-    if output_file is None:
-        return None
-    response_key = f"path_{path_index:02d}_{strategy}"
-    responses[response_key] = raw
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary_file = output_file.with_suffix(f"{output_file.suffix}.tmp")
-    temporary_file.write_text(
-        json.dumps(responses, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_file.replace(output_file)
-    stripped = raw.lstrip()
-    return {
-        "path": str(output_file.resolve()),
-        "key": response_key,
-        "character_count": len(raw),
-        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
-        "starts_with_json_fence": stripped.lower().startswith("```json"),
-        "starts_with_object": stripped.startswith("{"),
-    }
-
-
-def _parse_path_response(
-    raw: str,
-    path_index: int,
-    strategy: str,
-    evidence_by_id: dict[str, PublicEvidence],
-    source_values: dict[str, JsonValue],
-    view: GeneratorTaskView,
-) -> _PathCandidate:
-    """按精确 schema 解析并完整校验单条路径响应。"""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            "LLM milestone JSON 解析失败: "
-            f"{exc.msg}; line={exc.lineno}, column={exc.colno}, position={exc.pos}"
-        ) from exc
-    except TypeError as exc:
-        raise TypeError("LLM milestone 返回必须是 JSON 文本") from exc
-    if not isinstance(data, dict):
-        raise ValueError("LLM milestone 顶层必须是 JSON 对象")
-    if set(data) != {
-        "atoms",
-        "minefield_invariant_ids",
-    }:
-        raise ValueError("顶层字段必须且只能是 atoms、minefield_invariant_ids")
-    values = data["atoms"]
-    if not isinstance(values, list) or not values:
-        raise ValueError("atoms 必须是非空数组")
-
-    atoms: list[_PathAtom] = []
-    atom_keys = {
-        "name",
-        "description",
-        "evidence_id",
-        "expected_literal_index",
-        "terminal",
-    }
-    for atom_index, value in enumerate(values):
-        if not isinstance(value, dict) or set(value) != atom_keys:
-            raise ValueError(f"atom[{atom_index}] schema 不合法")
-        name = _nonempty(value["name"], "name")
-        description = _nonempty(value["description"], "description")
-        evidence_id = _nonempty(value["evidence_id"], "evidence_id")
-        evidence = evidence_by_id.get(evidence_id)
-        if evidence is None:
-            raise ValueError(f"atom[{atom_index}] 引用未知 evidence_id")
-        literal_index = value["expected_literal_index"]
-        if isinstance(literal_index, bool) or not isinstance(literal_index, int):
-            raise TypeError(f"atom[{atom_index}] expected_literal_index 必须是整数")
-        if evidence.expected_policy == "none":
-            if literal_index != 0:
-                raise ValueError("expected_policy=none 时 index 必须为 0")
-            expected: JsonValue = None
-        else:
-            allowed = _allowed_expected_literals(evidence, source_values)
-            if literal_index < 0 or literal_index >= len(allowed):
-                raise ValueError(f"atom[{atom_index}] expected_literal_index 越界")
-            expected = allowed[literal_index]
-        terminal = value["terminal"]
-        if not isinstance(terminal, bool):
-            raise TypeError(f"atom[{atom_index}] terminal 必须是 bool")
-        if terminal != (atom_index == len(values) - 1):
-            raise ValueError("只有最后一个 atom 的 terminal 可以为 true")
-        atoms.append(_PathAtom(name, description, evidence_id, expected, terminal))
-
-    invariant_ids = data["minefield_invariant_ids"]
-    if not isinstance(invariant_ids, list):
-        raise TypeError("minefield_invariant_ids 必须是数组")
-    normalized_ids = tuple(
-        _nonempty(value, "invariant_id") for value in invariant_ids
-    )
-    if len(set(normalized_ids)) != len(normalized_ids):
-        raise ValueError("minefield_invariant_ids 不能重复")
-    known_ids = {item.invariant_id for item in view.invariant_catalog}
-    if any(invariant_id not in known_ids for invariant_id in normalized_ids):
-        raise ValueError("minefield_invariant_ids 引用未知 invariant")
-    return _PathCandidate(
-        path_index,
-        strategy,
-        tuple(atoms),
-        normalized_ids,
-    )
-
-
-def _align_path(path: _PathCandidate) -> _AlignedPath:
-    occurrences: Counter[tuple[str, str]] = Counter()
-    signatures: list[_PathSignature] = []
-    for atom in path.atoms:
-        base = (atom.evidence_id, _canonical_json(atom.expected))
-        occurrence_index = occurrences[base]
-        signatures.append((base[0], base[1], occurrence_index))
-        occurrences[base] += 1
-    return _AlignedPath(
-        path.path_index,
-        path.strategy,
-        path.atoms,
-        tuple(signatures),
-        path.minefield_invariant_ids,
-    )
-
-
-def _distinct_aligned_paths(paths: list[_AlignedPath]) -> list[_AlignedPath]:
-    result: list[_AlignedPath] = []
-    seen: set[tuple[_PathSignature, ...]] = set()
-    for path in sorted(paths, key=lambda item: item.path_index):
-        if path.signatures not in seen:
-            result.append(path)
-            seen.add(path.signatures)
-    return result
-
-
-def _consensus_clusters(
-    paths: list[_AlignedPath], threshold: int
-) -> dict[_PathSignature, _ConsensusCluster]:
-    support: Counter[_PathSignature] = Counter()
-    terminal_support: Counter[_PathSignature] = Counter()
-    representatives: dict[_PathSignature, tuple[int, int, _PathAtom]] = {}
-    for path in paths:
-        seen: set[_PathSignature] = set()
-        for position, (signature, atom) in enumerate(zip(path.signatures, path.atoms)):
-            candidate = (path.path_index, position, atom)
-            if signature not in representatives or candidate[:2] < representatives[signature][:2]:
-                representatives[signature] = candidate
-            if signature in seen:
-                continue
-            seen.add(signature)
-            support[signature] += 1
-            terminal_support[signature] += int(atom.terminal)
-    return {
-        signature: _ConsensusCluster(
-            representative=representatives[signature][2],
-            support_count=count,
-            terminal_support_count=terminal_support[signature],
-        )
-        for signature, count in support.items()
-        if count >= threshold
-    }
-
-
-def _milestones_from_clusters(
-    clusters: dict[_PathSignature, _ConsensusCluster],
-    evidence_by_id: dict[str, PublicEvidence],
-) -> list[Milestone]:
-    nodes: list[Milestone] = []
-    for signature, cluster in sorted(clusters.items(), key=lambda item: item[0]):
-        atom = cluster.representative
-        evidence = evidence_by_id[atom.evidence_id]
-        milestone_id = _milestone_id(signature)
-        constraint = Constraint(
-            constraint_id=f"{milestone_id}_constraint",
-            target=evidence.target,
-            selector=evidence.selector,
-            operator=evidence.operator,
-            expected=atom.expected,
-            namespace=evidence.namespace,
-            hard=True,
-            evaluator_hint=evidence.evaluator_hint,
-            metadata={"evidence_id": evidence.evidence_id, **dict(evidence.metadata)},
-        )
-        nodes.append(
-            Milestone(
-                milestone_id=milestone_id,
-                name=atom.name,
-                description=atom.description,
-                constraints=[constraint],
-                metadata={
-                    "evidence_id": atom.evidence_id,
-                    "signature": list(signature),
-                    "support_count": cluster.support_count,
-                    "necessity_basis": "synthetic_consensus",
-                },
+) -> tuple[_PathCandidate | None, list[JsonObject]]:
+    """按显式环境规则离线模拟路径，并递归插入必要 recovery。"""
+    expected_turns = [turn.turn_id for turn in view.turns]
+    if [turn.turn_id for turn in path.turns] != expected_turns:
+        return None, [_violation(
+            "turn_sequence_mismatch", "路径必须完整、按顺序覆盖所有 turns",
+            path_index=path_index,
+        )]
+    state = copy.deepcopy(view.initial_state)
+    output_turns: list[_TurnCandidate] = []
+    for turn in path.turns:
+        if turn.disposition != "executable" and turn.operations:
+            return None, [_violation(
+                "non_executable_has_operations", "非 executable turn 不能包含 operation",
+                path_index=path_index, turn_id=turn.turn_id,
+            )]
+        if turn.disposition == "executable" and turn.forbidden_evidence_ids:
+            return None, [_violation(
+                "executable_has_forbidden", "executable turn 的 forbidden 必须为空",
+                path_index=path_index, turn_id=turn.turn_id,
+            )]
+        for evidence_id in (*turn.forbidden_evidence_ids, *(op.evidence_id for op in turn.operations)):
+            if evidence_id not in evidence:
+                return None, [_violation(
+                    "unknown_evidence", f"未知 evidence: {evidence_id}",
+                    path_index=path_index, turn_id=turn.turn_id,
+                )]
+        simulated_operations: list[_OperationCandidate] = []
+        for operation in turn.operations:
+            error = _simulate_operation(
+                operation, state, view.environment_rules, evidence,
+                simulated_operations, (),
             )
-        )
-    return nodes
+            if error is not None:
+                return None, [_violation(
+                    "environment_simulation_failed", error,
+                    path_index=path_index, turn_id=turn.turn_id,
+                )]
+        output_turns.append(_TurnCandidate(
+            turn.turn_id, turn.disposition, tuple(simulated_operations),
+            turn.forbidden_evidence_ids,
+        ))
+    return _PathCandidate(tuple(output_turns)), []
 
-
-def _milestone_id(signature: _PathSignature) -> str:
-    digest = hashlib.sha256(
-        _canonical_json(signature).encode("utf-8")
-    ).hexdigest()[:12]
-    return f"m_{digest}"
-
-
-def _consensus_edges(
-    paths: list[_AlignedPath],
-    retained: set[_PathSignature],
-    threshold: int,
-) -> list[tuple[str, str]]:
-    support: Counter[tuple[_PathSignature, _PathSignature]] = Counter()
-    for path in paths:
-        ordered = [signature for signature in path.signatures if signature in retained]
-        for left_index, source in enumerate(ordered):
-            support.update((source, target) for target in ordered[left_index + 1 :])
-    signature_edges = {
-        pair for pair, count in support.items() if count >= threshold
-    }
-    edges = sorted(
-        (_milestone_id(source), _milestone_id(target))
-        for source, target in signature_edges
-    )
-    node_ids = {_milestone_id(signature) for signature in retained}
-    if not _is_dag(node_ids, edges):
-        raise ValueError("共识 precedence 关系形成环")
-    return sorted(_transitive_reduction(set(edges)))
-
-
-def _consensus_minefields(
-    paths: list[_AlignedPath],
-    threshold: int,
-    view: GeneratorTaskView,
-    evidence_by_id: dict[str, PublicEvidence],
-    source_values: dict[str, JsonValue],
-) -> list[Minefield]:
-    support = Counter(
-        invariant_id
-        for path in paths
-        for invariant_id in set(path.minefield_invariant_ids)
-    )
-    invariant_by_id = {item.invariant_id: item for item in view.invariant_catalog}
-    result: list[Minefield] = []
-    for invariant_id in sorted(
-        key for key, count in support.items() if count >= threshold
-    ):
-        invariant = invariant_by_id[invariant_id]
-        evidence = evidence_by_id[invariant.evidence_id]
-        if evidence.source_ref != invariant.source_ref:
-            raise ValueError(f"invariant evidence 不匹配: {invariant_id}")
-        if evidence.expected_policy == "none":
-            expected: JsonValue = None
-        else:
-            literals = _allowed_expected_literals(evidence, source_values)
-            if len(literals) != 1:
-                raise ValueError(f"invariant 必须只关联一个公开 literal: {invariant_id}")
-            expected = literals[0]
-        digest = hashlib.sha256(invariant_id.encode("utf-8")).hexdigest()[:12]
-        minefield_id = f"mf_{digest}"
-        constraint = Constraint(
-            constraint_id=f"{minefield_id}_constraint",
-            target=evidence.target,
-            selector=evidence.selector,
-            operator=evidence.operator,
-            expected=expected,
-            namespace=evidence.namespace,
-            hard=True,
-            evaluator_hint=evidence.evaluator_hint,
-            metadata={"evidence_id": evidence.evidence_id, **dict(evidence.metadata)},
-        )
-        penalty = {"warning": 0.25, "error": 0.5, "fatal": 1.0}[
-            invariant.severity
-        ]
-        result.append(
-            Minefield(
-                minefield_id=minefield_id,
-                name=invariant.description,
-                description=invariant.description,
-                severity=invariant.severity,
-                constraints=[constraint],
-                penalty=MinefieldPenalty(mode="fixed", value=penalty),
-                metadata={
-                    "invariant_id": invariant_id,
-                    "source_ref": invariant.source_ref,
-                    "support_count": support[invariant_id],
-                },
-            )
-        )
-    return result
-
-
-def _valid_path_summary(
-    path: _PathCandidate, response_record: JsonObject | None
-) -> JsonObject:
-    return {
-        "path_index": path.path_index,
-        "strategy": path.strategy,
-        "status": "valid",
-        "distinct": True,
-        "atom_count": len(path.atoms),
-        "minefield_count": len(path.minefield_invariant_ids),
-        "reason": None,
-        "response_record": response_record,
-    }
-
-
-def _rejected_path_summary(
-    path_index: int,
-    strategy: str,
-    reason: str,
-    response_record: JsonObject | None = None,
-) -> JsonObject:
-    return {
-        "path_index": path_index,
-        "strategy": strategy,
-        "status": "rejected",
-        "distinct": False,
-        "atom_count": 0,
-        "minefield_count": 0,
-        "reason": reason,
-        "response_record": response_record,
-    }
-
-
-def _mark_duplicate_summaries(
-    summaries: list[JsonObject], distinct_paths: list[_AlignedPath]
-) -> list[JsonObject]:
-    distinct_indexes = {path.path_index for path in distinct_paths}
-    return [
-        {
-            **summary,
-            "distinct": summary["status"] == "valid"
-            and summary["path_index"] in distinct_indexes,
+def _simulate_operation(
+    operation: _OperationCandidate,
+    state: JsonObject,
+    rules: JsonObject,
+    evidence: dict[str, PublicEvidence],
+    output: list[_OperationCandidate],
+    recovery_stack: tuple[str, ...],
+) -> str | None:
+    tool_name = _tool_name(evidence[operation.evidence_id])
+    for rule_id, rule in rules.items():
+        if not isinstance(rule, dict) or not _rule_applies(rule, tool_name, operation.arguments):
+            continue
+        required = {
+            "state_path", "blocked_value", "recovery_tool",
+            "recovery_arguments", "recovered_value",
         }
-        for summary in summaries
+        if not required <= set(rule):
+            return f"环境规则字段不完整: {rule_id}"
+        state_path = rule["state_path"]
+        if not isinstance(state_path, str) or _state_value(state, state_path) != rule["blocked_value"]:
+            continue
+        recovery_tool = rule["recovery_tool"]
+        recovery_arguments = rule["recovery_arguments"]
+        if not isinstance(recovery_tool, str) or not isinstance(recovery_arguments, dict):
+            return f"环境规则 recovery 非法: {rule_id}"
+        if recovery_tool in recovery_stack or recovery_tool == tool_name:
+            return f"recovery cycle: {' -> '.join((*recovery_stack, tool_name, recovery_tool))}"
+        recovery_evidence = _evidence_for_tool(recovery_tool, evidence)
+        if recovery_evidence is None:
+            return f"recovery tool 不可见: {recovery_tool}"
+        recovery = _OperationCandidate(recovery_evidence, json_safe(recovery_arguments))
+        error = _simulate_operation(
+            recovery, state, rules, evidence, output, (*recovery_stack, tool_name)
+        )
+        if error is not None:
+            return error
+        _set_state_value(state, state_path, rule["recovered_value"])
+    output.append(operation)
+    _apply_recovery_effects(tool_name, operation.arguments, state, rules)
+    return None
+
+def _mandatory_occurrences(
+    paths: list[_PathCandidate], view: GeneratorTaskView
+) -> set[tuple[str, str, int]]:
+    if not paths:
+        return set()
+    result: set[tuple[str, str, int]] = set()
+    for turn in view.turns:
+        counters = [
+            Counter(operation.evidence_id for candidate_turn in path.turns
+                    if candidate_turn.turn_id == turn.turn_id
+                    for operation in candidate_turn.operations)
+            for path in paths
+        ]
+        evidence_ids = set.intersection(*(set(counter) for counter in counters)) if counters else set()
+        for evidence_id in evidence_ids:
+            for occurrence_index in range(min(counter[evidence_id] for counter in counters)):
+                result.add((turn.turn_id, evidence_id, occurrence_index))
+    return result
+
+def _common_precedence(
+    paths: list[_PathCandidate],
+    mandatory: set[tuple[str, str, int]],
+    view: GeneratorTaskView,
+) -> list[tuple[str, str]]:
+    edges: list[tuple[str, str]] = []
+    milestone_ids = {
+        item: f"m_{stable_json_digest(item)[:16]}" for item in mandatory
+    }
+    by_turn = {
+        turn.turn_id: sorted(item for item in mandatory if item[0] == turn.turn_id)
+        for turn in view.turns
+    }
+    positions = [_occurrence_positions(path) for path in paths]
+    for occurrences in by_turn.values():
+        for left in occurrences:
+            for right in occurrences:
+                if left != right and all(item[left] < item[right] for item in positions):
+                    edges.append((milestone_ids[left], milestone_ids[right]))
+    for left_turn, right_turn in zip(view.turns, view.turns[1:]):
+        left = by_turn[left_turn.turn_id]
+        right = by_turn[right_turn.turn_id]
+        if not left or not right:
+            continue
+        left_sinks = [item for item in left if not any(
+            (milestone_ids[item], milestone_ids[other]) in edges for other in left
+        )]
+        right_roots = [item for item in right if not any(
+            (milestone_ids[other], milestone_ids[item]) in edges for other in right
+        )]
+        edges.extend(
+            (milestone_ids[source], milestone_ids[target])
+            for source in left_sinks for target in right_roots
+        )
+    return edges
+
+def _ordered_occurrences(
+    mandatory: set[tuple[str, str, int]],
+    paths: list[_PathCandidate],
+    view: GeneratorTaskView,
+) -> list[tuple[str, str, int]]:
+    turn_order = {turn.turn_id: index for index, turn in enumerate(view.turns)}
+    positions = [_occurrence_positions(path) for path in paths]
+    return sorted(
+        mandatory,
+        key=lambda item: (
+            turn_order[item[0]],
+            sum(position[item] for position in positions) / len(positions),
+            item[1],
+            item[2],
+        ),
+    )
+
+def _forbidden_intersection(
+    paths: list[_PathCandidate], view: GeneratorTaskView
+) -> dict[str, set[str]]:
+    if not paths:
+        return {}
+    result: dict[str, set[str]] = {}
+    for turn in view.turns:
+        forbidden_sets = [
+            set(candidate_turn.forbidden_evidence_ids)
+            for path in paths for candidate_turn in path.turns
+            if candidate_turn.turn_id == turn.turn_id
+        ]
+        result[turn.turn_id] = (
+            set.intersection(*forbidden_sets) if forbidden_sets else set()
+        )
+    return result
+
+def _evidence_catalog(view: GeneratorTaskView) -> dict[str, PublicEvidence]:
+    result: dict[str, PublicEvidence] = {}
+    for item in view.evidence_catalog:
+        if item.evidence_id in result:
+            raise ValueError(f"evidence ID 重复: {item.evidence_id}")
+        if item.target != ConstraintTarget.TOOL_CALL:
+            continue
+        _tool_name(item)
+        result[item.evidence_id] = item
+    if not result and view.tool_schema.get("tools"):
+        raise ValueError("tool schema 非空但没有 TOOL_CALL evidence")
+    return result
+
+def _tool_name(evidence: PublicEvidence) -> str:
+    value = evidence.metadata.get("tool_name")
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"TOOL_CALL evidence 缺少真实 tool_name: {evidence.evidence_id}")
+    return value
+
+def _evidence_for_tool(
+    tool_name: str, evidence: dict[str, PublicEvidence]
+) -> str | None:
+    return next(
+        (item.evidence_id for item in evidence.values() if _tool_name(item) == tool_name),
+        None,
+    )
+
+def _rule_applies(rule: JsonObject, tool_name: str, arguments: JsonObject) -> bool:
+    tools = rule.get("applies_to_tools")
+    expected = rule.get("applies_when_arguments", {})
+    return (
+        isinstance(tools, list)
+        and tool_name in tools
+        and isinstance(expected, dict)
+        and all(arguments.get(key) == value for key, value in expected.items())
+    )
+
+def _state_value(state: JsonObject, path: str) -> object:
+    parts = path.split(".")
+    current: object = state.get("namespaces", state)
+    for part in parts:
+        if isinstance(current, list):
+            current = current[-1] if current else {}
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+def _set_state_value(state: JsonObject, path: str, value: object) -> None:
+    parts = path.split(".")
+    namespaces = state.get("namespaces")
+    current: JsonObject = namespaces if isinstance(namespaces, dict) else state
+    for part in parts[:-1]:
+        child = current.get(part)
+        if isinstance(child, list):
+            if not child:
+                child.append({})
+            if not isinstance(child[-1], dict):
+                child[-1] = {}
+            current = child[-1]
+        elif isinstance(child, dict):
+            current = child
+        else:
+            current[part] = {}
+            current = current[part]
+    current[parts[-1]] = json_safe(value)
+
+def _apply_recovery_effects(
+    tool_name: str, arguments: JsonObject, state: JsonObject, rules: JsonObject
+) -> None:
+    for rule in rules.values():
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("recovery_tool") != tool_name:
+            continue
+        expected = rule.get("recovery_arguments")
+        if not isinstance(expected, dict) or not all(
+            arguments.get(key) == value for key, value in expected.items()
+        ):
+            continue
+        state_path = rule.get("state_path")
+        if isinstance(state_path, str) and "recovered_value" in rule:
+            _set_state_value(state, state_path, rule["recovered_value"])
+
+def _deduplicate_paths(paths: list[_PathCandidate]) -> list[_PathCandidate]:
+    result: list[_PathCandidate] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = json.dumps(_normalized_path(path), ensure_ascii=False, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+def _normalized_path(path: _PathCandidate | None) -> object:
+    if path is None:
+        return None
+    return [
+        [
+            turn.turn_id,
+            turn.disposition,
+            [operation.evidence_id for operation in turn.operations],
+            sorted(turn.forbidden_evidence_ids),
+        ]
+        for turn in path.turns
     ]
 
-
-def _source_values(view: GeneratorTaskView) -> dict[str, JsonValue]:
-    values: dict[str, JsonValue] = {"instruction": view.instruction}
-    for container in (
-        view.public_assets,
-        view.tool_schema,
-        view.environment_schema,
-        view.output_contract,
-    ):
-        _collect_source_values(container, values)
-    return values
-
-
-def _evidence_catalog(
-    view: GeneratorTaskView, source_values: dict[str, JsonValue]
-) -> dict[str, PublicEvidence]:
-    result: dict[str, PublicEvidence] = {}
-    for evidence in view.evidence_catalog:
-        if evidence.evidence_id in result:
-            raise ValueError(f"evidence_id 重复: {evidence.evidence_id}")
-        if evidence.source_ref not in source_values:
-            raise ValueError(f"evidence source_ref 未登记: {evidence.source_ref}")
-        if not isinstance(evidence.target, ConstraintTarget):
-            raise TypeError(f"evidence target 不合法: {evidence.evidence_id}")
-        if not isinstance(evidence.operator, Operator):
-            raise TypeError(f"evidence operator 不合法: {evidence.evidence_id}")
-        if evidence.expected_policy not in {"public_literal", "none"}:
-            raise ValueError(f"expected_policy 不合法: {evidence.evidence_id}")
-        if evidence.selector != "$" and not evidence.selector.startswith("$."):
-            raise ValueError(f"constraint selector 不合法: {evidence.selector}")
-        if not evidence.evaluator_hint.strip():
-            raise ValueError(f"evaluator_hint 不能为空: {evidence.evidence_id}")
-        if evidence.expected_policy == "public_literal" and not _allowed_expected_literals(
-            evidence, source_values
-        ):
-            raise ValueError(f"evidence 缺少允许的公开值: {evidence.evidence_id}")
-        result[evidence.evidence_id] = evidence
-    invariant_ids: set[str] = set()
-    for invariant in view.invariant_catalog:
-        if invariant.invariant_id in invariant_ids:
-            raise ValueError(f"invariant_id 重复: {invariant.invariant_id}")
-        if invariant.source_ref not in source_values:
-            raise ValueError(f"invariant source_ref 未登记: {invariant.source_ref}")
-        if invariant.evidence_id not in result:
-            raise ValueError(f"invariant evidence 未登记: {invariant.evidence_id}")
-        invariant_ids.add(invariant.invariant_id)
+def _occurrence_positions(path: _PathCandidate) -> dict[tuple[str, str, int], int]:
+    result: dict[tuple[str, str, int], int] = {}
+    for turn in path.turns:
+        counts: Counter[str] = Counter()
+        for position, operation in enumerate(turn.operations):
+            occurrence = (turn.turn_id, operation.evidence_id, counts[operation.evidence_id])
+            counts[operation.evidence_id] += 1
+            result[occurrence] = position
     return result
 
+def _occurrence_label(occurrence: tuple[str, str, int]) -> str:
+    return f"{occurrence[0]}:{occurrence[1]}#{occurrence[2]}"
 
-def _collect_source_values(value: object, result: dict[str, JsonValue]) -> None:
+def _turn_dispositions(
+    paths: list[_PathCandidate], view: GeneratorTaskView
+) -> JsonObject:
+    result: JsonObject = {}
+    for turn in view.turns:
+        values = {
+            candidate_turn.disposition
+            for path in paths for candidate_turn in path.turns
+            if candidate_turn.turn_id == turn.turn_id
+        }
+        result[turn.turn_id] = next(iter(values)) if len(values) == 1 else "mixed"
+    return result
+
+def _empty_reason(
+    paths: list[_PathCandidate],
+    mandatory: set[tuple[str, str, int]],
+    draft: JsonObject,
+    refined: JsonObject | None,
+) -> str | None:
+    if mandatory:
+        return None
+    if paths:
+        has_operation = any(
+            turn.operations for path in paths for turn in path.turns
+        )
+        return "no_common_operation" if has_operation else "no_operation_required"
+    rounds = [draft, *([refined] if refined is not None else [])]
+    if all(bool(item["planner_failed"]) for item in rounds):
+        return "planner_failed"
+    if any(
+        violation.get("kind") == "invalid_response"
+        for item in rounds for violation in item["violations"]
+    ):
+        return "invalid_response"
+    return "no_simulatable_path"
+
+def _round_summary(candidate: JsonObject) -> JsonObject:
+    return {
+        key: candidate[key]
+        for key in (
+            "round_index", "stage", "returned_path_count",
+            "parsed_path_count", "simulatable_path_count", "violations",
+        )
+    }
+
+def _assert_no_forbidden_generation_inputs(value: object, path: str = "$") -> None:
     if isinstance(value, dict):
-        source_ref = value.get("source_ref")
-        if isinstance(source_ref, str) and source_ref.strip():
-            if source_ref in result:
-                raise ValueError(f"source_ref 重复: {source_ref}")
-            result[source_ref] = value.get(
-                "value",
-                {key: item for key, item in value.items() if key != "source_ref"},
-            )
-        for item in value.values():
-            _collect_source_values(item, result)
+        for key, item in value.items():
+            if str(key).casefold() in _FORBIDDEN_KEYS:
+                raise ValueError(f"generator view 泄漏禁止字段: {path}.{key}")
+            _assert_no_forbidden_generation_inputs(item, f"{path}.{key}")
     elif isinstance(value, list):
-        for item in value:
-            _collect_source_values(item, result)
+        for index, item in enumerate(value):
+            _assert_no_forbidden_generation_inputs(item, f"{path}[{index}]")
 
-
-def _public_literals(value: object) -> list[JsonValue]:
-    if isinstance(value, (dict, list)):
-        result: list[JsonValue] = []
-        items = value.values() if isinstance(value, dict) else value
-        for item in items:
-            for literal in _public_literals(item):
-                if literal not in result:
-                    result.append(literal)
-        return result
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return [value]
-    return []
-
-
-def _allowed_expected_literals(
-    evidence: PublicEvidence, source_values: dict[str, JsonValue]
-) -> list[JsonValue]:
-    if evidence.expected_policy == "none":
-        return []
-    return _public_literals(source_values[evidence.source_ref])
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-
-
-def _nonempty(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} 必须是非空字符串")
-    return value.strip()
-
-
-def _transitive_reduction(
-    edges: set[tuple[str, str]],
-) -> set[tuple[str, str]]:
-    reduced = set(edges)
-    successors: dict[str, set[str]] = {}
-    for left, right in edges:
-        successors.setdefault(left, set()).add(right)
-    for edge in sorted(edges):
-        reduced.remove(edge)
-        successors[edge[0]].remove(edge[1])
-        if not _reachable(edge[0], edge[1], successors):
-            reduced.add(edge)
-            successors[edge[0]].add(edge[1])
-    return reduced
-
-
-def _reachable(source: str, target: str, successors: dict[str, set[str]]) -> bool:
-    pending = list(successors.get(source, set()))
-    visited: set[str] = set()
-    while pending:
-        current = pending.pop()
-        if current == target:
-            return True
-        if current not in visited:
-            visited.add(current)
-            pending.extend(successors.get(current, set()) - visited)
-    return False
-
-
-def _is_dag(node_ids: set[str], edges: list[tuple[str, str]]) -> bool:
-    successors: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
-    indegree = {node_id: 0 for node_id in node_ids}
-    for source, target in edges:
-        if source == target or source not in node_ids or target not in node_ids:
-            return False
-        successors[source].append(target)
-        indegree[target] += 1
-    pending = [node_id for node_id, degree in indegree.items() if degree == 0]
-    visited = 0
-    while pending:
-        current = pending.pop()
-        visited += 1
-        for target in successors[current]:
-            indegree[target] -= 1
-            if indegree[target] == 0:
-                pending.append(target)
-    return visited == len(node_ids)
-
-
-def _reject(
-    message: str,
-    *,
-    requested_path_count: int = 0,
-    minimum_valid_path_count: int = 0,
-    valid_path_count: int = 0,
-    distinct_path_count: int = 0,
-    candidate_atom_count: int = 0,
-    aligned_atom_count: int = 0,
-    consensus_node_count: int = 0,
-    reasons: tuple[str, ...] = (),
-    path_summaries: tuple[JsonObject, ...] = (),
-) -> NoReturn:
-    report = GenerationReport(
-        generation_status="auto_rejected",
-        requested_path_count=requested_path_count,
-        minimum_valid_path_count=minimum_valid_path_count,
-        valid_path_count=valid_path_count,
-        distinct_path_count=distinct_path_count,
-        candidate_atom_count=candidate_atom_count,
-        aligned_atom_count=aligned_atom_count,
-        consensus_node_count=consensus_node_count,
-        graph_valid=False,
-        reasons=(*reasons, message),
-        path_summaries=path_summaries,
-    )
-    logger.error(
-        "milestone 自动生成被拒绝",
-        extra={"事件": "milestone生成拒绝", "原因": message},
-    )
-    raise MilestoneGenerationError(message, report)
+def _violation(kind: str, message: str, **metadata: object) -> JsonObject:
+    return {"kind": kind, "message": message, **json_safe(metadata)}

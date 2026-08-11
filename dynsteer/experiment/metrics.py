@@ -431,7 +431,6 @@ def aggregate_cost(results: Sequence[ExperimentCaseResult]) -> tuple[JsonObject,
     summary["adaptation_attributed_artifacts"] = _sum_ledger(ledger, generated_only=False)
     summary["data_quality"] = dict(sorted(quality.items()))
     detail = {
-        "schema_version": 1,
         "pairing_key": ["benchmark", "model_id", "repeat_index", "case_id"],
         "adaptation_ledger": ledger,
         "paired_cases": rows,

@@ -3,14 +3,9 @@ from __future__ import annotations
 import hashlib
 import re
 
-from dynsteer.milestone.model import PublicEvidence, PublicInvariant
-from dynsteer.model import ConstraintTarget, JsonObject, Operator
+from dynsteer.milestone.model import PublicEvidence
+from dynsteer.model import Actor, ConstraintTarget, JsonObject, Operator
 from dynsteer.utils import json_safe
-
-
-_INVARIANT_PATTERN = re.compile(
-    r"\b(?:must not|do not|never)\b|禁止|不得|严禁", re.IGNORECASE
-)
 
 
 def stable_contract_slug(value: str) -> str:
@@ -20,31 +15,10 @@ def stable_contract_slug(value: str) -> str:
     return f"{normalized or 'item'}_{digest}"
 
 
-def base_public_evidence() -> list[PublicEvidence]:
-    """返回所有 benchmark 共用的基础公开 evidence。"""
-    return [
-        PublicEvidence(
-            evidence_id="agent_message_instruction",
-            target=ConstraintTarget.STEP,
-            selector="$.content",
-            operator=Operator.FUZZY_MATCH,
-            source_ref="instruction",
-        ),
-        PublicEvidence(
-            evidence_id="tool_result_present",
-            target=ConstraintTarget.TOOL_RESULT,
-            selector="$",
-            operator=Operator.ADDED,
-            source_ref="instruction",
-            expected_policy="none",
-        ),
-    ]
-
-
 def normalize_tool_contract(
     tool_schema: JsonObject,
 ) -> tuple[JsonObject, list[PublicEvidence]]:
-    """复制公开工具 schema，并返回稳定的工具 evidence。"""
+    """单次遍历工具 schema，补充来源并生成确切工具调用 evidence。"""
     normalized = json_safe(tool_schema)
     if not isinstance(normalized, dict):
         raise TypeError("tool_schema 必须是对象")
@@ -55,11 +29,11 @@ def normalize_tool_contract(
         return normalized, evidence
     for index, tool in enumerate(tools):
         if not isinstance(tool, dict):
-            continue
+            raise TypeError(f"tools[{index}] 必须是对象")
         function = tool.get("function")
         raw_name = function.get("name") if isinstance(function, dict) else tool.get("name")
         if not isinstance(raw_name, str) or not raw_name.strip():
-            continue
+            raise ValueError(f"tools[{index}] 缺少工具名")
         name = raw_name.strip()
         if name in seen_names:
             raise ValueError(f"工具名重复: {name}")
@@ -67,54 +41,13 @@ def normalize_tool_contract(
         slug = stable_contract_slug(name)
         source_ref = f"tool:{slug}:name"
         tools[index] = {**tool, "source_ref": source_ref, "value": name}
-        evidence.append(
-            PublicEvidence(
-                evidence_id=f"tool_call_{slug}",
-                target=ConstraintTarget.TOOL_CALL,
-                selector="$.name",
-                operator=Operator.EQUALS,
-                source_ref=source_ref,
-            )
-        )
+        evidence.append(PublicEvidence(
+            evidence_id=f"tool_call_{slug}",
+            target=ConstraintTarget.TOOL_CALL,
+            selector="$.name",
+            operator=Operator.EQUALS,
+            source_ref=source_ref,
+            matching_route=(Actor.AGENT, Actor.ENVIRONMENT),
+            metadata={"tool_name": name},
+        ))
     return normalized, evidence
-
-
-def build_public_invariants(
-    contents: list[str],
-) -> tuple[list[JsonObject], list[PublicEvidence], list[PublicInvariant]]:
-    """从公开文本提取去重的不变量及其可执行 evidence。"""
-    assets: list[JsonObject] = []
-    evidence: list[PublicEvidence] = []
-    invariants: list[PublicInvariant] = []
-    seen: set[str] = set()
-    for content in contents:
-        for line in content.splitlines():
-            rule = line.strip(" -\t")
-            if not rule or rule in seen or not _INVARIANT_PATTERN.search(rule):
-                continue
-            seen.add(rule)
-            slug = stable_contract_slug(rule)
-            source_ref = f"invariant:{slug}"
-            evidence_id = f"invariant_message_{slug}"
-            invariant_id = f"invariant_{slug}"
-            assets.append(
-                {"kind": "invariant_source", "source_ref": source_ref, "value": rule}
-            )
-            evidence.append(
-                PublicEvidence(
-                    evidence_id=evidence_id,
-                    target=ConstraintTarget.STEP,
-                    selector="$.content",
-                    operator=Operator.CONTAINS,
-                    source_ref=source_ref,
-                )
-            )
-            invariants.append(
-                PublicInvariant(
-                    invariant_id=invariant_id,
-                    description=rule,
-                    source_ref=source_ref,
-                    evidence_id=evidence_id,
-                )
-            )
-    return assets, evidence, invariants

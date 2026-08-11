@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as dt
-import hashlib
 import importlib
 import importlib.util
 import itertools
@@ -16,7 +15,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 import networkx as nx
 from tqdm import tqdm
@@ -34,9 +33,15 @@ from dynsteer.llm import build_llm_from_config, build_llm_from_env
 from dynsteer.milestone import compile_task_case
 from dynsteer.milestone.model import (
     MilestoneGenerationConfig,
-    MilestoneGenerationError,
 )
-from dynsteer.model import JsonObject, MilestoneGraph, TaskCase
+from dynsteer.milestone.semantics import canonical_graph_semantics, compare_input_coverage
+from dynsteer.metrics import (
+    activate_runtime_metrics_recorder,
+    reset_runtime_metrics_recorder,
+    summarize_llm_calls,
+)
+from dynsteer.model import JsonObject, MilestoneGraph, RuntimeMetricsRecorder, TaskCase
+from dynsteer.utils import canonical_json, stable_json_digest
 
 
 LOGGER = logging.getLogger("milestone_reliability")
@@ -75,6 +80,7 @@ class _CaseResult:
     metrics: JsonObject
     output_path: Path
     generation_report: JsonObject
+    generation_usage: JsonObject
     reference_count: int | None
     prediction_count: int | None
     reference_summary: JsonObject
@@ -280,8 +286,8 @@ def _group_reliability_specs(
         reliability = _validate_reliability_metadata(
             spec.metadata.get("milestone_reliability", {})
         )
-        generation_digest = _digest(spec.milestone_generation)
-        reliability_digest = _digest(reliability)
+        generation_digest = stable_json_digest(spec.milestone_generation)
+        reliability_digest = stable_json_digest(reliability)
         current = mutable.get(key)
         if current is None:
             mutable[key] = {
@@ -338,6 +344,7 @@ def _run_case(
     reference_count: int | None = None
     prediction_count: int | None = None
     report: JsonObject = {}
+    generation_usage = summarize_llm_calls([])
     try:
         adapter = get_adapter(group.benchmark)
         case_config = replace(
@@ -348,9 +355,10 @@ def _run_case(
         original = adapter.adapt_task_case(case_config, case_id)
         if not isinstance(original, TaskCase):
             raise TypeError("adapter.adapt_task_case() 必须返回 TaskCase")
-        reference = copy.deepcopy(original.milestone_graph)
+        reference = adapter.reference_milestone_graph(case_config, case_id)
         if reference is None:
             raise ValueError("原生 milestone graph 缺失")
+        reference = copy.deepcopy(reference)
         reference_count = len(reference.nodes)
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         return _failed_case(
@@ -364,26 +372,20 @@ def _run_case(
             llm = build_llm_from_env()
         if llm is None:
             raise ValueError("milestone generator LLM 未配置")
-        prediction, generation_report = compile_task_case(
-            view,
-            group.milestone_generation,
-            llm,
-            response_output_file=response_output_file,
-        )
+        recorder = RuntimeMetricsRecorder()
+        token = activate_runtime_metrics_recorder(recorder)
+        try:
+            prediction, generation_report = compile_task_case(
+                view,
+                group.milestone_generation,
+                llm,
+                response_output_file=response_output_file,
+            )
+        finally:
+            reset_runtime_metrics_recorder(token)
+            generation_usage = summarize_llm_calls(recorder.llm_calls)
         report = generation_report.to_dict()
         prediction_count = len(prediction.nodes)
-    except MilestoneGenerationError as exc:
-        return _failed_case(
-            group,
-            case_id,
-            "generation_rejected",
-            exc,
-            started,
-            reference_count,
-            None,
-            exc.report.to_dict(),
-            reference_summary=_descriptor_summary(reference),
-        )
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         return _failed_case(
             group,
@@ -394,20 +396,30 @@ def _run_case(
             reference_count,
             None,
             reference_summary=_descriptor_summary(reference),
+            generation_usage=generation_usage,
         )
 
     try:
-        strict_prediction = _graph_descriptor(prediction, structural=False)
-        strict_reference = _graph_descriptor(reference, structural=False)
-        structural_prediction = _graph_descriptor(prediction, structural=True)
-        structural_reference = _graph_descriptor(reference, structural=True)
+        tool_aliases = adapter.reliability_tool_aliases(case_config, case_id)
+        reference_semantics = canonical_graph_semantics(reference, tool_aliases)
+        prediction_semantics = canonical_graph_semantics(prediction)
+        coverage = compare_input_coverage(reference, view, tool_aliases)
+        semantic_metrics = _semantic_metric_bundle(
+            reference_semantics, prediction_semantics, coverage
+        )
+        strict_prediction = _graph_descriptor(prediction, mode="strict")
+        strict_reference = _graph_descriptor(reference, mode="strict")
+        structural_prediction = _graph_descriptor(prediction, mode="structural")
+        structural_reference = _graph_descriptor(reference, mode="structural")
+        topology_prediction = _graph_descriptor(prediction, mode="topology")
+        topology_reference = _graph_descriptor(reference, mode="topology")
         profile = group.reliability_metadata["edit_cost_profile"]
         solver_mode = options.ged_solver or group.reliability_metadata["ged_solver"]
         timeout = (
             options.ged_timeout_seconds
             or group.reliability_metadata["ged_timeout_seconds"]
         )
-        metrics = {
+        diagnostics = {
             "strict": _graph_metric_bundle(
                 strict_prediction, strict_reference, profile, solver_mode, timeout
             ),
@@ -418,6 +430,9 @@ def _run_case(
                 solver_mode,
                 timeout,
             ),
+            "topology": _graph_metric_bundle(
+                topology_prediction, topology_reference, profile, solver_mode, timeout
+            ),
             "node_count_delta": len(prediction.nodes) - len(reference.nodes),
             "edge_count_delta": len(prediction.edges) - len(reference.edges),
         }
@@ -426,11 +441,23 @@ def _run_case(
             if options.fgw is not None
             else group.reliability_metadata["fgw"]
         )
-        metrics["fgw"] = (
+        diagnostics["fgw"] = (
             _compute_fgw_optional(strict_prediction, strict_reference, alpha=0.5)
             if fgw_enabled
             else _disabled_fgw()
         )
+        metrics = {
+            "completed": True,
+            "graph_returned": True,
+            "graph_empty": not prediction_semantics["operations"],
+            "reference_graph_empty": not reference_semantics["operations"],
+            "generated_operation_count": len(prediction_semantics["operations"]),
+            "reference_operation_count": len(reference_semantics["operations"]),
+            "generation_status": report.get("generation_status"),
+            "semantic_metrics": semantic_metrics,
+            "input_coverage": coverage,
+            "diagnostics": diagnostics,
+        }
     except (nx.NetworkXException, TimeoutError, RuntimeError, ValueError) as exc:
         return _failed_case(
             group,
@@ -443,6 +470,7 @@ def _run_case(
             report,
             reference_summary=_descriptor_summary(reference),
             prediction_summary=_descriptor_summary(prediction),
+            generation_usage=generation_usage,
         )
 
     return _CaseResult(
@@ -452,6 +480,7 @@ def _run_case(
         metrics=metrics,
         output_path=Path(),
         generation_report=report,
+        generation_usage=generation_usage,
         reference_count=reference_count,
         prediction_count=prediction_count,
         reference_summary=_descriptor_summary(reference),
@@ -460,8 +489,60 @@ def _run_case(
     )
 
 
+def _semantic_metric_bundle(
+    reference: JsonObject, generated: JsonObject, coverage: JsonObject
+) -> JsonObject:
+    """计算 operation 多重集、occurrence topology 与 fatal minefield 指标。"""
+    dimensions = ("dispositions", "operations", "responses", "minefields", "topology")
+    metrics = {
+        dimension: _multiset_metric(
+            Counter(str(item) for item in reference.get(dimension, [])),
+            Counter(str(item) for item in generated.get(dimension, [])),
+        )
+        for dimension in dimensions
+    }
+    reference_fatal = {
+        item for item in reference.get("minefields", []) if '"severity":"fatal"' in str(item)
+    }
+    generated_minefields = {str(item) for item in generated.get("minefields", [])}
+    fatal_miss_count = len(reference_fatal - generated_minefields)
+    spurious_fatal_count = len(generated_minefields - reference_fatal)
+    complete = all(
+        bool(metrics[dimension]["exact"])
+        for dimension in ("operations", "minefields", "topology")
+    )
+    return {
+        **metrics,
+        "fatal_minefield_miss_count": fatal_miss_count,
+        "spurious_fatal_minefield_count": spurious_fatal_count,
+        "operation_topology_exact": complete,
+    }
+
+
+def _multiset_metric(
+    reference_items: Counter[str], generated_items: Counter[str]
+) -> JsonObject:
+    """使用 occurrence count 计算多重集 precision、recall、F1 与 exact。"""
+    reference_count = sum(reference_items.values())
+    generated_count = sum(generated_items.values())
+    true_positive = sum((reference_items & generated_items).values())
+    precision = true_positive / generated_count if generated_count else float(not reference_count)
+    recall = true_positive / reference_count if reference_count else float(not generated_count)
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "reference_count": reference_count,
+        "generated_count": generated_count,
+        "true_positive": true_positive,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "exact": reference_items == generated_items,
+    }
+
+
 def _graph_descriptor(
-    graph: MilestoneGraph | nx.DiGraph, structural: bool = False
+    graph: MilestoneGraph | nx.DiGraph,
+    mode: Literal["strict", "structural", "topology"] = "strict",
 ) -> nx.DiGraph:
     """将 milestone graph 转为包含稳定节点/边标签的 DiGraph。"""
     if isinstance(graph, (nx.DiGraph, nx.Graph)):
@@ -490,13 +571,16 @@ def _graph_descriptor(
             }
             for item in node.constraints
         ]
-        constraint_shapes.sort(key=_canonical_json)
+        constraint_shapes.sort(key=canonical_json)
         label = (
+            {"terminal": node.milestone_id in terminal_ids}
+            if mode == "topology"
+            else
             {
                 "terminal": node.milestone_id in terminal_ids,
                 "constraint_shapes": constraint_shapes,
             }
-            if structural
+            if mode == "structural"
             else {
                 "name": node.name,
                 "description": node.description,
@@ -514,7 +598,7 @@ def _graph_descriptor(
                     }
                     for shape, item in zip(constraint_shapes, sorted(
                         node.constraints,
-                        key=lambda value: _canonical_json({
+                        key=lambda value: canonical_json({
                             "target": getattr(value.target, "value", value.target),
                             "selector": value.selector,
                             "operator": getattr(value.operator, "value", value.operator),
@@ -525,7 +609,7 @@ def _graph_descriptor(
                 ],
             }
         )
-        descriptor.add_node(node.milestone_id, label=_canonical_json(label))
+        descriptor.add_node(node.milestone_id, label=canonical_json(label))
     for source, target in graph.edges:
         descriptor.add_edge(source, target, label="directed_precedence")
     return descriptor
@@ -830,7 +914,6 @@ def _write_report(
     """写出 index.json 与 summary.json。"""
     statuses = (
         "completed",
-        "generation_rejected",
         "generation_failed",
         "adapt_failed",
         "ged_failed",
@@ -841,28 +924,34 @@ def _write_report(
     }
     completed = [result for result in results if result.status == "completed"]
     strict_similarities = [
-        float(result.metrics["strict"]["ged_similarity"]) for result in completed
+        float(result.metrics["diagnostics"]["strict"]["ged_similarity"]) for result in completed
     ]
     structural_similarities = [
-        float(result.metrics["structural"]["ged_similarity"])
+        float(result.metrics["diagnostics"]["structural"]["ged_similarity"])
         for result in completed
     ]
     strict_f1 = [
-        float(result.metrics["strict"]["node_set_f1"]["f1"])
+        float(result.metrics["diagnostics"]["strict"]["node_set_f1"]["f1"])
         for result in completed
     ]
     structural_f1 = [
-        float(result.metrics["structural"]["node_set_f1"]["f1"])
+        float(result.metrics["diagnostics"]["structural"]["node_set_f1"]["f1"])
+        for result in completed
+    ]
+    topology_similarities = [
+        float(result.metrics["diagnostics"]["topology"]["ged_similarity"]) for result in completed
+    ]
+    topology_f1 = [
+        float(result.metrics["diagnostics"]["topology"]["node_set_f1"]["f1"])
         for result in completed
     ]
     generation_fields = (
-        "requested_path_count",
-        "minimum_valid_path_count",
-        "valid_path_count",
-        "distinct_path_count",
+        "returned_path_count",
+        "parsed_path_count",
+        "simulatable_path_count",
+        "final_path_count",
     )
     summary = {
-        "schema_version": "milestone_reliability.summary.v1",
         "status_counts": status_counts,
         "failed_case_count": len(results) - status_counts["completed"],
         "strict": {
@@ -873,11 +962,76 @@ def _write_report(
             "ged_similarity": _statistics(structural_similarities),
             "node_set_f1": _statistics(structural_f1),
         },
+        "topology": {
+            "ged_similarity": _statistics(topology_similarities),
+            "node_set_f1": _statistics(topology_f1),
+        },
+        "operation_topology_exact": {
+            "count": sum(bool(result.metrics["semantic_metrics"]["operation_topology_exact"]) for result in completed),
+            "ratio": (sum(bool(result.metrics["semantic_metrics"]["operation_topology_exact"]) for result in completed) / len(completed) if completed else None),
+        },
+        "semantic_macro_f1": {
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["f1"]) for result in completed])
+            for dimension in ("operations", "minefields", "topology")
+        },
+        "semantic_macro_precision": {
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["precision"]) for result in completed])
+            for dimension in ("operations", "minefields", "topology")
+        },
+        "semantic_macro_recall": {
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["recall"]) for result in completed])
+            for dimension in ("operations", "minefields", "topology")
+        },
+        "fatal_minefield_miss_count": sum(int(result.metrics["semantic_metrics"]["fatal_minefield_miss_count"]) for result in completed),
+        "spurious_fatal_minefield_count": sum(int(result.metrics["semantic_metrics"]["spurious_fatal_minefield_count"]) for result in completed),
+        "input_coverage": {
+            "uncovered_case_count": sum(not bool(result.metrics["input_coverage"]["covered"]) for result in completed),
+            "uncovered_count": sum(int(result.metrics["input_coverage"]["uncovered_count"]) for result in completed),
+        },
+        "empty_graph": {
+            "reference_count": sum(bool(result.metrics.get("reference_graph_empty")) for result in completed),
+            "accuracy": (
+                sum(bool(result.metrics.get("reference_graph_empty")) == bool(result.metrics.get("graph_empty")) for result in completed) / len(completed)
+                if completed else None
+            ),
+            "false_nonempty_count": sum(
+                bool(result.metrics.get("reference_graph_empty")) and not bool(result.metrics.get("graph_empty"))
+                for result in completed
+            ),
+            "false_empty_count": sum(
+                not bool(result.metrics.get("reference_graph_empty")) and bool(result.metrics.get("graph_empty"))
+                for result in completed
+            ),
+            "confusion": {
+                "reference_empty_generated_empty": sum(
+                    bool(result.metrics.get("reference_graph_empty")) and bool(result.metrics.get("graph_empty"))
+                    for result in completed
+                ),
+                "reference_empty_generated_nonempty": sum(
+                    bool(result.metrics.get("reference_graph_empty")) and not bool(result.metrics.get("graph_empty"))
+                    for result in completed
+                ),
+                "reference_nonempty_generated_empty": sum(
+                    not bool(result.metrics.get("reference_graph_empty")) and bool(result.metrics.get("graph_empty"))
+                    for result in completed
+                ),
+                "reference_nonempty_generated_nonempty": sum(
+                    not bool(result.metrics.get("reference_graph_empty")) and not bool(result.metrics.get("graph_empty"))
+                    for result in completed
+                ),
+            },
+        },
+        "graph_return_count": sum(bool(result.metrics.get("graph_returned")) for result in results),
+        "reference_multinode_generated_single_operation_count": sum(
+            int(result.metrics.get("reference_operation_count", 0)) >= 2
+            and int(result.metrics.get("generated_operation_count", 0)) == 1
+            for result in completed
+        ),
         "absolute_node_count_delta": _statistics(
-            [abs(float(result.metrics["node_count_delta"])) for result in completed]
+            [abs(float(result.metrics["diagnostics"]["node_count_delta"])) for result in completed]
         ),
         "absolute_edge_count_delta": _statistics(
-            [abs(float(result.metrics["edge_count_delta"])) for result in completed]
+            [abs(float(result.metrics["diagnostics"]["edge_count_delta"])) for result in completed]
         ),
         "generation": {
             field: _statistics(
@@ -890,19 +1044,31 @@ def _write_report(
             )
             for field in generation_fields
         },
+        "repair": {
+            "triggered_count": sum(bool(result.generation_report.get("repair_triggered")) for result in results),
+            "first_round_completed_count": sum(result.generation_report.get("selected_round") == 1 for result in results),
+        },
+        "generation_usage": {
+            "llm_call_count": sum(int(result.generation_usage.get("llm_call_count", 0)) for result in results),
+            "prompt_tokens": _sum_available_usage(results, "prompt_tokens"),
+            "completion_tokens": _sum_available_usage(results, "completion_tokens"),
+            "total_tokens": _sum_available_usage(results, "total_tokens"),
+            "token_available": all(bool(result.generation_usage.get("token_available")) for result in results),
+        },
         "exact_count": sum(
-            result.metrics["strict"].get("solver_mode") == "exact"
+            result.metrics["diagnostics"]["strict"].get("solver_mode") == "exact"
             for result in completed
         ),
         "approximate_count": sum(
-            result.metrics["strict"].get("solver_mode") == "approximate"
+            result.metrics["diagnostics"]["strict"].get("solver_mode") == "approximate"
             for result in completed
         ),
         "case_files": case_files,
         "metric_definition": {
-            "primary": "strict.ged_similarity",
+            "primary": "semantic_metrics.operation_topology_exact",
             "strict.ged_similarity": "max(0, 1 - ged_distance / ged_base)",
             "structural.ged_similarity": "同公式，仅比较 terminal 与 constraint shape",
+            "topology.ged_similarity": "同公式，仅比较 terminal 与有向先后拓扑",
             "strict.node_set_f1.f1": "strict GED 的零代价节点替换",
             "structural.node_set_f1.f1": "structural GED 的零代价节点替换",
             "node_count_delta": "prediction node count - reference node count",
@@ -938,10 +1104,9 @@ def _write_case_json(
     experiment_id: str,
     run_id: str,
 ) -> None:
-    """写出单个 case 的稳定 v1 schema。"""
+    """写出单个 case 的稳定结构。"""
     finished_at = _utc_now()
     payload = {
-        "schema_version": "milestone_reliability.case.v1",
         "experiment_id": experiment_id,
         "run_id": run_id,
         "benchmark": result.benchmark,
@@ -949,11 +1114,22 @@ def _write_case_json(
         "status": result.status,
         "finished_at": finished_at,
         "elapsed_ms": result.elapsed_ms,
+        "graph_state": {
+            "graph_returned": bool(result.metrics.get("graph_returned")),
+            "graph_empty": bool(result.metrics.get("graph_empty")),
+            "reference_graph_empty": bool(result.metrics.get("reference_graph_empty")),
+            "completed": result.status == "completed",
+            "generation_status": result.metrics.get("generation_status"),
+        },
         "reference": result.reference_summary,
         "prediction": result.prediction_summary,
-        "metrics": result.metrics,
+        "semantic_metrics": result.metrics.get("semantic_metrics", {}),
+        "input_coverage": result.metrics.get("input_coverage", {}),
+        "diagnostics": result.metrics.get("diagnostics", {}),
         "generation_report": result.generation_report,
-        "diagnostics": list(result.diagnostics),
+        "llm_usage": result.generation_usage,
+        "raw_response_records": [],
+        "errors": list(result.diagnostics),
     }
     _write_json(path, payload)
 
@@ -962,10 +1138,13 @@ def _validate_reliability_metadata(metadata: object) -> JsonObject:
     if not isinstance(metadata, Mapping):
         raise ValueError("metadata.milestone_reliability 必须为 JSON 对象")
     result = dict(metadata)
+    result.setdefault("primary_metric", "operation_topology_exact")
     result.setdefault("ged_solver", "exact")
     result.setdefault("ged_timeout_seconds", 60)
     result.setdefault("edit_cost_profile", dict(DEFAULT_EDIT_COST_PROFILE))
     result.setdefault("fgw", False)
+    if result["primary_metric"] != "operation_topology_exact":
+        raise ValueError("metadata.milestone_reliability.primary_metric 非法")
     if result["ged_solver"] not in {"exact", "approximate"}:
         raise ValueError("metadata.milestone_reliability.ged_solver 非法")
     timeout = result["ged_timeout_seconds"]
@@ -1075,6 +1254,7 @@ def _failed_case(
     report: JsonObject | None = None,
     reference_summary: JsonObject | None = None,
     prediction_summary: JsonObject | None = None,
+    generation_usage: JsonObject | None = None,
 ) -> _CaseResult:
     return _CaseResult(
         benchmark=group.benchmark,
@@ -1083,6 +1263,7 @@ def _failed_case(
         metrics={},
         output_path=Path(),
         generation_report=report or {},
+        generation_usage=generation_usage or summarize_llm_calls([]),
         reference_count=reference_count,
         prediction_count=prediction_count,
         reference_summary=reference_summary or {},
@@ -1145,6 +1326,18 @@ def _statistics(values: list[float]) -> JsonObject:
     }
 
 
+def _sum_available_usage(results: list[_CaseResult], field: str) -> int | None:
+    """仅在所有 case token 均可用时汇总 generation usage。"""
+    if not results or not all(
+        bool(result.generation_usage.get("token_available")) for result in results
+    ):
+        return None
+    values = [result.generation_usage.get(field) for result in results]
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        return None
+    return sum(int(value) for value in values)
+
+
 def _safe_error(exc: Exception) -> str:
     message = " ".join(str(exc).splitlines())[:300]
     lowered = message.lower()
@@ -1153,20 +1346,6 @@ def _safe_error(exc: Exception) -> str:
             message = f"包含敏感字段 {key} 的错误消息已隐藏"
             break
     return f"{type(exc).__name__}: {message}"
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-
-
-def _digest(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

@@ -1,6 +1,5 @@
 import json
 import re
-import hashlib
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +51,7 @@ from dynsteer.utils import (
     parse_int_value,
     read_json_file,
     required_str,
+    stable_json_digest,
     unknown_fields,
 )
 
@@ -100,7 +100,6 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
     data = json_safe(task_case)
     if isinstance(data.get("metadata"), dict):
         data["metadata"].pop("adaptation_usage", None)
-    data["initial_state"] = None
     path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
 
 def refresh_task_cases_for_experiment(
@@ -138,7 +137,7 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
         if str(config.metadata.get("method") or "").strip().lower() == "default":
             return task_case
         graph = task_case.milestone_graph
-        has_origin_graph = graph is not None and bool(graph.nodes or graph.minefields)
+        has_origin_graph = graph is not None
         generation = config.milestone_generation
         if generation.use_origin_milestone and has_origin_graph:
             graph.metadata["source"] = "origin"
@@ -148,17 +147,19 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
             if llm is None:
                 raise ValueError(f"TaskCase 需要自动生成 milestone，但未配置 generator: {case_id}")
             graph, report = compile_task_case(view, generation, llm)
+            graph.metadata["source"] = "generated"
             task_case.metadata["milestone_generation"] = report.to_dict()
         task_case.milestone_graph = enrich_milestone_graph(graph)
         task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
+        task_case.metadata["generation_phase"] = "pre_execution"
         summary = summarize_llm_calls(recorder.llm_calls)
         canonical = json_safe(task_case)
         if isinstance(canonical.get("metadata"), dict):
             canonical["metadata"].pop("adaptation_cost", None)
             canonical["metadata"].pop("adaptation_usage", None)
-        artifact_id = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        artifact_id = stable_json_digest(canonical)
         task_case.metadata["adaptation_cost"] = {
-            "schema_version": 1, "artifact_id": artifact_id,
+            "artifact_id": artifact_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": max(time.perf_counter() - started, 0.0), **summary,
         }
@@ -178,7 +179,6 @@ def _postprocess_task_case(task_case: TaskCase, goal_mode: str="auto") -> TaskCa
             generation_mode,
             llm_provider=build_llm_from_env,
         )
-    task_case.metadata["stage_goal_template_schema_version"] = 1
     task_case.stage_goals = materialize_stage_goals(task_case)
     task_case.stage_evaluation_specs = generate_stage_evaluation_specs(task_case)
     return task_case
@@ -230,7 +230,8 @@ def parse_milestone_graph(data: JsonObject) -> MilestoneGraph:
         metadata=_optional_object(graph_data, "metadata"),
     )
     enrich_milestone_graph(graph)
-    return enrich_milestone_routes(graph)
+    graph = enrich_milestone_routes(graph)
+    return graph
 
 def parse_stage_evaluation_spec(data: JsonObject) -> StageEvaluationSpec:
     spec_data = ensure_json_object(data)
