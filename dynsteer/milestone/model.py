@@ -17,21 +17,27 @@ class MilestoneGenerationConfig:
     """控制执行前 milestone 自动生成。"""
 
     use_origin_milestone: bool = True
-    max_candidate_path_count: int = 6
-    enable_repair: bool = True
+    target_candidate_graph_count: int = 6
+    max_candidate_batch_count: int = 4
     generator: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.use_origin_milestone, bool):
             raise TypeError("use_origin_milestone 必须是 bool")
-        if isinstance(self.max_candidate_path_count, bool) or not isinstance(
-            self.max_candidate_path_count, int
+        if isinstance(self.target_candidate_graph_count, bool) or not isinstance(
+            self.target_candidate_graph_count, int
         ):
-            raise TypeError("max_candidate_path_count 必须是整数")
-        if not 1 <= self.max_candidate_path_count <= 8:
-            raise ValueError("max_candidate_path_count 必须位于 1～8")
-        if not isinstance(self.enable_repair, bool):
-            raise TypeError("enable_repair 必须是 bool")
+            raise TypeError("target_candidate_graph_count 必须是整数")
+        if not 2 <= self.target_candidate_graph_count <= 8:
+            raise ValueError("target_candidate_graph_count 必须位于 2～8")
+        if isinstance(self.max_candidate_batch_count, bool) or not isinstance(
+            self.max_candidate_batch_count, int
+        ):
+            raise TypeError("max_candidate_batch_count 必须是整数")
+        if not 1 <= self.max_candidate_batch_count <= 4:
+            raise ValueError("max_candidate_batch_count 必须位于 1～4")
+        if self.target_candidate_graph_count > 2 * self.max_candidate_batch_count:
+            raise ValueError("候选图目标数不能超过批次数的两倍")
         if not isinstance(self.generator, dict):
             raise TypeError("generator 必须是 JSON 对象")
 
@@ -72,8 +78,10 @@ class GeneratorTaskView:
     language: str
     turns: tuple[GeneratorTurn, ...]
     public_assets: list[JsonObject]
-    initial_state: JsonObject
+    public_state: JsonObject
+    simulation_state: JsonObject
     tool_schema: JsonObject
+    tool_contracts: JsonObject
     environment_rules: JsonObject
     evidence_catalog: tuple[PublicEvidence, ...]
 
@@ -88,24 +96,35 @@ class GeneratorTaskView:
 
 @dataclass(frozen=True)
 class GenerationReport:
-    """记录多路径生成、模拟和聚合的审计摘要。"""
+    """记录候选图生成、校验和聚合的审计摘要。"""
 
-    generation_status: Literal["generated"]
+    generation_status: Literal["generated", "generation_failed"]
     turn_dispositions: JsonObject
-    max_candidate_path_count: int
-    returned_path_count: int
-    parsed_path_count: int
-    simulatable_path_count: int
-    final_path_count: int
-    selected_round: int | None
+    target_candidate_graph_count: int
+    max_candidate_batch_count: int
+    request_count: int
+    request_success_count: int
+    returned_graph_count: int
+    parsed_graph_count: int
+    valid_graph_count: int
+    accepted_observation_count: int
+    global_unique_graph_count: int
+    within_batch_duplicate_count: int
+    rejected_graph_count: int
+    target_reached: bool
     graph_returned: bool
     graph_empty: bool
     empty_reason: str | None
+    aggregated_node_count: int
+    aggregated_edge_count: int
     minefield_count: int
-    repair_triggered: bool
-    counterexample_removed_operations: tuple[str, ...] = ()
-    round_summaries: tuple[JsonObject, ...] = ()
-    path_summaries: tuple[JsonObject, ...] = ()
+    low_sample_count: bool
+    low_diversity: bool
+    cross_request_signature_counts: JsonObject = field(default_factory=dict)
+    candidate_summaries: tuple[JsonObject, ...] = ()
+    aggregation_support: JsonObject = field(default_factory=dict)
+    validation_issues: tuple[JsonObject, ...] = ()
+    response_digests: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> JsonObject:

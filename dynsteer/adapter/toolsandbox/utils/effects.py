@@ -3,7 +3,75 @@ from __future__ import annotations
 from dynsteer.model import JsonObject
 
 
-def toolsandbox_environment_rules() -> JsonObject:
+def toolsandbox_tool_contracts(agent_to_execution: dict[str, str] | None = None) -> JsonObject:
+    """返回由 ToolSandbox 工具实现核实的输出和副作用契约。"""
+    contracts: JsonObject = {}
+    for name, fields in {
+        "search_contacts": {"person_id": "string", "name": "string", "phone_number": "string", "relationship": "string", "is_self": "boolean"},
+        "search_reminder": {"reminder_id": "string", "content": "string", "creation_timestamp": "number", "reminder_timestamp": "number", "latitude": "number", "longitude": "number"},
+        "search_messages": {"message_id": "string", "sender_person_id": "string", "sender_phone_number": "string", "recipient_person_id": "string", "recipient_phone_number": "string", "content": "string", "creation_timestamp": "number"},
+        "timestamp_to_datetime_info": {"year": "integer", "month": "integer", "day": "integer", "hour": "integer", "minute": "integer", "second": "integer", "isoweekday": "integer"},
+        "timestamp_diff": {"days": "integer", "seconds": "integer"},
+        "seconds_to_hours_minutes_seconds": {"hour": "integer", "minute": "integer", "second": "integer"},
+    }.items():
+        contracts[name] = {"outputs": {
+            field: {"selector": f"$.{field}", "type": output_type, "cardinality": ["one", "all"]}
+            for field, output_type in fields.items()
+        }, "writes": []}
+    for name in ("get_current_timestamp", "datetime_info_to_timestamp", "shift_timestamp", "unit_conversion", "search_holiday", "calculate_lat_lon_distance"):
+        contracts[name] = {"outputs": {
+            "value": {"selector": "$", "type": "number", "cardinality": ["one"]}
+        }, "writes": []}
+    for name in (
+        "get_cellular_service_status", "get_location_service_status",
+        "get_low_battery_mode_status", "get_wifi_status",
+    ):
+        contracts[name] = {"outputs": {
+            "value": {"selector": "$", "type": "boolean", "cardinality": ["one"]}
+        }, "writes": []}
+    for name, namespace, operation, required, executor_arguments in (
+        ("add_contact", "CONTACT", "add", ("name", "phone_number"), {}),
+        ("modify_contact", "CONTACT", "update", ("person_id",), {}),
+        ("remove_contact", "CONTACT", "remove", ("person_id",), {}),
+        ("add_reminder", "REMINDER", "add", ("content", "reminder_timestamp"), {}),
+        ("modify_reminder", "REMINDER", "update", ("reminder_id",), {}),
+        ("remove_reminder", "REMINDER", "remove", ("reminder_id",), {}),
+        (
+            "send_message_with_phone_number", "MESSAGING", "add",
+            ("recipient_phone_number", "content"),
+            {"phone_number": "recipient_phone_number", "content": "content"},
+        ),
+    ):
+        contracts[name] = {
+            "outputs": {}, "writes": [namespace],
+            "required_dynamic_inputs": list(required),
+            "executor_arguments": executor_arguments,
+            "effect": {"namespace": namespace, "operation": operation},
+            "state_evaluator": "toolsandbox_snapshot",
+        }
+    for name, field in (
+        ("set_wifi_status", "wifi"),
+        ("set_cellular_service_status", "cellular"),
+        ("set_location_service_status", "location_service"),
+        ("set_low_battery_mode_status", "low_battery_mode"),
+    ):
+        contracts[name] = {
+            "outputs": {}, "writes": ["SETTING"],
+            "required_dynamic_inputs": [field],
+            "executor_arguments": {"on": field},
+            "effect": {"namespace": "SETTING", "operation": "set"},
+            "state_evaluator": "toolsandbox_snapshot",
+        }
+    if not agent_to_execution:
+        return contracts
+    return {
+        agent_name: contracts[execution_name]
+        for agent_name, execution_name in agent_to_execution.items()
+        if execution_name in contracts
+    }
+
+
+def toolsandbox_environment_rules(agent_to_execution: dict[str, str] | None = None) -> JsonObject:
     """返回由 ToolSandbox 实现核实的确切工具状态恢复规则。"""
     rules: JsonObject = {}
     for setting, state_field in (
@@ -45,4 +113,14 @@ def toolsandbox_environment_rules() -> JsonObject:
         "recovery_arguments": {"on": True},
         "recovered_value": True,
     }
-    return rules
+    if not agent_to_execution:
+        return rules
+    execution_to_agent = {execution: agent for agent, execution in agent_to_execution.items()}
+    return {
+        rule_name: {
+            **rule,
+            "applies_to_tools": [execution_to_agent.get(str(name), str(name)) for name in rule["applies_to_tools"]],
+            "recovery_tool": execution_to_agent.get(str(rule["recovery_tool"]), str(rule["recovery_tool"])),
+        }
+        for rule_name, rule in rules.items()
+    }

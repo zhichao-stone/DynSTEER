@@ -107,6 +107,7 @@ def summarize_llm_calls(llm_calls: list[LLMCallMetrics]) -> JsonObject:
         "total_tokens": total,
         "token_available": token_available,
         "llm_elapsed_seconds": sum(max(float(call.elapsed_seconds), 0.0) for call in llm_calls),
+        "calls": [call.to_dict() for call in llm_calls],
     }
 
 

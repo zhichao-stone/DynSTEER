@@ -42,6 +42,7 @@ def build_llm_from_env(env: Mapping[str, str] | None=None) -> BaseLLM | None:
         max_retries=parse_int_value(source.get("DYNSTEER_JUDGE_MAX_RETRIES"), "DYNSTEER_JUDGE_MAX_RETRIES", default=3, min_value=1, error_type=LLMConfigurationError),
         retry_base_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_RETRY_BASE_SECONDS"), "DYNSTEER_JUDGE_RETRY_BASE_SECONDS", default=1.0, min_value=0.0, error_type=LLMConfigurationError),
         retry_max_seconds=parse_float_value(source.get("DYNSTEER_JUDGE_RETRY_MAX_SECONDS"), "DYNSTEER_JUDGE_RETRY_MAX_SECONDS", default=8.0, min_value=0.0, error_type=LLMConfigurationError),
+        seed=parse_int_value(source.get("DYNSTEER_JUDGE_SEED"), "DYNSTEER_JUDGE_SEED", default=None, min_value=0, error_type=LLMConfigurationError),
     )
     return build_llm(config)
 
@@ -79,6 +80,7 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
         max_retries=parse_int_value(config.get("max_retries"), "max_retries", default=3, min_value=1, error_type=LLMConfigurationError),
         retry_base_seconds=parse_float_value(config.get("retry_base_seconds"), "retry_base_seconds", default=1.0, min_value=0.0, error_type=LLMConfigurationError),
         retry_max_seconds=parse_float_value(config.get("retry_max_seconds"), "retry_max_seconds", default=8.0, min_value=0.0, error_type=LLMConfigurationError),
+        seed=parse_int_value(config.get("seed"), "seed", default=None, min_value=0, error_type=LLMConfigurationError),
     )
     return build_llm(llm_config)
 

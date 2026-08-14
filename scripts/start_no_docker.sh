@@ -96,6 +96,17 @@ ensure_agentcompass_extra() {
     esac
 }
 
+ensure_toolsandbox_group() {
+    local benchmark="$1"
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+    if [[ "$benchmark" == "toolsandbox" ]]; then
+        echo "Enabling locked ToolSandbox dependencies for benchmark: $benchmark"
+        uv sync --frozen --no-dev --no-install-project --inexact --group toolsandbox
+    fi
+}
+
 project_python() {
     local venv_dir="${UV_PROJECT_ENVIRONMENT:-.venv}"
     local candidate
@@ -110,11 +121,10 @@ project_python() {
     exit 127
 }
 
-install_benchmark_source() {
+prepare_benchmark_source() {
     local benchmark="$1"
     local source_path="$2"
     local invocation_dir="$3"
-    local python_executable="$4"
 
     local source_abs
     if ! source_abs="$(absolute_host_path "$invocation_dir" "$source_path")"; then
@@ -127,8 +137,7 @@ install_benchmark_source() {
     fi
 
     export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_abs"
-    echo "Installing benchmark source for $benchmark: $source_abs"
-    uv pip install --python "$python_executable" --editable "$source_abs"
+    echo "Using benchmark source for $benchmark: $source_abs"
 }
 
 main() {
@@ -272,10 +281,11 @@ main() {
     cd "$project_root"
     ensure_uv_environment "$project_root"
     ensure_agentcompass_extra "$benchmark"
+    ensure_toolsandbox_group "$benchmark"
     local python_executable
     python_executable="$(project_python)"
     if [[ -n "$source_path" ]]; then
-        install_benchmark_source "$benchmark" "$source_path" "$invocation_dir" "$python_executable"
+        prepare_benchmark_source "$benchmark" "$source_path" "$invocation_dir"
     else
         unset DYNSTEER_BENCHMARK_SOURCE_ROOT
     fi

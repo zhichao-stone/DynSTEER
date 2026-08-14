@@ -147,9 +147,11 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
             if llm is None:
                 raise ValueError(f"TaskCase 需要自动生成 milestone，但未配置 generator: {case_id}")
             graph, report = compile_task_case(view, generation, llm)
+            if report.generation_status == "generation_failed":
+                raise RuntimeError(f"milestone generation failed: {case_id}")
             graph.metadata["source"] = "generated"
             task_case.metadata["milestone_generation"] = report.to_dict()
-        task_case.milestone_graph = enrich_milestone_graph(graph)
+        task_case.milestone_graph = graph if graph.topology is not None else enrich_milestone_graph(graph)
         task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
         task_case.metadata["generation_phase"] = "pre_execution"
         summary = summarize_llm_calls(recorder.llm_calls)
@@ -197,7 +199,11 @@ def _optional_json_object(data: JsonObject, key: str) -> JsonObject | None:
 
 def parse_constraint(data: JsonObject) -> Constraint:
     constraint_data = ensure_json_object(data)
-    return Constraint(constraint_id=required_str(constraint_data, "constraint_id", "Constraint"), target=enum_value(ConstraintTarget, constraint_data.get("target"), "target"), selector=required_str(constraint_data, "selector", "Constraint"), operator=enum_value(Operator, constraint_data.get("operator"), "operator"), expected=constraint_data.get("expected"), namespace=constraint_data.get("namespace"), reference_milestone_id=constraint_data.get("reference_milestone_id"), weight=float(constraint_data.get("weight", 1.0)), threshold=float(constraint_data.get("threshold", 1.0)), hard=bool(constraint_data.get("hard", False)), evaluator_hint=str(constraint_data.get("evaluator_hint", "rule")), stage_goal_semantics=constraint_data.get("stage_goal_semantics"), metadata=_optional_object(constraint_data, "metadata"))
+    expected = constraint_data.get("expected")
+    expected_template = constraint_data.get("expected_template")
+    if expected is not None and expected_template is not None:
+        raise ValueError("Constraint.expected 与 expected_template 不能同时非空")
+    return Constraint(constraint_id=required_str(constraint_data, "constraint_id", "Constraint"), target=enum_value(ConstraintTarget, constraint_data.get("target"), "target"), selector=required_str(constraint_data, "selector", "Constraint"), operator=enum_value(Operator, constraint_data.get("operator"), "operator"), expected=expected, expected_template=expected_template, namespace=constraint_data.get("namespace"), reference_milestone_id=constraint_data.get("reference_milestone_id"), weight=float(constraint_data.get("weight", 1.0)), threshold=float(constraint_data.get("threshold", 1.0)), hard=bool(constraint_data.get("hard", False)), evaluator_hint=str(constraint_data.get("evaluator_hint", "rule")), stage_goal_semantics=constraint_data.get("stage_goal_semantics"), metadata=_optional_object(constraint_data, "metadata"))
 
 def parse_milestone(data: JsonObject) -> Milestone:
     milestone_data = ensure_json_object(data)

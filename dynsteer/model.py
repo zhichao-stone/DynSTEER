@@ -304,6 +304,7 @@ class Constraint:
     selector: str
     operator: Operator
     expected: JsonValue = None
+    expected_template: JsonValue = None
     namespace: Optional[str] = None
     reference_milestone_id: Optional[str] = None
     weight: float = 1.0
@@ -313,6 +314,34 @@ class Constraint:
     stage_goal_semantics: JsonObject | None = None
     metadata: JsonObject = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.expected is not None and self.expected_template is not None:
+            raise ValueError("Constraint.expected 与 expected_template 不能同时非空")
+        _validate_binding_template(self.expected_template)
+
+
+def _validate_binding_template(value: JsonValue) -> None:
+    """递归校验 expected_template 中固定的运行时 binding 叶节点。"""
+    if isinstance(value, dict):
+        if "$binding" in value:
+            if set(value) != {"$binding"} or not isinstance(value["$binding"], dict):
+                raise ValueError("expected_template binding 叶节点结构无效")
+            binding = value["$binding"]
+            if set(binding) != {"source_milestone_id", "selector", "cardinality"}:
+                raise ValueError("expected_template binding 字段无效")
+            if not isinstance(binding["source_milestone_id"], str) or not binding["source_milestone_id"]:
+                raise ValueError("expected_template source_milestone_id 必须是非空字符串")
+            if not isinstance(binding["selector"], str) or not binding["selector"]:
+                raise ValueError("expected_template selector 必须是非空字符串")
+            if binding["cardinality"] not in {"one", "all"}:
+                raise ValueError("expected_template cardinality 只允许 one/all")
+            return
+        for item in value.values():
+            _validate_binding_template(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_binding_template(item)
+
 @dataclass
 class Milestone:
     milestone_id: str
@@ -321,6 +350,7 @@ class Milestone:
     constraints: list[Constraint]
     pass_threshold: Optional[float] = None
     metadata: JsonObject = field(default_factory=dict)
+
     matching_route: tuple[Actor, Actor] | None = None
 
 @dataclass
@@ -526,6 +556,7 @@ class MilestoneStepAnalysis:
 @dataclass(frozen=True)
 class ScoringContext:
     task_case: TaskCase | None = None
+    trajectory: Trajectory | None = None
     matched_step_indexes: Mapping[str, int] = field(default_factory=dict)
     matched_snapshots: Mapping[str, StateSnapshot] = field(default_factory=dict)
     metadata: JsonObject = field(default_factory=dict)
@@ -793,6 +824,7 @@ class LLMConfig:
     max_retries: int = 3
     retry_base_seconds: float = 1.0
     retry_max_seconds: float = 8.0
+    seed: int | None = None
 
 @dataclass(frozen=True)
 class ValidatedJudgePayload:

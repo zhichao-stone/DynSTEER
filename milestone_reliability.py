@@ -13,6 +13,7 @@ import shutil
 import statistics
 import time
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional
@@ -54,6 +55,10 @@ DEFAULT_EDIT_COST_PROFILE: JsonObject = {
     "node_label_distance": "canonical_json",
     "edge_label_distance": "exact",
 }
+_FEW_SHOT_CONTAMINATED_PREFIXES = (
+    "search_relationship_with_phone_number",
+    "remove_reminder_with_recency_latest",
+)
 
 
 class _InfrastructureError(RuntimeError):
@@ -63,6 +68,7 @@ class _InfrastructureError(RuntimeError):
 @dataclass(frozen=True)
 class _ReliabilitySpecGroup:
     benchmark: str
+    repeat_index: int
     data_root: Path
     case_ids: tuple[str, ...]
     harness_config: HarnessRunConfig
@@ -162,36 +168,53 @@ def _run_reliability_experiment(
     )
 
     started_at = _utc_now()
-    ordered_results: list[_CaseResult] = []
-    case_files: list[str] = []
-    total_cases = sum(len(group.case_ids) for group in groups)
+    jobs = [
+        (group, case_id)
+        for group in groups
+        for case_id in group.case_ids
+    ]
+    completed: dict[int, tuple[_CaseResult, str]] = {}
+    worker_count = options.workers or 1
     with tqdm(
-        total=total_cases,
-        desc="Milestone reliability",
+        total=len(jobs),
+        desc=f"Milestone reliability ({worker_count} workers)",
         unit="case",
         dynamic_ncols=True,
     ) as progress:
-        for group in groups:
-            for case_id in group.case_ids:
-                case_path = _case_output_path(run_dir, group.benchmark, case_id)
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="milestone-reliability",
+        ) as executor:
+            futures: dict[Future[_CaseResult], tuple[int, Path]] = {}
+            for index, (group, case_id) in enumerate(jobs):
+                case_path = _case_output_path(
+                    run_dir, group.benchmark, case_id, group.repeat_index
+                )
                 response_output_file = _response_output_file(
-                    run_dir, group.benchmark, case_id
+                    run_dir, group.benchmark, case_id, group.repeat_index
                 )
-                result = _run_case(group, case_id, options, response_output_file)
-                result = replace(result, output_path=case_path)
+                future = executor.submit(
+                    _run_case, group, case_id, options, response_output_file
+                )
+                futures[future] = (index, case_path)
+            for future in as_completed(futures):
+                index, case_path = futures[future]
+                result = replace(future.result(), output_path=case_path)
                 _write_case_json(
-                    case_path,
-                    result,
-                    str(config["experiment_id"]),
-                    run_id,
+                    case_path, result, str(config["experiment_id"]), run_id
                 )
-                ordered_results.append(result)
-                case_files.append(case_path.relative_to(run_dir).as_posix())
+                completed[index] = (
+                    result,
+                    case_path.relative_to(run_dir).as_posix(),
+                )
                 progress.update(1)
                 progress.set_postfix(
                     status=result.status,
                     refresh=False,
                 )
+
+    ordered_results = [completed[index][0] for index in range(len(jobs))]
+    case_files = [completed[index][1] for index in range(len(jobs))]
 
     _write_report(
         run_dir,
@@ -255,19 +278,22 @@ def _configure_logging() -> None:
     logging.getLogger("dynsteer.milestone.compiler").setLevel(logging.CRITICAL)
 
 
-def _case_output_path(run_dir: Path, benchmark: str, case_id: str) -> Path:
+def _case_output_path(
+    run_dir: Path, benchmark: str, case_id: str, repeat_index: int = 0
+) -> Path:
     """生成稳定的 benchmark/case 输出路径，文件名保留完整 case ID。"""
-    return run_dir / benchmark / safe_case_file_name(case_id)
+    return run_dir / benchmark / f"repeat_{repeat_index:02d}" / safe_case_file_name(case_id)
 
 
 def _response_output_file(
     run_dir: Path,
     benchmark: str,
     case_id: str,
+    repeat_index: int = 0,
 ) -> Path:
     """返回 benchmark 目录下单个 case 的 LLM 响应 JSON 文件。"""
     benchmark_dir = Path(safe_case_file_name(benchmark)).stem
-    return run_dir / benchmark_dir / "llm_outputs" / safe_case_file_name(case_id)
+    return run_dir / benchmark_dir / f"repeat_{repeat_index:02d}" / "llm_outputs" / safe_case_file_name(case_id)
 
 
 def _group_reliability_specs(
@@ -276,13 +302,13 @@ def _group_reliability_specs(
     """按 benchmark/data_root 有序分组并去重 case。"""
     if specs is None:
         raise ValueError("specs 不能为空")
-    mutable: dict[tuple[str, str], dict[str, Any]] = {}
+    mutable: dict[tuple[str, str, int], dict[str, Any]] = {}
     for spec in specs:
         if not spec.case_ids:
             raise ValueError(f"{spec.benchmark}.case_ids 不能为空")
         if not spec.data_root.exists():
             raise ValueError(f"data_root 不存在: {spec.data_root}")
-        key = (spec.benchmark, str(spec.data_root.resolve()))
+        key = (spec.benchmark, str(spec.data_root.resolve()), spec.repeat_index)
         reliability = _validate_reliability_metadata(
             spec.metadata.get("milestone_reliability", {})
         )
@@ -321,6 +347,7 @@ def _group_reliability_specs(
         groups.append(
             _ReliabilitySpecGroup(
                 benchmark=spec.benchmark,
+                repeat_index=spec.repeat_index,
                 data_root=spec.data_root,
                 case_ids=tuple(item["case_ids"]),
                 harness_config=harness_config,
@@ -367,7 +394,10 @@ def _run_case(
 
     try:
         view = adapter.generator_task_view(case_config, copy.deepcopy(original), case_id)
-        llm = build_llm_from_config(group.milestone_generation.generator)
+        llm = build_llm_from_config({
+            **group.milestone_generation.generator,
+            "seed": options.random_seed + group.repeat_index,
+        })
         if llm is None:
             llm = build_llm_from_env()
         if llm is None:
@@ -386,6 +416,8 @@ def _run_case(
             generation_usage = summarize_llm_calls(recorder.llm_calls)
         report = generation_report.to_dict()
         prediction_count = len(prediction.nodes)
+        if generation_report.generation_status == "generation_failed":
+            raise RuntimeError("所有候选批次调用或顶层解析均失败")
     except (TypeError, ValueError, KeyError, RuntimeError) as exc:
         return _failed_case(
             group,
@@ -401,8 +433,12 @@ def _run_case(
 
     try:
         tool_aliases = adapter.reliability_tool_aliases(case_config, case_id)
-        reference_semantics = canonical_graph_semantics(reference, tool_aliases)
-        prediction_semantics = canonical_graph_semantics(prediction)
+        reference_semantics = canonical_graph_semantics(
+            reference, tool_aliases, view
+        )
+        prediction_semantics = canonical_graph_semantics(
+            prediction, view=view
+        )
         coverage = compare_input_coverage(reference, view, tool_aliases)
         semantic_metrics = _semantic_metric_bundle(
             reference_semantics, prediction_semantics, coverage
@@ -449,11 +485,12 @@ def _run_case(
         metrics = {
             "completed": True,
             "graph_returned": True,
-            "graph_empty": not prediction_semantics["operations"],
-            "reference_graph_empty": not reference_semantics["operations"],
+            "graph_empty": _semantic_graph_empty(prediction_semantics),
+            "reference_graph_empty": _semantic_graph_empty(reference_semantics),
             "generated_operation_count": len(prediction_semantics["operations"]),
             "reference_operation_count": len(reference_semantics["operations"]),
             "generation_status": report.get("generation_status"),
+            "few_shot_contaminated": _few_shot_contaminated(case_id),
             "semantic_metrics": semantic_metrics,
             "input_coverage": coverage,
             "diagnostics": diagnostics,
@@ -492,8 +529,8 @@ def _run_case(
 def _semantic_metric_bundle(
     reference: JsonObject, generated: JsonObject, coverage: JsonObject
 ) -> JsonObject:
-    """计算 operation 多重集、occurrence topology 与 fatal minefield 指标。"""
-    dimensions = ("dispositions", "operations", "responses", "minefields", "topology")
+    """计算 goal、operation、topology、preserve 与 fatal minefield 指标。"""
+    dimensions = ("dispositions", "goals", "operations", "minefields", "topology", "preserves")
     metrics = {
         dimension: _multiset_metric(
             Counter(str(item) for item in reference.get(dimension, [])),
@@ -507,16 +544,70 @@ def _semantic_metric_bundle(
     generated_minefields = {str(item) for item in generated.get("minefields", [])}
     fatal_miss_count = len(reference_fatal - generated_minefields)
     spurious_fatal_count = len(generated_minefields - reference_fatal)
-    complete = all(
+    operation_complete = all(
         bool(metrics[dimension]["exact"])
         for dimension in ("operations", "minefields", "topology")
     )
+    goal_complete = all(
+        bool(metrics[dimension]["exact"])
+        for dimension in ("goals", "operations", "minefields", "topology", "preserves")
+    )
+    positive_fatal_recall = (
+        metrics["minefields"]["recall"] if reference_fatal else None
+    )
+    fatal_tools = sorted({_fatal_tool_name(item) for item in reference_fatal} - {None})
+    per_tool_recall = {
+        tool: float(any(_fatal_tool_name(item) == tool for item in generated_minefields))
+        for tool in fatal_tools
+    }
     return {
         **metrics,
         "fatal_minefield_miss_count": fatal_miss_count,
         "spurious_fatal_minefield_count": spurious_fatal_count,
-        "operation_topology_exact": complete,
+        "fatal_positive_recall": positive_fatal_recall,
+        "fatal_per_tool_recall": per_tool_recall,
+        "operation_topology_exact": operation_complete,
+        "goal_effect_exact": goal_complete,
     }
+
+
+def _semantic_graph_empty(semantics: JsonObject) -> bool:
+    """按 goal、operation 和 minefield 共同判断语义空图。"""
+    return not any(
+        semantics.get(key) for key in ("goals", "operations", "minefields")
+    )
+
+
+def _few_shot_contaminated(case_id: str) -> bool:
+    """标记与 generation prompt 两个结构样例同源的 ToolSandbox case。"""
+    return any(case_id.startswith(prefix) for prefix in _FEW_SHOT_CONTAMINATED_PREFIXES)
+
+
+def _compensation_reasons(report: JsonObject) -> list[str]:
+    """汇总触发第 4 批的可审计原因。"""
+    reasons: list[str] = []
+    issues = report.get("validation_issues", [])
+    if isinstance(issues, list):
+        codes = {str(item.get("code")) for item in issues if isinstance(item, dict)}
+        if "batch_incomplete" in codes:
+            reasons.append("batch_incomplete")
+        if codes & {"batch_json_error", "batch_schema_error"}:
+            reasons.append("batch_parse_failure")
+    if int(report.get("rejected_graph_count", 0)) > 0:
+        reasons.append("candidate_rejected")
+    if int(report.get("within_batch_duplicate_count", 0)) > 0:
+        reasons.append("within_batch_duplicate")
+    return reasons or ["accepted_observation_shortfall"]
+
+
+def _fatal_tool_name(value: object) -> str | None:
+    """从 canonical fatal minefield identity 读取工具名。"""
+    try:
+        payload = json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+    tool_name = payload.get("tool_name") if isinstance(payload, dict) else None
+    return str(tool_name) if isinstance(tool_name, str) and tool_name else None
 
 
 def _multiset_metric(
@@ -923,6 +1014,10 @@ def _write_report(
         for status in statuses
     }
     completed = [result for result in results if result.status == "completed"]
+    primary_completed = [
+        result for result in completed
+        if not bool(result.metrics.get("few_shot_contaminated"))
+    ]
     strict_similarities = [
         float(result.metrics["diagnostics"]["strict"]["ged_similarity"]) for result in completed
     ]
@@ -946,10 +1041,13 @@ def _write_report(
         for result in completed
     ]
     generation_fields = (
-        "returned_path_count",
-        "parsed_path_count",
-        "simulatable_path_count",
-        "final_path_count",
+        "request_count",
+        "returned_graph_count",
+        "parsed_graph_count",
+        "valid_graph_count",
+        "accepted_observation_count",
+        "global_unique_graph_count",
+        "within_batch_duplicate_count",
     )
     summary = {
         "status_counts": status_counts,
@@ -970,17 +1068,31 @@ def _write_report(
             "count": sum(bool(result.metrics["semantic_metrics"]["operation_topology_exact"]) for result in completed),
             "ratio": (sum(bool(result.metrics["semantic_metrics"]["operation_topology_exact"]) for result in completed) / len(completed) if completed else None),
         },
+        "goal_effect_exact": {
+            "count": sum(bool(result.metrics["semantic_metrics"]["goal_effect_exact"]) for result in primary_completed),
+            "ratio": (sum(bool(result.metrics["semantic_metrics"]["goal_effect_exact"]) for result in primary_completed) / len(primary_completed) if primary_completed else None),
+            "primary_case_count": len(primary_completed),
+            "few_shot_contaminated_excluded_count": len(completed) - len(primary_completed),
+        },
         "semantic_macro_f1": {
-            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["f1"]) for result in completed])
-            for dimension in ("operations", "minefields", "topology")
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["f1"]) for result in primary_completed])
+            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
         },
         "semantic_macro_precision": {
-            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["precision"]) for result in completed])
-            for dimension in ("operations", "minefields", "topology")
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["precision"]) for result in primary_completed])
+            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
         },
         "semantic_macro_recall": {
-            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["recall"]) for result in completed])
-            for dimension in ("operations", "minefields", "topology")
+            dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["recall"]) for result in primary_completed])
+            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
+        },
+        "fatal_positive_recall": _statistics([
+            float(value) for result in primary_completed
+            if isinstance((value := result.metrics["semantic_metrics"].get("fatal_positive_recall")), (int, float))
+        ]),
+        "fatal_per_tool_recall": {
+            tool: _statistics(values)
+            for tool, values in _fatal_per_tool_values(primary_completed).items()
         },
         "fatal_minefield_miss_count": sum(int(result.metrics["semantic_metrics"]["fatal_minefield_miss_count"]) for result in completed),
         "spurious_fatal_minefield_count": sum(int(result.metrics["semantic_metrics"]["spurious_fatal_minefield_count"]) for result in completed),
@@ -1044,9 +1156,22 @@ def _write_report(
             )
             for field in generation_fields
         },
-        "repair": {
-            "triggered_count": sum(bool(result.generation_report.get("repair_triggered")) for result in results),
-            "first_round_completed_count": sum(result.generation_report.get("selected_round") == 1 for result in results),
+        "candidate_ensemble": {
+            "target_reached_count": sum(bool(result.generation_report.get("target_reached")) for result in results),
+            "compensation_batch_count": sum(int(result.generation_report.get("request_count", 0)) == 4 for result in results),
+            "generation_failed_count": sum(result.generation_report.get("generation_status") == "generation_failed" for result in results),
+            "compensation_reasons": dict(sorted(Counter(
+                reason
+                for result in results
+                if int(result.generation_report.get("request_count", 0)) == 4
+                for reason in _compensation_reasons(result.generation_report)
+            ).items())),
+            "cross_request_signature_distribution": dict(sorted(Counter(
+                signature
+                for result in results
+                for signature, count in dict(result.generation_report.get("cross_request_signature_counts", {})).items()
+                for _ in range(int(count))
+            ).items())),
         },
         "generation_usage": {
             "llm_call_count": sum(int(result.generation_usage.get("llm_call_count", 0)) for result in results),
@@ -1054,6 +1179,16 @@ def _write_report(
             "completion_tokens": _sum_available_usage(results, "completion_tokens"),
             "total_tokens": _sum_available_usage(results, "total_tokens"),
             "token_available": all(bool(result.generation_usage.get("token_available")) for result in results),
+            "completion_tokens_per_batch": [
+                call.get("completion_tokens")
+                for result in results
+                for call in result.generation_usage.get("calls", [])
+                if isinstance(call, dict)
+            ],
+            "total_tokens_per_case": [
+                result.generation_usage.get("total_tokens") for result in results
+                if isinstance(result.generation_usage.get("total_tokens"), int)
+            ],
         },
         "exact_count": sum(
             result.metrics["diagnostics"]["strict"].get("solver_mode") == "exact"
@@ -1065,7 +1200,7 @@ def _write_report(
         ),
         "case_files": case_files,
         "metric_definition": {
-            "primary": "semantic_metrics.operation_topology_exact",
+            "primary": "semantic_metrics.goal_effect_exact",
             "strict.ged_similarity": "max(0, 1 - ged_distance / ged_base)",
             "structural.ged_similarity": "同公式，仅比较 terminal 与 constraint shape",
             "topology.ged_similarity": "同公式，仅比较 terminal 与有向先后拓扑",
@@ -1079,11 +1214,14 @@ def _write_report(
         "experiment_id": config["experiment_id"],
         "experiment_config": str(config_path),
         "random_seed": options.random_seed,
+        "workers": options.workers or 1,
         "started_at": started_at,
         "finished_at": finished_at,
         "groups": [
             {
                 "benchmark": group.benchmark,
+                "repeat_index": group.repeat_index,
+                "random_seed": options.random_seed + group.repeat_index,
                 "data_root": str(group.data_root.resolve()),
                 "source_root": str(group.source_root) if group.source_root else None,
                 "case_count": len(group.case_ids),
@@ -1138,12 +1276,12 @@ def _validate_reliability_metadata(metadata: object) -> JsonObject:
     if not isinstance(metadata, Mapping):
         raise ValueError("metadata.milestone_reliability 必须为 JSON 对象")
     result = dict(metadata)
-    result.setdefault("primary_metric", "operation_topology_exact")
+    result.setdefault("primary_metric", "goal_effect_exact")
     result.setdefault("ged_solver", "exact")
     result.setdefault("ged_timeout_seconds", 60)
     result.setdefault("edit_cost_profile", dict(DEFAULT_EDIT_COST_PROFILE))
     result.setdefault("fgw", False)
-    if result["primary_metric"] != "operation_topology_exact":
+    if result["primary_metric"] != "goal_effect_exact":
         raise ValueError("metadata.milestone_reliability.primary_metric 非法")
     if result["ged_solver"] not in {"exact", "approximate"}:
         raise ValueError("metadata.milestone_reliability.ged_solver 非法")
@@ -1324,6 +1462,19 @@ def _statistics(values: list[float]) -> JsonObject:
         "min": min(values) if values else None,
         "max": max(values) if values else None,
     }
+
+
+def _fatal_per_tool_values(results: list[_CaseResult]) -> dict[str, list[float]]:
+    """汇总仅含正例的逐工具 fatal recall。"""
+    values: dict[str, list[float]] = {}
+    for result in results:
+        per_tool = result.metrics.get("semantic_metrics", {}).get("fatal_per_tool_recall", {})
+        if not isinstance(per_tool, dict):
+            continue
+        for tool, recall in per_tool.items():
+            if isinstance(recall, (int, float)) and not isinstance(recall, bool):
+                values.setdefault(str(tool), []).append(float(recall))
+    return values
 
 
 def _sum_available_usage(results: list[_CaseResult], field: str) -> int | None:

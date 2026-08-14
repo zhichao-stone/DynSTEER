@@ -9,6 +9,40 @@ from dynsteer.utils import json_safe
 logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 
+_MILESTONE_FOCUS_INSTRUCTIONS: dict[TaskLanguage, dict[str, str]] = {
+    TaskLanguage.ENGLISH: {
+        "minimality": (
+            "Challenge every search/getter/conversion/recovery node: retain it only if "
+            "the task cannot be completed correctly without its output or effect. Prefer "
+            "public literals and direct goals when sufficient."
+        ),
+        "alternative": (
+            "Actively seek a genuinely different complete realization: alternative visible "
+            "tools, direct use of public information, or a correct bulk set_state. Do not "
+            "create variation by omitting prerequisites."
+        ),
+        "dependency_safety": (
+            "Audit producer-consumer dependencies, executability, and fatal side effects. "
+            "Keep independent producers unordered; use empty/non-executable graphs and "
+            "minefields when the visible inputs or tools cannot safely complete the task."
+        ),
+    },
+    TaskLanguage.CHINESE: {
+        "minimality": (
+            "逐一质疑 search、getter、conversion、recovery 节点：只有缺少其输出或效果时任务"
+            "确实无法正确完成，才保留该节点；公开 literal 或直接 goal 已足够时优先采用。"
+        ),
+        "alternative": (
+            "主动寻找真正不同且完整的实现：替代的可见工具、直接利用公开信息，或正确的批量 "
+            "set_state；不得通过省略前置条件制造差异。"
+        ),
+        "dependency_safety": (
+            "核查 producer-consumer 的真实依赖、任务可执行性和 fatal 副作用；独立 producer "
+            "之间不排序；公开输入或工具不能安全完成任务时，使用空的不可执行图和 minefield。"
+        ),
+    },
+}
+
 def _safe_format(template: str, **kwargs: object) -> str:
     """安全替换简单 `{key}` 占位符，避免执行表达式或破坏 JSON 大括号。"""
     if template is None:
@@ -69,7 +103,7 @@ def load_prompt_template(domain: str, name: str) -> PromptTemplate:
 
 
 class MilestonePromptBuilder:
-    """集中构造多路径 generation/refinement 提示词与公开 payload。"""
+    """集中构造相互独立的候选 milestone graph 提示词。"""
 
     def __init__(
         self, view: GeneratorTaskView, config: MilestoneGenerationConfig
@@ -82,35 +116,38 @@ class MilestonePromptBuilder:
             "case_id": view.case_id,
             "language": view.language,
             "turns": json_safe(view.turns),
-            "public_assets": view.public_assets,
-            "initial_state": view.initial_state,
+            "public_assets": [
+                item for item in view.public_assets
+                if item.get("visibility", "agent") == "agent"
+            ],
+            "public_state": _public_state_prompt_json(view.public_state),
             "tool_schema": view.tool_schema,
-            "environment_rules": view.environment_rules,
             "evidence_catalog": json_safe(view.evidence_catalog),
         }
 
-    def generation(self) -> str:
-        """渲染第一轮多样化路径生成提示词。"""
+    def generation(self, batch_index: int, focus: str) -> str:
+        """渲染一个独立双图批次的生成提示词。"""
+        language = normalize_task_language(self.view.language)
+        instructions = _MILESTONE_FOCUS_INSTRUCTIONS.get(language, {})
+        if focus not in instructions:
+            raise ValueError(f"不支持的 milestone 批次审查重点: {focus}")
         return load_prompt_template("milestone", "generation").render(
-            normalize_task_language(self.view.language),
-            max_candidate_path_count=self.config.max_candidate_path_count,
+            language,
+            batch_index=batch_index + 1,
+            focus_code=focus,
+            focus_instruction=instructions[focus],
             task=json.dumps(self.payload, ensure_ascii=False, sort_keys=True),
         )
 
-    def refinement(
-        self,
-        original_response: str,
-        violations: list[JsonObject],
-        simulated_paths: list[object],
-        common_operations: list[str],
-    ) -> str:
-        """渲染结构修复与共同 operation 反例搜索提示词。"""
-        return load_prompt_template("milestone", "refinement").render(
-            normalize_task_language(self.view.language),
-            max_candidate_path_count=self.config.max_candidate_path_count,
-            task=json.dumps(self.payload, ensure_ascii=False, sort_keys=True),
-            original_response=original_response,
-            validation_violations=json.dumps(violations, ensure_ascii=False),
-            simulated_paths=json.dumps(simulated_paths, ensure_ascii=False),
-            common_operations=json.dumps(common_operations, ensure_ascii=False),
-        )
+
+def _public_state_prompt_json(public_state: JsonObject) -> JsonObject:
+    """为公开状态叶节点附加可供 provenance 引用的稳定 reference。"""
+    def convert(value: object, path: tuple[str, ...]) -> object:
+        if isinstance(value, dict):
+            return {str(key): convert(item, (*path, str(key))) for key, item in value.items()}
+        if isinstance(value, list):
+            return [convert(item, (*path, str(index))) for index, item in enumerate(value)]
+        return {"source_ref": f"public_state:{'.'.join(path)}", "value": value}
+
+    result = convert(public_state, ())
+    return result if isinstance(result, dict) else {}

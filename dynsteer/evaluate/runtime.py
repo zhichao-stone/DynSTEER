@@ -247,7 +247,7 @@ def scoring_context(
             matched_snapshots[milestone_id] = snapshot
     if reference_anchor_snapshots:
         matched_snapshots.update(reference_anchor_snapshots)
-    return ScoringContext(task_case=task_case, matched_step_indexes=matched_step_indexes, matched_snapshots=matched_snapshots)
+    return ScoringContext(task_case=task_case, trajectory=trajectory, matched_step_indexes=matched_step_indexes, matched_snapshots=matched_snapshots)
 
 
 def state_scoring_context(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState) -> ScoringContext:

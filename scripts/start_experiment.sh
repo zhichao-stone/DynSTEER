@@ -29,18 +29,6 @@ script_dir() {
     cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
 }
 
-detect_compose() {
-    if docker compose version >/dev/null 2>&1; then
-        echo "docker compose"
-        return 0
-    fi
-    if command -v docker-compose >/dev/null 2>&1; then
-        echo "docker-compose"
-        return 0
-    fi
-    return 1
-}
-
 require_value() {
     local option_name="$1"
     local option_value="${2:-}"
@@ -48,25 +36,6 @@ require_value() {
         echo "$option_name requires a non-empty value." >&2
         exit 64
     fi
-}
-
-absolute_host_path() {
-    local base_dir="$1"
-    local input_path="$2"
-    if [[ "$input_path" == /* || "$input_path" =~ ^[A-Za-z]:[\\/] ]]; then
-        cd -- "$input_path" && pwd
-    else
-        cd -- "$base_dir/$input_path" && pwd
-    fi
-}
-
-docker_mount_path() {
-    local host_path="$1"
-    if command -v cygpath >/dev/null 2>&1; then
-        cygpath -w "$host_path"
-        return 0
-    fi
-    printf '%s\n' "$host_path"
 }
 
 run_in_container() {
@@ -249,7 +218,17 @@ ensure_agentcompass_extra() {
     fi
 }
 
-install_benchmark_source() {
+ensure_toolsandbox_group() {
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
+        return 0
+    fi
+    if experiment_uses_toolsandbox "$1" "$2"; then
+        echo "Enabling locked ToolSandbox dependencies for experiment"
+        (cd "$1" && uv sync --frozen --no-dev --no-install-project --inexact --group toolsandbox)
+    fi
+}
+
+prepare_benchmark_source() {
     local source_path="$1"
 
     if [[ ! -d "$source_path" ]]; then
@@ -262,8 +241,7 @@ install_benchmark_source() {
     fi
 
     export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_path"
-    echo "Installing benchmark source for experiment: $source_path"
-    uv pip install --python "${UV_PROJECT_ENVIRONMENT:-.venv}/bin/python" --editable "$source_path"
+    echo "Using benchmark source for experiment: $source_path"
 }
 
 main() {
@@ -396,8 +374,9 @@ main() {
     cd "$project_root"
     ensure_uv_environment "$project_root"
     ensure_agentcompass_extra "$project_root" "$experiment_config"
+    ensure_toolsandbox_group "$project_root" "$experiment_config"
     if [[ -n "$source_path" ]]; then
-        install_benchmark_source "$source_path"
+        prepare_benchmark_source "$source_path"
     else
         local bootstrap_lines
         bootstrap_lines="$(experiment_bootstrap_lines "$project_root" "$experiment_config")"
@@ -413,7 +392,7 @@ main() {
                 continue
             fi
             if [[ "$bootstrap_source_root" != "-" && -n "$bootstrap_source_root" && -z "${installed_sources[$bootstrap_source_root]+x}" ]]; then
-                install_benchmark_source "$bootstrap_source_root"
+                prepare_benchmark_source "$bootstrap_source_root"
                 installed_sources["$bootstrap_source_root"]=1
             fi
             if [[ "$bootstrap_max_workers" != "-" && -n "$bootstrap_max_workers" ]]; then

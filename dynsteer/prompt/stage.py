@@ -58,8 +58,20 @@ def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
     """构造 LLM fallback prompt 可消费的通用 constraint JSON。"""
     semantics = dict(constraint.stage_goal_semantics) if isinstance(constraint.stage_goal_semantics, dict) else None
     placeholder = f"[[{constraint.constraint_id}.expected]]"
-    if isinstance(semantics, dict) and semantics.get("kind") == "set_state":
+    generated_state = isinstance(semantics, dict) and semantics.get("kind") == "set_state" and "operation" in semantics
+    if isinstance(semantics, dict) and semantics.get("kind") == "set_state" and not generated_state:
         semantics["expected"] = placeholder
+    if isinstance(semantics, dict) and semantics.get("kind") == "tool_call":
+        arguments = semantics.get("arguments")
+        if isinstance(arguments, dict):
+            semantics["arguments"] = {
+                name: (
+                    {"source_milestone_id": value.get("source_milestone_id"), "argument": name, "label": "derived from predecessor"}
+                    if isinstance(value, dict) and value.get("source") == "node_output"
+                    else value
+                )
+                for name, value in arguments.items()
+            }
     return {
         "constraint_id": constraint.constraint_id,
         "target": constraint.target.value,
@@ -69,6 +81,6 @@ def _constraint_prompt_json(constraint: Constraint) -> JsonObject:
         "reference_milestone_id": constraint.reference_milestone_id,
         "hard": constraint.hard,
         "evaluator_hint": constraint.evaluator_hint,
-        "expected_summary": placeholder,
+        "expected_summary": "generated_state_goal" if generated_state else placeholder,
         "stage_goal_semantics": semantics,
     }

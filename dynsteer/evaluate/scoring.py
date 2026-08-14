@@ -65,6 +65,18 @@ class GeneralScorer:
         actual = self.select_value(current_source, constraint.selector)
         missing = actual is None
         reference_value = constraint.expected
+        if constraint.expected_template is not None:
+            reference_value, binding_evidence = self._resolve_expected_template(
+                constraint.expected_template, context
+            )
+            if reference_value is MISSING:
+                return ConstraintScore(
+                    constraint_id=constraint.constraint_id,
+                    score=0.0,
+                    missing=True,
+                    evidence=[binding_evidence],
+                    actual=actual,
+                )
         if constraint.operator in {Operator.ADDED, Operator.UPDATED, Operator.REMOVED, Operator.UNCHANGED_SINCE}:
             if constraint.reference_milestone_id is not None and reference_source is None:
                 return ConstraintScore(constraint_id=constraint.constraint_id, score=0.0, missing=True, evidence=[f"reference milestone 未命中: {constraint.reference_milestone_id}"], actual=actual)
@@ -77,6 +89,93 @@ class GeneralScorer:
         if missing:
             evidence.append(f"selector 未命中: {constraint.selector}")
         return ConstraintScore(constraint_id=constraint.constraint_id, score=score, missing=missing, evidence=evidence, actual=actual)
+
+    def _resolve_expected_template(
+        self, template: JsonValue, context: ScoringContext | None
+    ) -> tuple[JsonValue | object, str]:
+        """递归解析 constraint expected_template 中的运行时 binding。"""
+        if isinstance(template, dict) and set(template) == {"$binding"}:
+            binding = template["$binding"]
+            return self._resolve_binding(binding, context) if isinstance(binding, dict) else (MISSING, "binding 必须是对象")
+        if isinstance(template, dict):
+            result: JsonObject = {}
+            for key, value in template.items():
+                resolved, evidence = self._resolve_expected_template(value, context)
+                if resolved is MISSING:
+                    return MISSING, evidence
+                result[key] = resolved
+            return result, "模板解析成功"
+        if isinstance(template, list):
+            result_list: list[JsonValue] = []
+            for value in template:
+                resolved, evidence = self._resolve_expected_template(value, context)
+                if resolved is MISSING:
+                    return MISSING, evidence
+                result_list.append(resolved)
+            return result_list, "模板解析成功"
+        return template, "静态模板值"
+
+    def _resolve_binding(
+        self, binding: JsonObject, context: ScoringContext | None
+    ) -> tuple[JsonValue | object, str]:
+        """从已匹配 producer 的真实工具结果解析 one/all binding。"""
+        milestone_id = binding.get("source_milestone_id")
+        selector = binding.get("selector")
+        cardinality = binding.get("cardinality")
+        if not isinstance(milestone_id, str) or not isinstance(selector, str) or cardinality not in {"one", "all"}:
+            return MISSING, "binding 字段无效"
+        result, evidence = self._producer_tool_result(milestone_id, context)
+        if result is MISSING:
+            return MISSING, evidence
+        if cardinality == "all" and isinstance(result, list):
+            values = [self.select_value(item, selector) for item in result]
+            if any(item is None for item in values):
+                return MISSING, f"producer {milestone_id} selector 未命中"
+            return values, f"已解析 producer {milestone_id} 的全部结果"
+        if cardinality == "all":
+            return MISSING, f"producer {milestone_id} all cardinality 要求数组结果"
+        if isinstance(result, list):
+            if len(result) != 1:
+                return MISSING, f"producer {milestone_id} one cardinality 不唯一"
+            result = result[0]
+        selected = self.select_value(result, selector)
+        if selected is None:
+            return MISSING, f"producer {milestone_id} selector 未命中: {selector}"
+        return selected, f"已解析 producer {milestone_id}"
+
+    def _producer_tool_result(
+        self, source_milestone_id: str, context: ScoringContext | None
+    ) -> tuple[JsonValue | object, str]:
+        """按 call ID 优先、唯一相邻结果次之定位 producer 的成功工具结果。"""
+        if context is None or context.task_case is None or context.trajectory is None:
+            return MISSING, "评分上下文缺少 task_case 或 trajectory"
+        boundary = context.matched_step_indexes.get(source_milestone_id)
+        graph = context.task_case.milestone_graph
+        if boundary is None or graph is None:
+            return MISSING, f"producer milestone 未匹配: {source_milestone_id}"
+        milestone = next((item for item in graph.nodes if item.milestone_id == source_milestone_id), None)
+        if milestone is None:
+            return MISSING, f"producer milestone 不存在: {source_milestone_id}"
+        tool_name = next((constraint.expected for constraint in milestone.constraints
+                          if constraint.target == ConstraintTarget.TOOL_CALL and constraint.selector == "$.name"), None)
+        if not isinstance(tool_name, str):
+            return MISSING, f"producer milestone 缺少工具名: {source_milestone_id}"
+        topology = graph.topology
+        anchor_id = topology.stage_anchor_by_id.get(source_milestone_id, "__start__") if topology is not None else "__start__"
+        stage_start = context.trajectory.first_step_index - 1 if anchor_id == "__start__" else context.matched_step_indexes.get(anchor_id, context.trajectory.first_step_index - 1)
+        calls = [step for step in context.trajectory.steps if stage_start < step.index <= boundary and step.tool_call is not None and step.tool_call.name == tool_name]
+        if not calls:
+            return MISSING, f"未找到 producer 工具调用: {tool_name}"
+        call = calls[-1]
+        call_id = call.raw.get("openai_tool_call_id")
+        candidates = [step for step in context.trajectory.steps if call.index < step.index <= boundary and step.tool_result is not None and step.tool_result.success]
+        if isinstance(call_id, str) and call_id:
+            candidates = [step for step in candidates if step.raw.get("openai_tool_call_id") == call_id]
+        else:
+            candidates = [step for step in candidates if step.index == call.index + 1]
+        if len(candidates) != 1:
+            return MISSING, f"producer 工具结果无法唯一归属: {tool_name}"
+        return candidates[0].tool_result.content, f"已定位 producer 工具结果: {tool_name}"
 
     def score_milestone(self, milestone: Milestone, scoring_step: TrajectoryStep, trajectory: Trajectory, context: ScoringContext) -> MilestoneScore:
         boundary_id = f"runtime:b{scoring_step.index}"

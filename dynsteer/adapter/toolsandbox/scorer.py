@@ -6,7 +6,7 @@ from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.adapter.toolsandbox.utils.runtime import load_toolsandbox_module
 from dynsteer.adapter.toolsandbox.utils.trace import tool_trace_items
 from dynsteer.evaluate.semantic import is_semantic_emit_message_constraint
-from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, Milestone, ScoringContext, StageGoalSemanticKind
+from dynsteer.model import Constraint, ConstraintScore, JsonObject, JsonValue, MISSING, Milestone, ScoringContext, StageGoalSemanticKind, StateSnapshot
 from dynsteer.utils import clamp
 import polars as pl
 
@@ -95,7 +95,7 @@ class ToolSandboxConstraintScorer(GeneralScorer):
             return super().score_custom_constraint(constraint, source, reference_source, actual, reference_value, context=context)
         measure_name = str(metadata.get("snapshot_constraint") or "")
         try:
-            score, reference_summary = self._score_toolsandbox_snapshot_constraint(measure_name=measure_name, constraint=constraint, actual=actual, context=context)
+            score, reference_summary = self._score_toolsandbox_snapshot_constraint(measure_name=measure_name, constraint=constraint, actual=actual, reference_source=reference_source, context=context)
         except Exception as exc:
             return self._custom_constraint_failure_score(constraint, actual, exc, context)
         except BaseException as exc:
@@ -128,7 +128,7 @@ class ToolSandboxConstraintScorer(GeneralScorer):
             actual=actual,
         )
 
-    def _score_toolsandbox_snapshot_constraint(self, measure_name: str, constraint: Constraint, actual: JsonValue, context: ScoringContext | None) -> tuple[float, JsonObject | None]:
+    def _score_toolsandbox_snapshot_constraint(self, measure_name: str, constraint: Constraint, actual: JsonValue, reference_source: object | None, context: ScoringContext | None) -> tuple[float, JsonObject | None]:
         if not measure_name:
             raise ValueError("缺少 snapshot_constraint")
         evaluation = self._module_loader("tool_sandbox.common.evaluation")
@@ -139,15 +139,15 @@ class ToolSandboxConstraintScorer(GeneralScorer):
         namespace = constraint.namespace or (str(metadata.get("database_namespace") or "") if isinstance(metadata, dict) else "")
         snapshot = self._rows_to_dataframe(actual, namespace=namespace)
         column_similarities = self._column_similarities(evaluation, constraint)
-        reference_snapshot, reference_summary = self._reference_dataframe(constraint, context)
-        target, target_source = self._resolved_target_dataframe(constraint=constraint, namespace=namespace, reference_snapshot=reference_snapshot)
+        reference_snapshot, reference_summary = self._reference_dataframe(constraint, context, reference_source)
+        target, target_source = self._resolved_target_dataframe(constraint=constraint, namespace=namespace, reference_snapshot=reference_snapshot, context=context)
         if isinstance(reference_summary, dict):
             reference_summary["target_source"] = target_source
         kwargs = self._snapshot_constraint_kwargs(constraint)
         score = float(measure(snapshot=snapshot, target_dataframe=target, column_similarities=column_similarities, reference_snapshot=reference_snapshot, **kwargs))
         return (score, reference_summary)
 
-    def _resolved_target_dataframe(self, constraint: Constraint, namespace: str, reference_snapshot: pl.DataFrame | None) -> tuple[pl.DataFrame, str]:
+    def _resolved_target_dataframe(self, constraint: Constraint, namespace: str, reference_snapshot: pl.DataFrame | None, context: ScoringContext | None) -> tuple[pl.DataFrame, str]:
         """解析 ToolSandbox snapshot constraint 的目标数据源。
 
         入参：
@@ -162,7 +162,50 @@ class ToolSandboxConstraintScorer(GeneralScorer):
             if reference_snapshot is None:
                 raise ValueError(f"preserve_state 缺少 reference snapshot: constraint={constraint.constraint_id}")
             return (reference_snapshot, "reference_snapshot")
+        if semantics.get("kind") == StageGoalSemanticKind.SET_STATE.value and "operation" in semantics:
+            return (self._state_goal_target_dataframe(semantics, namespace, reference_snapshot, context), "generated_state_goal_binding")
         return (self._rows_to_dataframe(constraint.expected, namespace=namespace, target=True), "constraint.expected")
+
+    def _state_goal_target_dataframe(self, semantics: JsonObject, namespace: str, reference_snapshot: pl.DataFrame | None, context: ScoringContext | None) -> pl.DataFrame:
+        """根据公开 literal 与前序 binding 构造 generated state goal 的评分目标。"""
+        operation = semantics.get("operation")
+        cardinality = semantics.get("cardinality")
+        match = self._resolved_state_values(semantics.get("match"), context)
+        values = self._resolved_state_values(semantics.get("values"), context)
+        if operation == "add":
+            return self._restore_namespace_schema(pl.DataFrame([values]), namespace, target=True)
+        if reference_snapshot is None:
+            raise ValueError("generated state goal 缺少 reference snapshot")
+        selected = reference_snapshot
+        for column, value in match.items():
+            if column not in selected.columns:
+                raise ValueError(f"state goal match 列不存在: {column}")
+            selected = selected.filter(pl.col(column) == value)
+        if cardinality == "one" and selected.height != 1:
+            raise ValueError(f"state goal one cardinality 命中 {selected.height} 行")
+        if selected.height == 0:
+            raise ValueError("state goal 未命中目标行")
+        if operation == "remove":
+            return selected
+        for column, value in values.items():
+            selected = selected.with_columns(pl.lit(value).alias(column))
+        return self._restore_namespace_schema(selected, namespace, target=True)
+
+    def _resolved_state_values(self, raw: object, context: ScoringContext | None) -> dict[str, JsonValue]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, JsonValue] = {}
+        for field, source in raw.items():
+            if not isinstance(source, dict):
+                raise ValueError(f"state goal 值来源无效: {field}")
+            if source.get("source") == "public_literal":
+                result[str(field)] = source.get("value")
+                continue
+            resolved, evidence = self._resolve_binding(source, context)
+            if resolved is MISSING:
+                raise ValueError(evidence)
+            result[str(field)] = resolved
+        return result
 
     def _rows_to_dataframe(self, value: JsonValue, namespace: str | None=None, target: bool=False) -> pl.DataFrame:
         rows: JsonValue
@@ -277,10 +320,19 @@ class ToolSandboxConstraintScorer(GeneralScorer):
             return partial(measure, **dict(raw_keywords))
         raise ValueError(f"不支持的 ToolSandbox column similarity: {measure_spec}")
 
-    def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None) -> tuple[pl.DataFrame | None, JsonObject | None]:
+    def _reference_dataframe(self, constraint: Constraint, context: ScoringContext | None, reference_source: object | None = None) -> tuple[pl.DataFrame | None, JsonObject | None]:
         metadata = constraint.metadata.get("toolsandbox")
         if not isinstance(metadata, dict):
             return (None, None)
+        reference_milestone_id = constraint.reference_milestone_id
+        if reference_milestone_id is not None:
+            reference_snapshot = reference_source if isinstance(reference_source, StateSnapshot) else (context.matched_snapshots.get(reference_milestone_id) if context is not None else None)
+            if reference_snapshot is None:
+                raise ValueError(f"ToolSandbox reference snapshot 缺失: {reference_milestone_id}")
+            namespace = constraint.namespace or str(metadata.get("database_namespace") or "")
+            rows = reference_snapshot.namespaces.get(namespace)
+            row_list = rows if isinstance(rows, list) else []
+            return self._rows_to_dataframe(rows, namespace=namespace), {"reference_milestone_id": reference_milestone_id, "reference_snapshot_id": reference_snapshot.snapshot_id, "namespace": namespace, "row_count": len(row_list), "columns": sorted({str(column) for row in row_list if isinstance(row, dict) for column in row})}
         reference_index = metadata.get("reference_milestone_node_index")
         if reference_index is None:
             return (None, None)

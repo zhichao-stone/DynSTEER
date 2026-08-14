@@ -1,3 +1,34 @@
+detect_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        echo "docker compose"
+        return 0
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then
+        echo "docker-compose"
+        return 0
+    fi
+    return 1
+}
+
+absolute_host_path() {
+    local base_dir="$1"
+    local input_path="$2"
+    if [[ "$input_path" == /* || "$input_path" =~ ^[A-Za-z]:[\\/] ]]; then
+        cd -- "$input_path" && pwd
+    else
+        cd -- "$base_dir/$input_path" && pwd
+    fi
+}
+
+docker_mount_path() {
+    local host_path="$1"
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$host_path"
+        return 0
+    fi
+    printf '%s\n' "$host_path"
+}
+
 experiment_bootstrap_lines() {
     local project_root="$1"
     local experiment_config="$2"
@@ -94,6 +125,19 @@ experiment_uses_agentcompass() {
                 return 0
                 ;;
         esac
+    done < <(experiment_bootstrap_lines "$project_root" "$experiment_config" "$container_project_root")
+    return 1
+}
+
+experiment_uses_toolsandbox() {
+    local project_root="$1"
+    local experiment_config="$2"
+    local container_project_root="${3:-}"
+    local line
+    while IFS=$'\t' read -r line _; do
+        if [[ "$line" == "toolsandbox" ]]; then
+            return 0
+        fi
     done < <(experiment_bootstrap_lines "$project_root" "$experiment_config" "$container_project_root")
     return 1
 }

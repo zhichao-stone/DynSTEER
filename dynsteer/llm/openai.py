@@ -24,6 +24,8 @@ class OpenaiLLM(BaseLLM):
         params.setdefault("temperature", self._config.temperature)
         if self._config.max_tokens is not None:
             params.setdefault("max_tokens", self._config.max_tokens)
+        if self._config.seed is not None:
+            params.setdefault("seed", self._config.seed)
         response_format = params.get("response_format")
         if isinstance(response_format, str):
             normalized = response_format.strip().lower()

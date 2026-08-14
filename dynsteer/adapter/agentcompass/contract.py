@@ -33,8 +33,10 @@ def build_agentcompass_generator_view(
         language=str(config.metadata.get("language") or "en"),
         turns=(GeneratorTurn("turn_0", task_case.task_description, "instruction"),),
         public_assets=public_assets,
-        initial_state=task_case.initial_state or {},
+        public_state=task_case.initial_state or {},
+        simulation_state={},
         tool_schema=tool_schema,
+        tool_contracts={},
         environment_rules={},
         evidence_catalog=tuple(tool_evidence),
     )

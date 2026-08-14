@@ -6,7 +6,7 @@ from dynsteer.language import TaskLanguage, language_from_task
 from dynsteer.llm.base import BaseLLM
 from dynsteer.prompt.stage import build_stage_goal_generation_prompt, build_stage_goal_system_prompt
 from dynsteer.prompt.template import load_prompt_template
-from dynsteer.model import Constraint, LLMMessage, MilestoneGraph, StageGoalSemanticKind, TaskCase
+from dynsteer.model import Constraint, JsonObject, LLMMessage, MilestoneGraph, StageGoalSemanticKind, TaskCase
 from dynsteer.stage.resolve import required_stage_goal_keys, stage_goal_key
 from dynsteer.utils import enum_value, optional_str
 
@@ -158,6 +158,10 @@ def _generate_stage_goals_by_llm(
         for milestone in graph.nodes
         for constraint in milestone.constraints
         if _semantics_kind(constraint) == StageGoalSemanticKind.SET_STATE
+        and not (
+            isinstance(constraint.stage_goal_semantics, dict)
+            and "operation" in constraint.stage_goal_semantics
+        )
     }
     stage_goals = _parse_stage_goal_from_resp(raw_text, required_placeholders)
     validate_stage_goals(graph, stage_goals)
@@ -205,6 +209,8 @@ def _constraint_goal_text_from_semantics(constraint: Constraint, language: TaskL
         return None
     if kind == StageGoalSemanticKind.SET_STATE:
         namespace = optional_str(semantics.get("namespace"), "state")
+        if "operation" in semantics:
+            return _generated_state_goal_text(semantics, namespace, language)
         expected = expected_placeholder(constraint.constraint_id)
         return _render_goal_template("set_state", language, namespace=namespace, expected=expected)
     if kind == StageGoalSemanticKind.PRESERVE_STATE:
@@ -227,13 +233,60 @@ def _constraint_goal_text_from_semantics(constraint: Constraint, language: TaskL
         arguments = semantics.get("arguments")
         arguments_clause = ""
         if isinstance(arguments, dict) and arguments:
-            expected_arguments = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+            expected_arguments = ", ".join(
+                f"{name}={_symbolic_value_text(value, language)}"
+                for name, value in sorted(arguments.items())
+            )
             arguments_clause = _ARGUMENTS_CLAUSE_TEXT[language].format(expected_arguments=expected_arguments)
         return _render_goal_template(
             "tool_call", language, 
             tool_name=tool_name, arguments_clause=arguments_clause
         )
     return None
+
+
+def _generated_state_goal_text(
+    semantics: JsonObject, namespace: str, language: TaskLanguage
+) -> str:
+    """把 generated set_state 语义渲染为不暴露 binding JSON 的目标文本。"""
+    operation = str(semantics.get("operation"))
+    cardinality = str(semantics.get("cardinality"))
+    match = _symbolic_mapping_text(semantics.get("match"), language)
+    values = _symbolic_mapping_text(semantics.get("values"), language)
+    if language == TaskLanguage.CHINESE:
+        parts = [f"在 {namespace} 中执行 {operation}（{cardinality}）"]
+        if match:
+            parts.append(f"匹配 {match}")
+        if values:
+            parts.append(f"写入 {values}")
+        return "；".join(parts)
+    parts = [f"Apply {operation} ({cardinality}) in {namespace}"]
+    if match:
+        parts.append(f"match {match}")
+    if values:
+        parts.append(f"write {values}")
+    return "; ".join(parts)
+
+
+def _symbolic_mapping_text(value: object, language: TaskLanguage) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return ", ".join(
+        f"{name}={_symbolic_value_text(source, language)}"
+        for name, source in sorted(value.items())
+    )
+
+
+def _symbolic_value_text(value: object, language: TaskLanguage) -> str:
+    if not isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if value.get("source") == "public_literal":
+        return json.dumps(value.get("value"), ensure_ascii=False)
+    milestone_id = optional_str(value.get("source_milestone_id"), "predecessor")
+    selector = optional_str(value.get("selector"), "result")
+    if language == TaskLanguage.CHINESE:
+        return f"里程碑 {milestone_id} 输出的 {selector}"
+    return f"{selector} produced by milestone {milestone_id}"
 
 
 def _semantics_kind(constraint: Constraint) -> StageGoalSemanticKind | None:
@@ -266,11 +319,13 @@ def _reference_text(reference: object, language: TaskLanguage) -> str:
 
 _REFERENCE_TEXT: dict[TaskLanguage, dict[str, str]] = {
     TaskLanguage.ENGLISH: {
+        "milestone_id": "milestone {value}",
         "milestone_index": "reference milestone index {value}",
         "initial_state": "initial state",
         "default": "the referenced state",
     },
     TaskLanguage.CHINESE: {
+        "milestone_id": "里程碑 {value}",
         "milestone_index": "参考里程碑索引 {value}",
         "initial_state": "初始状态",
         "default": "被引用状态",

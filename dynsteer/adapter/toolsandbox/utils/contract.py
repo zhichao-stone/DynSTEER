@@ -9,6 +9,7 @@ from dynsteer.adapter.contract import (
 )
 from dynsteer.adapter.toolsandbox.utils.effects import (
     toolsandbox_environment_rules,
+    toolsandbox_tool_contracts,
 )
 from dynsteer.adapter.toolsandbox.utils.state import (
     initial_state_from_context,
@@ -71,6 +72,9 @@ def build_toolsandbox_generator_view(
         turn_sources[0] = ("instruction", task_case.task_description)
     raw_tool_schema = agent_facing_tool_schema(context, module_loader)
     tool_schema, tool_evidence = normalize_tool_contract(raw_tool_schema)
+    tool_name_mapping = context.get_agent_to_execution_facing_tool_name()
+    if not isinstance(tool_name_mapping, dict):
+        raise TypeError("ToolSandbox tool name mapping 必须是字典")
     initial_state = initial_state_from_context(context, module_loader)
     turns = tuple(
         GeneratorTurn(f"turn_{order}", instruction, source_ref)
@@ -93,9 +97,11 @@ def build_toolsandbox_generator_view(
         language=str(config.metadata.get("language") or "en"),
         turns=turns,
         public_assets=public_assets,
-        initial_state=initial_state,
+        public_state={},
+        simulation_state=initial_state,
         tool_schema=tool_schema,
-        environment_rules=toolsandbox_environment_rules(),
+        tool_contracts=toolsandbox_tool_contracts({str(key): str(value) for key, value in tool_name_mapping.items()}),
+        environment_rules=toolsandbox_environment_rules({str(key): str(value) for key, value in tool_name_mapping.items()}),
         evidence_catalog=tuple(tool_evidence),
     )
 

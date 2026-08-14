@@ -37,6 +37,7 @@ _GENERATOR_CONFIG_FIELDS = {
     "max_retries",
     "retry_base_seconds",
     "retry_max_seconds",
+    "seed",
 }
 
 
@@ -124,8 +125,8 @@ def milestone_generation_from_mapping(
         raise TypeError("milestone_generation 必须是 JSON 对象")
     unknown = set(data) - {
         "use_origin_milestone",
-        "max_candidate_path_count",
-        "enable_repair",
+        "target_candidate_graph_count",
+        "max_candidate_batch_count",
         "generator",
     }
     if unknown:
@@ -138,8 +139,8 @@ def milestone_generation_from_mapping(
         raise ValueError(f"不支持的 milestone generator 字段: {sorted(unknown_generator)}")
     return MilestoneGenerationConfig(
         use_origin_milestone=data.get("use_origin_milestone", True),
-        max_candidate_path_count=data.get("max_candidate_path_count", 6),
-        enable_repair=data.get("enable_repair", True),
+        target_candidate_graph_count=data.get("target_candidate_graph_count", 6),
+        max_candidate_batch_count=data.get("max_candidate_batch_count", 4),
         generator={str(key): value for key, value in generator.items()},
     )
 

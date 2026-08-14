@@ -1,110 +1,15 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import TYPE_CHECKING
-
 from dynsteer.model import (
-    Constraint,
-    Milestone,
     MilestoneGraph,
     MilestoneTopology,
-    Minefield,
-    MinefieldPenalty,
-    StageGoalSemanticKind,
 )
-from dynsteer.utils import stable_json_digest
-
-
-if TYPE_CHECKING:
-    from dynsteer.milestone.model import PublicEvidence
 
 
 START_NODE_ID = "__start__"
 FINISH_NODE_ID = "__finish__"
 
-
-def milestones_from_occurrences(
-    occurrences: list[tuple[str, str, int]],
-    evidence: dict[str, PublicEvidence],
-) -> list[Milestone]:
-    """将已排序的共同工具 occurrence 编译为 operation milestones。"""
-    result: list[Milestone] = []
-    for turn_id, evidence_id, occurrence_index in occurrences:
-        item = evidence[evidence_id]
-        tool_name = _evidence_tool_name(item)
-        milestone_id = f"m_{stable_json_digest((turn_id, evidence_id, occurrence_index))[:16]}"
-        result.append(Milestone(
-            milestone_id=milestone_id,
-            name=f"执行 {tool_name}",
-            description=f"{turn_id} 中第 {occurrence_index + 1} 次执行 {tool_name}",
-            constraints=[Constraint(
-                constraint_id=f"{milestone_id}_tool",
-                target=item.target,
-                selector=item.selector,
-                operator=item.operator,
-                expected=tool_name,
-                namespace=item.namespace,
-                hard=True,
-                evaluator_hint=item.evaluator_hint,
-                stage_goal_semantics={
-                    "kind": StageGoalSemanticKind.TOOL_CALL.value,
-                    "tool_name": tool_name,
-                    "evidence_source": "trajectory_or_structured_scorer",
-                    "user_visible_required": False,
-                },
-                metadata={"evidence_id": evidence_id},
-            )],
-            matching_route=item.matching_route,
-            metadata={
-                "turn_id": turn_id,
-                "evidence_id": evidence_id,
-                "occurrence_index": occurrence_index,
-                "necessity_basis": "path_intersection",
-            },
-        ))
-    return result
-
-
-def minefields_from_forbidden(
-    forbidden_by_turn: dict[str, set[str]],
-    evidence: dict[str, PublicEvidence],
-) -> list[Minefield]:
-    """将逐 turn 的共同 forbidden evidence 编译为 fatal minefields。"""
-    result: list[Minefield] = []
-    for turn_id, forbidden in forbidden_by_turn.items():
-        for evidence_id in sorted(forbidden):
-            item = evidence[evidence_id]
-            tool_name = _evidence_tool_name(item)
-            minefield_id = f"mf_{stable_json_digest((turn_id, evidence_id))[:16]}"
-            result.append(Minefield(
-                minefield_id=minefield_id,
-                name=f"禁止 {tool_name}",
-                description=f"{turn_id} 的全部可模拟路径均禁止调用 {tool_name}",
-                severity="fatal",
-                constraints=[Constraint(
-                    constraint_id=f"{minefield_id}_trigger",
-                    target=item.target,
-                    selector=item.selector,
-                    operator=item.operator,
-                    expected=tool_name,
-                    hard=True,
-                    evaluator_hint=item.evaluator_hint,
-                    stage_goal_semantics={
-                        "kind": StageGoalSemanticKind.TOOL_CALL.value,
-                        "tool_name": tool_name,
-                    },
-                )],
-                penalty=MinefieldPenalty(mode="fixed", value=1.0),
-                metadata={"turn_id": turn_id, "evidence_id": evidence_id},
-            ))
-    return result
-
-
-def _evidence_tool_name(evidence: PublicEvidence) -> str:
-    value = evidence.metadata.get("tool_name")
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"TOOL_CALL evidence 缺少真实 tool_name: {evidence.evidence_id}")
-    return value
 
 def augmented_edges(graph: MilestoneGraph) -> list[tuple[str, str]]:
     ids = {node.milestone_id for node in graph.nodes}
