@@ -35,8 +35,10 @@ ToolSandbox adapter 与 harness 按 data root、backend 和 source root 共享�
 ## 配置入口
 
 ```bash
-./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
+./scripts/start_experiment.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
 ```
+
+`start_experiment_no_docker.sh` 会拒绝要求 Docker 任务环境的配置；当前 AgentCompass 的 SWE-bench Pro 与 SkillsBench 路径属于这类配置。
 
 `main.py --exp PATH` 可直接展开同一配置，但没有 AgentCompass 环境时必须先用启动脚本完成 bootstrap。`--force_adapt` 强制重建 adapted case 并自动等价于 `--force_eval`；`--force_eval` 只强制重跑评估产物；`--no_sum` 跳过实验级汇总。
 

@@ -8,12 +8,13 @@ import logging
 import os
 import re
 import secrets
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Any
 
 from dynsteer.harness.model import HarnessRunConfig
@@ -66,8 +67,10 @@ def run_agentcompass_case(
     if config is None or output_dir is None or not isinstance(case_id, str) or not case_id.strip():
         raise ValueError("config、case_id 和 output_dir 不能为空")
     settings = _agentcompass_config(config)
+    if os.environ.get("DYNSTEER_NO_DOCKER") == "1" and settings["environment"] == "docker":
+        raise ValueError("DYNSTEER_NO_DOCKER=1 rejects Docker task environments")
     benchmark_params = dict(settings["benchmark_params"])
-    benchmark_params.update({"sample_ids": [case_id], "k": 1, "avgk": True})
+    benchmark_params.update({"sample_ids": [case_id]})
     run_key, run_id = _run_identity(config, normalized, case_id)
     api = _agentcompass_api()
 
@@ -81,6 +84,7 @@ def run_agentcompass_case(
             benchmark_params=benchmark_params,
             harness_params=dict(settings["harness_params"]),
             environment_params=dict(settings["environment_params"]),
+            k=1,
             model_base_url=os.environ.get("MODEL_BASE_URL", ""),
             model_api_key=os.environ.get("MODEL_API_KEY", ""),
             model_api_protocol=str(settings["model_api_protocol"]),
@@ -200,11 +204,22 @@ def _load_agentcompass_components(benchmark: str) -> None:
     """只加载目标 benchmark 的 AgentCompass 组件，避免无关依赖阻断 Windows。"""
     try:
         for module_name in _AGENTCOMPASS_COMPONENT_MODULES[benchmark]:
-            importlib.import_module(module_name)
+            _import_benchmark_component(module_name)
     except KeyError as exc:
         raise ValueError(f"AgentCompass benchmark 缺少组件加载配置: {benchmark}") from exc
     except Exception as exc:
         raise RuntimeError(f"AgentCompass 组件加载失败: {benchmark}") from exc
+
+
+def _import_benchmark_component(module_name: str) -> None:
+    """绕过固定版本 benchmarks 包的全量导出，只注册目标 benchmark。"""
+    package_name = module_name.rpartition(".")[0]
+    if package_name not in sys.modules:
+        root = importlib.import_module("agentcompass")
+        package = ModuleType(package_name)
+        package.__path__ = [str(Path(root.__file__).parent / "benchmarks")]
+        sys.modules[package_name] = package
+    importlib.import_module(module_name)
 
 
 def _agentcompass_config(config: HarnessRunConfig) -> JsonObject:
@@ -282,9 +297,12 @@ def _sanitize_detail(
     status = raw_attempt.get("status")
     if not isinstance(status, str) or status not in _STATUS_VALUES:
         raise ValueError(f"AgentCompass attempt status 不合法: {status}")
-    correct = raw_attempt.get("correct")
-    if not isinstance(correct, bool):
-        raise TypeError("AgentCompass attempt correct 必须是 bool")
+    metrics = raw_attempt.get("metrics")
+    if not isinstance(metrics, Mapping):
+        raise TypeError("AgentCompass attempt metrics 必须是对象")
+    correct = metrics.get("correct")
+    if correct is not None and not isinstance(correct, bool):
+        raise TypeError("AgentCompass attempt correct 必须是 bool 或 None")
     extra = raw_attempt.get("extra")
     extra = extra if isinstance(extra, Mapping) else {}
 
@@ -312,7 +330,7 @@ def _sanitize_detail(
         artifacts = raw_attempt.get("artifacts")
         artifacts = artifacts if isinstance(artifacts, Mapping) else {}
         files = artifacts.get("file")
-        attempt["score"] = raw_attempt.get("score")
+        attempt["score"] = metrics.get("score")
         attempt["files"] = dict(files) if isinstance(files, Mapping) else {}
         attempt["evaluation"] = {
             "reward": evaluation.get("reward"),

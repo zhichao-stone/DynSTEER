@@ -23,7 +23,6 @@ Options:
 Examples:
   ./scripts/start_no_docker.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
   ./scripts/start_no_docker.sh --benchmark toolsandbox --source ../ToolSandbox --only_adapt
-  ./scripts/start_no_docker.sh --benchmark swebench_pro --source ../AgentCompass
 EOF
 }
 
@@ -138,6 +137,7 @@ main() {
     script_root="$(script_dir)"
     local project_root
     project_root="$(cd -- "$script_root/.." && pwd)"
+    export DYNSTEER_NO_DOCKER=1
 
     local benchmark=""
     local source_path=""
@@ -271,8 +271,8 @@ main() {
 
     cd "$project_root"
     if agentcompass_is_benchmark "$benchmark"; then
-        ensure_agentcompass_environment "$project_root" "$source_path"
-        source_path="$DYNSTEER_BENCHMARK_SOURCE_ROOT"
+        echo "no_docker entry does not support the current Docker-based AgentCompass path." >&2
+        exit 65
     fi
     ensure_uv_environment "$project_root"
     ensure_toolsandbox_group "$benchmark"

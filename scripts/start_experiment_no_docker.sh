@@ -23,7 +23,7 @@ Options:
 Examples:
   ./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json
   ./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json --no-env-file
-  ./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass
+  ./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json --source ../ToolSandbox
 EOF
 }
 
@@ -138,6 +138,7 @@ main() {
     . "$script_root/experiment_bootstrap.sh"
     local project_root
     project_root="$(cd -- "$script_root/.." && pwd)"
+    export DYNSTEER_NO_DOCKER=1
 
     local experiment_config=""
     local source_path=""
@@ -257,6 +258,7 @@ main() {
     ensure_toolsandbox_group "$project_root" "$experiment_config"
     local python_executable
     python_executable="$(project_python)"
+    assert_experiment_avoids_docker "$python_executable" "$project_root" "$experiment_config"
     if [[ -n "$source_path" ]]; then
         prepare_benchmark_source "$source_path" "$invocation_dir"
     else

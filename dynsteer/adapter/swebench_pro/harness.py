@@ -36,8 +36,10 @@ class SWEBenchProHarness(BaseAgentCompassHarness):
         }
         if summary["returncode"] is not None:
             metrics["returncode"] = summary["returncode"]
+        resolved_score = 1.0 if summary["resolved"] else 0.0
+        score = resolved_score if summary["status"] == "completed" else None
         return AgentCompassRunData(
-            default_result=BenchmarkDefaultResult(score=1.0 if summary["resolved"] else 0.0, raw=default_raw, metrics=metrics),
+            default_result=BenchmarkDefaultResult(score=score, raw=default_raw, metrics=metrics),
             final_state={"patch": patch},
             raw_summary=agentcompass_run_summary(detail, summary, "agentcompass_swebench_pro"),
         )

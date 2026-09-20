@@ -10,14 +10,11 @@ DynSTEER 支持通过 AgentCompass 运行 `swebench_pro` 和 `skillsbench`，固
 
 独立环境由启动脚本自动加载：
 
-```powershell
-./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --workers 1
-```
+`start_experiment_no_docker.sh` 会导出 `DYNSTEER_NO_DOCKER=1`，并在启动前拒绝 `environment=docker` 或 Docker recipe 的 AgentCompass 配置。当前固定的 SWE-bench Pro 与 SkillsBench 执行路径仍使用 Docker 任务环境，因此不能用该入口启动。
 
 对应的脚本入口为：
 
 ```powershell
-./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
 ./scripts/start_experiment.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
 ```
 
@@ -31,7 +28,7 @@ DynSTEER 支持通过 AgentCompass 运行 `swebench_pro` 和 `skillsbench`，固
 | `environment` | 必填非空字符串 | AgentCompass environment ID |
 | `model_api_protocol` | 必填非空字符串 | 模型协议 |
 | `data_dir` | 必填非空字符串 | AgentCompass 独立数据缓存目录 |
-| `benchmark_params` | 可选对象 | benchmark 原生参数；`sample_ids/k/avgk` 由桥接层覆盖 |
+| `benchmark_params` | 可选对象 | benchmark 原生参数；单 case 的 `sample_ids` 由桥接层覆盖，重复次数使用 `execution.attempts.k` |
 | `harness_params` | 可选对象 | harness 原生参数 |
 | `environment_params` | 可选对象 | environment 原生参数 |
 | `model_params` | 可选对象 | model 原生参数 |
@@ -96,8 +93,8 @@ AgentCompass 目录加载只导入目标 benchmark、对应 harness、Docker env
 
 | benchmark | score | final state | 原生状态来源 |
 |---|---|---|---|
-| SWE-bench Pro | resolved 对应 1/0 | patch 大小、哈希、路径摘要 | AgentCompass `correct/eval_raw_data` |
-| SkillsBench | `[0,1]` partial reward | artifact 大小、哈希、类型清单 | AgentCompass `score/verify_log` |
+| SWE-bench Pro | completed 时 resolved 对应 1/0；run/eval error 时 `null` | patch 大小、哈希、路径摘要 | AgentCompass `metrics.correct/eval_raw_data` |
+| SkillsBench | completed 时 `[0,1]` partial reward；run/eval error 时 `null` | artifact 大小、哈希、类型清单 | AgentCompass `metrics.score/verify_log` |
 
 合法 0 分与 run/eval error 通过 `raw_summary` 中的状态字段区分。provenance 只写入 `raw_summary`。
 

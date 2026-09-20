@@ -141,3 +141,54 @@ experiment_uses_toolsandbox() {
     done < <(experiment_bootstrap_lines "$project_root" "$experiment_config" "$container_project_root")
     return 1
 }
+
+assert_experiment_avoids_docker() {
+    local python_cmd="$1"
+    local project_root="$2"
+    local experiment_config="$3"
+
+    local python_project_root="$project_root"
+    local python_experiment_config="$experiment_config"
+    if command -v cygpath >/dev/null 2>&1; then
+        python_project_root="$(cygpath -m "$project_root")"
+        if [[ -e "$experiment_config" ]]; then
+            python_experiment_config="$(cygpath -m "$experiment_config")"
+        fi
+    fi
+
+    MSYS2_ARG_CONV_EXCL="*" "$python_cmd" - "$python_project_root" "$python_experiment_config" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+project_root = Path(sys.argv[1]).resolve()
+raw_config_path = Path(sys.argv[2])
+if raw_config_path.is_absolute():
+    config_path = raw_config_path
+else:
+    candidate = raw_config_path.resolve()
+    config_path = candidate if candidate.exists() else (project_root / raw_config_path).resolve()
+config = json.loads(config_path.read_text(encoding="utf-8"))
+
+for index, spec in enumerate(config.get("benchmarks", [])):
+    if not isinstance(spec, dict):
+        continue
+    metadata = spec.get("metadata")
+    settings = metadata.get("agentcompass") if isinstance(metadata, dict) else None
+    if not isinstance(settings, dict):
+        continue
+    environment = str(settings.get("environment") or "").strip().lower()
+    recipes = settings.get("enabled_recipes", [])
+    docker_recipes = [
+        str(recipe)
+        for recipe in (recipes if isinstance(recipes, list) else [])
+        if "docker" in str(recipe).lower()
+    ]
+    if environment == "docker" or docker_recipes:
+        benchmark = str(spec.get("benchmark") or f"#{index}")
+        raise SystemExit(
+            f"no_docker entry rejects Docker task environment: {benchmark}; "
+            "use a validated non-Docker environment configuration"
+        )
+PY
+}
