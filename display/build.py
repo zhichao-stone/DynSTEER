@@ -38,12 +38,43 @@ def build_display_data(runs_dir: Path, results_dir: Path, data_dir: Path | None 
         raise RuntimeError(f"读取展示数据失败: {exc}") from exc
 
 
-def write_display_data_js(data: JsonObject, output: Path) -> None:
+def write_display_assets(data: JsonObject, output: Path) -> None:
     if data is None or output is None:
         raise ValueError("data 和 output 不能为空")
     output.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
-    output.write_text(f"window.DYNSTEER_DATA = {payload};\n", encoding="utf-8")
+    scenarios_dir = output.parent / "scenarios"
+    scenarios_dir.mkdir(exist_ok=True)
+    index_runs = []
+
+    # 场景详情单独落盘，入口文件只保留选择器需要的轻量索引。
+    for run_index, run in enumerate(data.get("runs", [])):
+        indexed_scenarios = []
+        for scenario_index, scenario in enumerate(run.get("scenarios", [])):
+            reference = f"{run_index:04d}-{scenario_index:04d}.js"
+            scenario_payload = json.dumps(scenario, ensure_ascii=False, separators=(",", ":"))
+            (scenarios_dir / reference).write_text(
+                "window.DYNSTEER_SCENARIOS = window.DYNSTEER_SCENARIOS || {};\n"
+                f'window.DYNSTEER_SCENARIOS["{reference}"] = {scenario_payload};\n',
+                encoding="utf-8",
+            )
+            indexed_scenarios.append({
+                "scenario_id": scenario.get("scenario_id"),
+                "experiment_id": scenario.get("experiment_id"),
+                "task_id": scenario.get("task_id"),
+                "summary": scenario.get("summary", {}),
+                "data_ref": reference,
+            })
+        index_run = {key: value for key, value in run.items() if key != "scenarios"}
+        index_run["scenarios"] = indexed_scenarios
+        index_runs.append(index_run)
+
+    index_data = {"generated_at": data.get("generated_at"), "runs": index_runs}
+    index_payload = json.dumps(index_data, ensure_ascii=False, separators=(",", ":"))
+    output.write_text(
+        "window.DYNSTEER_SCENARIOS = {};\n"
+        f"window.DYNSTEER_DATA = {index_payload};\n",
+        encoding="utf-8",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -53,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--output", type=Path, default=Path("display/data.js"))
     args = parser.parse_args(argv)
-    write_display_data_js(build_display_data(args.runs_dir, args.results_dir, args.data_dir), args.output)
+    write_display_assets(build_display_data(args.runs_dir, args.results_dir, args.data_dir), args.output)
     return 0
 
 

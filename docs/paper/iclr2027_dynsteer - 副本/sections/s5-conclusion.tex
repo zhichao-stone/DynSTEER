@@ -1,0 +1,4 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+In this work, we presented \textbf{DynSTEER}, a dynamic evaluation framework that advances LLM agent evaluation from passive, post-hoc terminal verification toward proactive, stage-wise execution review. By compiling path-tolerant milestone DAGs from public views, DynSTEER accommodates diverse exploration paths without single-reference bias. During execution, it aligns closed actions to dominator-bounded stages, isolating intermediate context to pinpoint first-error steps and adaptively routing judge tiers toward vulnerable execution links. On ToolSandbox, DynSTEER improves model discriminability by 85.2\% over native terminal verification, statistically separates all model pairs, and eliminates 34.51\% of wasteful execution steps on underperforming rollouts, establishing a principled and cost-effective foundation for evaluating and optimizing LLM agents.

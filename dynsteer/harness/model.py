@@ -21,6 +21,7 @@ class HarnessRunConfig:
     runs_dir: Path = Path("runs")
     results_dir: Path = Path("results")
     stop_on_ready_frontier_no_progress: bool = True
+    use_milestone_graph: bool = True
     ready_frontier_patience: int = 8
     ready_frontier_min_delta: float = 0.02
     milestone_generation: MilestoneGenerationConfig = field(
@@ -44,6 +45,8 @@ class HarnessRunConfig:
             raise ValueError("results_dir 不能为空")
         if not isinstance(self.stop_on_ready_frontier_no_progress, bool):
             raise TypeError("stop_on_ready_frontier_no_progress 必须是 bool")
+        if not isinstance(self.use_milestone_graph, bool):
+            raise TypeError("use_milestone_graph 必须是 bool")
         if not isinstance(self.ready_frontier_patience, int):
             raise TypeError("ready_frontier_patience 必须是整数")
         if self.ready_frontier_patience < 1:

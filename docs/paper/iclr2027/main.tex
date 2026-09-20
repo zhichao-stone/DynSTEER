@@ -1,0 +1,80 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2027_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tcolorbox}
+
+\title{DynSTEER: Dynamic Stage-wise Trajectory Evaluation and Execution-time Review for Agents}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the \iclrfinalcopy macro remains commented out below.
+% Non-anonymous submissions will be rejected without review.
+
+\author{Zhichao Shi$^{1,2,3,4}$, 
+Wenjie Zhang$^{5}$, 
+Xuhui Jiang$^{3,4}$\thanks{Corresponding author}, 
+Xiaojun Wu$^{3,4,6}$, 
+Cehao Yang$^{3,4,6}$, \\
+\textbf{Chengjin Xu}$^{3,4}$\textbf{,} 
+\textbf{Jian Guo}$^4$\textbf{,} \textbf{Yuanzhuo Wang}$^2$\footnotemark[1] \\
+$^1$ School of Advanced Interdisciplinary Sciences, UCAS \\
+$^2$ State Key Lab of AI Safety, Institute of Computing Technology, CAS \\
+$^3$ DataArc Tech Ltd. \\
+$^4$ IDEA Research, International Digital Economy Academy \\
+$^5$ Jiangnan University \\
+$^6$ The Hong Kong University of Science and Technology (Guangzhou)
+}
+
+% \arxiv enables author display while keeping headers blank (no ICLR conference header)
+\arxiv
+%\iclrfinalcopy % Uncomment for official camera-ready conference version
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+% Float spacing adjustment to eliminate excessive whitespace below figures
+\setlength{\dbltextfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\setlength{\dblfloatsep}{6pt plus 2pt minus 2pt}
+
+\begin{document}
+
+\maketitle
+
+\input{sections/s0-abstract}
+\input{sections/s1-introduction}
+\input{sections/s2-related_work}
+\input{sections/s3-methodology}
+\input{sections/s4-experiments}
+\input{sections/s5-conclusion}
+
+% \subsubsection*{Reproducibility Statement}
+% To ensure reproducibility, we documented all task blueprint prompts, scoring rubric definitions, and evaluation thresholds in Section~\ref{sec:methodology} and Appendix~\ref{app:algorithms}. Appendix~\ref {app: dataset_stats} details the full dataset statistics for the scenarios evaluated. We will release all experimental trajectories, stage logs, and evaluation scripts as open-source supplementary materials upon publication.
+
+\bibliography{references}
+\bibliographystyle{iclr2027_conference}
+
+\newpage
+\appendix
+\input{appendixs/app_dataset_stats}
+\input{appendixs/app_algorithms}
+\input{appendixs/app_case_studies}
+\input{appendixs/app_prompts}
+
+\end{document}

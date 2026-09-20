@@ -1,0 +1,199 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 575" width="1400" height="575" style="background:#ffffff; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <filter id="shadow" x="-3%" y="-3%" width="106%" height="108%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.06" />
+    </filter>
+    <marker id="arr-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ef4444" />
+    </marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981" />
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#3b82f6" />
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b" />
+    </marker>
+  </defs>
+
+  <!-- LEFT PANEL: Conventional Evaluation -->
+  <g transform="translate(40, 15)">
+    <rect width="630" height="545" rx="16" fill="#fff5f5" stroke="#fecaca" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Header -->
+    <rect x="0" y="0" width="630" height="52" rx="16" fill="#fee2e2" stroke="#fecaca" stroke-width="1"/>
+    <circle cx="32" cy="26" r="12" fill="#ef4444"/>
+    <text x="28" y="31" font-size="14" font-weight="800" fill="#ffffff">✕</text>
+    <text x="54" y="32" font-size="16.5" font-weight="800" fill="#991b1b">(a) Conventional: Untargeted Full-Trajectory &amp; Single-Reference</text>
+
+    <!-- Sub-box 1: Granularity gap in trajectory evaluation -->
+    <g transform="translate(24, 72)">
+      <rect width="582" height="135" rx="10" fill="#ffffff" stroke="#fed7d7" stroke-width="1.5"/>
+      <text x="16" y="24" font-size="14" font-weight="700" fill="#b91c1c">1. Granularity Gap in Trajectory Evaluation</text>
+      <text x="16" y="42" font-size="11" fill="#64748b">Full-trajectory review hides failures; atomic steps lose context and flag benign events.</text>
+
+      <!-- Coarse whole-trajectory view -->
+      <rect x="16" y="52" width="271" height="70" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="28" y="68" font-size="10.5" font-weight="700" fill="#334155">Full-trajectory: Too Coarse</text>
+      <rect x="28" y="76" width="24" height="18" rx="3" fill="#e2e8f0" stroke="#94a3b8"/>
+      <text x="40" y="88" font-size="7.5" font-weight="700" fill="#475569" text-anchor="middle">S1</text>
+      <rect x="54" y="76" width="24" height="18" rx="3" fill="#e2e8f0" stroke="#94a3b8"/>
+      <text x="66" y="88" font-size="7.5" font-weight="700" fill="#475569" text-anchor="middle">S2</text>
+      <rect x="80" y="76" width="24" height="18" rx="3" fill="#fee2e2" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="92" y="88" font-size="7.5" font-weight="800" fill="#991b1b" text-anchor="middle">E3</text>
+      <rect x="106" y="76" width="24" height="18" rx="3" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="118" y="88" font-size="7.5" font-weight="700" fill="#92400e" text-anchor="middle">R4</text>
+      <rect x="132" y="76" width="24" height="18" rx="3" fill="#e2e8f0" stroke="#94a3b8"/>
+      <text x="144" y="88" font-size="7.5" font-weight="700" fill="#475569" text-anchor="middle">O5</text>
+      <rect x="158" y="76" width="24" height="18" rx="3" fill="#d1fae5" stroke="#10b981"/>
+      <text x="170" y="88" font-size="7.5" font-weight="700" fill="#065f46" text-anchor="middle">Goal</text>
+      <line x1="186" y1="85" x2="199" y2="85" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+      <rect x="203" y="72" width="72" height="28" rx="5" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+      <text x="239" y="83" font-size="8.5" font-weight="800" fill="#991b1b" text-anchor="middle">Score 1.0</text>
+      <text x="239" y="94" font-size="7.5" fill="#dc2626" text-anchor="middle">post-hoc</text>
+      <text x="28" y="116" font-size="8.5" font-weight="700" fill="#b91c1c">First failure (E3) is buried in the aggregate trace.</text>
+
+      <text x="290" y="92" font-size="8" font-weight="800" fill="#94a3b8" text-anchor="middle">VS</text>
+
+      <!-- Fine atomic-step view -->
+      <rect x="307" y="52" width="259" height="70" rx="8" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+      <text x="319" y="68" font-size="10.5" font-weight="700" fill="#92400e">Atomic-step: Too Fine &amp; Noisy</text>
+      <rect x="319" y="76" width="52" height="22" rx="3" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="345" y="90" font-size="7.5" font-weight="700" fill="#475569" text-anchor="middle">Step 2</text>
+      <line x1="377" y1="74" x2="377" y2="100" stroke="#f59e0b" stroke-width="1" stroke-dasharray="2,2"/>
+      <rect x="381" y="76" width="52" height="22" rx="3" fill="#fef3c7" stroke="#f59e0b"/>
+      <text x="407" y="90" font-size="7.5" font-weight="800" fill="#92400e" text-anchor="middle">S3 Retry</text>
+      <line x1="439" y1="74" x2="439" y2="100" stroke="#f59e0b" stroke-width="1" stroke-dasharray="2,2"/>
+      <rect x="443" y="76" width="52" height="22" rx="3" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="469" y="90" font-size="7.5" font-weight="700" fill="#475569" text-anchor="middle">S4 Obs</text>
+      <line x1="499" y1="85" x2="507" y2="85" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arr-red)"/>
+      <rect x="509" y="74" width="45" height="22" rx="3" fill="#fef2f2" stroke="#ef4444"/>
+      <text x="531.5" y="88" font-size="7.5" font-weight="800" fill="#991b1b" text-anchor="middle">Noisy</text>
+      <text x="319" y="116" font-size="8.5" font-weight="700" fill="#b91c1c">Missing context: benign retry / observation becomes noise.</text>
+    </g>
+    <!-- Sub-box 2: Single-Path Bias -->
+    <g transform="translate(24, 222)">
+      <rect width="582" height="135" rx="10" fill="#ffffff" stroke="#fed7d7" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="14" font-weight="700" fill="#b91c1c">2. Single-Reference Bias (Penalizing Valid Exploration)</text>
+      <text x="16" y="46" font-size="12" fill="#64748b">Agent discovers an alternative, highly efficient valid path not in the single reference trace.</text>
+      
+      <g transform="translate(16, 60)">
+        <text x="10" y="22" font-size="11" font-weight="700" fill="#475569">Ref: Search(Name) ➔ Call(Phone)</text>
+        <text x="10" y="54" font-size="11" font-weight="700" fill="#2563eb">Agent: Filter(Date) ➔ Call(Phone)</text>
+
+        <rect x="345" y="8" width="225" height="52" rx="6" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+        <text x="355" y="26" font-size="11" font-weight="700" fill="#991b1b">Trajectory Sim = 0.12 (Fail!)</text>
+        <text x="355" y="42" font-size="10" fill="#dc2626">⚠️ Correct outcome rejected</text>
+        <text x="355" y="54" font-size="9" fill="#64748b">due to rigid single-path alignment</text>
+      </g>
+    </g>
+
+    <!-- Sub-box 3: Blind 100-step Runout -->
+    <g transform="translate(24, 372)">
+      <rect width="582" height="145" rx="10" fill="#ffffff" stroke="#fed7d7" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="14" font-weight="700" fill="#b91c1c">3. Delayed Evaluation &amp; Wasteful Execution Runout</text>
+      <text x="16" y="46" font-size="12" fill="#64748b">Agent derails into infinite parameter loops at turn 18, but harness runs blindly to turn 100.</text>
+      
+      <g transform="translate(16, 62)">
+        <rect x="0" y="10" width="550" height="18" rx="6" fill="#fee2e2"/>
+        <rect x="0" y="10" width="100" height="18" rx="6" fill="#fca5a5"/>
+        <line x1="100" y1="4" x2="100" y2="34" stroke="#b91c1c" stroke-width="2.5"/>
+        <text x="80" y="48" font-size="10" font-weight="700" fill="#b91c1c">Step 18 (Stuck)</text>
+
+        <rect x="100" y="10" width="450" height="18" fill="#fee2e2" stroke="#f87171" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="240" y="23" font-size="10" font-weight="700" fill="#dc2626">Wasteful Prefix: 82 turns, 185s, 32k tokens squandered</text>
+        <text x="500" y="48" font-size="10" font-weight="700" fill="#64748b">Step 100 (Timeout)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- RIGHT PANEL: DynSTEER Paradigm -->
+  <g transform="translate(730, 15)">
+    <rect width="630" height="545" rx="16" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Header -->
+    <rect x="0" y="0" width="630" height="52" rx="16" fill="#dcfce7" stroke="#bbf7d0" stroke-width="1"/>
+    <circle cx="32" cy="26" r="12" fill="#10b981"/>
+    <text x="27" y="31" font-size="14" font-weight="800" fill="#ffffff">✓</text>
+    <text x="54" y="32" font-size="16.5" font-weight="800" fill="#166534">(b) DynSTEER: Targeted Stage Review &amp; Proactive Control</text>
+
+    <!-- Sub-box 1: Stage Multi-dimensional Review -->
+    <g transform="translate(24, 72)">
+      <rect width="582" height="135" rx="10" fill="#ffffff" stroke="#bbf7d0" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="14" font-weight="700" fill="#15803d">1. Targeted Stage-wise Review with Rich Trajectory Context</text>
+      <text x="16" y="46" font-size="12" fill="#64748b">Focuses on essential milestones with adequate context; dynamically adapts strategy toward weak links.</text>
+      
+      <g transform="translate(16, 60)">
+        <rect x="0" y="5" width="120" height="44" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+        <text x="10" y="22" font-size="11" font-weight="700" fill="#334155">Stage 1 [s₀ ➔ M₁]</text>
+        <text x="10" y="38" font-size="10" fill="#10b981">Correctness: 1.0 ✓</text>
+
+        <line x1="124" y1="27" x2="150" y2="27" stroke="#10b981" stroke-width="2" marker-end="url(#arr-green)"/>
+
+        <rect x="155" y="5" width="165" height="44" rx="6" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+        <text x="163" y="22" font-size="11" font-weight="700" fill="#991b1b">Stage 2 [M₁ ➔ M₂] (Targeted)</text>
+        <text x="163" y="38" font-size="10" font-weight="700" fill="#dc2626">⚠️ First Error Isolated at Step 3!</text>
+
+        <!-- Outcome judgment -->
+        <rect x="335" y="5" width="235" height="48" rx="6" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+        <text x="345" y="22" font-size="11" font-weight="700" fill="#166534">Dynamic Strategy Escalation</text>
+        <text x="345" y="36" font-size="10" fill="#047857">✓ Focuses on agent's weak link</text>
+        <text x="345" y="48" font-size="9" fill="#64748b">Sufficient Context: Avoids Step Noise</text>
+      </g>
+    </g>
+
+    <!-- Sub-box 2: Path-Tolerant DAG -->
+    <g transform="translate(24, 222)">
+      <rect width="582" height="135" rx="10" fill="#ffffff" stroke="#bbf7d0" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="14" font-weight="700" fill="#15803d">2. Path-Tolerant Milestone DAG (Simulated Planning)</text>
+      <text x="16" y="46" font-size="12" fill="#64748b">Aggregates multiple public candidates; respects diverse valid exploratory branches.</text>
+      
+      <g transform="translate(16, 58)">
+        <circle cx="25" cy="28" r="14" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="20" y="32" font-size="10" font-weight="700" fill="#334155">s₀</text>
+
+        <path d="M 42 22 Q 90 2 130 14" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#arr-blue)"/>
+        <path d="M 42 34 Q 90 54 130 42" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#arr-green)"/>
+
+        <rect x="135" y="4" width="95" height="24" rx="4" fill="#eff6ff" stroke="#3b82f6" stroke-width="1"/>
+        <text x="142" y="20" font-size="9" font-weight="700" fill="#1e40af">Search(Name)</text>
+
+        <rect x="135" y="32" width="95" height="24" rx="4" fill="#ecfdf5" stroke="#10b981" stroke-width="1"/>
+        <text x="142" y="48" font-size="9" font-weight="700" fill="#065f46">Filter(Date)</text>
+
+        <path d="M 235 16 Q 260 20 280 28" fill="none" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+        <path d="M 235 44 Q 260 36 280 28" fill="none" stroke="#10b981" stroke-width="1.5" marker-end="url(#arr-gray)"/>
+
+        <circle cx="300" cy="28" r="14" fill="#d1fae5" stroke="#10b981" stroke-width="2"/>
+        <text x="292" y="32" font-size="10" font-weight="700" fill="#065f46">Call</text>
+
+        <rect x="335" y="10" width="230" height="44" rx="6" fill="#f0fdf4" stroke="#10b981" stroke-width="1.5"/>
+        <text x="345" y="26" font-size="11" font-weight="700" fill="#166534">Both Paths Accepted (Pass!)</text>
+        <text x="345" y="42" font-size="10" fill="#047857">✓ Preserves LLM agent exploration</text>
+      </g>
+    </g>
+
+    <!-- Sub-box 3: Adaptive Early Stop -->
+    <g transform="translate(24, 372)">
+      <rect width="582" height="145" rx="10" fill="#ffffff" stroke="#bbf7d0" stroke-width="1.5"/>
+      <text x="16" y="26" font-size="14" font-weight="700" fill="#15803d">3. Proactive Execution Control: Adaptive Early Termination</text>
+      <text x="16" y="46" font-size="12" fill="#64748b">Halts deadlocks &amp; fatal violations during execution; surfaces failure diagnostics immediately.</text>
+      
+      <g transform="translate(16, 62)">
+        <rect x="0" y="10" width="550" height="18" rx="6" fill="#f1f5f9"/>
+        <rect x="0" y="10" width="100" height="18" rx="6" fill="#10b981"/>
+        
+        <line x1="100" y1="0" x2="100" y2="38" stroke="#059669" stroke-width="3"/>
+        <rect x="55" y="-18" width="90" height="18" rx="4" fill="#059669"/>
+        <text x="63" y="-5" font-size="10" font-weight="800" fill="#ffffff">STOP AT STEP 18</text>
+
+        <rect x="115" y="5" width="430" height="28" rx="6" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3,3"/>
+        <text x="135" y="23" font-size="11" font-weight="800" fill="#065f46">⚡ SAVED 82 TURNS (82% Execution Time &amp; 32k Tokens Saved)</text>
+
+        <text x="10" y="50" font-size="11" font-weight="700" fill="#0f172a">Reason: Frontier Deadlock detected across ready milestones.</text>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000" style="background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <title>DynSTEER framework overview</title>
+  <desc>The framework compiles public task views into candidate milestone graphs, merges them by majority support, aligns closed trajectory actions with milestone stages, and dynamically adjusts judge tiers and dimension weights before advancing or stopping.</desc>
+  <defs>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="108%" filterUnits="userSpaceOnUse"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.06"/></filter>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1 L10 5 L0 9 z" fill="#2563eb"/></marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1 L10 5 L0 9 z" fill="#059669"/></marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1 L10 5 L0 9 z" fill="#64748b"/></marker>
+    <marker id="arr-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1 L10 5 L0 9 z" fill="#dc2626"/></marker>
+    <marker id="arr-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 1 L10 5 L0 9 z" fill="#7e22ce"/></marker>
+
+    <symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></symbol>
+    <symbol id="i-plan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.2"/><circle cx="12" cy="7" r="2.2"/><circle cx="18" cy="15" r="2.2"/><path d="M7.6 16.2l3-6.2M13.8 8.3l2.7 4.8"/></symbol>
+    <symbol id="i-merge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h5l4 6h7"/><path d="M4 18h5l4-6"/><path d="M17 9l3 3-3 3"/></symbol>
+    <symbol id="i-dag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="18" r="2.1"/><circle cx="12" cy="6" r="2.1"/><circle cx="19" cy="15" r="2.1"/><path d="M6.7 16.2l4-8M13.6 7.4l4 5.8M7.1 18h9.8"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 17l8 4 8-4"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l4.2-4.2"/><circle cx="12" cy="16" r="1.5"/></symbol>
+    <symbol id="i-loop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.4"/><path d="M20 5v6h-6"/></symbol>
+    <symbol id="i-judge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M9 8h6M9 12h6M9 16h3"/></symbol>
+    <symbol id="i-weight" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2.2"/><circle cx="15" cy="16" r="2.2"/></symbol>
+    <symbol id="i-report" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9 13l2 2 4-4"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+  </defs>
+
+  <g transform="translate(35,20)">
+    <rect width="1530" height="280" rx="16" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="1530" height="40" rx="16" fill="#dbeafe" stroke="#bfdbfe"/>
+    <circle cx="28" cy="20" r="12" fill="#2563eb"/><text x="24" y="25" font-size="14" font-weight="900" fill="#fff">1</text>
+    <text x="52" y="26" font-size="20" font-weight="800" fill="#1e40af">Milestone Graph Generation and Consensus Merge</text>
+
+    <g transform="translate(25,52)">
+      <rect width="270" height="192" rx="10" fill="#fff" stroke="#dbeafe" stroke-width="1.5"/>
+      <use href="#i-doc" x="14" y="8" width="20" height="20" color="#2563eb"/>
+      <text x="42" y="23" font-size="15" font-weight="800" fill="#1e40af">Public task view</text>
+      <rect x="14" y="34" width="242" height="34" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-doc" x="24" y="42" width="18" height="18" color="#3b82f6"/><text x="50" y="55" font-size="13" font-weight="700" fill="#334155">Instruction</text>
+      <rect x="14" y="76" width="242" height="34" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-chip" x="24" y="84" width="18" height="18" color="#3b82f6"/><text x="50" y="97" font-size="13" font-weight="700" fill="#334155">Tool schemas</text>
+      <rect x="14" y="118" width="242" height="34" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-db" x="24" y="126" width="18" height="18" color="#3b82f6"/><text x="50" y="139" font-size="13" font-weight="700" fill="#334155">Initial metadata</text>
+      <rect x="14" y="160" width="242" height="20" rx="5" fill="#fef2f2" stroke="#fecaca"/>
+      <text x="24" y="174" font-size="12" font-weight="800" fill="#b91c1c">No gold path / no tests</text>
+    </g>
+    <line x1="297" y1="148" x2="312" y2="148" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arr-blue)"/>
+
+    <g transform="translate(315,52)">
+      <rect width="500" height="192" rx="10" fill="#fff" stroke="#dbeafe" stroke-width="1.5"/>
+      <use href="#i-plan" x="14" y="8" width="20" height="20" color="#2563eb"/>
+      <text x="42" y="23" font-size="15" font-weight="800" fill="#1e40af">Simulated candidate graphs</text>
+      <rect x="30" y="32" width="140" height="120" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="42" y="50" font-size="13" font-weight="800" fill="#334155">C1</text>
+      <rect x="75" y="60" width="52" height="20" rx="5" fill="#eff6ff" stroke="#93c5fd"/><text x="101" y="74" font-size="11" font-weight="800" fill="#1e40af" text-anchor="middle">M0</text>
+      <rect x="75" y="90" width="52" height="20" rx="5" fill="#eff6ff" stroke="#93c5fd"/><text x="101" y="104" font-size="11" font-weight="800" fill="#1e40af" text-anchor="middle">M1a</text>
+      <rect x="75" y="120" width="52" height="20" rx="5" fill="#eff6ff" stroke="#93c5fd"/><text x="101" y="134" font-size="11" font-weight="800" fill="#1e40af" text-anchor="middle">M2</text>
+      <path d="M101 80v10M101 110v10" stroke="#60a5fa" stroke-width="1.8"/>
+      <rect x="190" y="32" width="140" height="120" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="202" y="50" font-size="13" font-weight="800" fill="#334155">C2</text>
+      <rect x="235" y="60" width="52" height="20" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/><text x="261" y="74" font-size="11" font-weight="800" fill="#065f46" text-anchor="middle">M0</text>
+      <rect x="235" y="90" width="52" height="20" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/><text x="261" y="104" font-size="11" font-weight="800" fill="#065f46" text-anchor="middle">M1b</text>
+      <rect x="235" y="120" width="52" height="20" rx="5" fill="#ecfdf5" stroke="#6ee7b7"/><text x="261" y="134" font-size="11" font-weight="800" fill="#065f46" text-anchor="middle">M2</text>
+      <path d="M261 80v10M261 110v10" stroke="#34d399" stroke-width="1.8"/>
+      <rect x="350" y="32" width="140" height="120" rx="8" fill="#fffbeb" stroke="#fde68a"/>
+      <text x="362" y="50" font-size="13" font-weight="800" fill="#92400e">C3</text>
+      <rect x="395" y="60" width="52" height="20" rx="5" fill="#fef9c3" stroke="#facc15"/><text x="421" y="74" font-size="11" font-weight="800" fill="#854d0e" text-anchor="middle">M0</text>
+      <rect x="395" y="90" width="52" height="20" rx="5" fill="#fef9c3" stroke="#facc15"/><text x="421" y="104" font-size="11" font-weight="800" fill="#854d0e" text-anchor="middle">M1c</text>
+      <rect x="395" y="120" width="52" height="20" rx="5" fill="#fef9c3" stroke="#facc15"/><text x="421" y="134" font-size="11" font-weight="800" fill="#854d0e" text-anchor="middle">M2</text>
+      <path d="M421 80v10M421 110v10" stroke="#eab308" stroke-width="1.8"/>
+      <rect x="30" y="160" width="460" height="20" rx="5" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="42" y="174" font-size="12" font-weight="700" fill="#475569">Contract check: schema - acyclic - binding</text>
+    </g>
+    <line x1="817" y1="148" x2="832" y2="148" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arr-blue)"/>
+
+    <g transform="translate(835,52)">
+      <rect width="270" height="192" rx="10" fill="#fff" stroke="#86efac" stroke-width="1.5"/>
+      <use href="#i-merge" x="14" y="8" width="20" height="20" color="#059669"/>
+      <text x="42" y="23" font-size="15" font-weight="800" fill="#15803d">Semantic merge</text>
+      <rect x="14" y="32" width="242" height="26" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/><text x="24" y="49" font-size="12" font-weight="800" fill="#166534">M0</text><text x="246" y="49" font-size="12" font-weight="800" fill="#15803d" text-anchor="end">3 / 3</text>
+      <rect x="14" y="60" width="242" height="26" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/><text x="24" y="77" font-size="12" font-weight="800" fill="#166534">M1a</text><text x="246" y="77" font-size="12" font-weight="800" fill="#15803d" text-anchor="end">2 / 3</text>
+      <rect x="14" y="88" width="242" height="26" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/><text x="24" y="105" font-size="12" font-weight="800" fill="#166534">M1b</text><text x="246" y="105" font-size="12" font-weight="800" fill="#15803d" text-anchor="end">2 / 3</text>
+      <rect x="14" y="116" width="242" height="26" rx="5" fill="#fef2f2" stroke="#fecaca"/><text x="24" y="133" font-size="12" font-weight="800" fill="#991b1b">M1c</text><text x="246" y="133" font-size="12" font-weight="800" fill="#b91c1c" text-anchor="end">1 / 3</text>
+      <rect x="14" y="144" width="242" height="26" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/><text x="24" y="161" font-size="12" font-weight="800" fill="#166534">M2</text><text x="246" y="161" font-size="12" font-weight="800" fill="#15803d" text-anchor="end">3 / 3</text>
+      <text x="14" y="186" font-size="12" font-weight="700" fill="#475569">Majority + transitive reduction</text>
+    </g>
+    <line x1="1107" y1="148" x2="1122" y2="148" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arr-blue)"/>
+
+    <g transform="translate(1125,52)">
+      <rect width="380" height="192" rx="10" fill="#fff" stroke="#86efac" stroke-width="1.5"/>
+      <use href="#i-dag" x="14" y="8" width="20" height="20" color="#059669"/>
+      <text x="42" y="23" font-size="15" font-weight="800" fill="#15803d">Path-tolerant Milestone DAG</text>
+      <rect x="20" y="32" width="80" height="120" rx="7" fill="#eff6ff" opacity=".48"/>
+      <rect x="100" y="32" width="140" height="120" rx="7" fill="#ecfdf5" opacity=".62"/>
+      <rect x="240" y="32" width="115" height="120" rx="7" fill="#fef9c3" opacity=".45"/>
+      <text x="30" y="48" font-size="12" font-weight="800" fill="#1e40af">S1</text>
+      <text x="110" y="48" font-size="12" font-weight="800" fill="#15803d">S2</text>
+      <text x="250" y="48" font-size="12" font-weight="800" fill="#a16207">S3</text>
+      <rect x="35" y="98" width="65" height="28" rx="6" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/><text x="67" y="116" font-size="12" font-weight="800" fill="#166534" text-anchor="middle">M0</text>
+      <rect x="135" y="66" width="70" height="24" rx="6" fill="#eff6ff" stroke="#60a5fa"/><text x="170" y="82" font-size="11" font-weight="800" fill="#1e40af" text-anchor="middle">M1a</text>
+      <rect x="135" y="122" width="70" height="24" rx="6" fill="#ecfdf5" stroke="#34d399"/><text x="170" y="138" font-size="11" font-weight="800" fill="#065f46" text-anchor="middle">M1b</text>
+      <rect x="270" y="98" width="65" height="28" rx="6" fill="#fef9c3" stroke="#eab308"/><text x="302" y="116" font-size="12" font-weight="800" fill="#854d0e" text-anchor="middle">M2</text>
+      <path d="M100 112 Q118 92 133 78M100 112 Q118 132 133 146M205 78 Q238 92 268 104M205 134 Q238 122 268 112" fill="none" stroke="#94a3b8" stroke-width="1.6"/>
+      <text x="20" y="174" font-size="12" font-weight="700" fill="#475569">Alternative paths remain valid</text>
+    </g>
+  </g>
+
+  <g transform="translate(800,304)"><line x1="0" y1="0" x2="0" y2="16" stroke="#059669" stroke-width="2.5" stroke-dasharray="4,3" marker-end="url(#arr-green)"/></g>
+
+  <g transform="translate(35,340)">
+    <rect width="1530" height="620" rx="16" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="1530" height="40" rx="16" fill="#dcfce7" stroke="#bbf7d0"/>
+    <circle cx="28" cy="20" r="12" fill="#10b981"/><text x="24" y="25" font-size="14" font-weight="900" fill="#fff">2</text>
+    <text x="52" y="26" font-size="20" font-weight="800" fill="#166534">Stage-wise Trajectory Evaluation and Dynamic Control</text>
+
+    <g transform="translate(25,40)">
+      <rect width="760" height="540" rx="10" fill="#fff" stroke="#bbf7d0" stroke-width="1.5"/>
+      <use href="#i-layers" x="14" y="8" width="20" height="20" color="#059669"/>
+      <text x="42" y="23" font-size="16" font-weight="800" fill="#166534">Stage-aligned execution view</text>
+      <text x="14" y="45" font-size="12" font-weight="700" fill="#64748b">DAG, closed actions, and decisions share the same stage coordinates.</text>
+
+      <rect x="14" y="56" width="201" height="438" rx="7" fill="#eff6ff" opacity=".28"/>
+      <rect x="215" y="56" width="290" height="438" rx="7" fill="#ecfdf5" opacity=".40"/>
+      <rect x="505" y="56" width="241" height="438" rx="7" fill="#fef9c3" opacity=".28"/>
+      <line x1="215" y1="58" x2="215" y2="494" stroke="#2563eb" stroke-width="2" stroke-dasharray="7,5"/>
+      <line x1="505" y1="58" x2="505" y2="494" stroke="#f59e0b" stroke-width="2" stroke-dasharray="7,5"/>
+      <text x="24" y="78" font-size="11" font-weight="900" fill="#475569">MILESTONE DAG</text>
+      <text x="155" y="78" font-size="12" font-weight="900" fill="#1e40af" text-anchor="middle">S1</text>
+      <text x="360" y="78" font-size="12" font-weight="900" fill="#15803d" text-anchor="middle">S2</text>
+      <text x="625" y="78" font-size="12" font-weight="900" fill="#a16207" text-anchor="middle">S3</text>
+
+      <rect x="85" y="95" width="70" height="38" rx="6" fill="#dcfce7" stroke="#22c55e" stroke-width="1.6"/><text x="120" y="118" font-size="13" font-weight="800" fill="#166534" text-anchor="middle">M0</text>
+      <rect x="260" y="90" width="80" height="30" rx="6" fill="#eff6ff" stroke="#60a5fa" stroke-width="1.4"/><text x="300" y="109" font-size="12" font-weight="800" fill="#1e40af" text-anchor="middle">M1a</text>
+      <rect x="260" y="145" width="80" height="30" rx="6" fill="#ecfdf5" stroke="#34d399" stroke-width="1.4"/><text x="300" y="164" font-size="12" font-weight="800" fill="#065f46" text-anchor="middle">M1b</text>
+      <rect x="615" y="95" width="80" height="38" rx="6" fill="#fef9c3" stroke="#eab308" stroke-width="1.5"/><text x="655" y="118" font-size="13" font-weight="800" fill="#854d0e" text-anchor="middle">M2</text>
+      <path d="M155 108 Q205 95 258 103M155 122 Q205 138 258 159M340 105 Q480 100 613 108M340 160 Q480 128 613 120" fill="none" stroke="#94a3b8" stroke-width="1.6"/>
+
+      <text x="24" y="250" font-size="11" font-weight="900" fill="#475569">CLOSED ACTIONS</text>
+      <path d="M300 175V220" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="5,4"/>
+      <rect x="285" y="220" width="180" height="7" rx="3.5" fill="#fca5a5"/>
+      <text x="375" y="214" font-size="11" font-weight="800" fill="#b91c1c" text-anchor="middle">does not settle M1a/M1b</text>
+      <circle cx="120" cy="300" r="21" fill="#dcfce7" stroke="#22c55e" stroke-width="2.2"/><text x="120" y="305" font-size="12" font-weight="900" fill="#166534" text-anchor="middle">t1</text>
+      <circle cx="300" cy="300" r="19" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/><text x="300" y="305" font-size="12" font-weight="900" fill="#1e40af" text-anchor="middle">t2</text>
+      <circle cx="370" cy="300" r="19" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/><text x="370" y="305" font-size="12" font-weight="900" fill="#1e40af" text-anchor="middle">t3</text>
+      <circle cx="440" cy="300" r="19" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/><text x="440" y="305" font-size="12" font-weight="900" fill="#1e40af" text-anchor="middle">t4</text>
+      <circle cx="500" cy="300" r="21" fill="#fee2e2" stroke="#ef4444" stroke-width="2.2"/><text x="500" y="305" font-size="10" font-weight="900" fill="#991b1b" text-anchor="middle">STOP</text>
+      <path d="M141 300H279M320 300H349M390 300H419M460 300H477" stroke="#64748b" stroke-width="1.8" marker-end="url(#arr-gray)"/>
+      <path d="M120 279V135" stroke="#059669" stroke-width="1.8" stroke-dasharray="6,4" marker-end="url(#arr-green)"/>
+      <path d="M300 281V227M370 281V227M440 281V227" stroke="#f87171" stroke-width="1.4" stroke-dasharray="4,3"/>
+      <text x="132" y="205" font-size="11" font-weight="800" fill="#047857">settles M0; closes S1</text>
+      <text x="120" y="338" font-size="11" font-weight="700" fill="#166534" text-anchor="middle">get time</text>
+      <text x="300" y="338" font-size="11" font-weight="700" fill="#1e40af" text-anchor="middle">search</text>
+      <text x="370" y="338" font-size="11" font-weight="700" fill="#1e40af" text-anchor="middle">retry</text>
+      <text x="440" y="338" font-size="11" font-weight="700" fill="#1e40af" text-anchor="middle">stagnation</text>
+      <text x="500" y="338" font-size="11" font-weight="900" fill="#b91c1c" text-anchor="middle">no progress</text>
+      <text x="625" y="300" font-size="12" font-weight="800" fill="#6b7280" text-anchor="middle">not</text>
+      <text x="625" y="318" font-size="12" font-weight="800" fill="#6b7280" text-anchor="middle">reached</text>
+
+      <text x="24" y="440" font-size="11" font-weight="900" fill="#475569">STAGE DECISION</text>
+      <rect x="30" y="447" width="160" height="32" rx="6" fill="#f0fdf4" stroke="#86efac"/><text x="110" y="467" font-size="12" font-weight="800" fill="#15803d" text-anchor="middle">PASS -&gt; S2</text>
+      <rect x="240" y="447" width="240" height="32" rx="6" fill="#fdf4ff" stroke="#f0abfc"/><text x="360" y="461" font-size="12" font-weight="900" fill="#7e22ce" text-anchor="middle">ADAPT</text><text x="360" y="474" font-size="11" font-weight="700" fill="#7e22ce" text-anchor="middle">Jstd -&gt; Jexp; weights up; halt</text>
+      <rect x="525" y="447" width="190" height="32" rx="6" fill="#f1f5f9" stroke="#e2e8f0"/><text x="620" y="467" font-size="12" font-weight="800" fill="#64748b" text-anchor="middle">S3 NOT REACHED</text>
+      <path d="M190 463H236" stroke="#7e22ce" stroke-width="1.8" marker-end="url(#arr-purple)"/>
+    </g>
+
+    <line x1="787" y1="160" x2="811" y2="160" stroke="#059669" stroke-width="2.2" marker-end="url(#arr-green)"/>
+    <line x1="787" y1="430" x2="811" y2="430" stroke="#059669" stroke-width="2.2" marker-end="url(#arr-green)"/>
+
+    <g transform="translate(815,40)">
+      <rect width="690" height="540" rx="10" fill="#fff" stroke="#bbf7d0" stroke-width="1.5"/>
+      <use href="#i-gauge" x="14" y="8" width="20" height="20" color="#059669"/>
+      <text x="42" y="23" font-size="16" font-weight="800" fill="#166534">Uncertainty-adaptive review loop</text>
+
+      <rect x="14" y="38" width="151" height="80" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="26" y="58" font-size="13" font-weight="900" fill="#334155">Stage evidence</text>
+      <text x="26" y="76" font-size="11" font-weight="700" fill="#64748b">S, u, frontier gap,</text>
+      <text x="26" y="90" font-size="11" font-weight="700" fill="#64748b">minefield signal</text>
+
+      <rect x="177" y="38" width="151" height="80" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="189" y="58" font-size="13" font-weight="900" fill="#334155">Diagnose</text>
+      <text x="189" y="76" font-size="11" font-weight="700" fill="#64748b">pass / warn / fail;</text>
+      <text x="189" y="90" font-size="11" font-weight="700" fill="#64748b">ambiguity check</text>
+
+      <rect x="340" y="38" width="151" height="80" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="352" y="58" font-size="13" font-weight="900" fill="#334155">Adapt policy</text>
+      <text x="352" y="76" font-size="11" font-weight="700" fill="#64748b">select judge tier;</text>
+      <text x="352" y="90" font-size="11" font-weight="700" fill="#64748b">update weights</text>
+
+      <rect x="503" y="38" width="173" height="80" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="515" y="58" font-size="13" font-weight="900" fill="#334155">Control action</text>
+      <text x="515" y="76" font-size="11" font-weight="700" fill="#64748b">advance, escalate,</text>
+      <text x="515" y="90" font-size="11" font-weight="700" fill="#64748b">or halt rollout</text>
+
+      <line x1="165" y1="78" x2="175" y2="78" stroke="#059669" stroke-width="2.2" marker-end="url(#arr-green)"/>
+      <line x1="328" y1="78" x2="338" y2="78" stroke="#059669" stroke-width="2.2" marker-end="url(#arr-green)"/>
+      <line x1="491" y1="78" x2="501" y2="78" stroke="#059669" stroke-width="2.2" marker-end="url(#arr-green)"/>
+      <path d="M589 118 C589 162 101 162 101 124" fill="none" stroke="#7e22ce" stroke-width="1.8" stroke-dasharray="6,4" marker-end="url(#arr-purple)"/>
+      <text x="345" y="158" font-size="11" font-weight="800" fill="#7e22ce" text-anchor="middle">next stage uses updated w and judge level</text>
+
+      <rect x="14" y="180" width="200" height="100" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+      <text x="26" y="202" font-size="14" font-weight="900" fill="#15803d">PASS</text>
+      <text x="26" y="224" font-size="11" font-weight="700" fill="#166534">High score, low u</text>
+      <text x="26" y="242" font-size="11" font-weight="700" fill="#166534">Keep cheap judge</text>
+      <text x="26" y="266" font-size="12" font-weight="900" fill="#047857">Advance frontier</text>
+
+      <rect x="226" y="180" width="200" height="100" rx="8" fill="#fdf4ff" stroke="#f0abfc"/>
+      <text x="238" y="202" font-size="14" font-weight="900" fill="#7e22ce">ADAPT</text>
+      <text x="238" y="224" font-size="11" font-weight="700" fill="#7e22ce">Low score / high u</text>
+      <text x="238" y="242" font-size="11" font-weight="700" fill="#7e22ce">Escalate weak dimension</text>
+      <text x="238" y="266" font-size="12" font-weight="900" fill="#a21caf">Update policy</text>
+
+      <rect x="438" y="180" width="238" height="100" rx="8" fill="#fff1f2" stroke="#fca5a5" stroke-width="2"/>
+      <use href="#i-stop" x="452" y="196" width="18" height="18" color="#dc2626"/>
+      <text x="478" y="210" font-size="14" font-weight="900" fill="#b91c1c">HALT</text>
+      <text x="450" y="234" font-size="11" font-weight="700" fill="#7f1d1d">Stagnation, safety violation,</text>
+      <text x="450" y="252" font-size="11" font-weight="700" fill="#7f1d1d">or unrecoverable quality</text>
+      <text x="450" y="270" font-size="12" font-weight="900" fill="#dc2626">Stop early with report</text>
+
+      <rect x="14" y="292" width="300" height="148" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-judge" x="26" y="304" width="18" height="18" color="#2563eb"/>
+      <text x="52" y="318" font-size="14" font-weight="900" fill="#334155">Judge escalation</text>
+      <rect x="26" y="332" width="272" height="22" rx="5" fill="#f0fdf4" stroke="#86efac"/><text x="36" y="347" font-size="11" font-weight="800" fill="#15803d">Jcheap - deterministic rules</text>
+      <rect x="26" y="360" width="272" height="22" rx="5" fill="#eff6ff" stroke="#bfdbfe"/><text x="36" y="375" font-size="11" font-weight="800" fill="#1e40af">Jstd - unified LLM review</text>
+      <rect x="26" y="388" width="272" height="22" rx="5" fill="#fdf4ff" stroke="#f0abfc"/><text x="36" y="403" font-size="11" font-weight="800" fill="#7e22ce">Jexp - specialist review</text>
+      <text x="26" y="429" font-size="11" font-weight="800" fill="#7e22ce">Weak / ambiguous stage escalates upward</text>
+
+      <rect x="328" y="292" width="348" height="148" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-weight" x="340" y="304" width="18" height="18" color="#7e22ce"/>
+      <text x="366" y="318" font-size="14" font-weight="900" fill="#334155">Dimension weight update</text>
+      <text x="340" y="342" font-size="11" font-weight="700" fill="#475569">Correctness</text><rect x="425" y="333" width="140" height="9" rx="4.5" fill="#bfdbfe"/><rect x="425" y="333" width="88" height="9" rx="4.5" fill="#3b82f6"/>
+      <text x="340" y="366" font-size="11" font-weight="700" fill="#475569">Efficiency</text><rect x="425" y="357" width="140" height="9" rx="4.5" fill="#a7f3d0"/><rect x="425" y="357" width="112" height="9" rx="4.5" fill="#059669"/>
+      <text x="340" y="390" font-size="11" font-weight="700" fill="#475569">Safety</text><rect x="425" y="381" width="140" height="9" rx="4.5" fill="#fecaca"/><rect x="425" y="381" width="126" height="9" rx="4.5" fill="#dc2626"/>
+      <path d="M580 337h18M580 361h18M580 385h18" stroke="#7e22ce" stroke-width="2" marker-end="url(#arr-purple)"/>
+      <text x="340" y="424" font-size="11" font-weight="800" fill="#7e22ce">Low score / high u increases weight for next stage</text>
+
+      <rect x="14" y="452" width="662" height="64" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+      <use href="#i-report" x="26" y="466" width="20" height="20" color="#334155"/>
+      <text x="56" y="476" font-size="13" font-weight="900" fill="#334155">Auditable decision report</text>
+      <text x="56" y="498" font-size="11" font-weight="700" fill="#64748b">closed action - dominator anchor - stage score - uncertainty - updated policy - stop reason</text>
+    </g>
+  </g>
+</svg>

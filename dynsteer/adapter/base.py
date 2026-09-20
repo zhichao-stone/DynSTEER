@@ -21,12 +21,12 @@ class BenchmarkDefaultResult:
     输出：
         `to_dict()` 返回 JSON 可序列化结构。
     """
-    score: float
+    score: float | None
     raw: JsonObject = field(default_factory=dict)
     metrics: JsonObject = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.score < 0.0 or self.score > 1.0:
+        if self.score is not None and (self.score < 0.0 or self.score > 1.0):
             raise ValueError("Default score 必须位于 [0, 1]")
 
     def to_dict(self) -> JsonObject:
@@ -142,6 +142,14 @@ class BaseBenchmarkHarness(ABC):
             raise ValueError("session 不能为空")
         if not reason:
             raise ValueError("reason 不能为空")
+
+    def send_guidance(self, session: object, message: str) -> None:
+        """向支持执行期干预的 benchmark 写入一次 agent 引导消息。"""
+        if session is None:
+            raise ValueError("session 不能为空")
+        if not message.strip():
+            raise ValueError("message 不能为空")
+        raise NotImplementedError("当前 benchmark 不支持执行期引导")
 
     def teardown_case(self, session: object) -> None:
         """释放 benchmark 原生 session 资源。"""

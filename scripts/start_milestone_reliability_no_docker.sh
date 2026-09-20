@@ -136,7 +136,10 @@ if [[ "$requires_toolsandbox" == "1" ]]; then
     sync_args+=(--group toolsandbox)
 fi
 if [[ "$requires_agentcompass" == "1" ]]; then
-    sync_args+=(--extra agentcompass)
+    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" != "1" ]]; then
+        echo "AgentCompass 依赖必须使用 .venv-agentcompass 独立环境，并设置 DYNSTEER_SKIP_UV_SYNC=1" >&2
+        exit 65
+    fi
 fi
 
 echo "Synchronizing the shared DynSTEER environment: $UV_PROJECT_ENVIRONMENT"

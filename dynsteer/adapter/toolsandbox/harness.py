@@ -12,9 +12,10 @@ from dynsteer.adapter.toolsandbox.utils.runtime import load_named_scenarios, loa
 from dynsteer.adapter.toolsandbox.utils.state import initial_state_from_context, snapshots_from_context, state_from_context
 from dynsteer.adapter.toolsandbox.utils.trace import sandbox_message_index, sandbox_rows_to_step_dicts
 from dynsteer.adapter.toolsandbox.utils.trajectory import trajectory_from_sandbox_rows
+from dynsteer.adapter.toolsandbox.utils.usage import ProviderUsageRecorder
 from dynsteer.adapter.utils import rows_from_dataframe, retry_call
 from dynsteer.harness.model import HarnessAdvanceResult, HarnessRunConfig
-from dynsteer.model import JsonObject, ToolSandboxSession
+from dynsteer.model import Actor, JsonObject, ToolSandboxSession, TrajectoryStep
 from dynsteer.utils import clamp, enum_name, json_safe
 
 
@@ -41,7 +42,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         if case_id not in scenarios:
             raise KeyError(f"ToolSandbox 场景不存在: {case_id}")
         scenario = scenarios[case_id]
-        roles = self._toolsandbox_roles(config)
+        usage_recorder = ProviderUsageRecorder() if config.metadata.get("capture_agent_usage") is True else None
+        roles = self._toolsandbox_roles(config, usage_recorder)
         context = copy.deepcopy(self._starting_context_from_scenario(scenario))
         self._set_current_context(context)
         initial_max = self._context_max_sandbox_message_index(context)
@@ -57,6 +59,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             initial_max_sandbox_message_index=initial_max,
             last_sandbox_message_index=initial_max,
             max_messages=max_messages,
+            usage_recorder=usage_recorder,
         )
         self._prepare_system_environment_messages(session)
         session.initial_state = initial_state_from_context(session.context, load_toolsandbox_module)
@@ -67,7 +70,9 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         session = self._require_session(session)
         if session.finished:
             return HarnessAdvanceResult(steps=[], snapshots=[], continue_running=False)
+        usage_recorder = session.usage_recorder
         self._advance_native_session(session)
+        usage_delta = usage_recorder.take_delta() if isinstance(usage_recorder, ProviderUsageRecorder) else None
         all_rows = rows_from_dataframe(
             self._sandbox_database(session.context, get_all_history_snapshots=True)
         )
@@ -95,6 +100,8 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         )
         if not trajectory.steps and not session.finished:
             raise RuntimeError("benchmark session 未完成但没有新增轨迹步骤")
+        if isinstance(usage_recorder, ProviderUsageRecorder):
+            self._assign_agent_usage(trajectory.steps, usage_delta, usage_recorder)
         if indexes:
             session.last_sandbox_message_index = max(indexes)
         return HarnessAdvanceResult(
@@ -106,7 +113,10 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
     def metrics_from_session(self, session: object) -> JsonObject:
         """返回 ToolSandbox 运行期 metrics。"""
         self._require_session(session)
-        return {"native_evaluation_skipped": True}
+        metrics: JsonObject = {"native_evaluation_skipped": True}
+        if isinstance(session.usage_recorder, ProviderUsageRecorder):
+            metrics["agent_usage"] = session.usage_recorder.summary()
+        return metrics
 
     def initial_state_from_session(self, session: object) -> JsonObject | None:
         """返回当前 ToolSandbox session 固化的真实初始状态。"""
@@ -174,6 +184,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             metrics={
                 "turn_count": int(getattr(result, "turn_count", 0)),
                 "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                "native_evaluation_token_source": "deterministic_native_verifier",
             },
         )
 
@@ -185,6 +196,45 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         session.finished = True
         session.stop_reason = reason
         session.termination_reason = "evaluation_policy_stop"
+
+    def send_guidance(self, session: object, message: str) -> None:
+        """写入一条只对 agent 可见的 ToolSandbox 引导轮。"""
+        session = self._require_session(session)
+        if not message.strip():
+            raise ValueError("message 不能为空")
+        if session.finished or not bool(
+            self._last_column_value(self._sandbox_database(session.context), "conversation_active")
+        ):
+            raise RuntimeError("ToolSandbox 会话已结束，无法写入引导消息")
+        latest_index = int(
+            self._last_column_value(self._sandbox_database(session.context), "sandbox_message_index")
+        )
+        if latest_index >= session.initial_max_sandbox_message_index + session.max_messages:
+            raise RuntimeError("ToolSandbox 已达到 max_messages，无法写入引导消息")
+        self._append_guidance_message(session, message)
+
+    def _append_guidance_message(self, session: ToolSandboxSession, message: str) -> None:
+        """通过 ToolSandbox BaseRole 公开写入 API 追加隐藏 user 消息。"""
+        if session.context is None:
+            raise RuntimeError("ToolSandbox session 已释放")
+        # ToolSandbox 是独立可选依赖，只有在执行期引导时才加载其 role 写入边界。
+        base_role = load_toolsandbox_module("tool_sandbox.roles.base_role")
+        message_conversion = load_toolsandbox_module("tool_sandbox.common.message_conversion")
+        execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
+        role_type = getattr(execution_context, "RoleType")
+        guidance = getattr(message_conversion, "Message")(
+            sender=role_type.USER,
+            recipient=role_type.AGENT,
+            content=message.strip(),
+            visible_to=[role_type.AGENT],
+        )
+        self._set_current_context(session.context)
+        getattr(base_role, "BaseRole").add_messages([guidance])
+        session.context = self._get_current_context()
+        new_index = self._context_max_sandbox_message_index(session.context)
+        if new_index <= session.last_sandbox_message_index:
+            raise RuntimeError("ToolSandbox guidance 消息索引未前进")
+        session.last_sandbox_message_index = new_index
 
     def teardown_case(self, session: object) -> None:
         """释放 ToolSandbox role 资源并断开大对象引用。"""
@@ -237,7 +287,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             except (TypeError, ValueError):
                 return effective_name
 
-    def _toolsandbox_roles(self, config: HarnessRunConfig) -> dict[object, object]:
+    def _toolsandbox_roles(self, config: HarnessRunConfig, usage_recorder: ProviderUsageRecorder | None=None) -> dict[object, object]:
         """创建 ToolSandbox 原生 role。"""
         execution_context = load_toolsandbox_module("tool_sandbox.common.execution_context")
         execution_environment = load_toolsandbox_module("tool_sandbox.roles.execution_environment")
@@ -247,7 +297,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         user_type = self._role_impl_type(config.metadata.get("user"))
         agent_client_config = config.metadata.get("agent_client")
         user_client_config = config.metadata.get("user_client")
-        agent_factory = get_agent_factory(agent_type, agent_client_config) or getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)
+        agent_factory = get_agent_factory(agent_type, agent_client_config, usage_recorder) or getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)
         user_factory = get_user_factory(user_type, user_client_config) or getattr(cli_utils, "USER_TYPE_TO_FACTORY").get(user_type)
         if agent_factory is None or user_factory is None:
             raise ValueError("ToolSandbox agent 或 user role 工厂不存在")
@@ -256,6 +306,23 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             role_type.EXECUTION_ENVIRONMENT: execution_environment.ExecutionEnvironment(),
             role_type.AGENT: agent_factory(),
         }
+
+    def _assign_agent_usage(self, steps: list[TrajectoryStep], delta: ProviderUsageDelta | None, recorder: ProviderUsageRecorder) -> None:
+        """把一个批次的 usage 只归属给首条 agent outbound，其余明确不归属。"""
+        agent_outbound_positions = [
+            index for index, step in enumerate(steps)
+            if step.actor == Actor.AGENT and step.recipient in {Actor.USER, Actor.ENVIRONMENT}
+        ]
+        token_position = agent_outbound_positions[0] if agent_outbound_positions else -1
+        if delta is not None and delta.total_tokens and not agent_outbound_positions:
+            recorder.note_missing_agent_target()
+        for index, step in enumerate(steps):
+            if index != token_position:
+                step.cost.tokens = 0
+            elif delta is None:
+                step.cost.tokens = None
+            else:
+                step.cost.tokens = delta.total_tokens
 
     def _starting_context_from_scenario(self, scenario: object) -> object:
         """从标准 ToolSandbox scenario 读取起始 context。"""

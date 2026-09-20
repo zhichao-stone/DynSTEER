@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from dynsteer.evaluate.runtime import (
 )
 from dynsteer.evaluate.settlement import evaluate_checkpoint, finish_settlement, record_settlement, referenced_milestone_ids
 from dynsteer.evaluate.step import evaluate_agent_step, evaluate_step_minefields
+from dynsteer.evaluate.intervention import build_intervention_message, trigger_stage_id as read_trigger_stage_id
 from dynsteer.evaluate.matching.frontier import initialize_milestone_frontier
 from dynsteer.evaluate.telemetry import policy_stop_log_extra
 from dynsteer.evaluate.scoring import (
@@ -25,7 +27,7 @@ from dynsteer.evaluate.scoring import (
 )
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.evaluate.weights import select_initial_weights
-from dynsteer.experiment.model import EvaluationStrategyConfig
+from dynsteer.experiment.model import EvaluationStrategyConfig, ExperimentMethod
 from dynsteer.graph import FINISH_NODE_ID
 from dynsteer.harness.config import (
     evaluation_strategy_from_mapping,
@@ -155,6 +157,8 @@ class DynSTEEREvaluator:
         session: object | None = None
         metrics_recorder = RuntimeMetricsRecorder()
         metrics_token = activate_runtime_metrics_recorder(metrics_recorder)
+        native_default_result = None
+        native_evaluation_seconds: float | None = None
 
         try:
             session = harness.start_case(config, case_id, raw_output_dir)
@@ -174,7 +178,7 @@ class DynSTEEREvaluator:
 
             def on_step(step: TrajectoryStep) -> tuple[int, bool]:
                 decision, closed = self._evaluate_appended_step(config, task_case, trajectory, state, step, scorer)
-                stopped = self._apply_live_decision(decision, state, harness, session, task_case)
+                stopped = self._apply_live_decision(decision, state, harness, session, task_case, config)
                 return int(closed), stopped
 
             def on_finish() -> tuple[int, bool]:
@@ -182,7 +186,7 @@ class DynSTEEREvaluator:
                 if closure is None:
                     return 0, False
                 decision = self._evaluate_closed_agent_step(config, task_case, trajectory, state, closure, scorer)
-                return 1, self._apply_live_decision(decision, state, harness, session, task_case)
+                return 1, self._apply_live_decision(decision, state, harness, session, task_case, config)
 
             collect_session_trajectory(
                 harness,
@@ -193,6 +197,11 @@ class DynSTEEREvaluator:
                 (lambda count: progress_reporter.case_advanced(case_id, count)) if progress_reporter is not None else None,
             )
 
+            if config.metadata.get("collect_online_native_score") is True:
+                native_started = time.perf_counter()
+                native_default_result = harness.default_result_from_session(session)
+                native_evaluation_seconds = max(time.perf_counter() - native_started, 0.0)
+
             self._finalize_state_reports(
                 task_case,
                 trajectory,
@@ -200,6 +209,7 @@ class DynSTEEREvaluator:
                 state,
                 finish_on_termination=False,
             )
+            self._enrich_interventions(state)
             runtime_metrics = self._build_runtime_metrics(metrics_recorder, trajectory, state.agent_step_tracker.completed_count)
             result = self._build_runtime_result(
                 task_case=task_case,
@@ -209,6 +219,14 @@ class DynSTEEREvaluator:
                 runtime_metrics=runtime_metrics,
                 metadata=self._report_metadata(config, method_fallback="dynsteer_evaluate"),
             )
+            if native_default_result is not None and native_evaluation_seconds is not None:
+                self._append_online_native_metrics(
+                    runtime_metrics,
+                    native_default_result,
+                    native_evaluation_seconds,
+                )
+                result.raw_summary["native_default_result"] = native_default_result.to_dict()
+                result.evaluation_report.metadata["native_score"] = native_default_result.score
             return result
         finally:
             try:
@@ -390,7 +408,15 @@ class DynSTEEREvaluator:
         scorer: GeneralScorer,
     ) -> tuple[RuntimeEvaluationDecision | None, bool]:
         """评估已追加的 raw step，并在 agent step 闭合时执行阶段评估。"""
-        decision = evaluate_step_minefields(task_case, trajectory, state, step, scorer, self._strategy.policy_stop)
+        decision = evaluate_step_minefields(
+            task_case,
+            trajectory,
+            state,
+            step,
+            scorer,
+            self._strategy.policy_stop,
+            self._strategy.use_minefields,
+        )
         if decision is not None:
             return decision, False
         closure = state.agent_step_tracker.ingest(step)
@@ -489,6 +515,7 @@ class DynSTEEREvaluator:
         harness: BaseBenchmarkHarness,
         session: object,
         task_case: TaskCase,
+        config: HarnessRunConfig,
     ) -> bool:
         """执行单步评估函数，并统一处理策略提前终止副作用。"""
         if decision is None or not decision.termination.should_stop:
@@ -497,12 +524,193 @@ class DynSTEEREvaluator:
             if decision.stage_result is not None:
                 decision.stage_result.metadata["policy_stop_suppressed"] = True
             return False
+        if (
+            str(config.metadata.get("method") or "") == ExperimentMethod.DYNSTEER_EVALUATE_GUIDED.value
+            and not self._is_fatal_minefield(decision)
+            and self._send_guidance(decision, state, harness, session, task_case)
+        ):
+            return False
         termination_reason = decision.termination.termination_reason or DEFAULT_POLICY_STOP_REASON
         decision.termination.termination_reason = termination_reason
         state.evaluation_termination = decision.termination
         harness.stop_case(session, termination_reason)
         logger.warning("evaluator_policy_stop", extra={"事件": "策略提前终止", **policy_stop_log_extra(task_case, state, decision)})
         return True
+
+    def _send_guidance(
+        self,
+        decision: RuntimeEvaluationDecision,
+        state: RuntimeEvaluationState,
+        harness: BaseBenchmarkHarness,
+        session: object,
+        task_case: TaskCase,
+    ) -> bool:
+        """尝试把非 fatal stop 转换为公开过程诊断引导；成功返回 True。"""
+        stage_id = read_trigger_stage_id(decision)
+        milestone_id = self._trigger_milestone_id(decision)
+        if len(state.interventions) >= self._strategy.max_interventions:
+            state.interventions.append(self._intervention_record(
+                decision,
+                state,
+                stage_id,
+                milestone_id,
+                "limit_reached",
+            ))
+            return False
+        if any(item.get("trigger_stage_id") == stage_id for item in state.interventions):
+            state.interventions.append(self._intervention_record(
+                decision,
+                state,
+                stage_id,
+                milestone_id,
+                "repeat_stage_suppressed",
+            ))
+            return False
+        message: str | None = None
+        try:
+            message = build_intervention_message(task_case, decision, state)
+            harness.send_guidance(session, message)
+            outcome = "sent"
+        except Exception as exc:
+            logger.warning(
+                "evaluator_guidance_failed",
+                extra={
+                    "事件": "执行期引导失败，回退为策略终止",
+                    "case_id": task_case.case_id,
+                    "trigger_stage_id": stage_id,
+                    "error": str(exc),
+                },
+            )
+            outcome = "send_failed" if message is not None else "build_failed"
+        state.interventions.append(self._intervention_record(
+            decision,
+            state,
+            stage_id,
+            milestone_id,
+            outcome,
+            message,
+        ))
+        return outcome == "sent"
+
+    def _enrich_interventions(self, state: RuntimeEvaluationState) -> None:
+        """为已发送引导补充后续阶段状态和额外 agent 步数。"""
+        for item in state.interventions:
+            if item.get("outcome") != "sent":
+                item.update({
+                    "post_guidance_stage_id": None,
+                    "post_guidance_stage_status": None,
+                    "post_guidance_extra_agent_steps": None,
+                })
+                continue
+            stage = self._post_guidance_stage(item, state)
+            trigger_step = item.get("trigger_step_index")
+            item.update({
+                "post_guidance_stage_id": stage.stage_id if stage is not None else None,
+                "post_guidance_stage_status": stage.status.value if stage is not None else None,
+                "post_guidance_extra_agent_steps": (
+                    state.agent_step_tracker.completed_count - int(trigger_step)
+                    if isinstance(trigger_step, int) else None
+                ),
+            })
+
+    def _post_guidance_stage(
+        self,
+        intervention: JsonObject,
+        state: RuntimeEvaluationState,
+    ) -> StageEvaluationResult | None:
+        """定位一次引导之后首个可接受的 milestone checkpoint 阶段。"""
+        trigger_stage_id = intervention.get("trigger_stage_id")
+        trigger_milestone_id = intervention.get("trigger_milestone_id")
+        trigger_step_index = intervention.get("trigger_step_index")
+        if not isinstance(trigger_stage_id, str):
+            return None
+        candidates = [
+            settlement for settlement in state.settlements
+            if settlement.kind == "milestone"
+            and settlement.end_step_index > trigger_step_index
+            and (
+                settlement.stage_id == trigger_stage_id
+                or settlement.milestone_id == trigger_milestone_id
+            )
+        ] if isinstance(trigger_step_index, int) else []
+        for settlement in sorted(candidates, key=lambda item: (item.end_step_index, item.settlement_id)):
+            stage = next(
+                (
+                    stage for stage in state.stage_reports
+                    if stage.stage_id == settlement.stage_id
+                    and stage.metadata.get("synthetic_pending_milestone") is not True
+                ),
+                None,
+            )
+            if stage is not None:
+                return stage
+        return None
+
+    def _trigger_milestone_id(self, decision: RuntimeEvaluationDecision) -> str | None:
+        """读取引导触发的 milestone ID；缺少时保持可追溯空值。"""
+        if decision.stage_result is not None and decision.stage_result.milestone_id:
+            return decision.stage_result.milestone_id
+        detail = decision.termination.termination_detail or {}
+        if isinstance(detail, dict):
+            for key in ("milestone_id", "most_promising_milestone_id"):
+                value = detail.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        return None
+
+    def _intervention_record(
+        self,
+        decision: RuntimeEvaluationDecision,
+        state: RuntimeEvaluationState,
+        trigger_stage_id: str,
+        trigger_milestone_id: str | None,
+        outcome: str,
+        message: str | None = None,
+    ) -> JsonObject:
+        """构造一次介入尝试的结构化审计记录。"""
+        return {
+            "intervention_index": len(state.interventions),
+            "trigger_step_index": self._trigger_step_index(decision),
+            "trigger_stage_id": trigger_stage_id,
+            "trigger_milestone_id": trigger_milestone_id,
+            "termination_code": decision.termination.termination_code,
+            "message_sha256": hashlib.sha256(message.encode("utf-8")).hexdigest() if message is not None else None,
+            "message_preview": message[:160] if message is not None else None,
+            "outcome": outcome,
+        }
+
+    def _append_online_native_metrics(
+        self,
+        runtime_metrics: JsonObject,
+        native_default_result: object,
+        native_evaluation_seconds: float,
+    ) -> None:
+        """把显式开启的 online native 评估统计并入 runtime metrics。"""
+        runtime_metrics["native_evaluation_seconds"] = native_evaluation_seconds
+        native_metrics = getattr(native_default_result, "metrics", {})
+        native_metrics = native_metrics if isinstance(native_metrics, dict) else {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = native_metrics.get(key)
+            runtime_metrics[f"native_evaluation_{key}"] = value if isinstance(value, int) else None
+
+    def _is_fatal_minefield(self, decision: RuntimeEvaluationDecision) -> bool:
+        """判断当前 stop 是否为 fatal minefield 硬停止。"""
+        code = decision.termination.termination_code
+        return bool(code and code.startswith("minefield:"))
+
+    def _trigger_step_index(self, decision: RuntimeEvaluationDecision) -> int | None:
+        """从结构化决策中读取当前 raw step index。"""
+        detail = decision.termination.termination_detail or {}
+        if isinstance(detail, dict):
+            boundary = detail.get("boundary")
+            if isinstance(boundary, dict) and isinstance(boundary.get("step_index"), int):
+                return boundary["step_index"]
+            value = detail.get("step_index")
+            if isinstance(value, int):
+                return value
+        if decision.checkpoint is not None:
+            return decision.checkpoint.end_step_index
+        return None
 
     def _record_replay_decision(
         self,

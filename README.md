@@ -5,7 +5,7 @@ DynSTEER 是阶段式动态 Agent 轨迹评估实验入口。第一阶段实现�
 ## 运行最小实验
 
 ```bash
-uv run python main.py --input examples/minimal_experiment.json --results-dir results
+./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_retest.json
 ```
 
 ## 查看静态评估看板
@@ -70,18 +70,18 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 
 ## 运行统一实验
 
-统一实验入口读取 `data/experiments/*.json`，用于编排 `default`、`dynsteer_replay`、`dynsteer_evaluate` 等方法矩阵。当前示例配置 `data/experiments/double_benchmark_initial.json` 默认运行 ToolSandbox 的 `default` 与 `dynsteer_replay`。
+统一实验入口读取 `data/experiments/*.json`，用于编排 `default`、`dynsteer_replay`、`dynsteer_evaluate` 等方法矩阵。当前示例配置 `data/experiments/toolsandbox_partial_main.json` 默认运行 ToolSandbox 的 `default` 与 `dynsteer_replay`。
 
 通过 Docker 启动实验：
 
 ```bash
-./scripts/start_experiment.sh --exp data/experiments/double_benchmark_initial.json
+./scripts/start_experiment.sh --exp data/experiments/toolsandbox_partial_main.json
 ```
 
 不通过 Docker、使用本地 uv 环境启动实验：
 
 ```bash
-./scripts/start_experiment_no_docker.sh --exp data/experiments/double_benchmark_initial.json
+./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json
 ```
 
 如需强制重建 `data/<benchmark>/adapted_cases`，在命令后追加 `--force_adapt`；它会自动连带强制重跑评估 case。只想覆盖已有 case 产物时用 `--force_eval`，只想跳过 `index.json`、`scores.json` 和 `metrics.json` 时用 `--no_sum`。
@@ -93,14 +93,14 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text
-runs/exp/double_benchmark_initial/<benchmark>/<model_id>/<method>/<case_id>
-results/exp/double_benchmark_initial/<benchmark>/<model_id>/<method>/<case_id>
+runs/exp/toolsandbox_partial_main/<benchmark>/<model_id>/<method>/<case_id>
+results/exp/toolsandbox_partial_main/<benchmark>/<model_id>/<method>/<case_id>
 ```
 
 也可以绕过脚本直接调用主入口：
 
 ```bash
-uv run python main.py --exp data/experiments/double_benchmark_initial.json
+uv run python main.py --exp data/experiments/toolsandbox_partial_main.json
 ```
 直接调用主入口时，benchmark 源码仍需要已能被当前环境导入；自动读取 `source_root` 和 `max_workers` 的是实验 wrapper 脚本。
 Docker 启动时，脚本会把 `benchmark.json.source_root` 指向的源码目录自动挂载到容器内与 `benchmark.json` 相同的相对路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
@@ -126,41 +126,30 @@ AgentCompass 是可选 benchmark 依赖。只运行 DynSTEER/ToolSandbox 时使�
 uv sync --locked
 ```
 
-选择 `swebench_pro` 或 `skillsbench` 时，先安装可选 extra：
+选择 `swebench_pro` 或 `skillsbench` 时，不要把 AgentCompass 安装进 DynSTEER/ToolSandbox 的主环境。启动脚本会根据 `--source` 指向的源码自动准备 `.venv-agentcompass`。DynSTEER/ToolSandbox 主环境保持：
 
 ```powershell
-uv sync --locked --extra agentcompass
+uv sync --locked
 ```
 
-然后还必须按固定 AgentCompass commit `04d138a1c1decd2c9caa8c2659c698d7ffb677b4` 的 requirements 安装所选 benchmark、harness 和 environment 依赖。当前 AgentCompass 固定提交要求 `openai>=2.41.1`，而 DynSTEER/ToolSandbox 基础依赖仍固定 `openai==1.17.0`；因此不能把两个 benchmark 环境当作同一个已验证的 uv 环境，建议为 AgentCompass 单独创建 Python 3.12+ 虚拟环境，并以 `--no-deps` 安装 DynSTEER 源码后运行。模型 endpoint 与密钥分别通过 `MODEL_BASE_URL`、`MODEL_API_KEY` 配置。
+脚本按固定 AgentCompass commit `04d138a1c1decd2c9caa8c2659c698d7ffb677b4` 的包声明安装其依赖。当前 AgentCompass 要求 `openai>=2.41.1`，而 DynSTEER/ToolSandbox 基础依赖固定 `openai==1.17.0`；因此两个 benchmark 环境不能混用同一个 uv 锁文件，AgentCompass 必须使用 Python 3.12+ 独立虚拟环境，DynSTEER 源码以 `--no-deps` 方式装入该环境。模型 endpoint 与密钥分别通过 `MODEL_BASE_URL`、`MODEL_API_KEY` 配置。
 
-将 `data/experiments/agentcompass_cross_benchmark.json` 中的模型 ID、SWE-bench Pro instance ID 和 SkillsBench task ID 三个占位值替换后运行：
+使用固化后的跨 Benchmark 主实验配置运行：
 
 ```powershell
-./scripts/start_experiment_no_docker.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
+./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --workers 1
 ```
 
 Docker 路径使用同样的参数：
 
 ```powershell
-./scripts/start_experiment.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
+./scripts/start_experiment.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
 ```
 
-这些脚本会根据 benchmark 自动执行 `uv sync --extra agentcompass`；它们只负责启用 bridge extra，不会替您安装 AgentCompass 的完整上游 requirements。实际运行仍应使用下方的 Python 3.12 独立环境方案。
+这些脚本会创建 `.venv-agentcompass`，安装 AgentCompass 源码、以 `--no-deps` 安装 DynSTEER 源码，并补充 DynSTEER 运行所需的独立依赖；后续运行会通过环境内 stamp 复用该环境。`DYNSTEER_AGENTCOMPASS_FORCE_INSTALL=1` 可强制重装；`DYNSTEER_AGENTCOMPASS_VENV` 和 `DYNSTEER_AGENTCOMPASS_PYTHON` 可覆盖环境路径和 Python 版本。
 
-该示例中的三个 ID 仍是占位符，必须替换为真实值。DynSTEER 通过 AgentCompass 加载数据、执行 agent 并采用原生评分，不需要本地 SWE-bench_Pro-os、SkillsBench 源仓库或 DynSTEER 自有官方评分脚本。
+配置中的 SWE-bench Pro 和 SkillsBench case ID 已按固定 seed 固化，模型凭据仍通过环境变量提供。DynSTEER 通过 AgentCompass 加载数据、执行 agent 并采用原生评分，不需要本地 SWE-bench_Pro-os、SkillsBench 源仓库或 DynSTEER 自有官方评分脚本。
 
-在 Windows 上，针对当前 OpenAI SDK 版本冲突，推荐使用独立环境运行真实 AgentCompass 评估：
+AgentCompass 只接受一次 run 一个统一模型 endpoint 和密钥：`MODEL_BASE_URL` 必须能服务实验配置矩阵中的全部 model ID，`MODEL_API_KEY` 必须对这些 ID 都有效。混合多个 endpoint 的主实验前，先用 `swebench_pro_pilot.json` 或 `skillsbench_pilot.json` 这类单模型配置分别验证。
 
-```powershell
-uv venv .venv-agentcompass --python 3.12
-$agentPython = ".venv-agentcompass\Scripts\python.exe"
-uv pip install --python $agentPython -r ..\AgentCompass\requirements\app.txt -r ..\AgentCompass\requirements\swe.txt -r ..\AgentCompass\requirements\mini-swe-agent.txt -r ..\AgentCompass\requirements\openhands.txt
-uv pip install --python $agentPython --no-deps -e ..\AgentCompass -e .
-uv pip install --python $agentPython "polars==0.20.31"
-$env:UV_PROJECT_ENVIRONMENT = ".venv-agentcompass"
-$env:DYNSTEER_SKIP_UV_SYNC = "1"
-./scripts/start_experiment_no_docker.sh --exp data/experiments/agentcompass_cross_benchmark.json --workers 1
-```
-
-这会同时准备 SWE-bench Pro 的 `mini_swe_agent` 与 SkillsBench 的 `openhands`。如果只跑其中一个 benchmark，可以去掉另一套 requirements 和实验配置项。运行前仍需准备 AgentCompass 数据缓存、Docker 以及 `MODEL_BASE_URL`/`MODEL_API_KEY`。
+上面的命令会准备 AgentCompass 基础运行时。SWE-bench Pro 的 `mini_swe_agent` 与 SkillsBench 的 `openhands` 可由 `metadata.agentcompass.auto_install_dependencies=true` 交回 AgentCompass 按需安装。运行前仍需准备 AgentCompass 数据缓存、Docker 以及 `MODEL_BASE_URL`/`MODEL_API_KEY`。

@@ -10,11 +10,12 @@ def native_result_summary(detail: Mapping[str, object]) -> JsonObject:
     correct = attempt.get("correct")
     if not isinstance(correct, bool):
         raise TypeError("SkillsBench correct 必须是 bool")
+    score: float | None
     score_value = attempt.get("score")
     if score_value is None:
         if status == "completed":
             raise ValueError("completed SkillsBench 结果必须包含 score")
-        score = 0.0
+        score = None
         reward_available = False
     else:
         if isinstance(score_value, bool) or not isinstance(score_value, (int, float)):

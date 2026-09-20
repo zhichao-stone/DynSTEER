@@ -1,0 +1,484 @@
+{
+  "benchmark": "skillsbench",
+  "display_name": "SkillsBench",
+  "source": "AgentCompass task catalog",
+  "case_id_source": "task directory name",
+  "agentcompass_commit": "04d138a1c1decd2c9caa8c2659c698d7ffb677b4",
+  "case_ids": [
+    "3d-scan-calc",
+    "ada-bathroom-plan-repair",
+    "adaptive-cruise-control",
+    "azure-bgp-oscillation-route-leak",
+    "bike-rebalance",
+    "citation-check",
+    "civ6-adjacency-optimizer",
+    "court-form-filling",
+    "crystallographic-wyckoff-position-analysis",
+    "dapt-intrusion-detection",
+    "data-to-d3",
+    "debug-trl-grpo",
+    "dialogue-parser",
+    "drone-planning-control",
+    "dynamic-object-aware-egomotion",
+    "earthquake-phase-association",
+    "earthquake-plate-calculation",
+    "econ-detrending-correlation",
+    "edit-pdf",
+    "energy-ac-optimal-power-flow",
+    "energy-market-pricing",
+    "energy-unit-commitment",
+    "enterprise-information-search",
+    "exam-block-sequencing",
+    "exceltable-in-ppt",
+    "exoplanet-detection-period",
+    "financial-modeling-qa",
+    "fix-build-agentops",
+    "fix-build-google-auto",
+    "fix-druid-loophole-cve",
+    "fix-erlang-ssh-cve",
+    "fix-visual-stability",
+    "flink-query",
+    "flood-risk-analysis",
+    "glm-lake-mendota",
+    "gravitational-wave-detection",
+    "grid-dispatch-operator",
+    "hvac-control",
+    "invoice-fraud-detection",
+    "jax-computing-basics",
+    "jpg-ocr-stat",
+    "lab-unit-harmonization",
+    "lake-warming-attribution",
+    "latex-formula-extraction",
+    "lean4-proof",
+    "llm-prefix-cache-replay",
+    "manufacturing-codebook-normalization",
+    "manufacturing-equipment-maintenance",
+    "manufacturing-fjsp-optimization",
+    "mario-coin-counting",
+    "mars-clouds-clustering",
+    "multilingual-video-dubbing",
+    "offer-letter-generator",
+    "organize-messy-files",
+    "paper-anonymizer",
+    "parallel-tfidf-search",
+    "paratransit-routing",
+    "pddl-airport-planning",
+    "pddl-tpp-planning",
+    "pdf-excel-diff",
+    "powerlifting-coef-calc",
+    "pptx-reference-formatting",
+    "protein-expression-analysis",
+    "python-scala-translation",
+    "quantum-numerical-simulation",
+    "r2r-mpc-control",
+    "radar-vital-signs",
+    "react-performance-debugging",
+    "reserves-at-risk-calc",
+    "sales-pivot-analysis",
+    "sec-financial-report",
+    "seismic-phase-picking",
+    "setup-fuzzing-py",
+    "shock-analysis-demand",
+    "shock-analysis-supply",
+    "simpo-code-reproduction",
+    "software-dependency-audit",
+    "spring-boot-jakarta-migration",
+    "suricata-custom-exfil",
+    "syzkaller-ppdev-syzlang",
+    "threejs-structure-parser",
+    "threejs-to-obj",
+    "tictoc-unnecessary-abort-detection",
+    "travel-planning",
+    "video-silence-remover",
+    "weighted-gdp-calc",
+    "xlsx-recover-data"
+  ],
+  "cases": [
+    {
+      "case_id": "3d-scan-calc",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "ada-bathroom-plan-repair",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "adaptive-cruise-control",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "azure-bgp-oscillation-route-leak",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "bike-rebalance",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "citation-check",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "civ6-adjacency-optimizer",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "court-form-filling",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "crystallographic-wyckoff-position-analysis",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "dapt-intrusion-detection",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "data-to-d3",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "debug-trl-grpo",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "dialogue-parser",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "drone-planning-control",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "dynamic-object-aware-egomotion",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "earthquake-phase-association",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "earthquake-plate-calculation",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "econ-detrending-correlation",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "edit-pdf",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "energy-ac-optimal-power-flow",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "energy-market-pricing",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "energy-unit-commitment",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "enterprise-information-search",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "exam-block-sequencing",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "exceltable-in-ppt",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "exoplanet-detection-period",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "financial-modeling-qa",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "fix-build-agentops",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "fix-build-google-auto",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "fix-druid-loophole-cve",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "fix-erlang-ssh-cve",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "fix-visual-stability",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "flink-query",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "flood-risk-analysis",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "glm-lake-mendota",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "gravitational-wave-detection",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "grid-dispatch-operator",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "hvac-control",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "invoice-fraud-detection",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "jax-computing-basics",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "jpg-ocr-stat",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "lab-unit-harmonization",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "lake-warming-attribution",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "latex-formula-extraction",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "lean4-proof",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "llm-prefix-cache-replay",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "manufacturing-codebook-normalization",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "manufacturing-equipment-maintenance",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "manufacturing-fjsp-optimization",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "mario-coin-counting",
+      "stratification_value": "media-content-production"
+    },
+    {
+      "case_id": "mars-clouds-clustering",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "multilingual-video-dubbing",
+      "stratification_value": "media-content-production"
+    },
+    {
+      "case_id": "offer-letter-generator",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "organize-messy-files",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "paper-anonymizer",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "parallel-tfidf-search",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "paratransit-routing",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "pddl-airport-planning",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "pddl-tpp-planning",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "pdf-excel-diff",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "powerlifting-coef-calc",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "pptx-reference-formatting",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "protein-expression-analysis",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "python-scala-translation",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "quantum-numerical-simulation",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "r2r-mpc-control",
+      "stratification_value": "industrial-physical-systems"
+    },
+    {
+      "case_id": "radar-vital-signs",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "react-performance-debugging",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "reserves-at-risk-calc",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "sales-pivot-analysis",
+      "stratification_value": "office-white-collar"
+    },
+    {
+      "case_id": "sec-financial-report",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "seismic-phase-picking",
+      "stratification_value": "natural-science"
+    },
+    {
+      "case_id": "setup-fuzzing-py",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "shock-analysis-demand",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "shock-analysis-supply",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "simpo-code-reproduction",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "software-dependency-audit",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "spring-boot-jakarta-migration",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "suricata-custom-exfil",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "syzkaller-ppdev-syzlang",
+      "stratification_value": "cybersecurity"
+    },
+    {
+      "case_id": "threejs-structure-parser",
+      "stratification_value": "media-content-production"
+    },
+    {
+      "case_id": "threejs-to-obj",
+      "stratification_value": "media-content-production"
+    },
+    {
+      "case_id": "tictoc-unnecessary-abort-detection",
+      "stratification_value": "software-engineering"
+    },
+    {
+      "case_id": "travel-planning",
+      "stratification_value": "mathematics-or-formal-reasoning"
+    },
+    {
+      "case_id": "video-silence-remover",
+      "stratification_value": "media-content-production"
+    },
+    {
+      "case_id": "weighted-gdp-calc",
+      "stratification_value": "finance-economics"
+    },
+    {
+      "case_id": "xlsx-recover-data",
+      "stratification_value": "finance-economics"
+    }
+  ],
+  "stats": {
+    "total_case_count": 87,
+    "unique_case_count": 87,
+    "duplicate_case_count": 0,
+    "category_distribution": {
+      "cybersecurity": 7,
+      "finance-economics": 9,
+      "industrial-physical-systems": 14,
+      "mathematics-or-formal-reasoning": 8,
+      "media-content-production": 5,
+      "natural-science": 14,
+      "office-white-collar": 14,
+      "software-engineering": 16
+    },
+    "stratification_field": "category",
+    "stratification_distribution": {
+      "cybersecurity": 7,
+      "finance-economics": 9,
+      "industrial-physical-systems": 14,
+      "mathematics-or-formal-reasoning": 8,
+      "media-content-production": 5,
+      "natural-science": 14,
+      "office-white-collar": 14,
+      "software-engineering": 16
+    },
+    "stratification_missing_count": 0,
+    "validated_task_field_counts": {
+      "task_id": 87,
+      "question": 87,
+      "category": 87
+    },
+    "metadata_field_counts": {
+      "repo": 0,
+      "base_commit": 0,
+      "requirements": 0,
+      "interface": 0
+    }
+  }
+}

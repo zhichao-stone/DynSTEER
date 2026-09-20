@@ -1,0 +1,64 @@
+\section{Prompt Templates for Milestone Generation and Stage Judges}
+\label{app:prompts}
+
+This section documents the primary prompt templates used across DynSTEER's pipeline, formatted in structured boxed environments.
+
+\begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
+\textbf{Prompt Template 1: Milestone Graph Candidate Generation Prompt} \\[-6pt]
+\rule{\textwidth}{0.4pt}
+\small
+\textbf{System Prompt:} \\
+You generate candidate milestone goal graphs, not step-by-step trajectories. A node belongs in one candidate graph only when, under that candidate's complete and feasible interpretation, every valid completion must reach that operation or goal. One candidate is a hypothesis about necessity; necessity across candidates is decided later by code aggregation.
+
+\textbf{User Prompt Input:} \\
+This is candidate batch \texttt{\{batch\_index\}}. Focus code: \texttt{\{focus\_code\}}. \\
+Batch focus: \texttt{\{focus\_instruction\}}
+
+\textbf{Core Requirements:}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item Return standalone candidate graphs for the current task based strictly on the public task view \texttt{\{task\_view\}}.
+  \item Each graph must define its own milestones, dependency edges, dynamic bindings, and fatal minefields.
+  \item Seek genuine diversity: explore distinct valid tools, direct public state lookups, or alternative precedence orders.
+  \item Output must strictly follow the JSON schema specifying nodes, edges, dependencies, and minefield operations.
+\end{itemize}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
+\textbf{Prompt Template 2: Standard Judge Unified Multi-Field Prompt} \\[-6pt]
+\rule{\textwidth}{0.4pt}
+\small
+\textbf{System Role:} \\
+You are a strict task-trajectory evaluator. Evaluate only the supplied task, stage interval, constraint checks, and trajectory steps. Do not invent external facts.
+
+\textbf{Context Inputs:}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item \texttt{stage\_goal}: Success condition for the current dominator-bounded stage interval.
+  \item \texttt{rubrics}: Target dimensions to score simultaneously (e.g., correctness, efficiency, safety, tool compliance).
+  \item \texttt{steps}: Observed actions and tool returns strictly within the stage evidence window $\mathcal{W}(m^*)$.
+\end{itemize}
+
+\textbf{Evaluation Instructions:}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item Determine whether this stage satisfies \texttt{stage\_goal} within the supplied interval.
+  \item Score each target dimension from 0.0 to 1.0 based on explicit behavioral evidence.
+  \item Provide concise diagnostic justifications citing specific step indices and tool call names.
+  \item Output format: Strict JSON mapping dimension names to score, confidence, and diagnostic rationale.
+\end{itemize}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
+\textbf{Prompt Template 3: Expensive Judge Specialist Prompt (Tool Quality Dimension)} \\[-6pt]
+\rule{\textwidth}{0.4pt}
+\small
+\textbf{Specialist Objective:} \\
+You are the specialist LLM-Judge for the \texttt{tool\_quality} dimension. Score only tool-use quality.
+
+\textbf{Detailed Forensic Focus:}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item Whether the agent selected the optimal tools for the active stage goal.
+  \item Whether tool arguments are complete, accurate, and type-conforming without hallucinations.
+  \item Whether return values, exceptions, and empty results were correctly parsed and handled rather than ignored.
+  \item Penalize redundant retry loops, irrelevant exploratory calls, and unhandled tool exceptions.
+  \item Output: Calibrated continuous score in $[0, 1]$, confidence score, and forensic audit trace.
+\end{itemize}
+\end{tcolorbox}

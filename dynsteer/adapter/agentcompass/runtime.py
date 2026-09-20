@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import importlib
 import json
 import logging
 import os
@@ -20,6 +21,14 @@ from dynsteer.model import JsonObject, JsonValue
 
 AGENTCOMPASS_COMMIT = "04d138a1c1decd2c9caa8c2659c698d7ffb677b4"
 SUPPORTED_BENCHMARKS = frozenset({"swebench_pro", "skillsbench"})
+_AGENTCOMPASS_COMPONENT_MODULES = {
+    "swebench_pro": (
+        "agentcompass.benchmarks.swebench_pro",
+    ),
+    "skillsbench": (
+        "agentcompass.benchmarks.skillsbench",
+    ),
+}
 _SECRET_KEYS = frozenset({"api_key", "model_api_key", "base_url", "model_base_url", "token", "password", "secret"})
 _STATUS_VALUES = frozenset({"completed", "run_error", "eval_error", "run_error_or_eval_error", "skipped"})
 logger = logging.getLogger(__name__)
@@ -89,6 +98,7 @@ def run_agentcompass_case(
             data_dir=str(settings["data_dir"]),
             timeout_seconds=int(settings["timeout_seconds"]),
             progress="none",
+            auto_install_dependencies=bool(settings["auto_install_dependencies"]),
         )
     except Exception as exc:
         logger.exception(
@@ -143,7 +153,7 @@ def _load_task_records_cached(
     api = _agentcompass_api()
     try:
         api["bootstrap_runtime"](data_dir=data_dir, force=True)
-        api["load_builtin_components"]()
+        _load_agentcompass_components(benchmark)
         request = api["build_run_request"](
             benchmark=benchmark,
             harness="none",
@@ -186,6 +196,17 @@ def _load_task_records_cached(
     return MappingProxyType(records)
 
 
+def _load_agentcompass_components(benchmark: str) -> None:
+    """只加载目标 benchmark 的 AgentCompass 组件，避免无关依赖阻断 Windows。"""
+    try:
+        for module_name in _AGENTCOMPASS_COMPONENT_MODULES[benchmark]:
+            importlib.import_module(module_name)
+    except KeyError as exc:
+        raise ValueError(f"AgentCompass benchmark 缺少组件加载配置: {benchmark}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"AgentCompass 组件加载失败: {benchmark}") from exc
+
+
 def _agentcompass_config(config: HarnessRunConfig) -> JsonObject:
     """读取并一次性校验 metadata.agentcompass 配置边界。"""
     if config is None or not isinstance(config.metadata, dict):
@@ -223,6 +244,10 @@ def _agentcompass_config(config: HarnessRunConfig) -> JsonObject:
     result["data_dir"] = str((Path.cwd() / data_dir).resolve() if not data_dir.is_absolute() else data_dir.resolve())
     result["enabled_recipes"] = list(enabled_recipes)
     result["timeout_seconds"] = timeout
+    auto_install = value.get("auto_install_dependencies", False)
+    if not isinstance(auto_install, bool):
+        raise TypeError("metadata.agentcompass.auto_install_dependencies 必须是 bool")
+    result["auto_install_dependencies"] = auto_install
     return result
 
 
@@ -323,18 +348,18 @@ def _agentcompass_api() -> dict[str, Any]:
     # 第三方可选依赖边界：基础 DynSTEER 启动不要求安装 AgentCompass。
     try:
         from agentcompass import build_run_request, run_evaluation_request
-        from agentcompass.runtime import BENCHMARKS, load_builtin_components
+        from agentcompass.runtime import BENCHMARKS
         from agentcompass.runtime.config import bootstrap_runtime
     except ModuleNotFoundError as exc:
         raise ImportError(
-            "当前环境未安装可选 AgentCompass 依赖，请先执行 `uv sync --extra agentcompass`，"
-            "并按 AgentCompass requirements 安装所选 benchmark/harness/environment 依赖。"
+            "当前环境未安装 AgentCompass。请使用 .venv-agentcompass 独立环境安装 ../AgentCompass，"
+            "并设置 UV_PROJECT_ENVIRONMENT 与 DYNSTEER_SKIP_UV_SYNC=1；"
+            "所选 harness 的 host 依赖可由 auto_install_dependencies=true 按需安装。"
         ) from exc
     return {
         "build_run_request": build_run_request,
         "run_evaluation_request": run_evaluation_request,
         "benchmarks": BENCHMARKS,
-        "load_builtin_components": load_builtin_components,
         "bootstrap_runtime": bootstrap_runtime,
     }
 

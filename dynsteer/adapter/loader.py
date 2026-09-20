@@ -62,10 +62,12 @@ def safe_case_file_name(case_id: str) -> str:
         raise ValueError("case_id 不能转换为空文件名")
     return f"{normalized}.json"
 
-def adapted_case_path(data_root: Path, case_id: str) -> Path:
-    if data_root is None:
-        raise ValueError("data_root 不能为空")
-    return data_root / "adapted_cases" / safe_case_file_name(case_id)
+def adapted_case_path(config: HarnessRunConfig, case_id: str) -> Path:
+    if config is None or config.data_root is None:
+        raise ValueError("config.data_root 不能为空")
+    suffix = "" if config.use_milestone_graph else ".no-milestone-graph"
+    normalized = re.sub("[^A-Za-z0-9_.-]+", "_", str(case_id)).strip("._")
+    return config.data_root / "adapted_cases" / f"{normalized}{suffix}.json"
 
 def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, force_adapt: bool=False) -> list[TaskCase]:
     """按加载阶段配置读取或重建 adapted TaskCase。
@@ -80,7 +82,7 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
     case_ids = list(config.case_ids or ())
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
-        path = adapted_case_path(config.data_root, case_id)
+        path = adapted_case_path(config, case_id)
         if force_adapt or not path.exists():
             task_case = _adapt_task_case(config, adapter, case_id)
             save_task_case(path, task_case)
@@ -139,7 +141,17 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
         graph = task_case.milestone_graph
         has_origin_graph = graph is not None
         generation = config.milestone_generation
-        if generation.use_origin_milestone and has_origin_graph:
+        if not config.use_milestone_graph:
+            graph = MilestoneGraph(
+                nodes=[],
+                edges=[],
+                minefields=[],
+                metadata={
+                    "source": "disabled",
+                    "empty_graph_completion_basis": "whole_trajectory",
+                },
+            )
+        elif generation.use_origin_milestone and has_origin_graph:
             graph.metadata["source"] = "origin"
         else:
             view = adapter.generator_task_view(config, task_case, case_id)
@@ -151,7 +163,9 @@ def _adapt_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, ca
                 raise RuntimeError(f"milestone generation failed: {case_id}")
             graph.metadata["source"] = "generated"
             task_case.metadata["milestone_generation"] = report.to_dict()
-        task_case.milestone_graph = graph if graph.topology is not None else enrich_milestone_graph(graph)
+        task_case.milestone_graph = (
+            graph if graph.topology is not None else enrich_milestone_graph(graph)
+        )
         task_case = _postprocess_task_case(task_case, str(config.metadata.get("stage_goal_generation", "auto")))
         task_case.metadata["generation_phase"] = "pre_execution"
         summary = summarize_llm_calls(recorder.llm_calls)

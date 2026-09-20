@@ -1,0 +1,22 @@
+\section{ToolSandbox Benchmark Dataset Details}
+\label{app:dataset_stats}
+
+ToolSandbox~\citep{gu2024toolsandbox} is an interactive, stateful benchmark specifically engineered to evaluate the complex multi-turn decision-making capabilities of tool-using LLM agents. Unlike static benchmarks that rely solely on mock API dictionaries, ToolSandbox maintains a stateful world environment with persistent entities, temporal relationships, and strict data invariants.
+
+\input{tables/tab_dataset_stats}
+
+\textbf{Methodological Selection of Sandboxed Scenarios.} In our evaluation, we benchmark agents across the suite of 509 scenarios that operate within fully sandboxed, local execution backends rather than relying on live commercial RapidAPI endpoints. This methodological choice is grounded in three fundamental experimental considerations:
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=2pt]
+    \item \textbf{Experimental Reproducibility and Determinism:} Live third-party web endpoints are inherently non-deterministic, subject to remote server downtime, dynamic endpoint deprecations, fluctuating network latency, and strict API rate-limiting. Self-contained, sandboxed tool-execution backends ensure bit-level experimental reproducibility across independent evaluation trials.
+    \item \textbf{State Snapshot Inspection and Invariant Auditing:} Evaluating stateful agent trajectories requires inspecting deep internal database mutations, restoring environment checkpoints, and verifying post-condition safety invariants. Purely local execution backends permit exact, serializable state snapshot verification, which is impossible with black-box commercial cloud endpoints.
+    \item \textbf{Hermetic Execution Security and Zero Contamination:} Running large-scale evaluations across thousands of agent rollouts on live commercial APIs introduces uncontrolled recurring monetary costs and risks data leakage over external public networks. The sandboxed suite provides a secure, self-contained testbed with zero external dependencies.
+\end{enumerate}
+
+Table~\ref{tab:dataset_stats} provides comprehensive descriptive statistics for the 509 sandboxed scenarios evaluated in our experiments:
+\begin{itemize}[leftmargin=*,itemsep=2pt,topsep=2pt]
+    \item \textbf{Domain Distribution:} Scenarios span five major functional application domains: Messaging \& Notifications (136 scenarios), Calendar \& Scheduling (112 scenarios), Contact Management (98 scenarios), Financial Transactions (84 scenarios), and Information Retrieval (79 scenarios).
+    \item \textbf{Multi-Turn Dialogues:} Each scenario involves an average of 3.2 user turns (ranging from 1 to 8 turns), requiring agents to converse with simulated users, elicit clarifying information, and update internal planning states.
+    \item \textbf{Tool Environment Complexity:} Scenarios provide an average of 12.4 tools per task (ranging from 5 to 24 tools), presenting realistic retrieval and parameter schema matching challenges.
+    \item \textbf{Perturbation Variants:} To rigorously evaluate agent robustness, the benchmark incorporates four difficulty variants: canonical tasks (127 scenarios), distraction tool injection (158 scenarios), scrambled parameter descriptors (142 scenarios), and insufficient information queries (82 scenarios) where agents must safely refuse or ask clarifying questions rather than invoking tools blindly.
+    \item \textbf{Safety Minefields:} The dataset contains 704 explicit minefield invariants across the 509 scenarios, encompassing irreversible database deletions, privacy leaks, and invalid transaction commitments.
+\end{itemize}

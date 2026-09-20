@@ -138,6 +138,7 @@ def runtime_diagnostics_summary(task_case: TaskCase, trajectory: Trajectory, sta
         "milestone_match_attempts": list(state.match_attempts),
         "milestone_final_diagnostics": _final_milestone_diagnostics(graph, state),
         "runtime_quality_diagnostics": build_quality_diagnostics(list(trajectory.steps)),
+        "interventions": list(state.interventions),
     }
 
 def selected_candidate_from_attempt(attempt: JsonObject) -> JsonObject | None:

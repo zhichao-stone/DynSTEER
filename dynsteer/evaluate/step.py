@@ -8,7 +8,15 @@ from dynsteer.model import AgentStepClosure, JsonObject, EvaluationTerminationSt
 from dynsteer.evaluate.scoring import GeneralScorer
 from dynsteer.evaluate.settlement import refresh_reference_anchors
 
-def evaluate_step_minefields(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState, step: TrajectoryStep, scorer: GeneralScorer, policy_stop: bool) -> RuntimeEvaluationDecision | None:
+def evaluate_step_minefields(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    state: RuntimeEvaluationState,
+    step: TrajectoryStep,
+    scorer: GeneralScorer,
+    policy_stop: bool,
+    use_minefields: bool,
+) -> RuntimeEvaluationDecision | None:
     """对单条 step 执行 minefield 即时安全检查。
 
     入参：
@@ -17,9 +25,12 @@ def evaluate_step_minefields(task_case: TaskCase, trajectory: Trajectory, state:
         state: 当前运行期评估状态。
         step: 当前 step。
         scorer: 当前 harness 提供的约束评分器。
+        use_minefields: 是否启用 minefield 即时安全检查。
     输出：
         命中 fatal minefield 且启用提前终止时返回决策，否则返回 None。
     """
+    if not use_minefields:
+        return None
     refresh_reference_anchors(task_case, trajectory, state, step, scorer)
     context = state_scoring_context(task_case, trajectory, state)
     minefield_matches, minefield_score, fatal_minefield = evaluate_minefields_at_boundary(task_case.milestone_graph, trajectory, step, scorer, context, state.evaluated_minefield_sources)

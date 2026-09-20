@@ -8,7 +8,7 @@ Usage:
 
 Options:
   --benchmark NAME      Benchmark name, for example toolsandbox. Required.
-  --source PATH         Local benchmark source tree to install editable.
+  --source PATH         Local benchmark source tree. AgentCompass uses this to prepare its isolated venv.
   --data-root PATH      Benchmark config directory. Defaults to data/NAME.
   --runs-dir PATH       Runtime artifacts directory. Defaults to runs.
   --results-dir PATH    DynSTEER reports directory. Defaults to results.
@@ -23,12 +23,16 @@ Options:
 Examples:
   ./scripts/start_no_docker.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
   ./scripts/start_no_docker.sh --benchmark toolsandbox --source ../ToolSandbox --only_adapt
+  ./scripts/start_no_docker.sh --benchmark swebench_pro --source ../AgentCompass
 EOF
 }
 
 script_dir() {
     cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
 }
+
+# shellcheck source=scripts/agentcompass_environment.sh
+. "$(script_dir)/agentcompass_environment.sh"
 
 require_value() {
     local option_name="$1"
@@ -81,19 +85,6 @@ ensure_uv_environment() {
 
     cd "$project_root"
     uv sync --frozen --no-dev --no-install-project --inexact
-}
-
-ensure_agentcompass_extra() {
-    local benchmark="$1"
-    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
-        return 0
-    fi
-    case "$benchmark" in
-        swebench_pro|skillsbench)
-            echo "Enabling optional AgentCompass bridge for benchmark: $benchmark"
-            uv sync --frozen --no-dev --no-install-project --inexact --extra agentcompass
-            ;;
-    esac
 }
 
 ensure_toolsandbox_group() {
@@ -279,14 +270,17 @@ main() {
     fi
 
     cd "$project_root"
+    if agentcompass_is_benchmark "$benchmark"; then
+        ensure_agentcompass_environment "$project_root" "$source_path"
+        source_path="$DYNSTEER_BENCHMARK_SOURCE_ROOT"
+    fi
     ensure_uv_environment "$project_root"
-    ensure_agentcompass_extra "$benchmark"
     ensure_toolsandbox_group "$benchmark"
     local python_executable
     python_executable="$(project_python)"
     if [[ -n "$source_path" ]]; then
         prepare_benchmark_source "$benchmark" "$source_path" "$invocation_dir"
-    else
+    elif ! agentcompass_is_benchmark "$benchmark"; then
         unset DYNSTEER_BENCHMARK_SOURCE_ROOT
     fi
 

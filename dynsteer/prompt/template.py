@@ -6,42 +6,44 @@ from dynsteer.language import TaskLanguage, normalize_task_language
 from dynsteer.milestone.model import GeneratorTaskView, MilestoneGenerationConfig
 from dynsteer.model import JsonObject
 from dynsteer.utils import json_safe
+
+
 logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 
 _MILESTONE_FOCUS_INSTRUCTIONS: dict[TaskLanguage, dict[str, str]] = {
     TaskLanguage.ENGLISH: {
         "minimality": (
-            "Challenge every search/getter/conversion/recovery node: retain it only if "
-            "the task cannot be completed correctly without its output or effect. Prefer "
-            "public literals and direct goals when sufficient."
+            "Challenge every node rigorously: retain it only if omitting it strictly prevents task success. "
+            "Never inject auxiliary shift_timestamp, timestamp_diff, or unit_conversion unless explicitly demanded. "
+            "Prefer direct public literals over intermediate getter/conversion tools."
         ),
         "alternative": (
-            "Actively seek a genuinely different complete realization: alternative visible "
-            "tools, direct use of public information, or a correct bulk set_state. Do not "
-            "create variation by omitting prerequisites."
+            "Actively explore valid alternative realizations: direct use of public state values, batch set_state goals, "
+            "or direct answer tools. Do not invent non-essential steps to manufacture superficial diversity."
         ),
         "dependency_safety": (
-            "Audit producer-consumer dependencies, executability, and fatal side effects. "
-            "Keep independent producers unordered; use empty/non-executable graphs and "
-            "minefields when the visible inputs or tools cannot safely complete the task."
+            "Audit producer-consumer dataflow and executability. Keep independent producers strictly unordered. "
+            "If the instruction lacks sufficient context to identify target records, declare response_only, "
+            "return an empty operation graph or clarification message, and register fatal minefields for unsafe side-effects."
         ),
     },
     TaskLanguage.CHINESE: {
         "minimality": (
-            "逐一质疑 search、getter、conversion、recovery 节点：只有缺少其输出或效果时任务"
-            "确实无法正确完成，才保留该节点；公开 literal 或直接 goal 已足够时优先采用。"
+            "极其严格地质疑每一个节点：只有缺少该节点任务在逻辑上必然失败时才予保留；"
+            "严禁插入非必需的 shift_timestamp、timestamp_diff 或单位转换工具；公开 literal 足矣时优先直接采用。"
         ),
         "alternative": (
-            "主动寻找真正不同且完整的实现：替代的可见工具、直接利用公开信息，或正确的批量 "
-            "set_state；不得通过省略前置条件制造差异。"
+            "主动寻找真正合法的不同实现：直接利用公开状态值、合法的批量 set_state 目标或直接答复工具；"
+            "不得通过随意省略必需前置条件或捏造无用工具来制造虚假差异。"
         ),
         "dependency_safety": (
-            "核查 producer-consumer 的真实依赖、任务可执行性和 fatal 副作用；独立 producer "
-            "之间不排序；公开输入或工具不能安全完成任务时，使用空的不可执行图和 minefield。"
+            "严格核查数据流依赖与任务可执行性；独立 producer 之间绝不连边；"
+            "若公开输入不足以确定唯一操作目标，果断判定为 response_only 并输出空操作图或澄清消息，并对危险副作用注册 fatal minefield。"
         ),
     },
 }
+
 
 def _safe_format(template: str, **kwargs: object) -> str:
     """安全替换简单 `{key}` 占位符，避免执行表达式或破坏 JSON 大括号。"""

@@ -1,0 +1,32 @@
+\section{Qualitative Case Studies and Error Analysis}
+\label{app:case_studies}
+
+\subsection{Case 1: Early Termination of Infinite Search Deadlock}
+\textbf{Scenario ID:} \\
+\null\hspace*{1.5em}\nolinkurl{search_message_with_recency_oldest_multiple_user_turn_alt_3_distraction_tools}
+
+\textbf{Agent Model:} DeepSeek-V4-Pro under ReAct prompting.
+
+\textbf{Execution Trace Summary:}
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item \textbf{Step 1:} The user requests the oldest message from a contact. The agent correctly calls \texttt{get\_current\_timestamp()}, settling milestone $M_1$ with $S_1 = 1.0$.
+    \item \textbf{Step 2:} The agent invokes \texttt{search\_messages(creation\_timestamp\_lowerbound=1785839960)}. The API returns an empty list because the bound is in the future.
+    \item \textbf{Step 3--18:} The agent enters an unrecoverable parameter loop, repeatedly querying \texttt{search\_messages} with slight arbitrary perturbations of the timestamp parameter (e.g., subtracting 100, adding 50), continuously receiving empty results.
+    \item \textbf{Native Default Evaluation:} The agent was allowed to run until the hard environment timeout of 100 turns, consuming 184.9 seconds of wall-clock time and over 32,000 tokens, only to fail at the end with a score of 0.0.
+    \item \textbf{DynSTEER Online Behavior:} DynSTEER's frontier monitor tracked that milestone $M_2$ (\texttt{retrieve\_target\_message}) remained unsettled across the ready frontier $\mathcal{F}_t$. At Step 18, representing $18.0\%$ of trajectory progress, DynSTEER triggered a \textbf{Frontier Deadlock Stop}, terminating execution immediately. This saved \textbf{82.0\% of wasteful execution turns} and 184.9 seconds of pipeline runtime.
+\end{itemize}
+
+\subsection{Case 2: First-Error Localization vs. Fluke Success}
+\textbf{Scenario ID:} \\
+\null\hspace*{1.5em}\nolinkurl{add_reminder_content_and_date_and_time_10_distraction_tools}
+
+\textbf{Agent Model:} DeepSeek-V4-Flash.
+
+\textbf{Execution Trace Summary:}
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item The agent was tasked with setting a reminder with a specific date and time.
+    \item In intermediate steps, the agent called an invalid distraction API \texttt{set\_calendar\_alarm} with malformed argument types, which failed.
+    \item The agent then stumbled upon \texttt{add\_reminder} after multiple trial-and-error retries.
+    \item \textbf{Native Default Evaluation:} Scored the final state as $1.0000$ for full resolution, completely ignoring the 4 erroneous intermediate API calls and high token overhead.
+    \item \textbf{DynSTEER Stage Review:} Detected that the stage leading to milestone $M_1$ incurred severe tool compliance penalties and inefficiency deductions, yielding $S_1 = 0.7230$. DynSTEER correctly preserved the distinction between clean one-shot execution and inefficient trial-and-error flukes.
+\end{itemize}

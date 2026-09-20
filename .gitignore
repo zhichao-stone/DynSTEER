@@ -12,7 +12,9 @@ wheels/
 # Environments
 .env
 .venv
+.venv*
 .uv-cache/
+.uv*
 env/
 venv/
 ENV/
@@ -49,5 +51,6 @@ outputs/*
 *.zip
 
 # Agents
-.agents/
+.agents*
+.codex*
 AGENTS.md

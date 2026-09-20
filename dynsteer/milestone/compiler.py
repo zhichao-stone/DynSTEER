@@ -239,7 +239,7 @@ class _CanonicalNode:
     key: str
     identity: JsonObject
     candidate: _CandidateNode
-    local_nodes: tuple[tuple[str, str, str], ...] = ()
+    local_nodes: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -706,7 +706,12 @@ def _canonicalize_candidate_graph(
         occurrence[base_digest] += 1
         key = stable_json_digest((base_by_id[node.local_id], index))
         local_to_key[node.local_id] = key
-    local_nodes = tuple(sorted((node.local_id, local_to_key[node.local_id], node.turn_id) for node in candidate.nodes))
+    local_nodes = tuple(sorted((
+        node.local_id,
+        local_to_key[node.local_id],
+        node.turn_id,
+        str(node.data.get("evidence_id") or node.data.get("executor_evidence_id") or ""),
+    ) for node in candidate.nodes))
     for node in ordered_nodes:
         canonical_nodes.append(_CanonicalNode(
             local_to_key[node.local_id], base_by_id[node.local_id], node,
@@ -958,7 +963,7 @@ def _aggregate_and_compile(
         (pair for pair, support in edge_support.items() if 2 * support > edge_eligible[pair]),
         key=lambda pair: (-edge_support[pair] / edge_eligible[pair], pair),
     )
-    binding_edges = _binding_edges(kept, key_to_id)
+    binding_edges = _binding_edges(kept, key_to_id, view, evidence)
     compiled_edges = _acyclic_edges(node_ids=set(key_to_id.values()), edges=binding_edges, issues=issues)
     edge_basis: dict[tuple[str, str], str] = {
         edge: "binding" for edge in compiled_edges
@@ -994,6 +999,10 @@ def _aggregate_and_compile(
         milestones, compiled_edges, dispositions, view
     )
     issues.extend(closure_issues)
+    milestones, compiled_edges, prune_issues = _prune_dangling_producers(
+        milestones, compiled_edges, view
+    )
+    issues.extend(prune_issues)
     node_ids = {item.milestone_id for item in milestones}
     compiled_edges = transitive_reduction(node_ids, [edge for edge in compiled_edges if edge[0] in node_ids and edge[1] in node_ids])
     minefields = _compile_minefields(observations, n, evidence)
@@ -1126,6 +1135,54 @@ def _validate_aggregated_closure(
     milestone_ids = {item.milestone_id for item in kept}
     kept_edges = [(source, target) for source, target in edges if source in milestone_ids and target in milestone_ids]
     return kept, kept_edges, issues
+
+
+def _prune_dangling_producers(
+    milestones: list[Milestone],
+    edges: list[tuple[str, str]],
+    view: GeneratorTaskView,
+) -> tuple[list[Milestone], list[tuple[str, str]], list[JsonObject]]:
+    """剔除未被任何后续节点消费、无副作用且无依赖关系的悬空只读查询节点。"""
+    issues: list[JsonObject] = []
+    active_edges = list(edges)
+    kept = list(milestones)
+    changed = True
+    while changed:
+        changed = False
+        target_ids = {target for _, target in active_edges}
+        source_ids = {source for source, _ in active_edges}
+        all_consumer_bindings = {
+            binding.get("source_milestone_id")
+            for m in kept
+            for c in m.constraints
+            if isinstance(c.expected_template, dict)
+            and isinstance(binding := c.expected_template.get("$binding"), dict)
+        }
+        for m in kept:
+            for c in m.constraints:
+                if (
+                    isinstance(c.stage_goal_semantics, dict)
+                    and c.stage_goal_semantics.get("kind") == "set_state"
+                ):
+                    all_consumer_bindings.update(_semantic_binding_ids(c.stage_goal_semantics))
+        for m in list(kept):
+            # 终端节点、有出度节点、有被绑定的节点、恢复节点均保留
+            if _compiled_terminal_node(m, view) or m.milestone_id in source_ids or m.milestone_id in all_consumer_bindings:
+                continue
+            if m.metadata.get("dependency_basis") == "recovery":
+                continue
+            tool_name = _milestone_tool_name(m)
+            contract = view.tool_contracts.get(str(tool_name), {}) if tool_name else {}
+            # 只有纯读工具且无任何后继引用的才属于冗余探针
+            if not contract.get("writes"):
+                kept.remove(m)
+                active_edges = [(s, t) for s, t in active_edges if s != m.milestone_id and t != m.milestone_id]
+                issues.append(_violation(
+                    "pruned_dangling_probe", turn_id=str(m.metadata.get("turn_id")),
+                    message=f"已修剪未被任何后续目标引用的悬空只读工具 {tool_name}",
+                ))
+                changed = True
+    return kept, active_edges, issues
 
 
 def _compiled_terminal_node(milestone: Milestone, view: GeneratorTaskView) -> bool:
@@ -1432,7 +1489,7 @@ def _compile_node(
                 constraints.append(Constraint(f"{milestone_id}_arg_{name}", ConstraintTarget.TOOL_CALL,
                                               f"$.arguments.{name}", Operator.EQUALS, expected=source.get("value"), hard=True))
             else:
-                binding = _majority_binding(values, "arguments", name)
+                binding = _majority_binding(values, "arguments", name, view=view, evidence=evidence)
                 if binding is not None:
                     semantic_arguments[name] = {"source": "node_output", **binding}
                     constraints.append(Constraint(f"{milestone_id}_arg_{name}", ConstraintTarget.TOOL_CALL,
@@ -1459,7 +1516,7 @@ def _compile_node(
         assert isinstance(target, dict)
         for name, source in sorted(dict(node.data.get(group, {})).items()):
             if isinstance(source, dict) and source.get("source") == "node_output":
-                binding = _majority_binding(values, group, name)
+                binding = _majority_binding(values, group, name, view=view, evidence=evidence)
                 if binding is None:
                     return None
                 target[name] = {"source": "node_output", **binding}
@@ -1476,24 +1533,63 @@ def _compile_node(
     return Milestone(milestone_id, f"更新 {node.data['namespace']}", f"{node.turn_id} 的状态目标", [constraint], metadata=metadata)
 
 
-def _majority_binding(values: list[_CanonicalNode], group: str, name: str) -> JsonObject | None:
+def _majority_binding(
+    values: list[_CanonicalNode],
+    group: str,
+    name: str,
+    view: GeneratorTaskView | None = None,
+    evidence: dict[str, PublicEvidence] | None = None,
+) -> JsonObject | None:
+    """针对参数或状态字段的动态绑定执行严格多数聚合，并在存在歧义时通过契约进行仲裁。"""
     counts: Counter[str] = Counter()
     payloads: dict[str, JsonObject] = {}
     for value in values:
         source = dict(value.candidate.data.get(group, {})).get(name)
         if not isinstance(source, dict) or source.get("source") != "node_output":
             continue
-        producer = _producer_key(value, str(source.get("producer_local_id")))
-        producer_turn = _producer_turn(value, str(source.get("producer_local_id")))
+        producer_local_id = str(source.get("producer_local_id"))
+        producer = _producer_key(value, producer_local_id)
+        producer_turn = _producer_turn(value, producer_local_id)
         if producer is None or producer_turn is None:
             continue
-        binding: JsonObject = {"source_milestone_id": f"m_{stable_json_digest((producer_turn, producer))[:16]}",
-                               "selector": source.get("selector"), "cardinality": source.get("cardinality")}
+        producer_evidence_id = (
+            _producer_evidence_id(value, producer_local_id)
+            or value.candidate.data.get("evidence_id")
+            or value.candidate.data.get("executor_evidence_id")
+        )
+        binding: JsonObject = {
+            "source_milestone_id": f"m_{stable_json_digest((producer_turn, producer))[:16]}",
+            "selector": source.get("selector"),
+            "cardinality": source.get("cardinality"),
+            "producer_evidence_id": producer_evidence_id,
+        }
         digest = stable_json_digest(binding)
         counts[digest] += 1
         payloads[digest] = binding
     winner = next((digest for digest, count in counts.items() if 2 * count > len(values)), None)
-    return payloads[winner] if winner is not None else None
+    if winner is not None:
+        result = dict(payloads[winner])
+        result.pop("producer_evidence_id", None)
+        return result
+
+    # 契约辅助裁决兜底: 如果无绝对多数，但候选中有契约显式支持的 selector，且唯一合法
+    if view is not None and evidence is not None and payloads:
+        contract_supported: list[JsonObject] = []
+        for binding in payloads.values():
+            prod_evidence_id = binding.get("producer_evidence_id")
+            contract = _contract_for_evidence(str(prod_evidence_id), view, evidence)
+            outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+            if any(
+                isinstance(out, dict) and out.get("selector") == binding.get("selector")
+                for out in outputs.values()
+            ):
+                contract_supported.append(binding)
+        if len(contract_supported) == 1:
+            result = dict(contract_supported[0])
+            result.pop("producer_evidence_id", None)
+            return result
+
+    return None
 
 
 def _majority_executor(values: list[_CanonicalNode]) -> str | None:
@@ -1510,14 +1606,24 @@ def _majority_executor(values: list[_CanonicalNode]) -> str | None:
 
 
 def _producer_key(value: _CanonicalNode, local_id: str) -> str | None:
-    return next((key for candidate_id, key, _ in value.local_nodes if candidate_id == local_id), None)
+    return next((item[1] for item in value.local_nodes if item[0] == local_id), None)
 
 
 def _producer_turn(value: _CanonicalNode, local_id: str) -> str | None:
-    return next((turn_id for candidate_id, _, turn_id in value.local_nodes if candidate_id == local_id), None)
+    return next((item[2] for item in value.local_nodes if item[0] == local_id), None)
 
 
-def _binding_edges(kept: dict[str, list[_CanonicalNode]], key_to_id: dict[str, str]) -> list[tuple[str, str]]:
+def _producer_evidence_id(value: _CanonicalNode, local_id: str) -> str | None:
+    """查找候选图中对应 producer local id 的 evidence id。"""
+    return next((item[3] for item in value.local_nodes if item[0] == local_id and len(item) > 3 and item[3]), None)
+
+
+def _binding_edges(
+    kept: dict[str, list[_CanonicalNode]],
+    key_to_id: dict[str, str],
+    view: GeneratorTaskView | None = None,
+    evidence: dict[str, PublicEvidence] | None = None,
+) -> list[tuple[str, str]]:
     edges: list[tuple[str, str]] = []
     for target_key, values in kept.items():
         target_id = key_to_id.get(target_key)
@@ -1530,7 +1636,7 @@ def _binding_edges(kept: dict[str, list[_CanonicalNode]], key_to_id: dict[str, s
             for name in dict(value.candidate.data.get(group, {}))
         }
         for group, name in sorted(field_names):
-            binding = _majority_binding(values, group, name)
+            binding = _majority_binding(values, group, name, view=view, evidence=evidence)
             if binding is None:
                 continue
             producer_id = binding.get("source_milestone_id")

@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title desc">
+  <title id="title">DynSTEER 阶段式动态 Agent 轨迹评估框架</title>
+  <desc id="desc">上半部分展示执行前通过多路候选任务图、确定性校验和多数聚合编译里程碑图；下半部分展示执行中对轨迹逐步观察、里程碑匹配、阶段切分、分级动态评估、策略更新和提前终止。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563EB"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .title { font: 700 44px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #0F172A; }
+      .subtitle { font: 400 23px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #475569; }
+      .phase { font: 700 27px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #0F172A; }
+      .step { font: 700 25px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #0F172A; }
+      .body { font: 400 21px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #334155; }
+      .small { font: 400 18px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #475569; }
+      .tiny { font: 400 16px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #475569; }
+      .white-step { font: 700 23px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #FFFFFF; }
+      .white-small { font: 400 17px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #EFF6FF; }
+      .box { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 2; rx: 18; filter: url(#shadow); }
+      .arrow { fill: none; stroke: #334155; stroke-width: 3; marker-end: url(#arrow); }
+      .feedback { fill: none; stroke: #2563EB; stroke-width: 3; stroke-dasharray: 10 8; marker-end: url(#arrow-blue); }
+      .node { fill: #EFF6FF; stroke: #3B82F6; stroke-width: 2; }
+      .node-text { font: 700 17px "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #1E3A8A; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1080" fill="#F8FAFC"/>
+  <text x="70" y="68" class="title">DynSTEER：阶段式动态 Agent 轨迹评估</text>
+  <text x="70" y="103" class="subtitle">先把任务编译成“必经目标地图”，再沿 Agent 的真实执行过程按阶段、按薄弱维度自适应评估</text>
+
+  <!-- Phase 1 -->
+  <rect x="55" y="133" width="1690" height="340" rx="26" fill="#EEF6FF" stroke="#BFDBFE" stroke-width="2"/>
+  <rect x="55" y="133" width="205" height="48" rx="24" fill="#1D4ED8"/>
+  <text x="157" y="165" class="white-step" text-anchor="middle">执行前：编译蓝图</text>
+
+  <g transform="translate(88,210)">
+    <rect width="270" height="175" class="box"/>
+    <circle cx="42" cy="43" r="22" fill="#DBEAFE"/>
+    <text x="42" y="50" class="step" text-anchor="middle" fill="#1D4ED8">1</text>
+    <text x="77" y="51" class="step">公开任务视图</text>
+    <text x="30" y="92" class="body">任务要求 · 可见状态</text>
+    <text x="30" y="124" class="body">工具说明 · 可核验证据</text>
+    <text x="30" y="153" class="small">不读取隐藏参考轨迹</text>
+  </g>
+
+  <path d="M 372 297 L 421 297" class="arrow"/>
+
+  <g transform="translate(432,190)">
+    <rect width="390" height="215" class="box"/>
+    <circle cx="42" cy="43" r="22" fill="#EDE9FE"/>
+    <text x="42" y="50" class="step" text-anchor="middle" fill="#6D28D9">2</text>
+    <text x="77" y="51" class="step">多路独立候选图</text>
+    <text x="28" y="83" class="small">不同批次分别关注：精简、替代路径、依赖与安全</text>
+    <g transform="translate(30,104)">
+      <rect width="95" height="78" rx="10" fill="#F5F3FF" stroke="#A78BFA" stroke-width="2"/>
+      <circle cx="25" cy="38" r="10" class="node"/><circle cx="69" cy="38" r="10" class="node"/>
+      <path d="M35 38 L57 38" class="arrow" stroke-width="2"/>
+      <text x="47" y="69" class="tiny" text-anchor="middle">候选 A</text>
+    </g>
+    <g transform="translate(146,104)">
+      <rect width="95" height="78" rx="10" fill="#F5F3FF" stroke="#A78BFA" stroke-width="2"/>
+      <circle cx="20" cy="30" r="9" class="node"/><circle cx="52" cy="30" r="9" class="node"/><circle cx="77" cy="55" r="9" class="node"/>
+      <path d="M29 30 L41 30 M59 37 L70 48" stroke="#334155" stroke-width="2" fill="none"/>
+      <text x="47" y="69" class="tiny" text-anchor="middle">候选 B</text>
+    </g>
+    <g transform="translate(262,104)">
+      <rect width="95" height="78" rx="10" fill="#F5F3FF" stroke="#A78BFA" stroke-width="2"/>
+      <circle cx="47" cy="27" r="9" class="node"/><circle cx="25" cy="52" r="9" class="node"/><circle cx="69" cy="52" r="9" class="node"/>
+      <path d="M41 35 L31 45 M53 35 L63 45" stroke="#334155" stroke-width="2" fill="none"/>
+      <text x="47" y="69" class="tiny" text-anchor="middle">候选 C</text>
+    </g>
+  </g>
+
+  <path d="M 835 297 L 884 297" class="arrow"/>
+
+  <g transform="translate(895,210)">
+    <rect width="300" height="175" class="box"/>
+    <circle cx="42" cy="43" r="22" fill="#D1FAE5"/>
+    <text x="42" y="50" class="step" text-anchor="middle" fill="#047857">3</text>
+    <text x="77" y="51" class="step">校验与多数聚合</text>
+    <text x="30" y="92" class="body">过滤不可执行或成环方案</text>
+    <text x="30" y="124" class="body">保留跨候选稳定出现的目标</text>
+    <text x="30" y="153" class="small">补齐必要依赖并做传递约简</text>
+  </g>
+
+  <path d="M 1208 297 L 1257 297" class="arrow"/>
+
+  <g transform="translate(1268,190)">
+    <rect width="425" height="215" class="box"/>
+    <circle cx="42" cy="43" r="22" fill="#FDE68A"/>
+    <text x="42" y="50" class="step" text-anchor="middle" fill="#92400E">4</text>
+    <text x="77" y="51" class="step">Milestone Graph</text>
+    <g transform="translate(28,84)">
+      <circle cx="24" cy="52" r="17" fill="#E2E8F0" stroke="#64748B" stroke-width="2"/>
+      <text x="24" y="58" class="tiny" text-anchor="middle">始</text>
+      <circle cx="108" cy="28" r="21" class="node"/><text x="108" y="29" class="node-text">M1</text>
+      <circle cx="108" cy="79" r="21" class="node"/><text x="108" y="80" class="node-text">M2</text>
+      <circle cx="218" cy="52" r="21" class="node"/><text x="218" y="53" class="node-text">M3</text>
+      <circle cx="307" cy="52" r="17" fill="#E2E8F0" stroke="#64748B" stroke-width="2"/>
+      <text x="307" y="58" class="tiny" text-anchor="middle">终</text>
+      <path d="M41 45 L86 31 M41 59 L86 76 M130 32 L196 48 M130 76 L196 57 M240 52 L289 52" stroke="#334155" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+      <rect x="330" y="17" width="55" height="29" rx="14" fill="#FEE2E2"/>
+      <text x="357" y="37" class="tiny" text-anchor="middle" fill="#991B1B">雷区</text>
+      <rect x="330" y="57" width="55" height="29" rx="14" fill="#DBEAFE"/>
+      <text x="357" y="77" class="tiny" text-anchor="middle" fill="#1E40AF">锚点</text>
+    </g>
+    <text x="28" y="195" class="small">节点是必须达成的目标；边表示不可交换的依赖</text>
+  </g>
+
+  <path d="M 1480 418 L 1480 510" class="arrow"/>
+  <text x="1496" y="458" class="small">评估约束</text>
+
+  <!-- Phase 2 -->
+  <rect x="55" y="500" width="1690" height="520" rx="26" fill="#FFFDF7" stroke="#FDE68A" stroke-width="2"/>
+  <rect x="55" y="500" width="245" height="48" rx="24" fill="#B45309"/>
+  <text x="177" y="532" class="white-step" text-anchor="middle">执行中：动态闭环</text>
+
+  <g transform="translate(85,595)">
+    <rect width="250" height="190" class="box"/>
+    <circle cx="43" cy="43" r="22" fill="#DBEAFE"/>
+    <text x="43" y="50" class="step" text-anchor="middle" fill="#1D4ED8">5</text>
+    <text x="79" y="51" class="step">Agent 真实轨迹</text>
+    <path d="M34 93 H214" stroke="#CBD5E1" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="47" cy="93" r="11" fill="#3B82F6"/>
+    <circle cx="101" cy="93" r="11" fill="#3B82F6"/>
+    <circle cx="155" cy="93" r="11" fill="#3B82F6"/>
+    <circle cx="207" cy="93" r="11" fill="#F59E0B"/>
+    <text x="30" y="134" class="body">消息 · 工具调用与结果</text>
+    <text x="30" y="164" class="body">环境状态变化</text>
+  </g>
+
+  <path d="M 348 690 L 390 690" class="arrow"/>
+
+  <g transform="translate(401,575)">
+    <rect width="290" height="230" class="box"/>
+    <circle cx="43" cy="43" r="22" fill="#FDE68A"/>
+    <text x="43" y="50" class="step" text-anchor="middle" fill="#92400E">6</text>
+    <text x="79" y="51" class="step">逐步观察与匹配</text>
+    <text x="28" y="95" class="body">每一步：即时扫描安全雷区</text>
+    <text x="28" y="130" class="body">完整动作闭合后：</text>
+    <text x="48" y="163" class="body">• 只检查当前可达节点</text>
+    <text x="48" y="196" class="body">• 对照工具、消息与状态证据</text>
+  </g>
+
+  <path d="M 704 690 L 746 690" class="arrow"/>
+
+  <g transform="translate(757,575)">
+    <rect width="280" height="230" class="box"/>
+    <circle cx="43" cy="43" r="22" fill="#D1FAE5"/>
+    <text x="43" y="50" class="step" text-anchor="middle" fill="#047857">7</text>
+    <text x="79" y="51" class="step">命中即切分阶段</text>
+    <text x="28" y="94" class="body">阶段 = 支配锚点 → 新里程碑</text>
+    <g transform="translate(33,118)">
+      <circle cx="25" cy="35" r="18" fill="#DBEAFE" stroke="#3B82F6" stroke-width="2"/>
+      <text x="25" y="41" class="tiny" text-anchor="middle">锚</text>
+      <path d="M46 35 H160" stroke="#2563EB" stroke-width="8" stroke-linecap="round"/>
+      <circle cx="186" cy="35" r="22" class="node"/>
+      <text x="186" y="36" class="node-text">M</text>
+      <text x="103" y="76" class="small" text-anchor="middle">只评价这段真实行为</text>
+    </g>
+  </g>
+
+  <path d="M 1050 690 L 1092 690" class="arrow"/>
+
+  <g transform="translate(1103,555)">
+    <rect width="430" height="270" class="box"/>
+    <circle cx="43" cy="43" r="22" fill="#EDE9FE"/>
+    <text x="43" y="50" class="step" text-anchor="middle" fill="#6D28D9">8</text>
+    <text x="79" y="51" class="step">按维度自适应评估</text>
+    <text x="28" y="88" class="small">仅聚焦本阶段相关维度；规则基线始终先运行</text>
+    <rect x="28" y="108" width="116" height="105" rx="14" fill="#ECFDF5" stroke="#6EE7B7" stroke-width="2"/>
+    <text x="86" y="140" class="step" text-anchor="middle" fill="#065F46">简略</text>
+    <text x="86" y="171" class="tiny" text-anchor="middle">规则与结构</text>
+    <text x="86" y="195" class="tiny" text-anchor="middle">快速筛查</text>
+    <rect x="157" y="108" width="116" height="105" rx="14" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+    <text x="215" y="140" class="step" text-anchor="middle" fill="#1E40AF">标准</text>
+    <text x="215" y="171" class="tiny" text-anchor="middle">目标维度组</text>
+    <text x="215" y="195" class="tiny" text-anchor="middle">多轮 LLM</text>
+    <rect x="286" y="108" width="116" height="105" rx="14" fill="#FAF5FF" stroke="#C4B5FD" stroke-width="2"/>
+    <text x="344" y="140" class="step" text-anchor="middle" fill="#6B21A8">复杂</text>
+    <text x="344" y="171" class="tiny" text-anchor="middle">薄弱维度逐项</text>
+    <text x="344" y="195" class="tiny" text-anchor="middle">专项多轮复核</text>
+    <text x="28" y="246" class="small">进展 · 状态 · 工具 · 效率 · 安全 · 交互 · 恢复</text>
+  </g>
+
+  <path d="M 1546 690 L 1585 690" class="arrow"/>
+
+  <g transform="translate(1596,590)">
+    <rect width="120" height="200" rx="18" fill="#0F172A" filter="url(#shadow)"/>
+    <text x="60" y="43" class="white-step" text-anchor="middle">阶段决策</text>
+    <path d="M20 64 H100" stroke="#475569" stroke-width="2"/>
+    <text x="60" y="96" class="white-small" text-anchor="middle">阶段分数</text>
+    <text x="60" y="125" class="white-small" text-anchor="middle">置信度</text>
+    <text x="60" y="154" class="white-small" text-anchor="middle">结构失败</text>
+    <text x="60" y="183" class="white-small" text-anchor="middle">安全雷区</text>
+  </g>
+
+  <!-- feedback and outcomes -->
+  <path d="M 1656 803 L 1656 905 L 1320 905 L 1320 838" class="feedback"/>
+  <text x="1460" y="895" class="small" fill="#1D4ED8">继续：更新下阶段权重与评估级别</text>
+
+  <path d="M 1596 820 L 1538 874" class="arrow"/>
+  <g transform="translate(1320,860)">
+    <rect width="210" height="105" rx="16" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="2"/>
+    <text x="105" y="36" class="step" text-anchor="middle" fill="#9F1239">提前终止</text>
+    <text x="105" y="69" class="small" text-anchor="middle">避免继续消耗执行成本</text>
+    <text x="105" y="94" class="small" text-anchor="middle">保留失败位置与原因</text>
+  </g>
+
+  <path d="M 1103 842 L 1058 892" class="arrow"/>
+  <g transform="translate(735,860)">
+    <rect width="315" height="105" rx="16" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="2"/>
+    <text x="158" y="36" class="step" text-anchor="middle" fill="#115E59">完成后总体验证</text>
+    <text x="158" y="68" class="small" text-anchor="middle">里程碑覆盖 · 终态复核 · 雷区惩罚</text>
+    <text x="158" y="94" class="small" text-anchor="middle">输出分阶段证据、诊断与改进线索</text>
+  </g>
+
+  <path d="M 723 912 L 335 912 L 335 803" class="feedback"/>
+  <text x="500" y="902" class="small" fill="#1D4ED8">下一动作 / 下一阶段</text>
+
+  <text x="70" y="1052" class="small">图中“多轮”指对同一评估目标进行多次独立判读；框架按维度调度评估成本，并不要求使用多个不同模型。</text>
+</svg>

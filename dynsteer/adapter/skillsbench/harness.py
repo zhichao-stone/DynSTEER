@@ -29,10 +29,15 @@ class SkillsBenchHarness(BaseAgentCompassHarness):
             "test_error_present": summary["test_error_present"],
             "reward_error_present": summary["reward_error_present"],
         }
-        metrics: JsonObject = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        metrics: JsonObject = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "native_evaluation_token_source": "deterministic_native_verifier",
+        }
         if summary["test_return_code"] is not None:
             metrics["test_return_code"] = summary["test_return_code"]
-        score = float(summary["score"]) if summary["reward_available"] else 0.0
+        score = summary["score"] if summary["reward_available"] else None
         return AgentCompassRunData(
             default_result=BenchmarkDefaultResult(score=score, raw=default_raw, metrics=metrics),
             final_state={"artifacts": artifacts},

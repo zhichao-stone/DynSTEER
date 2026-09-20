@@ -1,0 +1,49 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate DynSTEER on the ToolSandbox benchmark with 4 agent models, 3 repeats, and 509 scenarios, yielding 6{,}108 source trajectories and as many paired replay evaluations. The experiments address three central research questions: (1) \textbf{RQ1 (Section~\ref{sec:exp_rq1}):} Does stage-wise dynamic evaluation provide superior error focus and model discriminability over native terminal evaluation? (2) \textbf{RQ2 (Section~\ref{sec:exp_rq2}):} Can milestone graphs compiled from public task views reliably capture necessary goals while accommodating diverse solution paths? (3) \textbf{RQ3 (Section~\ref{sec:exp_rq3}):} How effectively does execution-time early stopping identify and remove wasteful execution prefixes?
+
+\subsection{Experimental Setup}
+\label{sec:exp_setup}
+\textbf{Benchmark Environment and Evaluated Models.} We conduct our evaluation on \textbf{ToolSandbox}~\citep{gu2024toolsandbox}, featuring state snapshots, dynamic argument types, and safety minefield invariants (dataset statistics in Appendix~\ref{app:dataset_stats}). We evaluate four instruction-tuned LLMs as agent backbones: \textbf{DeepSeek-V4-Pro}, \textbf{DeepSeek-V4-Flash}~\citep{deepseekai2024deepseekv3}, \textbf{Qwen3-Max-2026-01-23}, and \textbf{Qwen-Plus-2025-12-01}~\citep{yang2024qwen25}, under standard ReAct prompting~\citep{yao2023react}.
+
+\textbf{Comparative Paradigms.} Each agent backbone is evaluated under two comparative paradigms: first, \textbf{\textsc{Default}}, using the native benchmark verifier based on terminal environment state; and second, \textbf{\textsc{DynSTEER-Replay}}, replaying the same source trajectory under our stage-wise evaluation, dominator review, and adaptive judging ladder. Replay records a virtual stop when early termination fires; it does not execute a separate live rollout. Consequently, all early-stop savings in this paper are paired counterfactual savings relative to the matching Default prefix.
+
+\textbf{Evaluation Metrics.} We assess performance across three dimensions:
+\begin{itemize}[leftmargin=*,itemsep=1.5pt,topsep=1pt]
+    \item \textbf{Metric Discriminability:} Following evaluation meta-evaluation literature~\citep{sakai2006evaluating,sakai2014statistical,carterette2012multiple,zheng2023judging}, we measure Discriminability Score, denoted DS, at margin $\epsilon$:
+    \begin{equation}
+        \text{DS}(\epsilon) = \left( \frac{\sigma_{\text{pop}}}{\mu} \right) \cdot \sqrt{\frac{N_{\text{sig}}(\epsilon)}{\binom{M}{2}}}, \quad N_{\text{sig}}(\epsilon) = \sum_{1 \le i < j \le M} \mathbb{I}\left( |\bar{s}_{m_i} - \bar{s}_{m_j}| > \epsilon \right)
+        \label{eq:ds}
+    \end{equation}
+    where $\mu$ is the population mean score across models, $\sigma_{\text{pop}}$ is the standard deviation across model means, where their ratio represents the Coefficient of Variation that penalizes metric compression, and $N_{\text{sig}}(\epsilon)$ is the number of statistically distinguishable model pairs at margin $\epsilon$.
+    \item \textbf{Milestone Graph Quality:} We compute Tool Operation Micro-F1 and Macro-F1 to measure semantic tool coverage, Fatal Minefield F1 for safety-critical action detection, and Graph Edit Distance similarity, or GED, for structural topology alignment.
+    \item \textbf{Efficiency and Early Termination:} For stopped replay run $i$, we pair it with the complete Default trajectory from the same model, repeat, and case, align its virtual stop to the recorded execution-timing batches, and define stop progress $p_i=b_i^{\text{stop}}/b_i^{\text{full}}$ and saved progress $q_i=1-p_i$. For each model, the \textbf{replay stop rate} in Table~\ref{tab:main_results} divides replay-detected stops by the replay trajectories in that model's evaluation population and includes quality failures, frontier stagnation, and fatal minefields. Table~\ref{tab:early_stop} therefore conditions on the stopped-run population identified by this definition rather than a separately selected subset.
+\end{itemize}
+
+\subsection{RQ1: Stage-wise Dynamic Evaluation, Error Focus, and Model Discriminability}
+\label{sec:exp_rq1}
+
+\input{tables/tab_main_results}
+
+Table~\ref{tab:main_results} compares performance between native terminal evaluation (\textsc{Default}) and DynSTEER.
+
+\textbf{Model Discriminability.} On \textsc{Default}, 22.63\% of all runs receive an exact 1.0 score, reflecting severe score saturation. At $\epsilon = 0.01$, \textsc{Default} achieves a DS of 0.0270, separating 5 of 6 pairwise model comparisons (83.33\%). In contrast, \textsc{DynSTEER} achieves a DS of \textbf{0.0500}, representing an \textbf{85.2\% relative improvement}, and discriminates all 6 out of 6 model pairs (100.0\% separation) with statistical significance at $p < 0.01$ under paired Wilcoxon signed-rank tests. Across individual models, DeepSeek-V4-Flash scores $0.7338 \pm 0.0026$, clearly separated from DeepSeek-V4-Pro ($0.7111 \pm 0.0021$), Qwen-Plus ($0.6615 \pm 0.0096$), and Qwen3-Max ($0.6503 \pm 0.0094$).
+
+\textbf{Process Quality Penalization and Error Localization.} While \textsc{Default} yields a population mean of $0.7582$, \textsc{DynSTEER} yields a calibrated mean of $0.6892$ with higher inter-model variance (shifting from 0.0224 to 0.0345), effectively penalizing redundant API retries, parameter hallucinations, and hazardous side-effects that stumble into a correct final state. In blind human auditing across 60 sampled trajectories with divergent labels, DynSTEER correctly pinpointed the first critical error with 91.7\% agreement with expert annotators, whereas terminal verification found zero intermediate errors (qualitative case studies in Appendix~\ref{app:case_studies}).
+
+\subsection{RQ2: Blueprint Compilation Reliability and Path Tolerance}
+\label{sec:exp_rq2}
+
+\input{tables/tab_milestone_gen}
+
+Table~\ref{tab:milestone_gen} summarizes the semantic accuracy, structural distance, and safety alignment of generated milestone DAGs against canonical expert annotations. DynSTEER's multi-candidate synthesis and strict-majority consensus achieve an \textbf{86.0\% Tool Operation Micro-F1} (81.7\% precision, 90.7\% recall) and an \textbf{86.7\% Fatal Minefield F1} (86.0\% recall), reliably identifying irreversible operations from public API specifications alone. Transitive reduction retains alternative parallel branches without penalizing valid exploratory variations (e.g., searching by contact name rather than date), achieving a 100\% valid DAG compilation rate with consistent topological alignment.
+
+\subsection{RQ3: Counterfactual Early-Stop Savings and Judge Efficiency}
+\label{sec:exp_rq3}
+
+\input{tables/tab_early_stop}
+
+\textbf{Execution-Time Early Termination.} DynSTEER monitors complementary stopping criteria, detailed in Table~\ref{tab:early_stop}: (1) \textbf{Stage Low-Score Policy (\textsc{Score})} fires when stage scores remain below $\theta_{\text{fail}}$ (234 runs across 64 unique tasks); (2) \textbf{Frontier Stagnation (\textsc{Deadlock})} fires after $N_{\text{stag}}$ observations without ready-frontier progress (285 runs across 125 unique tasks); and (3) \textbf{Fatal Minefield Interception (\textsc{Minefield})} fires on irreversible hazardous actions (704 runs across 97 unique tasks). The total is exactly the 1{,}223 policy stops already counted in Table~\ref{tab:main_results}. Because unique tasks can hit more than one criterion, the category-level task counts do not add to 270.
+
+\textbf{Counterfactual Prefix Savings and Judge Hierarchy.} These replay events stop at 54.59\% of the paired full trajectory on average and would remove 45.41\% of the remaining execution steps. Minefield interception is earlier and saves a larger fraction of the remaining suffix than quality or deadlock stops, while \textsc{Score} stops are conservative on short trajectories. We report savings as normalized progress rather than a wall-clock net benefit: replay judging latency runs on a different clock than environment execution, and the old gross-versus-net comparison mixed these clocks. Concurrently, adaptive judge routing substantially reduces heavy deliberation while preserving ranking correlation ($\tau = 0.667$) with all-expensive judging; Appendix~\ref{app:case_studies} illustrates auditable stop decisions.

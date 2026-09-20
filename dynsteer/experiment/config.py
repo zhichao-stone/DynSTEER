@@ -134,6 +134,7 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
         case_ids=spec.case_ids,
         runs_dir=spec.runs_dir,
         results_dir=spec.results_dir,
+        use_milestone_graph=spec.strategy.use_milestone_graph,
         milestone_generation=spec.milestone_generation,
         metadata=spec.to_metadata(),
     )
@@ -194,6 +195,12 @@ def _strategy_for_method(method: ExperimentMethod, raw_strategy: object) -> Eval
         return replace(strategy, dynamic_routing=True, dynamic_weighting=False)
     if method == ExperimentMethod.DYNSTEER_REPLAY_STATIC_ROUTING:
         return replace(strategy, dynamic_routing=False, dynamic_weighting=True)
+    if method == ExperimentMethod.DYNSTEER_REPLAY_NO_MINEFIELDS:
+        return replace(strategy, use_minefields=False)
+    if method == ExperimentMethod.DYNSTEER_REPLAY_NO_MILESTONE_GRAPH:
+        return replace(strategy, use_milestone_graph=False)
+    if method == ExperimentMethod.DYNSTEER_REPLAY_NO_POLICY_STOP:
+        return replace(strategy, policy_stop=False)
     return strategy
 
 
@@ -202,7 +209,20 @@ def _judge_config(profiles: dict[str, JsonObject], profile_name: str | None) -> 
         return {}
     if profile_name not in profiles:
         raise ValueError(f"judge profile 不存在: {profile_name}")
-    return dict(profiles[profile_name])
+    profile = dict(profiles[profile_name])
+    for forbidden in ("api_key", "base_url"):
+        if forbidden in profile:
+            raise ValueError(f"judge profile 禁止配置 {forbidden}")
+    api_key_env = optional_str(profile.get("api_key_env"))
+    if api_key_env is None:
+        raise ValueError("judge profile 必须提供非空 api_key_env")
+    profile["api_key_env"] = api_key_env
+    base_url_env = optional_str(profile.get("base_url_env"))
+    if "base_url_env" in profile:
+        if base_url_env is None:
+            raise ValueError("judge profile 的 base_url_env 不能为空")
+        profile["base_url_env"] = base_url_env
+    return profile
 
 
 def _case_ids(value: object) -> tuple[str, ...] | None:

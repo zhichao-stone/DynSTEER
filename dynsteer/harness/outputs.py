@@ -348,6 +348,19 @@ def _evaluation_payloads(
         **report.to_dict(),
         "termination": termination,
     }
+    native_result = harness_result.raw_summary.get("native_default_result")
+    native_result = native_result if isinstance(native_result, dict) else {}
+    native_score_value = native_result.get("score")
+    native_score = (
+        float(native_score_value)
+        if isinstance(native_score_value, (int, float)) and not isinstance(native_score_value, bool)
+        else None
+    )
+    native_task_completed = native_score >= 1.0 if native_score is not None else None
+    summary["native_score"] = native_score
+    summary["native_task_completed"] = native_task_completed
+    full_report["native_score"] = native_score
+    full_report["native_task_completed"] = native_task_completed
     return raw_summary, summary, full_report
 
 

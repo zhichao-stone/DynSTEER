@@ -56,6 +56,7 @@ def convert_actf_steps(
                 event_type=EventType.MESSAGE,
                 timestamp=timestamp,
                 content=user_content,
+                cost=StepCost(tokens=0, latency_ms=0),
                 raw={"actf_step_id": str(native_step_id)},
             ))
 
@@ -71,6 +72,8 @@ def convert_actf_steps(
         metric = native_step.get("metric")
         metric = metric if isinstance(metric, Mapping) else {}
         tokens, llm_latency, env_latency = _cost(metric, benchmark, case_id, native_index)
+        derived_tokens = 0 if tokens is not None else None
+        derived_llm_latency = 0 if llm_latency is not None else None
         stop_reason = _text(metric.get("stop_reason"))
 
         call_ids: list[str] = []
@@ -115,7 +118,10 @@ def convert_actf_steps(
                 event_type=EventType.TOOL_CALL,
                 timestamp=timestamp,
                 tool_call=ToolCall(name=name, arguments=arguments),
-                cost=StepCost(tokens=tokens if call_index == 0 else None, latency_ms=llm_latency if call_index == 0 else None),
+                cost=StepCost(
+                    tokens=tokens if call_index == 0 else derived_tokens,
+                    latency_ms=llm_latency if call_index == 0 else derived_llm_latency,
+                ),
                 raw=raw,
             ))
 
@@ -139,13 +145,16 @@ def convert_actf_steps(
         for observation_index, observation in enumerate(observations):
             call_index = pairings.get(observation_index)
             raw = {"actf_step_id": str(native_step_id)}
+            is_first_environment_pair = bool(pairings) and observation_index == min(pairings)
             if call_index is not None:
                 call_id = call_ids[call_index]
                 raw["openai_tool_call_id"] = call_id
-                if env_latency is not None and observation_index == min(pairings):
+                if env_latency is not None and is_first_environment_pair:
                     if len(calls) > 1:
                         raw["aggregate_env_latency"] = True
                     latency = env_latency
+                elif env_latency is not None:
+                    latency = 0
                 else:
                     latency = None
                 success, exception, result_content = _observation_result(observation)
@@ -158,11 +167,13 @@ def convert_actf_steps(
                     event_type=EventType.TOOL_RESULT,
                     timestamp=timestamp,
                     tool_result=ToolResult(success=success, content=result_content, exception=exception),
-                    cost=StepCost(latency_ms=latency),
+                    cost=StepCost(tokens=0, latency_ms=latency),
                     raw=raw,
                 ))
             else:
                 raw["unpaired_observation"] = True
+                if env_latency is not None:
+                    raw["non_leading_environment_latency_excluded"] = True
                 index = len(output)
                 output.append(TrajectoryStep(
                     step_id=f"{benchmark}::{case_id}::step::{index}",
@@ -172,6 +183,7 @@ def convert_actf_steps(
                     event_type=EventType.MESSAGE,
                     timestamp=timestamp,
                     content=_text(observation),
+                    cost=StepCost(tokens=0, latency_ms=0 if env_latency is not None else None),
                     raw=raw,
                 ))
 
@@ -252,7 +264,7 @@ def _cost(metric: Mapping[str, object], benchmark: str, case_id: str, step_index
     for name, value in (("prompt_tokens_len", prompt), ("completion_tokens_len", completion)):
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
             raise ValueError(f"ACTF {name} 必须是非负整数: {benchmark}/{case_id}/{step_index}")
-    tokens = None if prompt is None and completion is None else int(prompt or 0) + int(completion or 0)
+    tokens = int(prompt) + int(completion) if prompt is not None and completion is not None else None
 
     latencies: list[int | None] = []
     for name in ("llm_infer_ms", "env_action_ms"):

@@ -40,11 +40,41 @@ def canonical_graph_semantics(
         constraint, semantic = primary if primary is not None else (None, None)
         kind = semantic.get("kind") if isinstance(semantic, dict) else None
         if kind == "set_state":
-            identity = canonical_json(
-                _canonical_state_goal(semantic, constraint, view)
-            )
+            canonical_state = _canonical_state_goal(semantic, constraint, view)
+            identity = canonical_json(canonical_state)
             goals.append(identity)
             operation_by_id[node.milestone_id] = identity
+
+            tool_name = _tool_name_from_node(node)
+            if tool_name is not None:
+                tool_name = (tool_aliases or {}).get(tool_name, tool_name)
+                expansion_count = 1
+                if canonical_state.get("cardinality") == "all":
+                    rows = _origin_expected_rows(semantic.get("expected"))
+                    if len(rows) > 1:
+                        expansion_count = len(rows)
+                    elif view is not None:
+                        ns = str(canonical_state.get("namespace"))
+                        initial_rows = _initial_namespace_rows(ns, view)
+                        if len(initial_rows) > 1:
+                            match_dict = canonical_state.get("match", {})
+                            if isinstance(match_dict, dict) and match_dict:
+                                matched = [
+                                    r for r in initial_rows
+                                    if all(
+                                        not isinstance(v, (str, int, float, bool))
+                                        or r.get(k) == v
+                                        for k, v in match_dict.items()
+                                    )
+                                ]
+                                if len(matched) > 1:
+                                    expansion_count = len(matched)
+                            else:
+                                expansion_count = len(initial_rows)
+                for _ in range(expansion_count):
+                    occurrence = occurrence_counts[tool_name]
+                    occurrence_counts[tool_name] += 1
+                    operations.append(tool_name)
         elif kind == "emit_message":
             identity = canonical_json({key: semantic.get(key) for key in ("kind", "sender", "recipient", "content")})
             goals.append(identity)
@@ -127,8 +157,11 @@ def _tool_name_from_constraints(constraints: object) -> str | None:
     }
     for constraint in constraints:
         semantic = getattr(constraint, "stage_goal_semantics", None)
-        if isinstance(semantic, dict) and isinstance(semantic.get("tool_name"), str):
-            return str(semantic["tool_name"])
+        if isinstance(semantic, dict):
+            if isinstance(semantic.get("tool_name"), str) and semantic["tool_name"]:
+                return str(semantic["tool_name"])
+            if isinstance(semantic.get("executor_tool_name"), str) and semantic["executor_tool_name"]:
+                return str(semantic["executor_tool_name"])
         if isinstance(semantic, dict) and semantic.get("kind") == "set_state":
             expected = semantic.get("expected")
             if semantic.get("namespace") == "SETTING" and isinstance(expected, dict):
@@ -171,6 +204,10 @@ def _minefield_identity(
         )
         if required and isinstance(arguments, dict) and not required.issubset(arguments):
             reason_code = "missing_required_input"
+        elif required and (arguments is None or not arguments):
+            reason_code = "missing_required_input"
+        else:
+            reason_code = "unsafe_side_effect"
     return canonical_json({
         "tool_name": tool_name, "severity": "fatal", "reason_code": reason_code,
     }) if tool_name else None

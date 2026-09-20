@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">DynSTEER Overall Framework</title>
+  <desc id="desc">DynSTEER compiles a public task view into a milestone graph, then evaluates an agent trajectory online with frontier matching, stage-wise scoring, adaptive routing, and early termination.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .title { font: 700 38px Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 19px Arial, sans-serif; fill: #475569; }
+      .phase { font: 700 22px Arial, sans-serif; fill: #ffffff; }
+      .heading { font: 700 21px Arial, sans-serif; fill: #0f172a; }
+      .body { font: 400 17px Arial, sans-serif; fill: #334155; }
+      .small { font: 400 15px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 400 13px Arial, sans-serif; fill: #475569; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .arrow { fill: none; stroke: #334155; stroke-width: 3; marker-end: url(#arrow); }
+      .feedback { fill: none; stroke: #2563eb; stroke-width: 3; stroke-dasharray: 9 7; marker-end: url(#blue-arrow); }
+      .node { fill: #eff6ff; stroke: #3b82f6; stroke-width: 2; }
+      .node-text { font: 700 15px Arial, sans-serif; fill: #1e3a8a; text-anchor: middle; dominant-baseline: middle; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" fill="#f8fafc"/>
+  <text x="60" y="58" class="title">DynSTEER: Dynamic Stage-wise Trajectory Evaluation</text>
+  <text x="60" y="91" class="subtitle">Compile a path-tolerant task blueprint, review closed actions by stage, and adapt evaluation cost during execution.</text>
+
+  <rect x="45" y="120" width="1510" height="300" rx="24" fill="#eef6ff" stroke="#bfdbfe" stroke-width="2"/>
+  <rect x="45" y="120" width="255" height="45" rx="22" fill="#1d4ed8"/>
+  <text x="172" y="149" class="phase" text-anchor="middle">Pre-execution Blueprint</text>
+
+  <g transform="translate(75,205)">
+    <rect width="255" height="145" class="box"/>
+    <text x="24" y="34" class="heading">1. Public Task View</text>
+    <text x="24" y="73" class="body">Task instructions</text>
+    <text x="24" y="99" class="body">Tool schemas and public state</text>
+    <text x="24" y="125" class="small">No hidden trajectory or final state</text>
+  </g>
+  <path d="M 342 277 L 390 277" class="arrow"/>
+
+  <g transform="translate(400,190)">
+    <rect width="350" height="175" class="box"/>
+    <text x="24" y="34" class="heading">2. Independent Candidate Graphs</text>
+    <text x="24" y="70" class="small">Minimality · alternatives · dependency safety</text>
+    <g transform="translate(30,94)">
+      <rect width="82" height="55" rx="9" fill="#f5f3ff" stroke="#a78bfa" stroke-width="2"/>
+      <circle cx="25" cy="24" r="9" class="node"/><circle cx="58" cy="24" r="9" class="node"/>
+      <path d="M34 24 L49 24" class="arrow" stroke-width="2"/>
+      <text x="41" y="48" class="tiny" text-anchor="middle">Graph A</text>
+    </g>
+    <g transform="translate(134,94)">
+      <rect width="82" height="55" rx="9" fill="#f5f3ff" stroke="#a78bfa" stroke-width="2"/>
+      <circle cx="20" cy="20" r="8" class="node"/><circle cx="48" cy="20" r="8" class="node"/><circle cx="64" cy="39" r="8" class="node"/>
+      <path d="M28 20 L40 20 M53 26 L59 34" class="arrow" stroke-width="2"/>
+      <text x="41" y="48" class="tiny" text-anchor="middle">Graph B</text>
+    </g>
+    <g transform="translate(238,94)">
+      <rect width="82" height="55" rx="9" fill="#f5f3ff" stroke="#a78bfa" stroke-width="2"/>
+      <circle cx="41" cy="17" r="8" class="node"/><circle cx="22" cy="39" r="8" class="node"/><circle cx="60" cy="39" r="8" class="node"/>
+      <path d="M36 24 L27 33 M46 24 L55 33" class="arrow" stroke-width="2"/>
+      <text x="41" y="48" class="tiny" text-anchor="middle">Graph C</text>
+    </g>
+  </g>
+  <path d="M 762 277 L 810 277" class="arrow"/>
+
+  <g transform="translate(820,205)">
+    <rect width="290" height="145" class="box"/>
+    <text x="24" y="34" class="heading">3. Validate and Aggregate</text>
+    <text x="24" y="73" class="body">Schema, contract, and DAG checks</text>
+    <text x="24" y="99" class="body">Majority goals and dependencies</text>
+    <text x="24" y="125" class="small">Recovery edges and transitive reduction</text>
+  </g>
+  <path d="M 1122 277 L 1170 277" class="arrow"/>
+
+  <g transform="translate(1180,185)">
+    <rect width="335" height="185" class="box"/>
+    <text x="24" y="34" class="heading">4. Milestone Graph</text>
+    <g transform="translate(35,66)">
+      <circle cx="22" cy="53" r="16" fill="#e2e8f0" stroke="#64748b" stroke-width="2"/>
+      <text x="22" y="58" class="tiny" text-anchor="middle">S</text>
+      <circle cx="105" cy="29" r="19" class="node"/><text x="105" y="30" class="node-text">M1</text>
+      <circle cx="105" cy="78" r="19" class="node"/><text x="105" y="79" class="node-text">M2</text>
+      <circle cx="202" cy="53" r="19" class="node"/><text x="202" y="54" class="node-text">M3</text>
+      <circle cx="282" cy="53" r="16" fill="#e2e8f0" stroke="#64748b" stroke-width="2"/>
+      <text x="282" y="58" class="tiny" text-anchor="middle">F</text>
+      <path d="M38 46 L86 33 M38 60 L86 74 M124 31 L183 49 M124 76 L183 58 M221 53 L266 53" class="arrow" stroke-width="2"/>
+    </g>
+    <text x="24" y="164" class="small">Goals, precedence, and fatal minefields</text>
+  </g>
+
+  <rect x="45" y="455" width="1510" height="430" rx="24" fill="#fffdf7" stroke="#fde68a" stroke-width="2"/>
+  <rect x="45" y="455" width="250" height="45" rx="22" fill="#b45309"/>
+  <text x="170" y="484" class="phase" text-anchor="middle">Execution-time Review</text>
+
+  <g transform="translate(75,555)">
+    <rect width="240" height="170" class="box"/>
+    <text x="24" y="34" class="heading">5. Agent Trajectory</text>
+    <path d="M28 76 H208" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="43" cy="76" r="10" fill="#3b82f6"/><circle cx="95" cy="76" r="10" fill="#3b82f6"/><circle cx="147" cy="76" r="10" fill="#3b82f6"/><circle cx="199" cy="76" r="10" fill="#f59e0b"/>
+    <text x="24" y="119" class="body">Messages and tool calls</text>
+    <text x="24" y="145" class="body">Results and state snapshots</text>
+  </g>
+  <path d="M 327 640 L 370 640" class="arrow"/>
+
+  <g transform="translate(380,535)">
+    <rect width="265" height="210" class="box"/>
+    <text x="24" y="34" class="heading">6. Boundary Processing</text>
+    <text x="24" y="78" class="body">Every raw step:</text>
+    <text x="42" y="105" class="body">scan fatal minefields</text>
+    <text x="24" y="143" class="body">Closed agent action:</text>
+    <text x="42" y="170" class="body">match reachable milestones</text>
+    <text x="42" y="196" class="small">tool call + result closure</text>
+  </g>
+  <path d="M 657 640 L 700 640" class="arrow"/>
+
+  <g transform="translate(710,535)">
+    <rect width="270" height="210" class="box"/>
+    <text x="24" y="34" class="heading">7. Stage Alignment</text>
+    <text x="24" y="76" class="body">Ready frontier</text>
+    <text x="24" y="106" class="body">Immediate-dominator anchor</text>
+    <text x="24" y="136" class="body">Stage = (anchor, milestone]</text>
+    <text x="24" y="178" class="small">Preserves parallel branches and</text>
+    <text x="24" y="199" class="small">avoids a single reference path.</text>
+  </g>
+  <path d="M 992 640 L 1035 640" class="arrow"/>
+
+  <g transform="translate(1045,515)">
+    <rect width="300" height="250" class="box"/>
+    <text x="24" y="34" class="heading">8. Adaptive Stage Judge</text>
+    <rect x="24" y="62" width="75" height="78" rx="10" fill="#ecfdf5" stroke="#6ee7b7" stroke-width="2"/>
+    <text x="61" y="92" class="heading" text-anchor="middle" fill="#065f46">Cheap</text><text x="61" y="117" class="tiny" text-anchor="middle">rules</text>
+    <rect x="112" y="62" width="75" height="78" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text x="149" y="92" class="heading" text-anchor="middle" fill="#1e40af">Standard</text><text x="149" y="117" class="tiny" text-anchor="middle">LLM</text>
+    <rect x="200" y="62" width="75" height="78" rx="10" fill="#faf5ff" stroke="#c4b5fd" stroke-width="2"/>
+    <text x="237" y="92" class="heading" text-anchor="middle" fill="#6b21a8">Expensive</text><text x="237" y="117" class="tiny" text-anchor="middle">per dimension</text>
+    <text x="24" y="176" class="small">Progress · state · tools · efficiency</text>
+    <text x="24" y="200" class="small">Safety · interaction · recovery</text>
+    <text x="24" y="230" class="tiny">Focus only on stage-relevant dimensions</text>
+  </g>
+  <path d="M 1357 640 L 1400 640" class="arrow"/>
+
+  <g transform="translate(1410,550)">
+    <rect width="120" height="180" rx="16" fill="#0f172a" filter="url(#shadow)"/>
+    <text x="60" y="34" class="phase" text-anchor="middle" font-size="18">Policy</text>
+    <text x="60" y="75" class="small" text-anchor="middle" fill="#e2e8f0">score</text>
+    <text x="60" y="101" class="small" text-anchor="middle" fill="#e2e8f0">uncertainty</text>
+    <text x="60" y="127" class="small" text-anchor="middle" fill="#e2e8f0">risk</text>
+    <text x="60" y="153" class="small" text-anchor="middle" fill="#e2e8f0">stop / continue</text>
+  </g>
+
+  <path d="M 1470 740 L 1470 820 L 1195 820 L 1195 775" class="feedback"/>
+  <text x="1250" y="850" class="small" fill="#2563eb">Update next-stage weights and judge levels</text>
+  <path d="M 1410 735 L 1350 800" class="arrow"/>
+  <g transform="translate(1100,790)">
+    <rect width="210" height="70" rx="13" fill="#fff1f2" stroke="#fda4af" stroke-width="2"/>
+    <text x="105" y="30" class="heading" text-anchor="middle" fill="#9f1239">Early Termination</text>
+    <text x="105" y="53" class="tiny" text-anchor="middle">preserve failure evidence</text>
+  </g>
+  <path d="M 1045 765 L 1000 810" class="arrow"/>
+  <g transform="translate(730,790)">
+    <rect width="245" height="70" rx="13" fill="#f0fdfa" stroke="#5eead4" stroke-width="2"/>
+    <text x="122" y="30" class="heading" text-anchor="middle" fill="#115e59">Finish Verification</text>
+    <text x="122" y="53" class="tiny" text-anchor="middle">coverage · terminal state · minefields</text>
+  </g>
+  <path d="M 710 825 L 315 825 L 315 726" class="feedback"/>
+  <text x="430" y="850" class="small" fill="#2563eb">Continue with the next action</text>
+</svg>

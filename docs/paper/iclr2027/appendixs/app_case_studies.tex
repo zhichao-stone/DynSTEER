@@ -1,0 +1,31 @@
+\section{Qualitative Case Studies and Error Analysis}
+\label{app:case_studies}
+
+\subsection{Case 1: Early Termination of Infinite Search Deadlock}
+\textbf{Scenario ID:} \\
+\null\hspace*{1.5em}\nolinkurl{search_message_with_recency_oldest_multiple_user_turn_alt_3_distraction_tools_arg_type_scrambled}
+
+\textbf{Agent Model:} Qwen3-Max-2026-01 under ReAct prompting.
+
+\textbf{Execution Trace Summary:}
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item The user asks for the oldest matching text. The agent asks one clarification, learns that the oldest message is required, and then obtains the current timestamp; milestone $m_0$ settles with score $1.0$.
+    \item The next milestone, retrieving the target message, stays ready but never improves: its best stage score is $0$ for eight consecutive observations.
+    \item DynSTEER therefore emits a frontier deadlock stop at replay observation 43 and maps that decision to the source execution boundary at batch 22.
+    \item \textbf{Replay accounting:} the complete source trajectory records 29 execution batches and 41.04s of execution latency; the matched prefix records 22 batches and 24.68s. Stopping there would save 7 batches and 16.36s of execution latency. These are paired counterfactual savings, not a separately executed live interruption.
+\end{itemize}
+
+\subsection{Case 2: First-Error Localization vs. Fluke Success}
+\textbf{Scenario ID:} \\
+\null\hspace*{1.5em}\nolinkurl{add_reminder_content_and_date_and_time_10_distraction_tools}
+
+\textbf{Agent Model:} DeepSeek-V4-Flash.
+
+\textbf{Execution Trace Summary:}
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item The agent was tasked with setting a reminder with a specific date and time.
+    \item In intermediate steps, the agent called an invalid distraction API \texttt{set\_calendar\_alarm} with malformed argument types, which failed.
+    \item The agent then stumbled upon \texttt{add\_reminder} after multiple trial-and-error retries.
+    \item \textbf{Native Default Evaluation:} Scored the final state as $1.0000$ for full resolution, completely ignoring the 4 erroneous intermediate API calls and high token overhead.
+    \item \textbf{DynSTEER Stage Review:} In the DeepSeek-V4-Flash run, the stage reaching $m_0$ scores $0.897$, whereas the subsequent target-message stage falls to $0.272$ and triggers the low-score policy. DynSTEER therefore preserves the distinction between clean execution and an unsuccessful, inefficient attempt.
+\end{itemize}

@@ -95,6 +95,49 @@
 
 在该样例中，当前时间对目标选择不可缺少，但它不是 REMINDER 记录字段，因此不得编造成 `match` key；它指向状态 goal 的 edge 表达目标选择依赖，选中的 reminder ID 则从搜索输出动态绑定。样例 selector 仍只是示意，当前任务必须替换为当前 producer contract 支持的 selector。
 
+样例 3
+任务："Remind me to call Mom tomorrow at 10am."（公开状态包含 wifi: true）
+含义：直接利用公开状态中的设置值，调用时间转换工具获得时间戳，最终支持添加提醒状态目标；禁止插入无关的平移或时差工具。
+
+{{
+  "dispositions": {{"turn_0": "executable"}},
+  "nodes": [
+    {{
+      "local_id": "n0",
+      "turn_id": "turn_0",
+      "kind": "tool_call",
+      "evidence_id": "example_datetime_to_timestamp",
+      "arguments": {{
+        "year": {{"source": "public_literal", "source_ref": "instruction:0", "value": 2026}},
+        "month": {{"source": "public_literal", "source_ref": "instruction:0", "value": 9}},
+        "day": {{"source": "public_literal", "source_ref": "instruction:0", "value": 12}},
+        "hour": {{"source": "public_literal", "source_ref": "instruction:0", "value": 10}}
+      }}
+    }},
+    {{
+      "local_id": "n1",
+      "turn_id": "turn_0",
+      "kind": "set_state",
+      "namespace": "REMINDER",
+      "operation": "add",
+      "cardinality": "one",
+      "match": {{}},
+      "values": {{
+        "content": {{"source": "public_literal", "source_ref": "instruction:0", "value": "call Mom"}},
+        "reminder_timestamp": {{
+          "source": "node_output",
+          "producer_local_id": "n0",
+          "selector": "$.timestamp",
+          "cardinality": "one"
+        }}
+      }},
+      "executor_evidence_id": "example_add_reminder"
+    }}
+  ],
+  "edges": [["n0", "n1"]],
+  "minefields": []
+}}
+
 当前公开任务 JSON
 
 {task}
@@ -117,6 +160,8 @@
 - 必须向用户作答时使用 `emit_message`；`content_requirement` 只描述答案必须传达什么，不得编造运行时才知道的答案。
 - 公开数据已经足够时直接使用，不要添加只为再次确认相同公开值的 getter。
 - 可见工具或公开输入无法安全完成任务时，不得编造完成方式；应使用适当的不可执行 disposition，以及合法的空图或仅回复图。
+- 严禁对抗性冗余：工具列表中如果存在 shift_timestamp、timestamp_diff、unit_conversion 等辅助计算工具，除非任务指令明确要求进行时间位移、区间差值计算或单位换算，否则严禁为了“防错”或“确认”将其加入图；直接将已获取的合法时间戳或参数绑定至目标操作。
+- 信息不足判定：若任务给出的条件不足以锁定唯一操作对象（例如“查看节日”但未说明何种节日，或“给最后联系人发消息”但在不可见消息历史时），该轮次必须判定为 response_only，输出空 nodes 或仅回复消息的 emit_message，并针对破坏性工具输出 missing_required_input 的 fatal minefield，严禁凭空猜测或调用假想工具。
 
 3. 节点 schema 与 provenance
 - node kind 只允许 `tool_call`、`set_state`、`emit_message`。禁止输出 `preserve_state`，它由代码派生。

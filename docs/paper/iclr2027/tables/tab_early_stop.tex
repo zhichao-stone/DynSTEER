@@ -1,0 +1,20 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{\textbf{Counterfactual Savings via Adaptive Early Termination on ToolSandbox.} Breakdown of all 1{,}223 replay policy stops, using the same run denominator as Table~\ref{tab:main_results}; only the matched suffix after each virtual stop is assumed avoidable.}
+\label{tab:early_stop}
+\vspace{0.1cm}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Termination Criterion} & \textbf{Halted Runs} & \textbf{Unique Tasks} & \textbf{Mean Stop Progress} & \textbf{Saved Progress} \\
+\midrule
+Stage Low-Score Policy (\textsc{Score}) & 234 & 64 & 63.76\% & 36.24\% \\
+Frontier Stagnation (\textsc{Deadlock}) & 285 & 125 & 65.87\% & 34.13\% \\
+Fatal Minefield Interception (\textsc{Minefield}) & 704 & 97 & 46.98\% & 53.02\% \\
+\midrule
+All Replay Policy Stops & 1{,}223 & 270 & 54.59\% & 45.41\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

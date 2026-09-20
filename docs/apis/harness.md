@@ -147,3 +147,19 @@ ToolSandbox 鐨勫師鐢熷伐鍏枫€乺ole 鍜?execution environment 閫氳�
 | `skillsbench` | 单次 `advance_case()` 完成 AgentCompass 整任务执行与原生评分 | `[]` | Default |
 
 完整配置、安全边界和 ACTF 映射参见 `docs/apis/agentcompass.md`。
+
+## Guided harness 接口
+
+`BaseBenchmarkHarness.send_guidance(session, message)` 是执行期引导契约：空 session、空消息直接报错；不支持的 benchmark 抛出 `NotImplementedError`，不静默降级。`ToolSandboxHarness` 使用 ToolSandbox `BaseRole.add_messages()` 写入 `USER -> AGENT` 消息，并把 `visible_to` 收窄为 `[AGENT]`；该消息进入 agent 的 user prompt，但 user simulator 不会读取。写入后 harness 校验 SANDBOX index 前进并更新 `ToolSandboxSession.last_sandbox_message_index`，避免 guidance row 被重复转换。
+
+## Online native result
+
+`HarnessRunConfig.use_milestone_graph` 控制静态适配是否生成完整图。在线 `dynsteer_evaluate` 显式设置 `collect_online_native_score=true` 时，raw summary 保存 `native_default_result`，summary/report 顶层输出 `native_score` 与 `native_task_completed`。native score 缺失时 completion 保持 `null`；replay 不把 DynSTEER overall score 回填为 native score。
+
+三个 benchmark 的 native verifier 是确定性容器/本地评估，`BenchmarkDefaultResult.metrics` 中 `prompt_tokens=0`、`completion_tokens=0`、`total_tokens=0` 均为真实 0，并用 `native_evaluation_token_source="deterministic_native_verifier"` 标记来源。
+
+## ToolSandbox agent usage recorder
+
+仅当 harness metadata 显式设置 `capture_agent_usage=true` 时，`start_case()` 才创建 `ProviderUsageRecorder` 并把它传给 agent role factory。recorder 挂在 OpenAI/Anthropic SDK 的 `DefaultHttpxClient` response hook 上，是纯观察者；不保存请求/响应正文、URL、header 或 provider cost/cache 字段。user simulator token 不计入 agent ledger。
+
+一个批次的所有完整 usage 汇总到首条 `Agent -> User/Environment` raw step 的 `cost.tokens`；同批其他 raw step 记 0。usage 缺失时首条 agent outbound 保持 `null`，不按半个 usage 或 0 填充。`trajectory.metrics.agent_usage` 记录 request、usage、missing counts 和 `available`；`build_runtime_metrics()` 只在 `available=true` 时输出累计 agent token，旧配置不新增该对象并保持原 step-cost 汇总路径。

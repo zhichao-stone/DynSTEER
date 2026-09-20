@@ -35,6 +35,17 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
     snapshot_count = len(trajectory.snapshots)
     tool_call_count = sum((1 for step in trajectory.steps if step.tool_call is not None or step.event_type == EventType.TOOL_CALL))
     token_summary = _trajectory_token_summary(trajectory.steps)
+    agent_usage = trajectory.metrics.get("agent_usage")
+    agent_usage = agent_usage if isinstance(agent_usage, dict) else None
+    if agent_usage is not None:
+        usage_available = agent_usage.get("available") is True
+        usage_tokens = int(agent_usage["total_tokens"]) if usage_available and isinstance(agent_usage.get("total_tokens"), int) else None
+        token_summary = {
+            "tokens": usage_tokens,
+            "value_count": 1 if usage_tokens is not None else 0,
+            "available": usage_available,
+            "coverage": 1.0 if usage_available else 0.0,
+        }
     trajectory_latency = [step.cost.latency_ms for step in trajectory.steps]
     trajectory_latency_available = any((value is not None for value in trajectory_latency))
     execution_records = _execution_timing_records(trajectory)
@@ -66,7 +77,7 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "raw_step_count": raw_step_count,
         "snapshot_count": snapshot_count,
         "tool_call_count": tool_call_count,
-        "trajectory_total_tokens": token_summary["tokens"] or 0,
+        "trajectory_total_tokens": token_summary["tokens"] if agent_usage is not None else token_summary["tokens"] or 0,
         "trajectory_total_latency_ms": _sum_optional_int(trajectory_latency) or 0,
         "trajectory_cost_available": token_summary["available"],
         "trajectory_token_value_count": token_summary["value_count"],
@@ -84,6 +95,8 @@ def build_runtime_metrics(*, started_monotonic: float, finished_monotonic: float
         "llm_total_tokens": llm_total_tokens,
         "llm_calls": [call.to_dict() for call in llm_calls],
     }
+    if agent_usage is not None:
+        metrics["agent_usage"] = dict(agent_usage)
     return metrics
 
 

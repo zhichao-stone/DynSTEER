@@ -6,7 +6,11 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any
 import anthropic
+from openai import DefaultHttpxClient as OpenAIHttpxClient
 from openai import OpenAI
+from anthropic import DefaultHttpxClient as AnthropicHttpxClient
+
+from dynsteer.adapter.toolsandbox.utils.usage import ProviderUsageRecorder
 from dynsteer.model import Actor
 from dynsteer.utils import enum_name, normalize_client_config
 
@@ -126,9 +130,13 @@ _TOOL_SANDBOX_AGENT_FALLBACK_NAMES = {"Cli", "Unhelpful"}
 _TOOL_SANDBOX_USER_FALLBACK_NAMES = {"Cli"}
 _DYNSTEER_CLIENT_CONFIG_KWARG = "_dynsteer_client_config"
 
-def get_agent_factory(role_impl_type: object, client_config: Mapping[str, Any] | None=None) -> Callable[[], object] | None:
+def get_agent_factory(
+    role_impl_type: object,
+    client_config: Mapping[str, Any] | None=None,
+    usage_recorder: ProviderUsageRecorder | None=None,
+) -> Callable[[], object] | None:
     """按 ToolSandbox agent 角色类型创建可选独立 client 配置的工厂。"""
-    return _role_factory(role_impl_type, _AGENT_FACTORY_SPECS, _TOOL_SANDBOX_AGENT_FALLBACK_NAMES, _GENERIC_AGENT_SPEC, client_config)
+    return _role_factory(role_impl_type, _AGENT_FACTORY_SPECS, _TOOL_SANDBOX_AGENT_FALLBACK_NAMES, _GENERIC_AGENT_SPEC, client_config, usage_recorder)
 
 def get_user_factory(role_impl_type: object, client_config: Mapping[str, Any] | None=None) -> Callable[[], object] | None:
     """按 ToolSandbox user 角色类型创建可选独立 client 配置的工厂。"""
@@ -145,16 +153,23 @@ def role_client_config(role: object) -> dict[str, object]:
         raise ValueError("role client_config 必须是 JSON 对象")
     return normalize_client_config(client_config, "client_config")
 
-def _role_factory(role_impl_type: object, specs: dict[str, RoleFactorySpec], fallback_names: set[str], generic_spec: RoleFactorySpec, client_config: Mapping[str, Any] | None) -> Callable[[], object] | None:
+def _role_factory(
+    role_impl_type: object,
+    specs: dict[str, RoleFactorySpec],
+    fallback_names: set[str],
+    generic_spec: RoleFactorySpec,
+    client_config: Mapping[str, Any] | None,
+    usage_recorder: ProviderUsageRecorder | None=None,
+) -> Callable[[], object] | None:
     if role_impl_type is None:
         raise ValueError("role_impl_type 不能为空")
     role_name = _role_impl_name(role_impl_type)
     spec = specs.get(role_name)
     if spec is not None:
-        return _build_role_factory(spec, client_config)
+        return _build_role_factory(spec, client_config, usage_recorder)
     if role_name in fallback_names:
         return None
-    return _build_role_factory(replace(generic_spec, model_name=role_name), client_config)
+    return _build_role_factory(replace(generic_spec, model_name=role_name), client_config, usage_recorder)
 
 def role_to_actor(sender: object, recipient: object) -> str:
     """将 ToolSandbox sender/recipient 映射为 DynSTEER actor。"""
@@ -215,21 +230,43 @@ def _client_kwargs(config: Mapping[str, Any], api_key_env: str, base_url_env: st
         kwargs["timeout"] = timeout_seconds
     return kwargs
 
-def _openai_client_from_config(client_config: Mapping[str, Any], default_api_key: str | None=None) -> object:
-    return OpenAI(**_client_kwargs(client_config, "OPENAI_API_KEY", "OPENAI_BASE_URL", default_api_key))
+def _openai_client_from_config(
+    client_config: Mapping[str, Any],
+    default_api_key: str | None=None,
+    usage_recorder: ProviderUsageRecorder | None=None,
+) -> object:
+    kwargs = _client_kwargs(client_config, "OPENAI_API_KEY", "OPENAI_BASE_URL", default_api_key)
+    if usage_recorder is not None:
+        return OpenAI(http_client=OpenAIHttpxClient(event_hooks={"response": [usage_recorder.record_openai_response]}), **kwargs)
+    return OpenAI(**kwargs)
 
-def _anthropic_client_from_config(client_config: Mapping[str, Any]) -> object:
-    return anthropic.Anthropic(**_client_kwargs(client_config, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"))
 
-def _build_role_factory(spec: RoleFactorySpec, client_config: Mapping[str, Any] | None) -> Callable[[], object]:
-    role_type = _environment_role_type(spec.module_name, spec.parent_class_name, spec.mode, needs_model_name=spec.needs_model_name, client_attr=spec.client_attr)
+def _anthropic_client_from_config(client_config: Mapping[str, Any], usage_recorder: ProviderUsageRecorder | None=None) -> object:
+    kwargs = _client_kwargs(client_config, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+    if usage_recorder is not None:
+        return anthropic.Anthropic(http_client=AnthropicHttpxClient(event_hooks={"response": [usage_recorder.record_anthropic_response]}), **kwargs)
+    return anthropic.Anthropic(**kwargs)
+
+def _build_role_factory(
+    spec: RoleFactorySpec,
+    client_config: Mapping[str, Any] | None,
+    usage_recorder: ProviderUsageRecorder | None=None,
+) -> Callable[[], object]:
+    role_type = _environment_role_type(spec.module_name, spec.parent_class_name, spec.mode, needs_model_name=spec.needs_model_name, client_attr=spec.client_attr, usage_recorder=usage_recorder)
     kwargs: dict[str, object] = {_DYNSTEER_CLIENT_CONFIG_KWARG: client_config}
     if spec.model_name is not None:
         kwargs["model_name"] = spec.model_name
     return lambda: role_type(**kwargs)
 
 @lru_cache(maxsize=None)
-def _environment_role_type(module_name: str, parent_class_name: str, mode: str, needs_model_name: bool=False, client_attr: str="openai_client") -> type:
+def _environment_role_type(
+    module_name: str,
+    parent_class_name: str,
+    mode: str,
+    needs_model_name: bool=False,
+    client_attr: str="openai_client",
+    usage_recorder: ProviderUsageRecorder | None=None,
+) -> type:
     parent_type = getattr(importlib.import_module(module_name), parent_class_name)
 
     class DynsteerEnvironmentRole(parent_type):
@@ -240,7 +277,7 @@ def _environment_role_type(module_name: str, parent_class_name: str, mode: str, 
             setattr(self, _DYNSTEER_CLIENT_CONFIG_KWARG, normalized_client_config)
             if mode == "openai_server":
                 super().__init__(*args, **kwargs)
-                setattr(self, client_attr, _openai_client_from_config(normalized_client_config, default_api_key="EMPTY"))
+                setattr(self, client_attr, _openai_client_from_config(normalized_client_config, default_api_key="EMPTY", usage_recorder=usage_recorder))
                 return
             if mode == "pass":
                 super().__init__(*args, **kwargs)
@@ -248,10 +285,10 @@ def _environment_role_type(module_name: str, parent_class_name: str, mode: str, 
             if needs_model_name:
                 self.model_name = str(kwargs.get("model_name") if "model_name" in kwargs else args[0])
             if mode == "anthropic":
-                self.client = _anthropic_client_from_config(normalized_client_config)
+                self.client = _anthropic_client_from_config(normalized_client_config, usage_recorder=usage_recorder)
                 logging.getLogger("httpx").setLevel(logging.WARNING)
             else:
-                self.openai_client = _openai_client_from_config(normalized_client_config)
+                self.openai_client = _openai_client_from_config(normalized_client_config, usage_recorder=usage_recorder)
     DynsteerEnvironmentRole.__name__ = f"DynSTEER{parent_type.__name__}"
     DynsteerEnvironmentRole.__qualname__ = DynsteerEnvironmentRole.__name__
     return DynsteerEnvironmentRole

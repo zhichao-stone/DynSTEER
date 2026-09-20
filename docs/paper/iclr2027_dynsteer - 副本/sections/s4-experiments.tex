@@ -1,0 +1,49 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate DynSTEER on the ToolSandbox benchmark, addressing three central research questions: (1) \textbf{RQ1 (Section~\ref{sec:exp_rq1}):} Does stage-wise evaluation provide superior error localization and model discriminability over native terminal evaluation? (2) \textbf{RQ2 (Section~\ref{sec:exp_rq2}):} Can milestone graphs compiled from public task views reliably capture necessary goals while accommodating diverse solution paths? (3) \textbf{RQ3 (Section~\ref{sec:exp_rq3}):} How effectively do uncertainty-driven judge routing and execution-time early stopping reduce evaluation pipeline latency and wasteful execution steps?
+
+\subsection{Experimental Setup}
+\label{sec:exp_setup}
+\textbf{Benchmark Environment and Evaluated Models.} We conduct our evaluation on \textbf{ToolSandbox}~\citep{gu2024toolsandbox}, featuring state snapshots, dynamic argument types, and safety minefield invariants (dataset statistics in Appendix~\ref{app:dataset_stats}). We evaluate four instruction-tuned LLMs as agent backbones: \textbf{DeepSeek-V4-Pro}, \textbf{DeepSeek-V4-Flash}~\citep{deepseekai2024deepseekv3}, \textbf{Qwen3-Max-2026-01-23}, and \textbf{Qwen-Plus-2025-12-01}~\citep{yang2024qwen25}, under standard ReAct prompting~\citep{yao2023react}.
+
+\textbf{Comparative Paradigms.} Each agent backbone is evaluated under two comparative paradigms: first, \textbf{\textsc{Default}}, using the native benchmark verifier based on terminal environment state; and second, \textbf{\textsc{DynSTEER-Replay}}, replaying trajectories under our stage-wise evaluation, dominator review, and adaptive judging ladder.
+
+\textbf{Evaluation Metrics.} We assess performance across three dimensions:
+\begin{itemize}[leftmargin=*,itemsep=1.5pt,topsep=1pt]
+    \item \textbf{Metric Discriminability:} Following evaluation meta-evaluation literature~\citep{sakai2006evaluating,sakai2014statistical,carterette2012multiple,zheng2023judging}, we measure Discriminability Score, denoted DS, at margin $\epsilon$:
+    \begin{equation}
+        \text{DS}(\epsilon) = \left( \frac{\sigma_{\text{pop}}}{\mu} \right) \cdot \sqrt{\frac{N_{\text{sig}}(\epsilon)}{\binom{M}{2}}}, \quad N_{\text{sig}}(\epsilon) = \sum_{1 \le i < j \le M} \mathbb{I}\left( |\bar{s}_{m_i} - \bar{s}_{m_j}| > \epsilon \right)
+        \label{eq:ds}
+    \end{equation}
+    where $\mu$ is the population mean score across models, $\sigma_{\text{pop}}$ is the standard deviation across model means, where their ratio represents the Coefficient of Variation that penalizes metric compression, and $N_{\text{sig}}(\epsilon)$ is the number of statistically distinguishable model pairs at margin $\epsilon$.
+    \item \textbf{Milestone Graph Quality:} We compute Tool Operation Micro-F1 and Macro-F1 to measure semantic tool coverage, Fatal Minefield F1 for safety-critical action detection, and Graph Edit Distance similarity, or GED, for structural topology alignment.
+    \item \textbf{Efficiency and Early Termination:} We evaluate trajectory savings via Mean Stop Progress and Saved Progress (the ratio of wasteful trailing steps eliminated on underperforming rollouts), Gross Execution Savings measuring raw agent wall-clock runtime saved ($T_{\text{agent}}^{\text{full}} - T_{\text{agent}}^{\text{prefix}}$), and Net Pipeline Savings capturing overall wall-clock time saved including DynSTEER judging overhead ($\text{Gross Savings} - T_{\text{evaluator}}^{\text{judge}}$).
+\end{itemize}
+
+\subsection{RQ1: Stage Evaluation Reliability, Error Localization, and Model Discriminability}
+\label{sec:exp_rq1}
+
+\input{tables/tab_main_results}
+
+Table~\ref{tab:main_results} compares performance between native terminal evaluation (\textsc{Default}) and DynSTEER.
+
+\textbf{Model Discriminability.} On \textsc{Default}, 22.63\% of all runs receive an exact 1.0 score, reflecting severe score saturation. At $\epsilon = 0.01$, \textsc{Default} achieves a DS of 0.0270, separating 5 of 6 pairwise model comparisons (83.33\%). In contrast, \textsc{DynSTEER} achieves a DS of \textbf{0.0500}, representing an \textbf{85.2\% relative improvement}, and discriminates all 6 out of 6 model pairs (100.0\% separation) with statistical significance at $p < 0.01$ under paired Wilcoxon signed-rank tests. Across individual models, DeepSeek-V4-Flash scores $0.7338 \pm 0.0026$, clearly separated from DeepSeek-V4-Pro ($0.7111 \pm 0.0021$), Qwen-Plus ($0.6615 \pm 0.0096$), and Qwen3-Max ($0.6503 \pm 0.0094$).
+
+\textbf{Process Quality Penalization and Error Localization.} While \textsc{Default} yields a population mean of $0.7582$, \textsc{DynSTEER} yields a calibrated mean of $0.6892$ with higher inter-model variance (shifting from 0.0224 to 0.0345), effectively penalizing redundant API retries, parameter hallucinations, and hazardous side-effects that stumble into a correct final state. In blind human auditing across 60 sampled trajectories with divergent labels, DynSTEER correctly pinpointed the first critical error with 91.7\% agreement with expert annotators, whereas terminal verification found zero intermediate errors (qualitative case studies in Appendix~\ref{app:case_studies}).
+
+\subsection{RQ2: Blueprint Compilation Reliability and Path Tolerance}
+\label{sec:exp_rq2}
+
+\input{tables/tab_milestone_gen}
+
+Table~\ref{tab:milestone_gen} summarizes the semantic accuracy, structural distance, and safety alignment of generated milestone DAGs against canonical expert annotations. DynSTEER's multi-candidate synthesis and strict-majority consensus achieve an \textbf{86.0\% Tool Operation Micro-F1} (81.7\% precision, 90.7\% recall) and an \textbf{86.7\% Fatal Minefield F1} (86.0\% recall), reliably identifying irreversible operations from public API specifications alone. Transitive reduction retains alternative parallel branches without penalizing valid exploratory variations (e.g., searching by contact name rather than date), achieving a 100\% valid DAG compilation rate with consistent topological alignment.
+
+\subsection{RQ3: Cost Efficiency of Adaptive Judge Routing and Early Termination}
+\label{sec:exp_rq3}
+
+\input{tables/tab_early_stop}
+
+\textbf{Execution-Time Early Termination.} To eliminate wasted compute and accelerate the evaluation-optimization cycle, DynSTEER concurrently monitors trajectories using two complementary stopping criteria, as detailed in Table~\ref{tab:early_stop}: (1) \textbf{Stage Low-Score Policy (\textsc{Score})}, halting executions when stage scores fall below $\theta_{\text{fail}}$ persistently due to severe reasoning flaws or argument corruptions (234 runs across 64 unique tasks); and (2) \textbf{Frontier Stagnation (\textsc{Deadlock})}, halting executions when an agent takes $N_{\text{stag}}$ consecutive actions without progressing on the ready frontier $\mathcal{F}_t$, intercepting infinite search loops and repetitive tool retries (285 runs across 109 unique tasks). In total, DynSTEER intercepted 519 underperforming runs across 173 distinct tasks, eliminating \textbf{34.51\% of wasteful trajectory steps} (35.81\% for \textsc{Score} and 33.44\% for \textsc{Deadlock}) at an average stopping progress of 65.49\%.
+
+\textbf{Pipeline Time Trade-offs and Judge Hierarchy.} Table~\ref{tab:early_stop} highlights the trade-off between raw agent runtime saved ($T_{\text{agent}}^{\text{full}} - T_{\text{agent}}^{\text{prefix}}$) and net pipeline time including judging overhead ($\text{Gross Savings} - T_{\text{evaluator}}^{\text{judge}}$). For \textsc{Score}, short failing trajectories save modest execution time (3.66s/run), which is slightly offset by LLM judging latency (-3.81s/run net); yet halting remains valuable by curtailing 35.81\% of wasteful steps, preventing compounding environment errors, and yielding immediate failure diagnostics. In contrast, for \textsc{Deadlock}, intercepting pathological infinite loops saves substantial execution delay (27.85s/run gross), achieving a dramatic \textbf{+63.05s/run net pipeline time savings} even after paying judging costs. Across all 519 runs, this delivers an average net saving of \textbf{+32.89s per run} (totaling 4.74 hours saved) with less than 2.1\% false terminations (case studies in Appendix~\ref{app:case_studies}). Concurrently, adaptive judge routing directs 61.4\% of checks to zero-LLM $J_{\text{cheap}}$, 29.8\% to $J_{\text{std}}$, and only 8.8\% to $J_{\text{exp}}$, substantially reducing heavy model deliberation while preserving ranking correlation ($\tau = 0.667$) with all-expensive judging.

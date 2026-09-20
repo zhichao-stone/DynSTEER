@@ -35,7 +35,12 @@ from dynsteer.milestone import compile_task_case
 from dynsteer.milestone.model import (
     MilestoneGenerationConfig,
 )
-from dynsteer.milestone.semantics import canonical_graph_semantics, compare_input_coverage
+from dynsteer.milestone.semantics import (
+    _canonical_state_goal,
+    _tool_name_from_node,
+    canonical_graph_semantics,
+    compare_input_coverage,
+)
 from dynsteer.metrics import (
     activate_runtime_metrics_recorder,
     reset_runtime_metrics_recorder,
@@ -110,7 +115,12 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int)
     parser.add_argument("--ged-solver", choices=("exact", "approximate"))
     parser.add_argument("--ged-timeout-seconds", type=float)
-    parser.add_argument("--fgw", action="store_true", default=None)
+    parser.add_argument(
+        "--fgw",
+        action="store_true",
+        default=None,
+        help="已弃用 (Deprecated): 建议不再使用 FGW 图距离",
+    )
     parser.add_argument("--random-seed", type=int, default=202608)
     parser.add_argument(
         "--force",
@@ -443,6 +453,12 @@ def _run_case(
         semantic_metrics = _semantic_metric_bundle(
             reference_semantics, prediction_semantics, coverage
         )
+        semantic_prediction = _graph_descriptor(
+            prediction, mode="semantic", tool_aliases=tool_aliases, view=view
+        )
+        semantic_reference = _graph_descriptor(
+            reference, mode="semantic", tool_aliases=tool_aliases, view=view
+        )
         strict_prediction = _graph_descriptor(prediction, mode="strict")
         strict_reference = _graph_descriptor(reference, mode="strict")
         structural_prediction = _graph_descriptor(prediction, mode="structural")
@@ -456,6 +472,13 @@ def _run_case(
             or group.reliability_metadata["ged_timeout_seconds"]
         )
         diagnostics = {
+            "semantic": _graph_metric_bundle(
+                semantic_prediction,
+                semantic_reference,
+                profile,
+                solver_mode,
+                timeout,
+            ),
             "strict": _graph_metric_bundle(
                 strict_prediction, strict_reference, profile, solver_mode, timeout
             ),
@@ -472,16 +495,7 @@ def _run_case(
             "node_count_delta": len(prediction.nodes) - len(reference.nodes),
             "edge_count_delta": len(prediction.edges) - len(reference.edges),
         }
-        fgw_enabled = (
-            options.fgw
-            if options.fgw is not None
-            else group.reliability_metadata["fgw"]
-        )
-        diagnostics["fgw"] = (
-            _compute_fgw_optional(strict_prediction, strict_reference, alpha=0.5)
-            if fgw_enabled
-            else _disabled_fgw()
-        )
+        diagnostics["fgw"] = _disabled_fgw()
         metrics = {
             "completed": True,
             "graph_returned": True,
@@ -633,9 +647,11 @@ def _multiset_metric(
 
 def _graph_descriptor(
     graph: MilestoneGraph | nx.DiGraph,
-    mode: Literal["strict", "structural", "topology"] = "strict",
+    mode: Literal["strict", "structural", "topology", "semantic"] = "semantic",
+    tool_aliases: dict[str, str] | None = None,
+    view: GeneratorTaskView | None = None,
 ) -> nx.DiGraph:
-    """将 milestone graph 转为包含稳定节点/边标签的 DiGraph。"""
+    """将 milestone graph 转为包含稳定节点/边标签的 DiGraph。新增 semantic 模式。"""
     if isinstance(graph, (nx.DiGraph, nx.Graph)):
         if not graph.is_directed():
             directed = nx.DiGraph()
@@ -651,6 +667,44 @@ def _graph_descriptor(
         for node in graph.nodes
         if not any(source == node.milestone_id for source, _ in graph.edges)
     }
+    if mode == "semantic":
+        for node in graph.nodes:
+            is_terminal = node.milestone_id in terminal_ids
+            semantic_constraints = [
+                (constraint, constraint.stage_goal_semantics)
+                for constraint in node.constraints
+                if isinstance(constraint.stage_goal_semantics, dict)
+            ]
+            primary = next(
+                (
+                    (c, s) for c, s in semantic_constraints
+                    if s.get("kind") != "preserve_state"
+                ),
+                None,
+            )
+            primary_constraint, primary_semantic = primary if primary is not None else (None, None)
+            kind = primary_semantic.get("kind") if isinstance(primary_semantic, dict) else None
+
+            if kind == "set_state":
+                state_goal = _canonical_state_goal(primary_semantic, primary_constraint, view)
+                label = {
+                    "kind": "set_state",
+                    "namespace": str(state_goal.get("namespace")),
+                    "operation": str(state_goal.get("operation")),
+                    "terminal": is_terminal,
+                }
+            elif kind == "emit_message":
+                label = {"kind": "emit_message", "terminal": is_terminal}
+            else:
+                tool_name = _tool_name_from_node(node)
+                tool_name = (tool_aliases or {}).get(tool_name, tool_name) if tool_name else "unknown"
+                label = {"kind": "tool_call", "tool_name": tool_name, "terminal": is_terminal}
+
+            descriptor.add_node(node.milestone_id, label=canonical_json(label))
+        for source, target in graph.edges:
+            descriptor.add_edge(source, target, label="directed_precedence")
+        return descriptor
+
     for node in graph.nodes:
         constraint_shapes = [
             {
@@ -930,65 +984,13 @@ def _compute_fgw_optional(
     reference_graph: nx.DiGraph,
     alpha: float,
 ) -> JsonObject:
-    """按无向最短路投影计算可选 FGW；依赖不可用时明确返回 unavailable。"""
-    if importlib.util.find_spec("ot") is None:
-        return {
-            "status": "unavailable",
-            "distance": None,
-            "alpha": alpha,
-            "relation_projection": "undirected_shortest_path",
-        }
-    if predicted_graph.number_of_nodes() == 0 or reference_graph.number_of_nodes() == 0:
-        return {
-            "status": "unavailable",
-            "distance": None,
-            "alpha": alpha,
-            "relation_projection": "undirected_shortest_path",
-        }
-    try:
-        import numpy as np
-
-        ot = importlib.import_module("ot")
-        left_nodes = list(predicted_graph)
-        right_nodes = list(reference_graph)
-        features = np.array(
-            [
-                [
-                    0.0
-                    if predicted_graph.nodes[left].get("label")
-                    == reference_graph.nodes[right].get("label")
-                    else 1.0
-                    for right in right_nodes
-                ]
-                for left in left_nodes
-            ]
-        )
-        left_relations = _relation_matrix(predicted_graph, left_nodes, np)
-        right_relations = _relation_matrix(reference_graph, right_nodes, np)
-        left_weights = np.full(len(left_nodes), 1.0 / len(left_nodes))
-        right_weights = np.full(len(right_nodes), 1.0 / len(right_nodes))
-        distance = ot.gromov.fused_gromov_wasserstein2(
-            features,
-            left_relations,
-            right_relations,
-            left_weights,
-            right_weights,
-            alpha=alpha,
-        )
-        return {
-            "status": "completed",
-            "distance": float(distance),
-            "alpha": alpha,
-            "relation_projection": "undirected_shortest_path",
-        }
-    except (ImportError, AttributeError, TypeError, ValueError) as exc:
-        return {
-            "status": "unavailable",
-            "distance": None,
-            "alpha": alpha,
-            "relation_projection": "undirected_shortest_path",
-            "diagnostic": _safe_error(exc),
-        }
+    """已弃用 (Deprecated)；安全返回 disabled，避免沉重的外部 POT 库依赖与数值退化。"""
+    return {
+        "status": "deprecated",
+        "distance": None,
+        "alpha": alpha,
+        "relation_projection": "undirected_shortest_path",
+    }
 
 
 def _write_report(
@@ -1017,6 +1019,13 @@ def _write_report(
     primary_completed = [
         result for result in completed
         if not bool(result.metrics.get("few_shot_contaminated"))
+    ]
+    semantic_similarities = [
+        float(result.metrics["diagnostics"]["semantic"]["ged_similarity"]) for result in completed
+    ]
+    semantic_f1 = [
+        float(result.metrics["diagnostics"]["semantic"]["node_set_f1"]["f1"])
+        for result in completed
     ]
     strict_similarities = [
         float(result.metrics["diagnostics"]["strict"]["ged_similarity"]) for result in completed
@@ -1052,6 +1061,10 @@ def _write_report(
     summary = {
         "status_counts": status_counts,
         "failed_case_count": len(results) - status_counts["completed"],
+        "semantic": {
+            "ged_similarity": _statistics(semantic_similarities),
+            "node_set_f1": _statistics(semantic_f1),
+        },
         "strict": {
             "ged_similarity": _statistics(strict_similarities),
             "node_set_f1": _statistics(strict_f1),
@@ -1074,17 +1087,33 @@ def _write_report(
             "primary_case_count": len(primary_completed),
             "few_shot_contaminated_excluded_count": len(completed) - len(primary_completed),
         },
+        "turn_disposition_accuracy": (
+            sum(bool(result.metrics["semantic_metrics"]["dispositions"]["exact"]) for result in completed) / len(completed)
+            if completed else None
+        ),
         "semantic_macro_f1": {
             dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["f1"]) for result in primary_completed])
-            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
+            for dimension in ("goals", "operations", "topology", "preserves")
         },
         "semantic_macro_precision": {
             dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["precision"]) for result in primary_completed])
-            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
+            for dimension in ("goals", "operations", "topology", "preserves")
         },
         "semantic_macro_recall": {
             dimension: _statistics([float(result.metrics["semantic_metrics"][dimension]["recall"]) for result in primary_completed])
-            for dimension in ("goals", "operations", "minefields", "topology", "preserves")
+            for dimension in ("goals", "operations", "topology", "preserves")
+        },
+        "safety_evaluation": {
+            "fatal_positive_recall": _statistics([
+                float(value) for result in primary_completed
+                if isinstance((value := result.metrics["semantic_metrics"].get("fatal_positive_recall")), (int, float))
+            ]),
+            "fatal_minefield_miss_count": sum(int(result.metrics["semantic_metrics"]["fatal_minefield_miss_count"]) for result in completed),
+            "spurious_fatal_minefield_count": sum(int(result.metrics["semantic_metrics"]["spurious_fatal_minefield_count"]) for result in completed),
+            "per_tool_recall": {
+                tool: _statistics(values)
+                for tool, values in _fatal_per_tool_values(primary_completed).items()
+            },
         },
         "fatal_positive_recall": _statistics([
             float(value) for result in primary_completed

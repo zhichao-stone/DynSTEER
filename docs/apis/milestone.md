@@ -20,6 +20,10 @@ def compile_task_case(
 - `max_candidate_batch_count`，范围 1～4；
 - `generator`。
 
+`generator.provider` 和 `generator.model` 必填。`generator.api_key` 和 `generator.base_url` 可直接填实验私有凭据；未提供 `api_key` 时按 provider 默认环境变量读取。
+
+没有 origin graph 的 benchmark 必须配置非空 generator；有 origin graph 的 benchmark 可以省略 generator。
+
 目标数不得超过批次数的两倍。旧 path count 与 repair 字段不再接受。
 
 ## 2. 任务视图与隔离边界
@@ -53,9 +57,9 @@ parser 接受 0～2 张候选以保留部分成功；超过 2 张时整批 schem
 
 同批相同完整图 signature 只计一票；不同批相同 signature 作为重复 observation 分别计票。节点、disposition 和 minefield 使用严格多数：`2 * support > observation_count`。edge 分母只包含同时出现两个端点的 observation：`2 * support(u,v) > eligible(u,v)`。
 
-多数聚合后，compiler 强制加入 binding、环境 recovery 和相邻 turn 的确定性依赖，校验 DAG，执行传递约简，并按工具 effect contract 派生 ToolSandbox preserve constraints。该聚合是经验性必经估计，不是形式化证明。
+多数聚合后，compiler 强制加入 binding（在无严格多数时引入工具契约先验仲裁，若候选中有且仅有一个由契约显式支持的输出 selector 则采纳）、环境 recovery 和相邻 turn 的确定性依赖，校验 DAG，执行传递约简，并按工具 effect contract 派生 ToolSandbox preserve constraints。该聚合是经验性必经估计，不是形式化证明。
 
-聚合后还会执行 closure 校验：state goal 引用未保留 producer 时删除该目标；tool argument binding 无法闭合时退化为 name-only milestone；disposition 降级后清理 executable 节点和悬空 edge。binding、recovery、turn-order edge 会在 aggregation support 中分别记录依赖依据。
+聚合后还会执行 closure 校验：state goal 引用未保留 producer 时删除该目标；tool argument binding 无法闭合时退化为 name-only milestone；disposition 降级后清理 executable 节点和悬空 edge；此外主动执行悬空无用探针剪枝（`_prune_dangling_producers`），自动修剪出度为0、无任何参数引用、非恢复节点且写集为空的冗余只读工具。binding、recovery、turn-order edge 会在 aggregation support 中分别记录依赖依据。
 
 ## 5. 动态 constraint
 
@@ -77,7 +81,9 @@ ToolSandbox generated `set_state` 根据 operation、match、values 和 binding 
 
 ## 7. Reliability 与实验重复
 
-canonical semantics 分别输出 `goals`、`operations`、`topology`、`minefields` 和 `preserves`。origin ToolSandbox snapshot goal 会根据真实 snapshot measure、状态评分 contract 和 first-user simulation state 归一为与 generated symbolic goal 相同的 namespace/operation/cardinality/match/values 公共语义；运行期 ID、timestamp 和 producer milestone ID 只保留动态占位，不进入 identity。旧 reference minefield 未保存 reason code 时，仅在其精确 tool schema 显示缺失 required arguments 时确定性归一为 `missing_required_input`，不根据 case ID 或工具名猜测。primary 指标 `goal_effect_exact` 要求上述五类语义全部精确匹配；同时报告各类 precision/recall/F1、fatal positive recall、逐工具 fatal recall 和 spurious fatal。没有 reference fatal minefield 的 empty-empty case 不进入 positive recall。
+canonical semantics 分别输出 `goals`、`operations`、`topology`、`minefields` 和 `preserves`。对于批量状态目标（`cardinality="all"`），根据受影响真实行数展开等量的底层操作，消除粒度抽象层级差异对操作多重集 F1 的惩罚。origin ToolSandbox snapshot goal 会根据真实 snapshot measure、状态评分 contract 和 first-user simulation state 归一为与 generated symbolic goal 相同的 namespace/operation/cardinality/match/values 公共语义；运行期 ID、timestamp 和 producer milestone ID 只保留动态占位，不进入 identity。旧 reference minefield 未保存 reason code 时，仅在其精确 tool schema 显示缺失 required arguments 时确定性归一为 `missing_required_input`，不根据 case ID 或工具名猜测。
+
+评测图论指标引入语义图描述符（`mode="semantic"`），基于规范化语义（而非字符级或字面值）构建 NetworkX 有向图，输出真实的 `semantic.ged_similarity` 与 `semantic.node_set_f1`，废弃易受字面值钝化的 Strict 图指标核心地位。汇总报告顶层单列 `safety_evaluation`（涵盖致命雷区正例召回率 `fatal_positive_recall`、漏报数 `fatal_minefield_miss_count`、误报数 `spurious_fatal_minefield_count` 及逐工具召回率），将 dispositions 移出多重集总分，单独报告 `turn_disposition_accuracy`。外部 FGW 依赖标记为已弃用（Deprecated）并安全停用。
 
 reliability repeat 是独立执行维度。每个 repeat 使用隔离的 case 与 `llm_outputs` 路径，并把 `base_seed + repeat_index` 传入 OpenAI-compatible 请求。当前 30-case 配置使用 3 个 repeat，对应 seed `202608/202609/202610`。
 

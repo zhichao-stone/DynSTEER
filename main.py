@@ -47,7 +47,7 @@ def _adapted_case_files_exist(config: HarnessRunConfig) -> bool:
         raise ValueError("config 不能为空")
     if config.case_ids is None:
         return False
-    return all(adapted_case_path(config.data_root, case_id).exists() for case_id in config.case_ids)
+    return all(adapted_case_path(config, case_id).exists() for case_id in config.case_ids)
 
 
 def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = False) -> list[Path]:
@@ -70,7 +70,7 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
         run_config = replace(config, case_ids=tuple(case_ids))
         harness.prepare_config(run_config)
         load_task_case(run_config, adapter, force_adapt=force_adapt)
-        adapted_paths.extend(adapted_case_path(run_config.data_root, case_id) for case_id in case_ids)
+        adapted_paths.extend(adapted_case_path(run_config, case_id) for case_id in case_ids)
     return adapted_paths
 
 

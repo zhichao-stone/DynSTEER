@@ -1,0 +1,7 @@
+\begin{abstract}
+Large language model agents are increasingly deployed for long-horizon task execution, raising a central granularity question for trajectory evaluation: whole-trajectory verification is too coarse to capture concrete failures and their associated evidence in long trajectories, while atomic-step scoring is too fine-grained, noise-sensitive, and computationally expensive.
+This granularity gap makes a single-reference trajectory paradigm inadequate for assessing the rich space of valid agent execution paths and delays timely feedback and early stopping in long-horizon tasks.
+To address these issues, we propose DynSTEER, a dynamic stage-wise framework for agent trajectory evaluation.
+DynSTEER bridges the granularity gap through stage-wise dynamic evaluation that segments rollouts at key execution nodes and adapts its multi-tier review strategy based on stage-level results; it compiles a path-tolerant milestone graph from public task views to preserve diverse legal paths without reference leakage; and it supports terminating unrecoverable agent executions to curb resource waste.
+Experiments show that DynSTEER improves evaluation discriminability by 85.2\% over native evaluation, separates all model pairs with statistical significance, and saves 45.41\% of execution steps on failed rollouts.
+\end{abstract}

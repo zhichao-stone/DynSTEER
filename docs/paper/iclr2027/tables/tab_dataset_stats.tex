@@ -1,0 +1,29 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{\textbf{ToolSandbox Benchmark Dataset Statistics.} Distribution of evaluated scenarios across functional domains, interaction modalities, adversarial perturbation variants, and safety minefield configurations.}
+\label{tab:dataset_stats}
+\vspace{0.15cm}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Scenario Domain / Sub-category} & \textbf{Count} & \textbf{Avg. User Turns} & \textbf{Available Tools} & \textbf{Minefield Invariants} \\
+\midrule
+Calendar \& Scheduling Management & 112 & 3.4 & 8 -- 18 & Data integrity, date bounds \\
+Messaging \& Notification Services & 136 & 2.9 & 6 -- 15 & Privacy, unverified sends \\
+Contact \& Personal CRM & 98 & 2.6 & 5 -- 12 & Irreversible deletion \\
+Financial \& Transaction Processing & 84 & 4.1 & 10 -- 24 & Unauthorized transfer \\
+Information Retrieval \& Weather/Geocoding & 79 & 3.2 & 7 -- 16 & Parameter type constraints \\
+\midrule
+\textbf{Perturbation \& Difficulty Variants} & \textbf{Count} & \multicolumn{3}{c}{\textbf{Properties \& Challenge Characteristics}} \\
+\midrule
+Standard Canonical & 127 & \multicolumn{3}{l}{Nominal parameters, standard system prompt and API schemas} \\
+Distraction Tools (3--10 extra APIs) & 158 & \multicolumn{3}{l}{Noise tools added to prompt to test agent tool retrieval} \\
+Scrambled Arguments / Descriptions & 142 & \multicolumn{3}{l}{Shuffled arg orders and adversarial field descriptors} \\
+Insufficient Information (Rejection Tasks) & 82 & \multicolumn{3}{l}{Ambiguous queries requiring clarification or safe refusal} \\
+\midrule
+\textbf{Total Evaluated Benchmark Pool} & \textbf{509} & \textbf{3.2 turns} & \textbf{12.4 tools/task} & \textbf{704 total minefields} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

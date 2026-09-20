@@ -107,7 +107,7 @@ def run_experiment(
             results.append(_case_result_from_output(default_spec, task_case, output))
 
         if spec.method != ExperimentMethod.DEFAULT:
-            if spec.method == ExperimentMethod.DYNSTEER_EVALUATE:
+            if spec.method in {ExperimentMethod.DYNSTEER_EVALUATE, ExperimentMethod.DYNSTEER_EVALUATE_GUIDED}:
                 runner = partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval)
             else:
                 runner = partial(
@@ -145,6 +145,7 @@ def _static_adaptation_key(spec: ExperimentRunSpec) -> tuple[object, ...]:
         generation.max_candidate_batch_count,
         generator,
         stage_mode,
+        spec.strategy.use_milestone_graph,
     )
 
 
@@ -285,14 +286,32 @@ def _case_result_from_output(
     """从输出文件中抽取 ExperimentCaseResult。"""
     summary_path = output.result_dir / "summary.json"
     summary: dict = read_json_file(summary_path, str(summary_path), dict)
+    raw_summary_path = output.raw_run_dir / "raw_summary.json"
+    raw_summary: dict = read_json_file(raw_summary_path, str(raw_summary_path), dict)
     runtime_metrics = summary.get("runtime_metrics") if isinstance(summary.get("runtime_metrics"), dict) else {}
 
     score = as_number(summary.get("score"))
+    native_score = as_number(summary.get("native_score"))
+    if native_score is None and spec.method == ExperimentMethod.DEFAULT:
+        native_score = score
     milestone_coverage = summary.get("milestone_coverage")
     minefield_match_count = summary.get("minefield_match_count")
     termination = summary.get("termination")
     termination_code = termination.get("code") if isinstance(termination, dict) else None
     termination_detail = termination.get("detail") if isinstance(termination, dict) else None
+    raw_interventions = raw_summary.get("interventions")
+    if raw_interventions is not None and not isinstance(raw_interventions, list):
+        raise ValueError("summary.interventions 必须是数组")
+    if any(not isinstance(item, dict) for item in raw_interventions or []):
+        raise ValueError("summary.interventions 项必须是对象")
+    raw_categories = task_case.metadata.get("categories", [])
+    strata = {
+        "task_types": sorted({item.value for item in task_case.task_types}),
+        "safety_categories": (
+            sorted({str(item) for item in raw_categories})
+            if isinstance(raw_categories, list) else []
+        ),
+    }
 
     return ExperimentCaseResult(
         experiment_id=spec.experiment_id,
@@ -302,10 +321,13 @@ def _case_result_from_output(
         repeat_index=spec.repeat_index,
         method=spec.method,
         score=score,
+        native_score=native_score,
         milestone_coverage=milestone_coverage if isinstance(milestone_coverage, str) else None,
         minefield_match_count=minefield_match_count if isinstance(minefield_match_count, int) else None,
         termination_code=str(termination_code) if termination_code else None,
         termination_detail=dict(termination_detail) if isinstance(termination_detail, dict) else {},
+        interventions=tuple(dict(item) for item in raw_interventions or []),
+        strata=strata,
         adaptation_cost=dict(task_case.metadata.get("adaptation_cost", {})),
         adaptation_usage=dict(task_case.metadata.get("adaptation_usage", {})),
         runtime_metrics=dict(runtime_metrics),

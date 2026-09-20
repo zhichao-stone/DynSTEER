@@ -744,6 +744,7 @@ class RuntimeEvaluationState:
     ready_frontier_progress_watch: ReadyFrontierProgressWatch | None = None
     agent_step_tracker: AgentStepTracker = field(default_factory=AgentStepTracker)
     evaluation_termination: EvaluationTerminationState = field(default_factory=EvaluationTerminationState)
+    interventions: list[JsonObject] = field(default_factory=list)
 
 @dataclass
 class RuntimeEvaluationDecision:
@@ -862,6 +863,7 @@ class ToolSandboxSession:
     system_environment_messages_prepared: bool = False
     stop_reason: str | None = None
     termination_reason: str | None = None
+    usage_recorder: object | None = None
 
 def ensure_json_object(value: Any) -> JsonObject:
     """校验输入是否为 JSON 对象。"""

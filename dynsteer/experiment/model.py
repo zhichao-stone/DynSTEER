@@ -11,16 +11,23 @@ from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
 class ExperimentMethod(str, Enum):
     DEFAULT = "default"
     DYNSTEER_EVALUATE = "dynsteer_evaluate"
+    DYNSTEER_EVALUATE_GUIDED = "dynsteer_evaluate_guided"
     DYNSTEER_REPLAY = "dynsteer_replay"
     DYNSTEER_REPLAY_STATIC = "dynsteer_replay_static"
     DYNSTEER_REPLAY_STATIC_WEIGHTING = "dynsteer_replay_static_weighting"
     DYNSTEER_REPLAY_STATIC_ROUTING = "dynsteer_replay_static_routing"
+    DYNSTEER_REPLAY_NO_MINEFIELDS = "dynsteer_replay_no_minefields"
+    DYNSTEER_REPLAY_NO_MILESTONE_GRAPH = "dynsteer_replay_no_milestone_graph"
+    DYNSTEER_REPLAY_NO_POLICY_STOP = "dynsteer_replay_no_policy_stop"
 
 @dataclass(frozen=True)
 class EvaluationStrategyConfig:
     dynamic_routing: bool = True
     dynamic_weighting: bool = True
     policy_stop: bool = True
+    use_milestone_graph: bool = True
+    use_minefields: bool = True
+    max_interventions: int = 2
     fixed_judge_level: EvaluationLevel = EvaluationLevel.CHEAP
     replay_continue_after_virtual_stop: bool = False
     metadata: JsonObject = field(default_factory=dict)
@@ -32,6 +39,14 @@ class EvaluationStrategyConfig:
             raise TypeError("dynamic_weighting 必须是 bool")
         if not isinstance(self.policy_stop, bool):
             raise TypeError("policy_stop 必须是 bool")
+        if not isinstance(self.use_milestone_graph, bool):
+            raise TypeError("use_milestone_graph 必须是 bool")
+        if not isinstance(self.use_minefields, bool):
+            raise TypeError("use_minefields 必须是 bool")
+        if not isinstance(self.max_interventions, int) or isinstance(self.max_interventions, bool):
+            raise TypeError("max_interventions 必须是整数")
+        if self.max_interventions < 0:
+            raise ValueError("max_interventions 不能为负数")
         if not isinstance(self.fixed_judge_level, EvaluationLevel):
             raise TypeError("fixed_judge_level 必须是 EvaluationLevel")
         if not isinstance(self.replay_continue_after_virtual_stop, bool):
@@ -103,10 +118,13 @@ class ExperimentCaseResult:
     repeat_index: int
     method: ExperimentMethod
     score: float | None = None
+    native_score: float | None = None
     milestone_coverage: str | None = None
     minefield_match_count: int | None = None
     termination_code: str | None = None
     termination_detail: JsonObject = field(default_factory=dict)
+    interventions: tuple[JsonObject, ...] = ()
+    strata: JsonObject = field(default_factory=dict)
     adaptation_cost: JsonObject = field(default_factory=dict)
     adaptation_usage: JsonObject = field(default_factory=dict)
     runtime_metrics: JsonObject = field(default_factory=dict)
@@ -115,10 +133,13 @@ class ExperimentCaseResult:
     def to_index_dict(self) -> JsonObject:
         return {
             "score": self.score,
+            "native_score": self.native_score,
             "milestone_coverage": self.milestone_coverage,
             "minefield_match_count": self.minefield_match_count,
             "termination_code": self.termination_code,
             "termination_detail": dict(self.termination_detail),
+            "interventions": [dict(item) for item in self.interventions],
+            "strata": dict(self.strata),
             "adaptation_cost": dict(self.adaptation_cost),
             "adaptation_usage": dict(self.adaptation_usage),
             "runtime_metrics": dict(self.runtime_metrics),

@@ -95,6 +95,49 @@ Meaning: current time and reminder search are independent producers needed to id
 
 In this example, current time is indispensable to target selection but is not itself a REMINDER record field, so it must not be invented as a `match` key. Its edge to the state goal records the target-selection dependency; the selected reminder ID is dynamically bound from the search output. The shown selector remains illustrative and must be replaced by one supported by the current producer contract.
 
+Example 3
+Task: "Remind me to call Mom tomorrow at 10am." (Public state includes wifi: true)
+Meaning: directly utilize public settings values, invoke the datetime conversion tool to obtain a timestamp, and finally support adding the reminder state goal; never inject auxiliary shifting or time-difference tools.
+
+{{
+  "dispositions": {{"turn_0": "executable"}},
+  "nodes": [
+    {{
+      "local_id": "n0",
+      "turn_id": "turn_0",
+      "kind": "tool_call",
+      "evidence_id": "example_datetime_to_timestamp",
+      "arguments": {{
+        "year": {{"source": "public_literal", "source_ref": "instruction:0", "value": 2026}},
+        "month": {{"source": "public_literal", "source_ref": "instruction:0", "value": 9}},
+        "day": {{"source": "public_literal", "source_ref": "instruction:0", "value": 12}},
+        "hour": {{"source": "public_literal", "source_ref": "instruction:0", "value": 10}}
+      }}
+    }},
+    {{
+      "local_id": "n1",
+      "turn_id": "turn_0",
+      "kind": "set_state",
+      "namespace": "REMINDER",
+      "operation": "add",
+      "cardinality": "one",
+      "match": {{}},
+      "values": {{
+        "content": {{"source": "public_literal", "source_ref": "instruction:0", "value": "call Mom"}},
+        "reminder_timestamp": {{
+          "source": "node_output",
+          "producer_local_id": "n0",
+          "selector": "$.timestamp",
+          "cardinality": "one"
+        }}
+      }},
+      "executor_evidence_id": "example_add_reminder"
+    }}
+  ],
+  "edges": [["n0", "n1"]],
+  "minefields": []
+}}
+
 Current public task JSON
 
 {task}
@@ -117,6 +160,8 @@ Required semantics
 - Represent a required user-facing answer with `emit_message`. `content_requirement` states what the answer must communicate; it must not fabricate the unknown runtime answer.
 - Use visible public data directly when sufficient. Do not add a getter merely to reconfirm the same public value.
 - If visible tools or public inputs cannot safely complete the task, do not invent a completion. Use an appropriate non-executable disposition and a legal empty or response-only graph.
+- Forbid adversarial redundancy: if the tool catalog includes auxiliary computation tools like shift_timestamp, timestamp_diff, or unit_conversion, do not add them to the graph for defensive re-checking or confirmation unless the user instruction explicitly requests time offsets, duration differences, or unit conversions; directly bind valid timestamps and parameters to the target operation.
+- Insufficient information handling: if the instruction lacks sufficient context to identify the target record (for instance, "check holidays" without specifying which holiday, or "message the last contact" when message history is invisible), declare the turn as response_only, produce an empty nodes array or an emit_message reply, and emit a fatal minefield with missing_required_input for any unsafe side-effecting tool, rather than blindly guessing or invoking imagined tools.
 
 3. Node schemas and provenance
 - The only allowed node kinds are `tool_call`, `set_state`, and `emit_message`. Never output `preserve_state`; it is derived by code.

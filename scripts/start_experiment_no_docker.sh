@@ -9,7 +9,7 @@ Usage:
 Options:
   --exp PATH                 Unified experiment config JSON. Required.
   --experiment-config PATH   Same as --exp.
-  --source PATH              Optional source tree override. Defaults to benchmark.json source_root.
+  --source PATH              Optional source tree override. AgentCompass uses this to prepare its isolated venv.
   --workers NUM              Optional worker override. Defaults to benchmark.json max_workers or 1.
   --random_seed NUM          Python random seed. Defaults to 202608.
   --only_adapt               Only adapt benchmark data into data-root; do not run evaluation.
@@ -21,14 +21,18 @@ Options:
   -h, --help                 Show this help.
 
 Examples:
-  ./scripts/start_experiment_no_docker.sh --exp data/experiments/double_benchmark_initial.json
-  ./scripts/start_experiment_no_docker.sh --exp data/experiments/double_benchmark_initial.json --no-env-file
+  ./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json
+  ./scripts/start_experiment_no_docker.sh --exp data/experiments/toolsandbox_partial_main.json --no-env-file
+  ./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass
 EOF
 }
 
 script_dir() {
     cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd
 }
+
+# shellcheck source=scripts/agentcompass_environment.sh
+. "$(script_dir)/agentcompass_environment.sh"
 
 require_value() {
     local option_name="$1"
@@ -81,16 +85,6 @@ ensure_uv_environment() {
 
     cd "$project_root"
     uv sync --frozen --no-dev --no-install-project --inexact
-}
-
-ensure_agentcompass_extra() {
-    if [[ "${DYNSTEER_SKIP_UV_SYNC:-0}" == "1" ]]; then
-        return 0
-    fi
-    if experiment_uses_agentcompass "$1" "$2"; then
-        echo "Enabling optional AgentCompass bridge for experiment"
-        uv sync --frozen --no-dev --no-install-project --inexact --extra agentcompass
-    fi
 }
 
 ensure_toolsandbox_group() {
@@ -255,8 +249,11 @@ main() {
     fi
 
     cd "$project_root"
+    if experiment_uses_agentcompass "$project_root" "$experiment_config"; then
+        ensure_agentcompass_environment "$project_root" "$source_path"
+        source_path="$DYNSTEER_BENCHMARK_SOURCE_ROOT"
+    fi
     ensure_uv_environment "$project_root"
-    ensure_agentcompass_extra "$project_root" "$experiment_config"
     ensure_toolsandbox_group "$project_root" "$experiment_config"
     local python_executable
     python_executable="$(project_python)"
@@ -286,7 +283,9 @@ main() {
                 fi
             fi
         done <<< "$bootstrap_lines"
-        unset DYNSTEER_BENCHMARK_SOURCE_ROOT
+        if ! experiment_uses_agentcompass "$project_root" "$experiment_config"; then
+            unset DYNSTEER_BENCHMARK_SOURCE_ROOT
+        fi
         if [[ -z "$workers" ]]; then
             workers="${derived_workers:-1}"
         fi

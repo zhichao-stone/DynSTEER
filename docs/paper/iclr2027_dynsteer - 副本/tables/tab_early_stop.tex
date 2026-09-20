@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{\textbf{Execution Efficiency and Prefix Savings via Adaptive Early Termination on ToolSandbox.} Breakdown of underperforming agent executions halted early by concurrent quality and deadlock criteria.}
+\label{tab:early_stop}
+\vspace{0.1cm}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Termination Criterion} & \textbf{Halted Runs} & \textbf{Unique Tasks} & \textbf{Mean Stop Progress} & \textbf{Saved Progress} & \textbf{Gross Exec Savings} & \textbf{Net Pipeline Savings} \\
+\midrule
+Stage Low-Score Policy (\textsc{Score}) & 234 & 64 & 64.19\% & 35.81\% & 3.66 s / run & -3.81 s / run \\
+Frontier Stagnation (\textsc{Deadlock}) & 285 & 109 & 66.56\% & 33.44\% & 27.85 s / run & 63.05 s / run \\
+\midrule
+Total Underperforming Subset & 519 & 173 & 65.49\% & 34.51\% & 16.94 s / run & 32.89 s / run \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

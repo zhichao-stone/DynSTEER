@@ -1,0 +1,56 @@
+\section{Algorithmic Formulations and Proof Details}
+\label{app:algorithms}
+
+\subsection{DynSTEER Execution-Time Stage Evaluation and Control Algorithm}
+Algorithm~\ref{alg:dynsteer} formalizes the complete execution-time stage evaluation, dominator evidence window extraction, uncertainty-adaptive judge routing, and early termination protocol, matching our implementation in \texttt{dynsteer/evaluate/evaluator.py} and \texttt{policy.py}.
+
+\begin{algorithm}[t]
+\caption{DynSTEER Execution-Time Stage Evaluation and Control}
+\label{alg:dynsteer}
+\begin{algorithmic}[1]
+\REQUIRE Public task view $V_{\text{public}}$, candidate count $C$, stop thresholds $\Theta$
+\ENSURE Final evaluation report $\mathcal{R}$, termination status
+\STATE $\{G_1, \dots, G_C\} \leftarrow \text{SynthesizeCandidates}(V_{\text{public}}, C)$
+\STATE $G \leftarrow \text{ValidateAndAggregate}(\{G_1, \dots, G_C\})$ \COMMENT{Milestone DAG $G = (M, E, \mathcal{K}, \mathcal{M}_{\text{fatal}})$}
+\STATE $M_{\text{settled}} \leftarrow \emptyset, \; t \leftarrow 0, \; \mathcal{R} \leftarrow \emptyset, \; \mathbf{w}_1 \leftarrow \text{InitWeights}(), \; \text{Level}^{(1)} \leftarrow J_{\text{cheap}}$
+\FOR{each event $e_k$ in agent execution rollout}
+    \IF{$e_k \in \mathcal{M}_{\text{fatal}}$}
+        \RETURN $\text{Halt}(\mathcal{R}, \text{reason}=\text{"Fatal Minefield"}, k)$
+    \ENDIF
+    \IF{$e_k$ is Closed Agent Action $a_t$}
+        \STATE $t \leftarrow t + 1$
+        \STATE $\mathcal{F}_t \leftarrow \{m \in M \setminus M_{\text{settled}} \mid \text{Pred}(m) \subseteq M_{\text{settled}}\}$
+        \STATE $m^* \leftarrow \text{MatchMilestone}(\mathcal{F}_t, a_t, s_t)$
+        \IF{$m^* \neq \text{None}$}
+            \STATE $M_{\text{settled}} \leftarrow M_{\text{settled}} \cup \{m^*\}$
+            \STATE $\mathcal{W} \leftarrow [t_{\text{idom}(m^*)}, t]$ \COMMENT{Dominator-anchored evidence window}
+            \STATE $S_t, \mathbf{s}_t, \mathbf{u}_t, \mathbf{diag} \leftarrow \text{EvaluateStage}(\mathcal{W}, m^*, \mathbf{w}_t, \text{Level}^{(t)})$
+            \STATE $\mathcal{R} \leftarrow \mathcal{R} \cup \{(m^*, S_t, \mathbf{diag})\}$
+            \STATE $\mathbf{w}_{t+1}, \text{Level}^{(t+1)} \leftarrow \text{UpdateEvaluationPolicy}(\mathbf{w}_t, \mathbf{s}_t, \mathbf{u}_t, S_t, \Theta)$ \COMMENT{Dynamic strategy adaptation}
+        \ENDIF
+        \IF{$\text{CheckEarlyStopCriteria}(\mathcal{R}, \mathcal{F}_t, S_t, t, \Theta)$}
+            \RETURN $\text{Halt}(\mathcal{R}, \text{reason}=\text{"Early Termination"}, t)$
+        \ENDIF
+    \ENDIF
+\ENDFOR
+\RETURN $\text{FinalizeReport}(\mathcal{R}, M_{\text{settled}})$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Blueprint Consensus Aggregation Details}
+The blueprint aggregation pipeline synthesizes multiple candidate graphs $\{G_1, \dots, G_C\}$ into a canonical Milestone DAG $G = (M, E, \mathcal{K}, \mathcal{M}_{\text{fatal}})$. 
+
+Let each candidate graph be represented by its set of nodes $M_c$, directed precedence edges $E_c$, and tool argument bindings $\mathcal{K}_c$. We define node semantic equivalence $\sim$ using canonical tool names and parameter role bindings:
+\begin{equation}
+    m_i \sim m_j \iff \text{ToolName}(m_i) = \text{ToolName}(m_j) \land \text{Role}(m_i) = \text{Role}(m_j)
+\end{equation}
+For each equivalence class $[m]$, its consensus support is:
+\begin{equation}
+    \text{Support}([m]) = \sum_{c=1}^{C_{\text{valid}}} \mathbb{I}\left( \exists m' \in M_c \text{ s.t. } m' \in [m] \right)
+\end{equation}
+Milestones with $\text{Support}([m]) \ge \lceil (C_{\text{valid}} + 1) / 2 \rceil$ are admitted into the canonical milestone set $M$. Precedence edges are aggregated analogously, and transitive reduction $\text{TR}(E)$ is computed using Tarjan's linear-time topological ordering algorithm~\citep{tarjan1972depth} to eliminate redundant shortcut edges.
+
+\subsection{Immediate Dominator Stage Anchoring Proof}
+Let $G = (M, E)$ be the DAG with augmented entry node $s_0$. A node $d$ dominates node $n$ ($d \;\text{dom}\; n$) if every directed path from $s_0$ to $n$ contains $d$. The \textbf{immediate dominator} $\text{idom}(n)$ is the unique node that strictly dominates $n$ without dominating any other strict dominator of $n$. We compute the dominator tree using the Lengauer-Tarjan algorithm~\citep{lengauer1979fast} in $\mathcal{O}(|E| \alpha(|E|, |M|))$ time.
+
+When milestone $m^*$ is settled at step $t$, its stage evidence window $\mathcal{W}(m^*) = [t_{\text{idom}(m^*)}, t]$ encompasses precisely the intermediate steps executed between its immediate dominator and $m^*$. Because $m^*$ could not have been reached without traversing $\text{idom}(m^*)$, all causal dependencies are preserved while concurrent, independent branches are cleanly partitioned.
