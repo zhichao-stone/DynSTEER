@@ -61,6 +61,7 @@ run_in_container() {
     local compose_parts=($compose_cmd)
     export DYNSTEER_HOST_UID="${DYNSTEER_HOST_UID:-$(id -u)}"
     export DYNSTEER_HOST_GID="${DYNSTEER_HOST_GID:-$(id -g)}"
+    export DYNSTEER_HOST_DOCKER_GID="${DYNSTEER_HOST_DOCKER_GID:-$(stat -c %g /var/run/docker.sock 2>/dev/null || true)}"
 
     local experiment_config=""
     local source_path=""
@@ -450,7 +451,8 @@ main() {
         only_adapt_args=(--only_adapt)
     fi
 
-    exec python main.py \
+    local python_cmd="${DYNSTEER_PYTHON:-python}"
+    exec "$python_cmd" main.py \
         --exp "$experiment_config" \
         "${worker_args[@]}" \
         "${random_seed_args[@]}" \

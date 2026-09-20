@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace/DynSTEER
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates git \
+    && apt-get install -y --no-install-recommends bash ca-certificates git wget docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Build a reusable bootstrap environment. start.sh seeds the project-local

@@ -50,6 +50,7 @@ toolsandbox = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["dynsteer*"]

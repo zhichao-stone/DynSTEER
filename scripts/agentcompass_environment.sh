@@ -89,6 +89,7 @@ ensure_agentcompass_environment() {
 
     export UV_CACHE_DIR="${UV_CACHE_DIR:-$project_root/.uv-cache}"
     export UV_PROJECT_ENVIRONMENT="$venv_dir"
+    export DYNSTEER_PYTHON="$python_bin"
     export DYNSTEER_SKIP_UV_SYNC=1
     export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_abs"
 }
