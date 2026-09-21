@@ -38,6 +38,10 @@ ensure_agentcompass_environment() {
     local current_stamp=""
     local runtime_dependencies="polars==0.20.31 networkx>=3.2 tqdm>=4.66.0 scipy==1.13.1"
 
+    export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
+    export LITELLM_LOCAL_MODEL_COST_MAP=true
+    export LITELLM_LOG="${LITELLM_LOG:-ERROR}"
+
     if ! command -v uv >/dev/null 2>&1; then
         echo "uv is required to prepare the AgentCompass environment." >&2
         exit 127
@@ -49,7 +53,7 @@ ensure_agentcompass_environment() {
     venv_dir="${DYNSTEER_AGENTCOMPASS_VENV:-$project_root/.venv-agentcompass}"
     stamp_dir="$venv_dir/.dynsteer"
     stamp_file="$stamp_dir/source"
-    expected_stamp="$source_abs|$runtime_dependencies"
+    expected_stamp="$source_abs|$python_version|$runtime_dependencies"
     for python_bin in "$venv_dir/bin/python" "$venv_dir/Scripts/python.exe" "$venv_dir/Scripts/python"; do
         if [[ -x "$python_bin" ]]; then
             break
@@ -85,6 +89,29 @@ ensure_agentcompass_environment() {
         uv pip install --python "$python_bin" $runtime_dependencies
         mkdir -p "$stamp_dir"
         printf '%s\n' "$expected_stamp" > "$stamp_file"
+    elif ! validate_agentcompass_environment "$python_bin"; then
+        echo "Rebuilding incomplete AgentCompass environment: $venv_dir"
+        uv venv "$venv_dir" --python "$python_version" --clear
+        python_bin=""
+        for python_bin in "$venv_dir/bin/python" "$venv_dir/Scripts/python.exe" "$venv_dir/Scripts/python"; do
+            if [[ -x "$python_bin" ]]; then
+                break
+            fi
+        done
+        if [[ -z "$python_bin" ]]; then
+            echo "AgentCompass Python executable not found after rebuild: $venv_dir" >&2
+            exit 127
+        fi
+        uv pip install --python "$python_bin" -e "$source_abs"
+        uv pip install --python "$python_bin" --no-deps -e "$project_root"
+        # shellcheck disable=SC2086
+        uv pip install --python "$python_bin" $runtime_dependencies
+        printf '%s\n' "$expected_stamp" > "$stamp_file"
+    fi
+
+    if ! validate_agentcompass_environment "$python_bin"; then
+        echo "AgentCompass environment validation failed: $python_bin" >&2
+        exit 127
     fi
 
     export UV_CACHE_DIR="${UV_CACHE_DIR:-$project_root/.uv-cache}"
@@ -92,4 +119,9 @@ ensure_agentcompass_environment() {
     export DYNSTEER_PYTHON="$python_bin"
     export DYNSTEER_SKIP_UV_SYNC=1
     export DYNSTEER_BENCHMARK_SOURCE_ROOT="$source_abs"
+}
+
+validate_agentcompass_environment() {
+    local python_bin="$1"
+    "$python_bin" -c 'import agentcompass, networkx, polars, scipy, tqdm' >/dev/null 2>&1
 }

@@ -1,13 +1,31 @@
-detect_compose() {
-    if docker compose version >/dev/null 2>&1; then
-        echo "docker compose"
+bootstrap_python_command() {
+    local project_root="$1"
+    local candidate
+    for candidate in \
+        "${DYNSTEER_BOOTSTRAP_PYTHON:-}" \
+        "${UV_PROJECT_ENVIRONMENT:-}/Scripts/python.exe" \
+        "${UV_PROJECT_ENVIRONMENT:-}/bin/python" \
+        "$project_root/.venv/Scripts/python.exe" \
+        "$project_root/.venv/bin/python" \
+        "$project_root/.venv-agentcompass/Scripts/python.exe" \
+        "$project_root/.venv-agentcompass/bin/python"; do
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    if command -v python >/dev/null 2>&1; then
+        echo "python"
         return 0
     fi
-    if command -v docker-compose >/dev/null 2>&1; then
-        echo "docker-compose"
+    if command -v python3 >/dev/null 2>&1; then
+        echo "python3"
         return 0
     fi
-    return 1
+
+    echo "Python is required to resolve experiment bootstrap information. Run the uv entrypoint first." >&2
+    return 127
 }
 
 absolute_host_path() {
@@ -34,15 +52,8 @@ experiment_bootstrap_lines() {
     local experiment_config="$2"
     local container_project_root="${3:-}"
 
-    local python_cmd=""
-    if command -v python >/dev/null 2>&1; then
-        python_cmd="python"
-    elif command -v python3 >/dev/null 2>&1; then
-        python_cmd="python3"
-    else
-        echo "Python is required to resolve experiment bootstrap information." >&2
-        return 127
-    fi
+    local python_cmd
+    python_cmd="$(bootstrap_python_command "$project_root")" || return $?
 
     local python_project_root="$project_root"
     local python_experiment_config="$experiment_config"

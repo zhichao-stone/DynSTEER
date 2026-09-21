@@ -271,7 +271,7 @@ main() {
 
     cd "$project_root"
     if agentcompass_is_benchmark "$benchmark"; then
-        echo "no_docker entry does not support the current Docker-based AgentCompass path." >&2
+        echo "Use start_experiment_no_docker.sh with an experiment config so AgentCompass can reject Docker-only settings." >&2
         exit 65
     fi
     ensure_uv_environment "$project_root"

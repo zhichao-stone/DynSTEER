@@ -2,25 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import importlib
 import json
 import logging
 import os
 import re
 import secrets
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType, ModuleType
+from types import MappingProxyType
 from typing import Any
 
+from dynsteer.adapter.agentcompass.components import import_agentcompass_component
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject, JsonValue
 
 AGENTCOMPASS_COMMIT = "04d138a1c1decd2c9caa8c2659c698d7ffb677b4"
+_AGENTCOMPASS_DEFAULT_ENVIRONMENT = "host_process"
 SUPPORTED_BENCHMARKS = frozenset({"swebench_pro", "skillsbench"})
 _AGENTCOMPASS_COMPONENT_MODULES = {
     "swebench_pro": (
@@ -30,6 +30,12 @@ _AGENTCOMPASS_COMPONENT_MODULES = {
         "agentcompass.benchmarks.skillsbench",
     ),
 }
+_AGENTCOMPASS_HARNESS_MODULES = {
+    "mini_swe_agent": ("agentcompass.harnesses.mini_swe_agent",),
+    "none": (),
+    "openhands": ("agentcompass.harnesses.openhands",),
+}
+_AGENTCOMPASS_ENVIRONMENT_MODULE = "agentcompass.environments.host_process"
 _SECRET_KEYS = frozenset({"api_key", "model_api_key", "base_url", "model_base_url", "token", "password", "secret"})
 _STATUS_VALUES = frozenset({"completed", "run_error", "eval_error", "run_error_or_eval_error", "skipped"})
 logger = logging.getLogger(__name__)
@@ -72,7 +78,7 @@ def run_agentcompass_case(
     benchmark_params = dict(settings["benchmark_params"])
     benchmark_params.update({"sample_ids": [case_id]})
     run_key, run_id = _run_identity(config, normalized, case_id)
-    api = _agentcompass_api()
+    api = _agentcompass_api(normalized, str(settings["harness"]))
 
     # AgentCompass 执行边界：密钥仅由环境变量注入 request。
     try:
@@ -136,6 +142,16 @@ def run_agentcompass_case(
     raw_attempt = next(iter(attempts.values()))
     if not isinstance(raw_attempt, Mapping):
         raise TypeError("AgentCompass attempt 必须是对象")
+    status = raw_attempt.get("status")
+    trajectory = raw_attempt.get("trajectory")
+    if isinstance(status, str) and status != "completed" and not (
+        isinstance(trajectory, dict) and isinstance(trajectory.get("steps"), list)
+    ):
+        logger.error(
+            "agentcompass_case_failed",
+            extra={"事件": "AgentCompass任务执行失败", "benchmark": normalized, "case_id": case_id, "status": status},
+        )
+        raise RuntimeError(f"AgentCompass 任务执行失败: benchmark={normalized}, case_id={case_id}, status={status}")
     sanitized = _sanitize_detail(normalized, str(raw_detail["task_id"]), raw_attempt, run_dir, detail_path, run_key, run_id)
     logger.info(
         "agentcompass_case_completed",
@@ -154,10 +170,9 @@ def _load_task_records_cached(
     """从 AgentCompass 加载一次任务目录并执行可见字段白名单投影。"""
     if agentcompass_commit != AGENTCOMPASS_COMMIT:
         raise ValueError("AgentCompass commit 与适配器固定版本不一致")
-    api = _agentcompass_api()
+    api = _agentcompass_api(benchmark, "none")
     try:
         api["bootstrap_runtime"](data_dir=data_dir, force=True)
-        _load_agentcompass_components(benchmark)
         request = api["build_run_request"](
             benchmark=benchmark,
             harness="none",
@@ -200,26 +215,19 @@ def _load_task_records_cached(
     return MappingProxyType(records)
 
 
-def _load_agentcompass_components(benchmark: str) -> None:
+def _load_agentcompass_components(benchmark: str, harness: str) -> None:
     """只加载目标 benchmark 的 AgentCompass 组件，避免无关依赖阻断 Windows。"""
     try:
-        for module_name in _AGENTCOMPASS_COMPONENT_MODULES[benchmark]:
-            _import_benchmark_component(module_name)
+        for module_name in (
+            *_AGENTCOMPASS_COMPONENT_MODULES[benchmark],
+            *_AGENTCOMPASS_HARNESS_MODULES[harness],
+            _AGENTCOMPASS_ENVIRONMENT_MODULE,
+        ):
+            import_agentcompass_component(module_name)
     except KeyError as exc:
-        raise ValueError(f"AgentCompass benchmark 缺少组件加载配置: {benchmark}") from exc
+        raise ValueError(f"AgentCompass benchmark/harness 缺少组件加载配置: {benchmark}/{harness}") from exc
     except Exception as exc:
         raise RuntimeError(f"AgentCompass 组件加载失败: {benchmark}") from exc
-
-
-def _import_benchmark_component(module_name: str) -> None:
-    """绕过固定版本 benchmarks 包的全量导出，只注册目标 benchmark。"""
-    package_name = module_name.rpartition(".")[0]
-    if package_name not in sys.modules:
-        root = importlib.import_module("agentcompass")
-        package = ModuleType(package_name)
-        package.__path__ = [str(Path(root.__file__).parent / "benchmarks")]
-        sys.modules[package_name] = package
-    importlib.import_module(module_name)
 
 
 def _agentcompass_config(config: HarnessRunConfig) -> JsonObject:
@@ -239,11 +247,15 @@ def _agentcompass_config(config: HarnessRunConfig) -> JsonObject:
         raise ValueError("metadata.model_id 必须是非空字符串")
 
     result: JsonObject = {}
-    for key in ("harness", "environment", "model_api_protocol", "data_dir"):
+    for key in ("harness", "model_api_protocol", "data_dir"):
         item = value.get(key)
         if not isinstance(item, str) or not item.strip():
             raise ValueError(f"metadata.agentcompass.{key} 必须是非空字符串")
         result[key] = item.strip()
+    environment = value.get("environment", _AGENTCOMPASS_DEFAULT_ENVIRONMENT)
+    if not isinstance(environment, str) or not environment.strip():
+        raise ValueError("metadata.agentcompass.environment 必须是非空字符串")
+    result["environment"] = environment.strip()
     for key in ("benchmark_params", "harness_params", "environment_params", "model_params"):
         item = value.get(key, {})
         if not isinstance(item, dict):
@@ -361,24 +373,39 @@ def _benchmark_name(benchmark: str) -> str:
     return normalized
 
 
-def _agentcompass_api() -> dict[str, Any]:
+def _agentcompass_api(benchmark: str, harness: str) -> dict[str, Any]:
     """在 AgentCompass benchmark 真正启用时加载其可选依赖边界。"""
     # 第三方可选依赖边界：基础 DynSTEER 启动不要求安装 AgentCompass。
     try:
         from agentcompass import build_run_request, run_evaluation_request
         from agentcompass.runtime import BENCHMARKS
         from agentcompass.runtime.config import bootstrap_runtime
+        from dynsteer.adapter.agentcompass.compat import apply_host_process_compat
     except ModuleNotFoundError as exc:
         raise ImportError(
             "当前环境未安装 AgentCompass。请使用 .venv-agentcompass 独立环境安装 ../AgentCompass，"
             "并设置 UV_PROJECT_ENVIRONMENT 与 DYNSTEER_SKIP_UV_SYNC=1；"
             "所选 harness 的 host 依赖可由 auto_install_dependencies=true 按需安装。"
         ) from exc
+    apply_host_process_compat(benchmark)
+    # 明确加载受支持组件后阻止 AgentCompass 全量导入无关 benchmark。
+    from agentcompass.runtime import registry
+
+    if not registry._BUILTINS_LOADED:
+        _load_agentcompass_components(benchmark, harness)
+        registry._BUILTINS_LOADED = True
+    recipe_classes: tuple[type, ...] = ()
+    if benchmark == "swebench_pro":
+        # 第三方可选依赖边界：SkillsBench 不需要加载 SWE-bench Pro recipe。
+        from dynsteer.adapter.agentcompass.recipes import SWEBenchProHostProcessRecipe
+
+        recipe_classes = (SWEBenchProHostProcessRecipe, )
     return {
         "build_run_request": build_run_request,
         "run_evaluation_request": run_evaluation_request,
         "benchmarks": BENCHMARKS,
         "bootstrap_runtime": bootstrap_runtime,
+        "recipes": recipe_classes,
     }
 
 

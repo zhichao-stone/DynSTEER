@@ -10,7 +10,11 @@ DynSTEER 支持通过 AgentCompass 运行 `swebench_pro` 和 `skillsbench`，固
 
 独立环境由启动脚本自动加载：
 
-`start_experiment_no_docker.sh` 会导出 `DYNSTEER_NO_DOCKER=1`，并在启动前拒绝 `environment=docker` 或 Docker recipe 的 AgentCompass 配置。当前固定的 SWE-bench Pro 与 SkillsBench 执行路径仍使用 Docker 任务环境，因此不能用该入口启动。
+`start_experiment_no_docker.sh` 会导出 `DYNSTEER_NO_DOCKER=1`，并在启动前拒绝 `environment=docker` 或 Docker recipe 的 AgentCompass 配置。省略 `environment` 时使用 AgentCompass 默认的 `host_process`，不会隐式要求 Docker。
+
+适配器为 `swebench_pro` 注册 `swebench_pro_host_process` recipe，用于把 host-process fresh evaluator 对齐到当前任务仓库。显式选择 Docker 时仍可使用 AgentCompass 原生 `swebench_pro_docker_prebaked` recipe。
+
+固定版本兼容层按 benchmark 加载：SkillsBench 会把 OpenHands 运行根、workspace、skills、verifier 和 wrapper 路径适配到当前用户可写的 `/tmp` 目录，并跳过需要 root 权限的宿主包管理器 bootstrap；SWE-bench Pro 只注册 host-process recipe 并对齐 fresh evaluator 路径。Docker 任务环境的原生路径不改变。
 
 对应的脚本入口为：
 
@@ -25,7 +29,7 @@ DynSTEER 支持通过 AgentCompass 运行 `swebench_pro` 和 `skillsbench`，固
 | 字段 | 要求 | 说明 |
 |---|---|---|
 | `harness` | 必填非空字符串 | AgentCompass harness ID |
-| `environment` | 必填非空字符串 | AgentCompass environment ID |
+| `environment` | 可选非空字符串，默认 `host_process` | AgentCompass environment ID；只有显式选择隔离环境时才填写 |
 | `model_api_protocol` | 必填非空字符串 | 模型协议 |
 | `data_dir` | 必填非空字符串 | AgentCompass 独立数据缓存目录 |
 | `benchmark_params` | 可选对象 | benchmark 原生参数；单 case 的 `sample_ids` 由桥接层覆盖，重复次数使用 `execution.attempts.k` |
@@ -62,7 +66,9 @@ def run_agentcompass_case(
 
 case list 固化前只调用 `load_task_records()`。SWE-bench Pro 的 ID 来自 dataset `instance_id`，SkillsBench 的 ID 来自任务目录名；分层抽样使用 `repo` 和 `category`，并必须把最终 `case_ids` 显式写入实验配置。
 
-AgentCompass 目录加载只导入目标 benchmark、对应 harness、Docker environment 和 recipe，不调用全量 `load_builtin_components()`。这可以避免 Windows 上无关 benchmark 的 Unix-only 依赖（例如 `fcntl`)阻断 catalog 导出。
+AgentCompass 目录加载只导入目标 benchmark、对应 harness、environment 和 recipe，不调用全量 `load_builtin_components()`。这可以避免 Windows 上无关 benchmark 的 Unix-only 依赖（例如 `fcntl`)阻断 catalog 导出。
+
+启动脚本每次都会校验 `.venv-agentcompass` 中的 Python 解释器与 `agentcompass`、`polars`、`networkx`、`scipy`、`tqdm`。校验失败时会自动重建并重装独立环境；二次校验仍失败才终止。脚本同时启用 `UV_LINK_MODE=copy`、`LITELLM_LOCAL_MODEL_COST_MAP=true` 和 `LITELLM_LOG=ERROR`，避免跨文件系统 hardlink 警告和 LiteLLM 弱网拉取价格表阻塞启动。
 
 项目根目录的 `get_cases.py` 会分别调用两个 benchmark 的 `load_task_records()`，生成 `docs/cases_swe-bench-pro.json` 与 `docs/cases_skills-bench.json`。输出包含排序后的 `case_ids`、逐 case 分层映射、全量数量、去重统计、`category` 分布、分层字段分布、字段覆盖计数、case ID 来源和固定 AgentCompass commit。运行 `bash scripts/get_cases.sh`；它会自动准备 `.venv-agentcompass`，默认源码路径为 `../AgentCompass`，默认缓存路径为 `data/agentcompass`；可通过第一个参数覆盖数据目录，通过 `DYNSTEER_AGENTCOMPASS_SOURCE` 覆盖 AgentCompass 源码路径。导出过程固定 `auto_install_dependencies=false`。
 
