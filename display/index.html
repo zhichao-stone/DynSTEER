@@ -1,0 +1,2918 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DynSTEER evaluation dashboard</title>
+  <script defer src="./data.js"></script>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --panel-soft: #f9fbfe;
+      --text: #172033;
+      --muted: #627086;
+      --line: #dbe3ee;
+      --line-strong: #c4cfdd;
+      --accent: #1463ff;
+      --accent-soft: #eaf1ff;
+      --ok: #108a42;
+      --warn: #c77a00;
+      --bad: #c93636;
+      --ink: #2b3447;
+      --trajectory-fr: 34;
+      --graph-fr: 30;
+      --stage-fr: 36;
+      --trajectory-col: 34fr;
+      --graph-col: 30fr;
+      --stage-col: 36fr;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 64px;
+      background: #243043;
+      border-right: 1px solid #182235;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 18px;
+      color: #ffffff;
+      z-index: 4;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: #ffffff;
+      color: #243043;
+      font-weight: 800;
+      font-size: 17px;
+    }
+
+    .app {
+      min-height: 100vh;
+      height: 100vh;
+      margin-left: 64px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      flex-shrink: 0;
+      background: rgba(246, 248, 251, 0.96);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+    }
+
+    .run-row,
+    .scenario-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      min-height: 62px;
+    }
+
+    .run-row {
+      border-bottom: 1px solid var(--line);
+      position: relative;
+      overflow: visible;
+    }
+
+    .scenario-row {
+      position: relative;
+      overflow: visible;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns:
+        minmax(300px, var(--trajectory-col))
+        10px
+        minmax(320px, var(--graph-col))
+        10px
+        minmax(340px, var(--stage-col));
+      gap: 0;
+      padding: 12px;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .panel {
+      --panel-scale: 1;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-splitter {
+      position: relative;
+      align-self: stretch;
+      width: 10px;
+      border: 0;
+      background: transparent;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .panel-splitter::before {
+      content: "";
+      position: absolute;
+      inset: 8px 4px;
+      width: 2px;
+      border-radius: 999px;
+      background: var(--line-strong);
+      transition: background 120ms ease, box-shadow 120ms ease;
+    }
+
+    .panel-splitter:hover::before,
+    .panel-splitter:focus-visible::before {
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(20, 99, 255, 0.12);
+    }
+
+    .panel-title {
+      padding: 12px 14px 10px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .panel-title-text {
+      min-width: 0;
+    }
+
+    .panel-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .panel-title h2 {
+      margin: 0;
+      font-size: calc(16px * var(--panel-scale));
+      line-height: 1.3;
+      flex: 0 0 auto;
+    }
+
+    .panel-title p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: calc(12px * var(--panel-scale));
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .panel-body {
+      padding: 12px;
+      overflow: auto;
+      min-height: 0;
+      flex: 1;
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .panel-legend {
+      display: grid;
+      justify-items: end;
+      gap: 5px;
+      color: var(--muted);
+      font-size: calc(11px * var(--panel-scale));
+      line-height: 1.2;
+    }
+
+    .trajectory-filter-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex: 0 0 auto;
+      flex-wrap: nowrap;
+    }
+
+    .filter-select {
+      min-height: 28px;
+      width: 128px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 4px 8px;
+      font: inherit;
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .filter-notice {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid rgba(199, 122, 0, 0.28);
+      border-radius: 8px;
+      background: rgba(199, 122, 0, 0.08);
+      color: var(--warn);
+      line-height: 1.4;
+    }
+
+    .text-button {
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--ink);
+      min-height: 28px;
+      padding: 4px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .text-button:hover,
+    .text-button:focus-visible {
+      border-color: var(--accent);
+      color: #073fba;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 9px;
+      border: 2px solid var(--line-strong);
+      border-radius: 3px;
+      background: #ffffff;
+    }
+
+    .legend-swatch.pass {
+      border-color: rgba(16, 138, 66, 0.72);
+    }
+
+    .legend-swatch.warn {
+      border-color: rgba(199, 122, 0, 0.72);
+      background: rgba(199, 122, 0, 0.08);
+    }
+
+    .legend-swatch.fail {
+      border-color: rgba(201, 54, 54, 0.76);
+    }
+
+    .legend-swatch.pending {
+      border-color: rgba(98, 112, 134, 0.7);
+      border-style: dashed;
+      background: #f5f7fa;
+    }
+
+    .legend-swatch.selected {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .legend-swatch.virtual {
+      border-style: dashed;
+    }
+
+    .metric-list {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: max-content;
+    }
+
+    .metric-list {
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .topbar-select {
+      position: relative;
+      z-index: 11;
+    }
+
+    .topbar-select:focus-within {
+      z-index: 30;
+    }
+
+    .run-select {
+      width: min(420px, 100%);
+      flex: 0 1 420px;
+    }
+
+    .case-select {
+      width: min(760px, 100%);
+      flex: 0 1 760px;
+    }
+
+    .select-search-input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ink);
+      padding: 8px 36px 8px 12px;
+      font: inherit;
+      outline: none;
+    }
+
+    .select-search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(20, 99, 255, 0.12);
+    }
+
+    .topbar-select::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      width: 7px;
+      height: 7px;
+      border-right: 1.5px solid var(--muted);
+      border-bottom: 1.5px solid var(--muted);
+      transform: translateY(-65%) rotate(45deg);
+      pointer-events: none;
+    }
+
+    .select-option-list {
+      position: absolute;
+      z-index: 40;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      max-height: calc(34px * 9 + 12px);
+      overflow: auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 12px 28px rgba(23, 32, 51, 0.14);
+      padding: 6px;
+    }
+
+    .select-option {
+      width: 100%;
+      min-height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink);
+      padding: 7px 9px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .select-option:hover,
+    .select-option.active {
+      background: var(--accent-soft);
+      color: #073fba;
+    }
+
+    .select-empty {
+      padding: 10px;
+      color: var(--muted);
+    }
+
+    .metric-chip,
+    .badge {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--muted);
+      border-radius: 999px;
+      min-height: 28px;
+      padding: 5px 9px;
+      font-size: calc(12px * var(--panel-scale));
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .metric-chip strong {
+      color: var(--text);
+      margin-left: 4px;
+      font-weight: 700;
+    }
+
+    .badge.ok,
+    .status-pass {
+      color: var(--ok);
+      border-color: rgba(16, 138, 66, 0.28);
+      background: rgba(16, 138, 66, 0.08);
+    }
+
+    .badge.warn,
+    .status-partial {
+      color: var(--warn);
+      border-color: rgba(199, 122, 0, 0.3);
+      background: rgba(199, 122, 0, 0.09);
+    }
+
+    .badge.bad,
+    .status-fail {
+      color: var(--bad);
+      border-color: rgba(201, 54, 54, 0.3);
+      background: rgba(201, 54, 54, 0.08);
+    }
+
+    .badge.pending {
+      color: var(--muted);
+      border-color: rgba(98, 112, 134, 0.28);
+      background: #f4f7fb;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line-strong);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .step-card,
+    .stage-card {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+
+    .step-card.selected,
+    .stage-card.selected,
+    .step-card.range-selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(20, 99, 255, 0.12);
+      background: #fbfdff;
+    }
+
+    .step-head,
+    .stage-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .step-meta,
+    .stage-meta,
+    .badge-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .step-index {
+      color: var(--text);
+      font-size: calc(13px * var(--panel-scale));
+      font-weight: 800;
+    }
+
+    .actor {
+      border-radius: 6px;
+      padding: 3px 7px;
+      background: #eef2f8;
+      color: #344258;
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+    }
+
+    .flow-arrow {
+      color: var(--muted);
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+    }
+
+    .event-type {
+      color: var(--muted);
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .tool-name {
+      border-radius: 6px;
+      padding: 3px 7px;
+      background: rgba(20, 99, 255, 0.08);
+      color: #174ea6;
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .content {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      padding: 9px;
+      background: #f7f9fc;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: #263246;
+      font-size: calc(12px * var(--panel-scale));
+      line-height: 1.55;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    details {
+      margin-top: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcff;
+    }
+
+    summary,
+    .detail-summary {
+      cursor: pointer;
+      color: var(--ink);
+      font-size: calc(12px * var(--panel-scale));
+      font-weight: 700;
+      padding: 7px 9px;
+    }
+
+    .detail-text {
+      margin: 0;
+      padding: 0 9px 9px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      font-size: calc(12px * var(--panel-scale));
+      line-height: 1.45;
+    }
+
+    .graph-panel .panel-body {
+      overflow-x: hidden;
+    }
+
+    .graph-svg {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      height: auto;
+      display: block;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .milestone-inline-detail {
+      height: 100%;
+      overflow: auto;
+      padding: 6px 8px;
+      color: var(--muted);
+      font-size: calc(11px * var(--panel-scale) * var(--milestone-content-scale, 1));
+      line-height: 1.4;
+    }
+
+    .milestone-inline-detail details {
+      margin: 0 0 6px;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+
+    .milestone-inline-detail .constraint-item {
+      margin: 0 8px 6px;
+      background: #f8fbff;
+    }
+
+    .milestone-inline-detail .constraint-item summary {
+      font-weight: 600;
+    }
+
+    .milestone-inline-detail summary {
+      padding: 6px 8px;
+      font-size: calc(11px * var(--panel-scale) * var(--milestone-content-scale, 1));
+    }
+
+    .milestone-inline-detail pre {
+      margin: 0;
+      padding: 0 8px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
+    }
+
+    .milestone-node {
+      cursor: pointer;
+    }
+
+    .milestone-node rect {
+      fill: #ffffff;
+      stroke: var(--line-strong);
+      stroke-width: 1.5;
+      transition: stroke 120ms ease, filter 120ms ease, fill 120ms ease;
+    }
+
+    .milestone-node.selected rect {
+      stroke-width: 2;
+      filter: drop-shadow(0 2px 5px rgba(20, 99, 255, 0.25));
+    }
+
+    .milestone-node.selected-stage rect {
+      stroke-width: 2;
+    }
+
+    .milestone-node.selected.selected-stage rect {
+      filter: drop-shadow(0 2px 5px rgba(20, 99, 255, 0.25));
+    }
+
+    .milestone-node.virtual rect {
+      stroke-dasharray: 5 4;
+    }
+
+    .milestone-node.pass rect {
+      stroke: rgba(16, 138, 66, 0.65);
+    }
+
+    .milestone-node.warn rect {
+      fill: rgba(199, 122, 0, 0.07);
+      stroke: rgba(199, 122, 0, 0.72);
+    }
+
+    .milestone-node.pending rect {
+      fill: #f6f8fb;
+      stroke: rgba(98, 112, 134, 0.72);
+      stroke-dasharray: 5 4;
+    }
+
+    .milestone-node.fail rect {
+      stroke: rgba(201, 54, 54, 0.72);
+    }
+
+    .milestone-node text {
+      fill: var(--text);
+      font-size: calc(12px * var(--panel-scale) * var(--milestone-content-scale, 1));
+      font-weight: 700;
+      pointer-events: none;
+    }
+
+    .milestone-resize-handle {
+      cursor: nwse-resize;
+      pointer-events: all;
+    }
+
+    .milestone-node .milestone-resize-handle rect {
+      fill: #ffffff;
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      filter: drop-shadow(0 1px 3px rgba(20, 99, 255, 0.18));
+      stroke-dasharray: none;
+    }
+
+    .milestone-node .milestone-resize-handle line {
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
+    .graph-edge {
+      stroke: #9aa8ba;
+      stroke-width: 1.7;
+      marker-end: url(#arrow);
+    }
+
+    .graph-edge.selected-stage {
+      stroke: var(--accent);
+      stroke-width: 2.4;
+    }
+
+    .stage-card {
+      cursor: pointer;
+    }
+
+    .stage-detail-card {
+      padding: 0;
+      cursor: default;
+    }
+
+    .stage-summary {
+      cursor: pointer;
+      display: block;
+      padding: 10px;
+      list-style: none;
+    }
+
+    .stage-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .stage-detail-body {
+      padding: 0 10px 10px;
+    }
+
+    .stage-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: calc(14px * var(--panel-scale));
+      font-weight: 800;
+    }
+
+    .stage-section {
+      margin-top: 10px;
+    }
+
+    .score-section {
+      margin-top: 8px;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .score-section .detail-summary {
+      margin: 0;
+      padding: 8px 10px;
+    }
+
+    .score-section .score-row {
+      padding: 0 10px;
+    }
+
+    .score-section .score-row:last-child {
+      padding-bottom: 8px;
+    }
+
+    .score-row {
+      display: grid;
+      grid-template-columns: minmax(92px, 1fr) minmax(74px, 0.45fr) minmax(54px, auto);
+      align-items: center;
+      gap: 8px;
+      min-height: 24px;
+      color: var(--ink);
+      font-size: calc(12px * var(--panel-scale));
+    }
+
+    .score-row.weight-row {
+      grid-template-columns: minmax(96px, 1fr) minmax(54px, auto);
+    }
+
+    .score-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .score-level {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .score-value {
+      color: var(--muted);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media (max-width: 1100px) {
+      body {
+        overflow: auto;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .app {
+        margin-left: 0;
+        height: auto;
+        overflow: visible;
+      }
+
+      .workspace {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        overflow: visible;
+      }
+
+      .panel-splitter {
+        display: none;
+      }
+
+      .panel {
+        min-height: auto;
+        height: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar" aria-label="main navigation">
+    <div class="brand-mark">D</div>
+  </aside>
+  <main class="app">
+    <header class="topbar">
+      <section class="run-row" aria-label="switch runs"></section>
+      <section class="scenario-row" aria-label="switch scenarios"></section>
+    </header>
+    <section class="workspace">
+      <section class="panel trajectory-panel" aria-label="execution trajectory"></section>
+      <div class="panel-splitter trajectory-graph-splitter" role="separator" aria-label="adjust execution trajectory and milestone graph widths" data-left="trajectory" data-right="graph" tabindex="0"></div>
+      <section class="panel graph-panel" aria-label="milestone graph"></section>
+      <div class="panel-splitter graph-stage-splitter" role="separator" aria-label="adjust milestone graph and evaluation stage widths" data-left="graph" data-right="stage" tabindex="0"></div>
+      <section class="panel stage-panel" aria-label="evaluation stages"></section>
+    </section>
+  </main>
+  <script>
+    const SVG_NS = "http" + "://www.w3.org/2000/svg";
+    const MILESTONE_BOX_WIDTH = 148;
+    const MILESTONE_BOX_HEIGHT = 48;
+    const SELECTED_MILESTONE_WIDTH = 320;
+    const SELECTED_MILESTONE_HEIGHT = 218;
+    const SELECTED_MILESTONE_HEADER_HEIGHT = 54;
+    const MILESTONE_DETAIL_BOTTOM_GAP = 8;
+    const state = {
+      data: null,
+      runIndex: 0,
+      scenarioIndex: 0,
+      selectedMilestoneId: null,
+      selectedMilestoneSize: null,
+      selectedStageId: null,
+      openStageIds: new Set(),
+      closedStageIds: new Set(),
+      trajectoryFilters: { actor: "all", recipient: "all" },
+      hiddenTrajectoryStepIndex: null,
+      panelFractions: { trajectory: 34, graph: 30, stage: 36 },
+      scenario: null,
+      loadedScenarioRef: null,
+      scenarioLoadToken: 0,
+      scenarioLoads: new Map(),
+      loadError: null,      resizeObserver: null
+    };
+
+    window.addEventListener("DOMContentLoaded", init);
+
+    function init() {
+      state.data = window.DYNSTEER_DATA || { runs: [] };
+      initPanelResize();
+      renderAll();
+      loadSelectedScenario();
+      updatePanelScales();
+    }
+
+    function currentRun() {
+      return (state.data.runs || [])[state.runIndex] || null;
+    }
+
+    function currentScenario() {
+      const scenario = currentScenarioMeta();
+      return scenario && state.loadedScenarioRef === scenario.data_ref ? state.scenario : null;
+    }
+
+    function currentScenarioMeta() {
+      const run = currentRun();
+      return run ? (run.scenarios || [])[state.scenarioIndex] || null : null;
+    }
+
+    function loadSelectedScenario() {
+      state.loadedScenarioRef = null;
+      state.scenario = null;
+      state.loadError = null;
+      const scenarioMeta = currentScenarioMeta();
+      if (!scenarioMeta || !scenarioMeta.data_ref) return;
+
+      const loadToken = ++state.scenarioLoadToken;
+      loadScenario(scenarioMeta.data_ref).then((scenario) => {
+        if (loadToken !== state.scenarioLoadToken || !scenario) return;
+        state.loadedScenarioRef = scenarioMeta.data_ref;
+        state.scenario = scenario;
+        renderAll();
+      }).catch(() => {
+        if (loadToken !== state.scenarioLoadToken) return;
+        state.loadError = "Failed to load scenario details; select another scenario";
+        renderAll();
+      });
+    }
+
+    function loadScenario(reference) {
+      if (state.scenarioLoads.has(reference)) return state.scenarioLoads.get(reference);
+      const request = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = `./scenarios/${reference}`;
+        script.onload = () => {
+          script.remove();
+          const scenario = window.DYNSTEER_SCENARIOS && window.DYNSTEER_SCENARIOS[reference];
+          if (scenario) {
+            delete window.DYNSTEER_SCENARIOS[reference];
+            resolve(scenario);
+            return;
+          }
+          reject(new Error(`Scenario data not found: ${reference}`));
+        };
+        script.onerror = () => {
+          script.remove();
+          reject(new Error(`Failed to load scenario data: ${reference}`));
+        };
+        document.head.append(script);
+      }).finally(() => state.scenarioLoads.delete(reference));
+      state.scenarioLoads.set(reference, request);
+      return request;
+    }
+
+    function selectScenario() {
+      resetSelection();
+      renderAll();
+      loadSelectedScenario();
+    }
+    function renderAll() {
+      renderRunRow();
+      renderScenarioRow();
+      renderTrajectory();
+      renderGraph();
+      renderStages();
+      updatePanelScales();
+    }
+
+    function initPanelResize() {
+      const workspace = document.querySelector(".workspace");
+      if (!workspace) return;
+      applyPanelFractions();
+      workspace.querySelectorAll(".panel-splitter").forEach((splitter) => {
+        splitter.addEventListener("pointerdown", (event) => startPanelResize(event, splitter));
+        splitter.addEventListener("keydown", (event) => resizePanelWithKeyboard(event, splitter));
+      });
+      window.addEventListener("resize", updatePanelScales);
+      if (window.ResizeObserver) {
+        state.resizeObserver = new ResizeObserver(updatePanelScales);
+        document.querySelectorAll(".panel").forEach((panel) => state.resizeObserver.observe(panel));
+      }
+    }
+
+    function startPanelResize(event, splitter) {
+      if (window.matchMedia("(max-width: 1100px)").matches) return;
+      const leftKey = splitter.dataset.left;
+      const rightKey = splitter.dataset.right;
+      if (!leftKey || !rightKey) return;
+      event.preventDefault();
+      const workspace = document.querySelector(".workspace");
+      const workspaceWidth = workspace ? workspace.getBoundingClientRect().width : 0;
+      if (!workspaceWidth) return;
+      const startX = event.clientX;
+      const startLeft = state.panelFractions[leftKey];
+      const startRight = state.panelFractions[rightKey];
+      const totalFraction = state.panelFractions.trajectory + state.panelFractions.graph + state.panelFractions.stage;
+      const fractionPerPixel = totalFraction / workspaceWidth;
+
+      const handleMove = (moveEvent) => {
+        const delta = (moveEvent.clientX - startX) * fractionPerPixel;
+        applyPanelPairFractions(leftKey, rightKey, startLeft + delta, startRight - delta);
+      };
+      const stopMove = () => {
+        document.removeEventListener("pointermove", handleMove);
+        document.removeEventListener("pointerup", stopMove);
+        document.removeEventListener("pointercancel", stopMove);
+      };
+      document.addEventListener("pointermove", handleMove);
+      document.addEventListener("pointerup", stopMove);
+      document.addEventListener("pointercancel", stopMove);
+    }
+
+    function resizePanelWithKeyboard(event, splitter) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const leftKey = splitter.dataset.left;
+      const rightKey = splitter.dataset.right;
+      if (!leftKey || !rightKey) return;
+      event.preventDefault();
+      const delta = event.key === "ArrowLeft" ? -2 : 2;
+      applyPanelPairFractions(
+        leftKey,
+        rightKey,
+        state.panelFractions[leftKey] + delta,
+        state.panelFractions[rightKey] - delta
+      );
+    }
+
+    function applyPanelPairFractions(leftKey, rightKey, leftValue, rightValue) {
+      const minimum = { trajectory: 18, graph: 20, stage: 20 };
+      const pairTotal = state.panelFractions[leftKey] + state.panelFractions[rightKey];
+      let nextLeft = Math.max(minimum[leftKey], leftValue);
+      let nextRight = pairTotal - nextLeft;
+      if (nextRight < minimum[rightKey]) {
+        nextRight = minimum[rightKey];
+        nextLeft = pairTotal - nextRight;
+      }
+      state.panelFractions[leftKey] = Number(nextLeft.toFixed(2));
+      state.panelFractions[rightKey] = Number(nextRight.toFixed(2));
+      applyPanelFractions();
+      updatePanelScales();
+    }
+
+    function applyPanelFractions() {
+      const workspace = document.querySelector(".workspace");
+      if (!workspace) return;
+      ["trajectory", "graph", "stage"].forEach((key) => {
+        const value = state.panelFractions[key];
+        workspace.style.setProperty(`--${key}-fr`, String(value));
+        workspace.style.setProperty(`--${key}-col`, `${value}fr`);
+      });
+    }
+
+    function updatePanelScales() {
+      const specs = [
+        [".trajectory-panel", 360],
+        [".graph-panel", 400],
+        [".stage-panel", 420]
+      ];
+      specs.forEach(([selector, baseWidth]) => {
+        const panel = document.querySelector(selector);
+        if (!panel) return;
+        const width = panel.getBoundingClientRect().width || baseWidth;
+        const scale = clamp(width / baseWidth, 0.78, 1.18);
+        panel.style.setProperty("--panel-scale", scale.toFixed(3));
+      });
+    }
+
+    function renderRunRow() {
+      const container = document.querySelector(".run-row");
+      clear(container);
+      const runs = state.data.runs || [];
+      if (!runs.length) {
+        appendEmptyInline(container, "No runs available");
+        return;
+      }
+
+      const selector = renderTopbarSelector({
+        items: runs,
+        selectedIndex: state.runIndex,
+        selectClassName: "run-select",
+        inputClassName: "run-search-input",
+        optionListClassName: "run-option-list",
+        optionClassName: "run-option",
+        emptyClassName: "run-empty",
+        emptyText: "No matching run",
+        labelForItem: runId,
+        onSelect: (match) => {
+          state.runIndex = match.index;
+          state.scenarioIndex = 0;
+          selectScenario();
+        }
+      });
+
+      const metrics = el("div", "metric-list");
+      const run = currentRun();
+      const summary = run ? run.summary || {} : {};
+      const metricNodes = [metric("benchmark", run ? run.benchmark : "")];
+      if (run && run.model_id) {
+        metricNodes.push(metric("model", run.model_id));
+      }
+      metricNodes.push(
+        metric("score", formatScore(summary.score ?? summary.overall_score)),
+        metric("coverage", summary.milestone_coverage || "unknown"),
+        metric("elapsed", formatSeconds(summary.elapsed_seconds)),
+        metric("steps", formatValue(summary.step_count)),
+        metric("scenarios", formatValue(summary.scenario_count))
+      );
+      metrics.append(...metricNodes);
+      container.append(selector, metrics);
+    }
+
+    function renderScenarioRow() {
+      const container = document.querySelector(".scenario-row");
+      clear(container);
+      const run = currentRun();
+      const scenarios = run ? run.scenarios || [] : [];
+      if (!scenarios.length) {
+        appendEmptyInline(container, "This run has no scenario data");
+        return;
+      }
+
+      const selector = renderTopbarSelector({
+        items: scenarios,
+        selectedIndex: state.scenarioIndex,
+        selectClassName: "case-select",
+        inputClassName: "case-search-input",
+        optionListClassName: "case-option-list",
+        optionClassName: "case-option",
+        emptyClassName: "case-empty",
+        emptyText: "No matching case",
+        labelForItem: scenarioCaseId,
+        onSelect: (match) => {
+          state.scenarioIndex = match.index;
+          selectScenario();
+        }
+      });
+      container.append(selector);
+    }
+
+    function renderTopbarSelector(config) {
+      const items = config.items || [];
+      const selected = items[config.selectedIndex] || items[0];
+      const selector = el("div", `topbar-select ${config.selectClassName || ""}`);
+      const input = el("input", `select-search-input ${config.inputClassName || ""}`);
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.setAttribute("role", "combobox");
+      input.setAttribute("aria-expanded", "false");
+      input.value = config.labelForItem(selected);
+
+      const options = el("div", `select-option-list ${config.optionListClassName || ""}`);
+      options.hidden = true;
+      let activeIndex = 0;
+      let suppressNextClickOpen = false;
+
+      const openOptions = (query, preferredActiveIndex) => {
+        const matches = filterSelectorItemsByPrefix(items, query, config.labelForItem);
+        activeIndex = Number.isInteger(preferredActiveIndex)
+          ? clamp(preferredActiveIndex, 0, Math.max(0, matches.length - 1))
+          : selectedMatchIndex(matches, config.selectedIndex);
+        options.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+        renderTopbarOptions(options, matches, activeIndex, config);
+      };
+      const closeOptions = () => {
+        options.hidden = true;
+        input.setAttribute("aria-expanded", "false");
+      };
+      const selectMatch = (match) => {
+        if (!match) return;
+        closeOptions();
+        config.onSelect(match);
+      };
+
+      input.addEventListener("mousedown", (event) => {
+        if (!options.hidden && document.activeElement === input) {
+          event.preventDefault();
+          suppressNextClickOpen = true;
+          closeOptions();
+        }
+      });
+      input.addEventListener("focus", () => {
+        input.select();
+        openOptions("");
+      });
+      input.addEventListener("click", () => {
+        if (suppressNextClickOpen) {
+          suppressNextClickOpen = false;
+          return;
+        }
+        if (options.hidden && document.activeElement === input) {
+          openOptions(input.value);
+        }
+      });
+      input.addEventListener("input", () => {
+        openOptions(input.value, 0);
+      });
+      input.addEventListener("keydown", (event) => {
+        const matches = filterSelectorItemsByPrefix(items, input.value, config.labelForItem);
+        if (event.key === "Escape") {
+          closeOptions();
+          input.value = config.labelForItem(items[config.selectedIndex] || items[0]);
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          activeIndex = Math.min(activeIndex + 1, Math.max(0, matches.length - 1));
+          renderTopbarOptions(options, matches, activeIndex, config);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          activeIndex = Math.max(0, activeIndex - 1);
+          renderTopbarOptions(options, matches, activeIndex, config);
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          selectMatch(matches[activeIndex] || matches[0]);
+        }
+      });
+
+      selector.addEventListener("focusout", () => {
+        window.setTimeout(() => {
+          if (!selector.contains(document.activeElement)) closeOptions();
+        }, 0);
+      });
+
+      selector.append(input, options);
+      return selector;
+    }
+
+    function renderTopbarOptions(container, matches, activeIndex, config) {
+      clear(container);
+      if (!matches.length) {
+        const empty = el("div", `select-empty ${config.emptyClassName || ""}`);
+        empty.textContent = config.emptyText;
+        container.append(empty);
+        return;
+      }
+
+      matches.forEach((match, index) => {
+        const option = el("button", `select-option ${config.optionClassName || ""}`);
+        option.type = "button";
+        option.textContent = match.label;
+        option.title = match.label;
+        option.classList.toggle("active", index === activeIndex);
+        option.addEventListener("mousedown", (event) => event.preventDefault());
+        option.addEventListener("click", () => config.onSelect(match));
+        container.append(option);
+      });
+      scrollActiveOptionToCenter(container);
+    }
+
+    function filterSelectorItemsByPrefix(items, query, labelForItem) {
+      const normalizedQuery = String(query || "").trim().toLowerCase();
+      return (items || [])
+        .map((item, index) => ({
+          item,
+          index,
+          label: labelForItem(item)
+        }))
+        .filter((match) => {
+          if (!normalizedQuery) return true;
+          return match.label.toLowerCase().startsWith(normalizedQuery);
+        });
+    }
+
+    function selectedMatchIndex(matches, selectedIndex) {
+      const index = matches.findIndex((match) => match.index === selectedIndex);
+      return index >= 0 ? index : 0;
+    }
+
+    function scrollActiveOptionToCenter(container) {
+      const active = container.querySelector(".select-option.active");
+      if (!active) return;
+      window.requestAnimationFrame(() => {
+        const centeredTop = active.offsetTop - (container.clientHeight - active.offsetHeight) / 2;
+        container.scrollTop = Math.max(0, centeredTop);
+      });
+    }
+
+    function runId(run) {
+      if (!run) return "unnamed run";
+      const parts = [];
+      if (run.experiment_id) parts.push(run.experiment_id);
+      parts.push(run.benchmark || "benchmark");
+      if (run.model_id) parts.push(run.model_id);
+      if (run.repeat_index !== null && run.repeat_index !== undefined && run.repeat_index >= 0) {
+        parts.push(`r${run.repeat_index}`);
+      }
+      if (run.method) parts.push(run.method);
+      return parts.join(" / ");
+    }
+
+    function scenarioCaseId(scenario) {
+      return scenario ? scenario.scenario_id || "unnamed case" : "unnamed case";
+    }
+
+    function renderTrajectory() {
+      const scenario = currentScenario();
+      const container = document.querySelector(".trajectory-panel");
+      clear(container);
+      const steps = scenario && scenario.trajectory ? scenario.trajectory.steps || [] : [];
+      const filteredSteps = steps.filter((step) => (
+        matchesActorFilter(step, state.trajectoryFilters.actor) &&
+        matchesRecipientFilter(step, state.trajectoryFilters.recipient)
+      ));
+      appendPanelTitle(
+        container,
+        "execution trajectory",
+        scenario ? `${scenario.task_id} · showing ${filteredSteps.length} / of ${steps.length} steps` : "waiting for a scenario",
+        trajectoryFilterControls()
+      );
+      const body = el("div", "panel-body");
+      container.append(body);
+      if (!scenario) {
+        appendEmpty(body, state.loadError || "No execution trajectory available");
+        return;
+      }
+
+      if (!steps.length) {
+        appendEmpty(body, "This scenario has no trajectory steps");
+        return;
+      }
+
+      const hiddenSelectedIndex = hiddenSelectedTrajectoryStepIndex(scenario, filteredSteps);
+      if (hiddenSelectedIndex !== null) {
+        body.append(trajectoryFilterNotice(hiddenSelectedIndex));
+      }
+
+      if (!filteredSteps.length) {
+        appendEmpty(body, "No trajectory steps match the current filters");
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      filteredSteps.forEach((step) => {
+        fragment.append(stepCard(step, scenario));
+      });
+      body.append(fragment);
+    }
+
+    function trajectoryFilterControls() {
+      const controls = el("div", "trajectory-filter-controls");
+      controls.append(
+        trajectoryFilterSelect("actor", "sender", [
+          ["all", "all senders"],
+          ["agent", "agent"],
+          ["user", "user"],
+          ["environment", "environment"],
+          ["system", "system"],
+          ["evaluator", "evaluator"],
+          ["unknown", "unknown"]
+        ]),
+        trajectoryFilterSelect("recipient", "recipient", [
+          ["all", "all recipients"],
+          ["agent", "agent"],
+          ["user", "user"],
+          ["environment", "environment"],
+          ["system", "system"],
+          ["evaluator", "evaluator"],
+          ["unknown", "unknown"]
+        ])
+      );
+      return controls;
+    }
+
+    function trajectoryFilterSelect(key, label, options) {
+      const select = el("select", "filter-select");
+      select.setAttribute("aria-label", label);
+      options.forEach(([value, text]) => {
+        const option = el("option");
+        option.value = value;
+        option.textContent = text;
+        option.selected = state.trajectoryFilters[key] === value;
+        select.append(option);
+      });
+      select.addEventListener("change", () => {
+        state.trajectoryFilters[key] = select.value;
+        state.hiddenTrajectoryStepIndex = null;
+        renderTrajectory();
+        updatePanelScales();
+      });
+      return select;
+    }
+
+    function matchesActorFilter(step, filter) {
+      if (filter === "all") return true;
+      return normalizedTrajectoryActor(step && step.actor) === filter;
+    }
+
+    function matchesRecipientFilter(step, filter) {
+      if (filter === "all") return true;
+      return normalizedTrajectoryActor(step && step.recipient) === filter;
+    }
+
+    function normalizedTrajectoryActor(value) {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (!normalized) return "unknown";
+      if (normalized === "execution_environment") return "environment";
+      return ["agent", "user", "environment", "system", "evaluator"].includes(normalized) ? normalized : "unknown";
+    }
+
+    function hiddenSelectedTrajectoryStepIndex(scenario, filteredSteps) {
+      const visibleIndexes = new Set(filteredSteps.map((step) => Number(step.index)).filter((value) => Number.isFinite(value)));
+      const candidates = selectedTrajectoryStepIndexes(scenario);
+      if (state.hiddenTrajectoryStepIndex !== null && state.hiddenTrajectoryStepIndex !== undefined) {
+        candidates.push(Number(state.hiddenTrajectoryStepIndex));
+      }
+      const hidden = candidates.find((index) => Number.isFinite(index) && !visibleIndexes.has(index));
+      if (hidden === undefined) {
+        state.hiddenTrajectoryStepIndex = null;
+        return null;
+      }
+      state.hiddenTrajectoryStepIndex = hidden;
+      return hidden;
+    }
+
+    function selectedTrajectoryStepIndexes(scenario) {
+      if (!scenario) return [];
+      const indexes = [];
+      if (state.selectedStageId) {
+        const settlement = settlementForStage(state.selectedStageId);
+        if (settlement && Number.isFinite(Number(settlement.start_step_index))) {
+          indexes.push(Number(settlement.start_step_index));
+        }
+      }
+      if (state.selectedMilestoneId) {
+        const matched = matchedStepIndexForMilestone(state.selectedMilestoneId, scenario);
+        if (matched !== null) indexes.push(matched);
+      }
+      return indexes;
+    }
+
+    function trajectoryFilterNotice(stepIndex) {
+      const notice = el("div", "filter-notice");
+      const text = el("span");
+      text.textContent = `The current filter hides selected step #${stepIndex}`;
+      const button = el("button", "text-button");
+      button.type = "button";
+      button.textContent = "clear filters";
+      button.addEventListener("click", () => {
+        state.trajectoryFilters = { actor: "all", recipient: "all" };
+        state.hiddenTrajectoryStepIndex = null;
+        renderTrajectory();
+        updatePanelScales();
+        requestAnimationFrame(() => focusStepCard(stepIndex));
+      });
+      notice.append(text, button);
+      return notice;
+    }
+
+    function renderGraph(options) {
+      const graphScroll = options && options.preserveScroll ? graphPanelScroll() : null;
+      const scenario = currentScenario();
+      const container = document.querySelector(".graph-panel");
+      clear(container);
+      appendPanelTitle(container, "milestone graph", "milestone topology and match status", graphLegend());
+      const body = el("div", "panel-body");
+      container.append(body);
+      if (!scenario) {
+        appendEmpty(body, state.loadError || "No milestone graph available");
+        return;
+      }
+
+      const graph = scenario.milestone_graph || {};
+      const nodes = graph.nodes || [];
+      if (!nodes.length) {
+        appendEmpty(body, "This scenario has no milestone nodes");
+        return;
+      }
+
+      const svg = document.createElementNS(SVG_NS, "svg");
+      svg.classList.add("graph-svg");
+      const layout = graphLayout(graph);
+      svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+      const stageNodeIds = stageMilestoneIds(state.selectedStageId, scenario);
+      drawEdges(svg, layout, stageNodeIds, scenario);
+      drawNodes(svg, layout, scenario, stageNodeIds);
+      body.append(svg);
+      restoreGraphPanelScroll(graphScroll);
+    }
+
+    function renderStages() {
+      const scenario = currentScenario();
+      const container = document.querySelector(".stage-panel");
+      clear(container);
+      appendPanelTitle(container, "evaluation stages", "stage coverage and evaluation evidence");
+      const body = el("div", "panel-body");
+      container.append(body);
+      if (!scenario) {
+        appendEmpty(body, state.loadError || "No evaluation stages available");
+        return;
+      }
+
+      const definitions = scenario.stage_definitions || [];
+      const reports = scenario.stage_reports || [];
+      const settlements = scenario.stage_settlements || [];
+      if (!definitions.length && !reports.length && !settlements.length) {
+        appendEmpty(body, "This scenario has no stage evaluation data");
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      if (definitions.length) {
+        const reportsByStage = new Map((scenario.stage_reports || []).map((report) => [report.stage_id, report]));
+        definitions.forEach((definition) => {
+          const report = reportsByStage.get(definition.stage_id) || emptyStageReport(definition);
+          fragment.append(stageCard(report, definition));
+        });
+      } else if (reports.length) {
+        reports.forEach((report) => fragment.append(stageCard(report, stageDefinitionForStage(report.stage_id, scenario))));
+      } else {
+        settlements.forEach((settlement) => fragment.append(settlementCard(settlement)));
+      }
+      body.append(fragment);
+    }
+
+    function graphLegend() {
+      const legend = el("div", "panel-legend");
+      legend.append(legendRow([["pass", "pass"], ["warn", "warn"], ["fail", "fail or fatal"]]));
+      legend.append(legendRow([["pending", "not started or missing"], ["selected", "selected or stage path"], ["virtual", "virtual node"]]));
+      return legend;
+    }
+
+    function legendRow(items) {
+      const row = el("div", "legend-row");
+      items.forEach(([kind, label]) => row.append(legendItem(kind, label)));
+      return row;
+    }
+
+    function legendItem(kind, label) {
+      const item = el("span", "legend-item");
+      const swatch = el("span", `legend-swatch ${kind}`);
+      const text = el("span");
+      text.textContent = label;
+      item.append(swatch, text);
+      return item;
+    }
+
+    function constraintDetailText(constraint) {
+      if (!constraint) return "None";
+      return [
+        `constraint_id: ${formatValue(constraint.constraint_id)}`,
+        `target: ${formatValue(constraint.target)}`,
+        `namespace: ${formatValue(constraint.namespace)}`,
+        `operator: ${formatValue(constraint.operator)}`,
+        `threshold: ${formatValue(constraint.threshold)}`,
+        `hard: ${formatValue(constraint.hard)}`,
+        `evaluator_hint: ${formatValue(constraint.evaluator_hint)}`,
+        `semantic_kind: ${formatValue(constraint.semantic_kind)}`,
+        `semantic_summary: ${formatValue(constraint.semantic_summary)}`,
+        `expected_summary: ${formatValue(constraint.expected_summary)}`,
+        `expected_rows_summary: ${formatValue((constraint.expected_rows_summary || []).join(" | "))}`,
+        `expected_detail: ${formatValue(constraint.expected_detail)}`
+      ].join("\n");
+    }
+
+    function matchingDetailText(matching) {
+      const score = matching.score || {};
+      const boundary = matching.boundary || {};
+      const parts = [
+        `mode: ${formatValue(matching.mode)}`,
+        `matched: ${formatValue(matching.matched)}`,
+        `boundary_id: ${formatValue(boundary.boundary_id)}`,
+        `boundary_step: ${formatValue(boundary.step_index)}`,
+        `score: ${formatScore(score.score)}`,
+        `status: ${formatValue(score.status)}`,
+        `missing_ratio: ${formatScore(score.missing_ratio)}`,
+        `hard_constraints_all_pass: ${formatValue(score.hard_constraints_all_pass)}`
+      ];
+      const constraintScores = score.constraint_scores || [];
+      if (constraintScores.length) {
+        parts.push("constraint_scores:");
+        constraintScores.forEach((item) => {
+          const evidence = Array.isArray(item.evidence) && item.evidence.length
+            ? ` evidence=${item.evidence.join(" | ")}`
+            : "";
+          parts.push(`- ${item.constraint_id || "constraint"} score=${formatScore(item.score)} missing=${formatValue(item.missing)}${evidence}`);
+        });
+      }
+      return parts.join("\n");
+    }
+
+    function bestMilestoneAttempt(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const attempts = Array.isArray(scenario.match_attempts) ? scenario.match_attempts : [];
+      let best = null;
+      attempts.forEach((attempt) => {
+        const candidates = Array.isArray(attempt.candidate_scores) ? attempt.candidate_scores : [];
+        candidates.forEach((candidate) => {
+          if (!candidate || candidate.milestone_id !== milestoneId) return;
+          const score = candidate.score || {};
+          const value = Number(score.score);
+          if (!Number.isFinite(value)) return;
+          if (!best || value > best.value || (value === best.value && Number(attempt.step_index) > Number(best.attempt.step_index))) {
+            best = { attempt, candidate, value };
+          }
+        });
+      });
+      return best;
+    }
+
+    function selectedAttemptMilestoneId(attempt) {
+      const candidates = Array.isArray(attempt && attempt.candidate_scores) ? attempt.candidate_scores : [];
+      const selected = candidates.find((candidate) => candidate && candidate.selected === true);
+      return selected ? selected.milestone_id : "";
+    }
+
+    function milestoneAttemptDetailText(best) {
+      if (!best) return "None";
+      const attempt = best.attempt || {};
+      const candidate = best.candidate || {};
+      const score = candidate.score || {};
+      const boundary = candidate.boundary || score.boundary || {};
+      const parts = [
+        `step_index: ${formatValue(attempt.step_index)}`,
+        `step_id: ${formatValue(attempt.step_id)}`,
+        `boundary_id: ${formatValue(boundary.boundary_id)}`,
+        `boundary_step: ${formatValue(boundary.step_index)}`,
+        `score: ${formatScore(score.score)}`,
+        `status: ${formatValue(score.status)}`,
+        `reject_reason: ${formatValue(candidate.reject_reason)}`,
+        `selected: ${formatValue(candidate.selected)}`,
+        `ready_before: ${(attempt.ready_before || []).join(", ") || "None"}`,
+        `matched_before: ${(attempt.matched_before || []).join(", ") || "None"}`
+      ];
+      const constraintScores = Array.isArray(score.constraint_scores) ? score.constraint_scores : [];
+      if (constraintScores.length) {
+        parts.push("constraint_scores:");
+        constraintScores.forEach((item) => {
+          const evidence = Array.isArray(item.evidence) && item.evidence.length
+            ? ` evidence=${item.evidence.join(" | ")}`
+            : "";
+          const actual = item.actual === undefined ? "" : ` actual=${shortJson(item.actual, 900)}`;
+          parts.push(`- ${item.constraint_id || "constraint"} score=${formatScore(item.score)} missing=${formatValue(item.missing)}${evidence}${actual}`);
+        });
+      }
+      return parts.join("\n");
+    }
+
+    function focusMilestone(milestoneId) {
+      const isSelected = state.selectedMilestoneId === milestoneId;
+      state.selectedMilestoneId = isSelected ? null : milestoneId;
+      state.selectedMilestoneSize = null;
+      state.selectedStageId = null;
+      renderTrajectory();
+      renderGraph();
+      renderStages();
+      if (!isSelected) {
+        scrollToMatchedStep(milestoneId);
+        requestAnimationFrame(() => scrollToMilestoneNode(milestoneId));
+      }
+    }
+
+    function focusStage(stageId) {
+      const scenario = currentScenario();
+      state.selectedStageId = stageId;
+      const settlement = settlementForStage(stageId);
+      const definition = stageDefinitionForStage(stageId, scenario);
+      const metadata = ((scenario || {}).milestone_graph || {}).metadata || {};
+      const nextMilestoneId = settlement && settlement.milestone_id
+        ? settlement.milestone_id
+        : definition && definition.milestone_id
+          ? definition.milestone_id
+          : (settlement && settlement.kind === "finish" ? metadata.finish_node_id || "__finish__" : null);
+      if (state.selectedMilestoneId !== nextMilestoneId) state.selectedMilestoneSize = null;
+      state.selectedMilestoneId = nextMilestoneId;
+      renderTrajectory();
+      renderGraph();
+      renderStages();
+      scrollToStepRange(settlement);
+      requestAnimationFrame(() => scrollToStageCard(stageId));
+      if (state.selectedMilestoneId) {
+        requestAnimationFrame(() => scrollToMilestoneNode(state.selectedMilestoneId));
+      }
+    }
+
+    function stepInSelectedStage(stepIndex) {
+      const settlement = settlementForStage(state.selectedStageId);
+      if (!settlement || stepIndex === null || stepIndex === undefined) return false;
+      return stepIndex >= settlement.start_step_index && stepIndex <= settlement.end_step_index;
+    }
+
+    function stepCard(step, scenario) {
+      const card = el("article", "step-card");
+      const stepIndex = Number(step.index);
+      card.dataset.stepIndex = Number.isFinite(stepIndex) ? String(stepIndex) : "";
+      const matchedMilestones = milestonesForStep(step, scenario);
+      const selectedByMilestone = state.selectedMilestoneId && matchedMilestones.includes(state.selectedMilestoneId);
+      const selectedByStage = stepInSelectedStage(stepIndex);
+      card.classList.toggle("selected", Boolean(selectedByMilestone));
+      card.classList.toggle("range-selected", Boolean(selectedByStage));
+
+      const head = el("div", "step-head");
+      const meta = el("div", "step-meta");
+      const index = el("span", "step-index");
+      index.textContent = step.index === null || step.index === undefined ? "#-" : `#${step.index}`;
+      const actor = el("span", "actor");
+      actor.textContent = step.actor || "unknown";
+      const arrow = el("span", "flow-arrow");
+      arrow.textContent = "->";
+      const recipient = el("span", "actor");
+      recipient.textContent = step.recipient || "unknown";
+      const type = el("span", "event-type");
+      type.textContent = step.event_type || "event";
+      meta.append(index, actor, arrow, recipient, type);
+      const toolName = toolNameForStep(step, scenario);
+      if (toolName) {
+        const tool = el("span", "tool-name");
+        tool.textContent = `tool: ${toolName}`;
+        meta.append(tool);
+      }
+
+      const badges = el("div", "badge-row");
+      matchedMilestones.forEach((milestoneId) => {
+        const badge = el("span", "badge ok");
+        badge.textContent = milestoneId;
+        badges.append(badge);
+      });
+      head.append(meta, badges);
+
+      const content = el("pre", "content");
+      content.textContent = step.content || "(no content)";
+      card.append(head, content);
+
+      if (step.tool_call) {
+        card.append(detailBlock(`Tool call:${toolName || step.tool_call.name || "unknown"}`, toolCallText(step.tool_call)));
+      }
+      if (step.tool_result) {
+        card.append(detailBlock(`Tool result:${toolName || "unknown"}`, toolResultText(step.tool_result, toolName)));
+      }
+      return card;
+    }
+
+    function stageCard(report, definition) {
+      const stageId = report.stage_id || (definition && definition.stage_id) || "";
+      const settlement = settlementForStage(stageId);
+      const card = el("details", "stage-card stage-detail-card");
+      card.dataset.stageId = stageId;
+      card.classList.toggle("selected", state.selectedStageId === stageId);
+      const isWarnStage = normalizeStageStatus(report.status) === "warn";
+      card.open = state.openStageIds.has(stageId) || (isWarnStage && !state.closedStageIds.has(stageId));
+
+      const summary = el("summary", "stage-summary");
+      summary.addEventListener("click", () => {
+        setStageOpen(stageId, !card.open);
+        focusStage(stageId);
+      });
+      const head = el("div", "stage-head");
+      const title = el("div", "stage-title");
+      title.textContent = `${report.stage_id || "unknown"}:${report.status || "unknown"}`;
+      const status = statusBadge(report.status);
+      head.append(title, status);
+
+      const meta = el("div", "stage-meta");
+      meta.append(
+        metric("level", dimensionLevelSummary(report.dimension_levels)),
+        metric("total score", formatScore(report.stage_score)),
+        metric("confidence", formatScore(averageScore(report.dimension_confidence))),
+        metric("uncertainty", formatScore(averageScore(report.dimension_uncertainty))),
+        metric("milestone", report.milestone_id || (definition && definition.milestone_id) || "None"),
+        metric("range", settlement ? stepRangeText(settlement) : "not matched")
+      );
+      summary.append(head, meta);
+      card.append(summary);
+      const body = el("div", "stage-detail-body");
+      const dimensions = dimensionRows(report);
+      const weights = weightRows(report);
+      const stageGoal = (definition && definition.stage_goal) || ((report.metadata || {}).stage_goal) || "";
+      if (stageGoal) body.append(detailBlock("stage goal", stageGoal));
+      if (dimensions) body.append(stageScoreSection("dimension scores", dimensions));
+      if (weights) body.append(stageScoreSection("dynamic weights", weights));
+      const warning = warningSummarySection(report);
+      if (warning) body.append(warning);
+      const diagnosis = arrayDetailBlock("diagnostics", report.diagnosis);
+      const evidence = arrayDetailBlock("evidence", report.evidence);
+      if (diagnosis) body.append(diagnosis);
+      if (evidence) body.append(evidence);
+      const failure = failureSummarySection(report);
+      if (failure) body.append(failure);
+      const pending = pendingMetadataSection(report);
+      if (pending) body.append(pending);
+      const termination = terminationSection(report);
+      if (termination) body.append(termination);
+      const attempt = pendingAttemptSection(report);
+      if (attempt) body.append(attempt);
+      const policy = policySection(report);
+      if (policy) body.append(policy);
+      card.append(body);
+      return card;
+    }
+
+    function emptyStageReport(definition) {
+      return {
+        stage_id: definition.stage_id,
+        milestone_id: definition.milestone_id,
+        status: "not_started",
+        stage_score: null,
+        dimension_scores: {},
+        dimension_levels: {},
+        dimension_confidence: {},
+        dimension_uncertainty: {},
+        next_weights: {},
+        evidence: [],
+        diagnosis: [],
+        metadata: { stage_goal: definition.stage_goal }
+      };
+    }
+
+    function settlementCard(settlement) {
+      const stageId = settlement.stage_id || settlement.settlement_id || "";
+      const card = el("article", "stage-card");
+      card.dataset.stageId = stageId;
+      card.classList.toggle("selected", state.selectedStageId === stageId);
+      card.addEventListener("click", () => focusStage(stageId));
+      const head = el("div", "stage-head");
+      const title = el("div", "stage-title");
+      title.textContent = settlement.settlement_id || "unnamed settlement";
+      head.append(title, statusBadge(settlement.status));
+      const meta = el("div", "stage-meta");
+      meta.append(
+        metric("type", settlement.kind || "unknown"),
+        metric("milestone", settlement.milestone_id || "None"),
+        metric("range", stepRangeText(settlement))
+      );
+      card.append(head, meta);
+      return card;
+    }
+
+    function graphLayout(graph) {
+      const nodes = graph.nodes || [];
+      const edges = (graph.edges || []).filter((edge) => edge.source && edge.target);
+      const ids = nodes.map((node) => node.milestone_id).filter(Boolean);
+      const indegree = new Map(ids.map((id) => [id, 0]));
+      const outgoing = new Map(ids.map((id) => [id, []]));
+      edges.forEach((edge) => {
+        if (!indegree.has(edge.source) || !indegree.has(edge.target)) return;
+        indegree.set(edge.target, indegree.get(edge.target) + 1);
+        outgoing.get(edge.source).push(edge.target);
+      });
+
+      const layerById = new Map();
+      const queue = ids.filter((id) => indegree.get(id) === 0);
+      if (!queue.length && ids.length) queue.push(ids[0]);
+      queue.forEach((id) => layerById.set(id, 0));
+
+      while (queue.length) {
+        const id = queue.shift();
+        const nextLayer = (layerById.get(id) || 0) + 1;
+        (outgoing.get(id) || []).forEach((target) => {
+          indegree.set(target, indegree.get(target) - 1);
+          layerById.set(target, Math.max(layerById.get(target) || 0, nextLayer));
+          if (indegree.get(target) === 0) queue.push(target);
+        });
+      }
+
+      ids.forEach((id, index) => {
+        if (!layerById.has(id)) layerById.set(id, index);
+      });
+
+      const layers = new Map();
+      nodes.forEach((node, index) => {
+        const id = node.milestone_id || `node-${index}`;
+        const layer = layerById.get(id) || 0;
+        if (!layers.has(layer)) layers.set(layer, []);
+        layers.get(layer).push(node);
+      });
+
+      const positioned = new Map();
+      const sortedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
+      const sidePadding = 30;
+      const minLayerGap = 24;
+      const layerGap = 92;
+      const layerSpecs = sortedLayers.map((layer) => {
+        const layerNodes = layers.get(layer);
+        const boxes = layerNodes.map((node) => selectedMilestoneBox(node.milestone_id));
+        const totalBoxWidth = boxes.reduce((total, box) => total + box.width, 0);
+        return {
+          layerNodes,
+          boxes,
+          height: Math.max(...boxes.map((box) => box.height)),
+          contentWidth: totalBoxWidth + minLayerGap * Math.max(0, layerNodes.length - 1)
+        };
+      });
+      const widestLayer = Math.max(360, ...layerSpecs.map((spec) => spec.contentWidth));
+      const width = widestLayer + sidePadding * 2;
+      let cursorY = 34;
+
+      layerSpecs.forEach((spec) => {
+        const { layerNodes, boxes } = spec;
+        const usableWidth = width - sidePadding * 2;
+        const totalBoxWidth = boxes.reduce((total, box) => total + box.width, 0);
+        const gap = layerNodes.length > 1
+          ? Math.max(minLayerGap, (usableWidth - totalBoxWidth) / (layerNodes.length - 1))
+          : 0;
+        const contentWidth = totalBoxWidth + gap * Math.max(0, layerNodes.length - 1);
+        let cursorX = sidePadding + (usableWidth - contentWidth) / 2;
+        layerNodes.forEach((node, index) => {
+          const id = node.milestone_id;
+          const box = boxes[index];
+          positioned.set(id, {
+            node,
+            x: cursorX + box.width / 2,
+            y: cursorY + spec.height / 2
+          });
+          cursorX += box.width + gap;
+        });
+        cursorY += spec.height + layerGap;
+      });
+      return { nodes: positioned, edges, width, height: Math.max(220, cursorY - layerGap + 34) };
+    }
+
+    function drawEdges(svg, layout, stageNodeIds, scenario) {
+      const defs = document.createElementNS(SVG_NS, "defs");
+      const marker = document.createElementNS(SVG_NS, "marker");
+      marker.setAttribute("id", "arrow");
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "8");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "6");
+      marker.setAttribute("markerHeight", "6");
+      marker.setAttribute("orient", "auto-start-reverse");
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      path.setAttribute("fill", "#9aa8ba");
+      marker.append(path);
+      defs.append(marker);
+      svg.append(defs);
+
+      layout.edges.forEach((edge) => {
+        const source = layout.nodes.get(edge.source);
+        const target = layout.nodes.get(edge.target);
+        if (!source || !target) return;
+        const sourceBox = selectedMilestoneBox(edge.source);
+        const targetBox = selectedMilestoneBox(edge.target);
+        const line = document.createElementNS(SVG_NS, "line");
+        line.setAttribute("x1", String(source.x));
+        line.setAttribute("y1", String(source.y + sourceBox.height / 2 - 4));
+        line.setAttribute("x2", String(target.x));
+        line.setAttribute("y2", String(target.y - targetBox.height / 2 + 4));
+        line.classList.add("graph-edge");
+        if (stageNodeIds.has(edge.source) && stageNodeIds.has(edge.target)) {
+          line.classList.add("selected-stage");
+        }
+        svg.append(line);
+      });
+    }
+
+    function drawNodes(svg, layout, scenario, stageNodeIds) {
+      layout.nodes.forEach((item, milestoneId) => {
+        const group = document.createElementNS(SVG_NS, "g");
+        group.classList.add("milestone-node");
+        group.dataset.milestoneId = milestoneId;
+        group.setAttribute("data-milestone-id", milestoneId);
+        group.classList.toggle("selected", state.selectedMilestoneId === milestoneId);
+        group.classList.toggle("selected-stage", stageNodeIds.has(milestoneId));
+        group.classList.toggle("virtual", Boolean(item.node.virtual));
+        const status = milestoneStatus(milestoneId, scenario);
+        if (status) group.classList.add(status);
+        const box = selectedMilestoneBox(milestoneId);
+        const contentScale = state.selectedMilestoneId === milestoneId ? milestoneContentScale(box) : 1;
+        group.style.setProperty("--milestone-content-scale", String(contentScale));
+        group.setAttribute("transform", `translate(${item.x - box.width / 2}, ${item.y - box.height / 2})`);
+        group.addEventListener("click", () => focusMilestone(milestoneId));
+
+        const rect = document.createElementNS(SVG_NS, "rect");
+        rect.setAttribute("width", String(box.width));
+        rect.setAttribute("height", String(box.height));
+        rect.setAttribute("rx", "8");
+        const name = document.createElementNS(SVG_NS, "text");
+        name.setAttribute("x", String(Math.round(12 * contentScale)));
+        name.setAttribute("y", String(Math.round(21 * contentScale)));
+        name.textContent = truncate(milestoneId, 18);
+        const meta = document.createElementNS(SVG_NS, "text");
+        meta.setAttribute("x", String(Math.round(12 * contentScale)));
+        meta.setAttribute("y", String(Math.round(38 * contentScale)));
+        meta.setAttribute("font-weight", "400");
+        meta.textContent = truncate(milestoneSubtitle(item.node), 18);
+        group.append(rect, name, meta);
+        if (state.selectedMilestoneId === milestoneId) {
+          group.append(milestoneInlineDetail(milestoneId, scenario, box, contentScale));
+          group.append(milestoneResizeHandle(milestoneId, box));
+        }
+        svg.append(group);
+      });
+    }
+
+    function selectedMilestoneBox(milestoneId) {
+      const isSelected = milestoneId && state.selectedMilestoneId === milestoneId;
+      if (isSelected && state.selectedMilestoneSize && state.selectedMilestoneSize.milestoneId === milestoneId) {
+        return {
+          width: state.selectedMilestoneSize.width,
+          height: state.selectedMilestoneSize.height
+        };
+      }
+      return {
+        width: isSelected ? SELECTED_MILESTONE_WIDTH : MILESTONE_BOX_WIDTH,
+        height: isSelected ? SELECTED_MILESTONE_HEIGHT : MILESTONE_BOX_HEIGHT
+      };
+    }
+
+    function milestoneContentScale(box) {
+      if (!box) return 1;
+      const widthRatio = Number(box.width) / SELECTED_MILESTONE_WIDTH;
+      const heightRatio = Number(box.height) / SELECTED_MILESTONE_HEIGHT;
+      const scale = Math.min(widthRatio, heightRatio);
+      return Number(clamp(scale, 0.75, 2.4).toFixed(3));
+    }
+
+    function milestoneDetailTop(contentScale) {
+      return Math.round(SELECTED_MILESTONE_HEADER_HEIGHT * (contentScale || 1));
+    }
+
+    function milestoneResizeHandle(milestoneId, box) {
+      const handle = document.createElementNS(SVG_NS, "g");
+      handle.classList.add("milestone-resize-handle");
+      handle.setAttribute("transform", `translate(${box.width - 25}, ${box.height - 25})`);
+      handle.addEventListener("click", (event) => event.stopPropagation());
+      handle.addEventListener("pointerdown", (event) => startMilestoneResize(event, milestoneId, box));
+
+      const hit = document.createElementNS(SVG_NS, "rect");
+      hit.setAttribute("width", "17");
+      hit.setAttribute("height", "17");
+      hit.setAttribute("rx", "5");
+      const first = document.createElementNS(SVG_NS, "line");
+      first.setAttribute("x1", "5");
+      first.setAttribute("y1", "13");
+      first.setAttribute("x2", "13");
+      first.setAttribute("y2", "5");
+      const second = document.createElementNS(SVG_NS, "line");
+      second.setAttribute("x1", "9");
+      second.setAttribute("y1", "13");
+      second.setAttribute("x2", "13");
+      second.setAttribute("y2", "9");
+      handle.append(hit, first, second);
+      return handle;
+    }
+
+    function startMilestoneResize(event, milestoneId, box) {
+      event.preventDefault();
+      event.stopPropagation();
+      const limits = milestoneResizeLimits();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const startWidth = box.width;
+      const startHeight = box.height;
+
+      const handleMove = (moveEvent) => {
+        const width = clamp(startWidth + moveEvent.clientX - startX, 240, limits.maxWidth);
+        const height = clamp(startHeight + moveEvent.clientY - startY, 160, limits.maxHeight);
+        state.selectedMilestoneSize = { milestoneId, width, height };
+        renderGraph({ preserveScroll: true });
+      };
+      const stopMove = () => {
+        document.removeEventListener("pointermove", handleMove);
+        document.removeEventListener("pointerup", stopMove);
+        document.removeEventListener("pointercancel", stopMove);
+      };
+
+      state.selectedMilestoneSize = { milestoneId, width: startWidth, height: startHeight };
+      document.addEventListener("pointermove", handleMove);
+      document.addEventListener("pointerup", stopMove);
+      document.addEventListener("pointercancel", stopMove);
+    }
+
+    function milestoneResizeLimits() {
+      const panel = document.querySelector(".graph-panel .panel-body");
+      const width = panel ? panel.clientWidth : 520;
+      const height = panel ? panel.clientHeight : 360;
+      return {
+        maxWidth: Math.max(SELECTED_MILESTONE_WIDTH, Math.min(760, width * 1.8)),
+        maxHeight: Math.max(SELECTED_MILESTONE_HEIGHT, Math.min(620, height * 1.4))
+      };
+    }
+
+    function milestoneInlineDetail(milestoneId, scenario, box, contentScale) {
+      const detailTop = milestoneDetailTop(contentScale);
+      const foreign = document.createElementNS(SVG_NS, "foreignObject");
+      foreign.setAttribute("x", "8");
+      foreign.setAttribute("y", String(detailTop));
+      foreign.setAttribute("width", String(box.width - 16));
+      foreign.setAttribute("height", String(Math.max(48, box.height - detailTop - MILESTONE_DETAIL_BOTTOM_GAP)));
+      foreign.style.setProperty("--milestone-content-scale", String(contentScale || 1));
+
+      const detail = el("div", "milestone-inline-detail");
+      detail.style.setProperty("--milestone-content-scale", String(contentScale || 1));
+      detail.addEventListener("click", (event) => event.stopPropagation());
+      const definition = stageDefinitionForMilestone(milestoneId, scenario);
+      const node = graphNodeForMilestone(milestoneId, scenario);
+      const matching = milestoneMatchingFor(milestoneId, scenario);
+      const bestAttempt = matching ? null : bestMilestoneAttempt(milestoneId, scenario);
+      const finalDiagnostic = matching ? null : milestoneFinalDiagnosticFor(milestoneId, scenario);
+      const constraints = node && Array.isArray(node.constraints) ? node.constraints : [];
+
+      appendInlineDetailSection(detail, "stage goal", definition ? definition.stage_goal || "None" : "None");
+      appendInlineDetailSection(detail, "milestone description", node ? node.description || node.name || "None" : "None");
+      appendConstraintDetailSection(detail, constraints);
+      appendInlineDetailSection(
+        detail,
+        "match diagnostics",
+        matching ? matchingDetailText(matching) : milestoneFailureDetailText(finalDiagnostic, bestAttempt)
+      );
+
+      foreign.append(detail);
+      return foreign;
+    }
+
+    function appendInlineDetailSection(container, title, text) {
+      const section = el("details");
+      const heading = el("summary", "detail-summary");
+      heading.textContent = title;
+      const body = el("pre");
+      body.textContent = text;
+      section.append(heading, body);
+      container.append(section);
+    }
+
+    function appendConstraintDetailSection(container, constraints) {
+      const section = el("details", "constraint-list");
+      const heading = el("summary", "detail-summary");
+      heading.textContent = "constraint definitions";
+      section.append(heading);
+
+      if (!constraints.length) {
+        const empty = el("pre");
+        empty.textContent = "None";
+        section.append(empty);
+        container.append(section);
+        return;
+      }
+
+      constraints.forEach((constraint, index) => {
+        const item = el("details", "constraint-item");
+        const itemHeading = el("summary");
+        itemHeading.textContent = constraintItemTitle(constraint, index);
+        const body = el("pre");
+        body.textContent = constraintDetailText(constraint);
+        item.append(itemHeading, body);
+        section.append(item);
+      });
+      container.append(section);
+    }
+
+    function constraintItemTitle(constraint, index) {
+      if (!constraint) return `constraint ${index + 1}`;
+      const id = constraint.constraint_id || `constraint ${index + 1}`;
+      const target = constraint.target ? ` · ${constraint.target}` : "";
+      return `${id}${target}`;
+    }
+
+    function milestoneMatchingFor(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const metadata = ((scenario.milestone_graph || {}).metadata) || {};
+      return (scenario.stage_settlements || []).find((settlement) => {
+        if (settlement.milestone_id === milestoneId) return true;
+        return settlement.kind === "finish" && milestoneId === (metadata.finish_node_id || "__finish__");
+      })?.milestone_matching || null;
+    }
+
+    function stageMilestoneIds(stageId, scenario) {
+      const selected = new Set();
+      if (!stageId || !scenario) return selected;
+      const graph = scenario.milestone_graph || {};
+      const metadata = graph.metadata || {};
+      const settlement = settlementForStage(stageId);
+      const report = stageReportForStage(stageId, scenario);
+      const definition = stageDefinitionForStage(stageId, scenario);
+      let targetId = (settlement && settlement.milestone_id) || (report && report.milestone_id) || (definition && definition.milestone_id) || "";
+      if (!targetId && settlement && settlement.kind === "finish") {
+        targetId = metadata.finish_node_id || "__finish__";
+      }
+      if (!targetId) return selected;
+
+      const reportMetadata = (report && report.metadata) || {};
+      const anchorId = (
+        (settlement && settlement.stage_anchor_milestone_id) ||
+        reportMetadata.stage_anchor_milestone_id ||
+        (definition && definition.anchor_milestone_id) ||
+        stageAnchorForMilestone(targetId, scenario) ||
+        (targetId === (metadata.finish_node_id || "__finish__") ? metadata.finish_stage_anchor_predecessor_id : "")
+      );
+      if (!anchorId) {
+        selected.add(targetId);
+        return selected;
+      }
+      return stagePathNodeIds(graph, anchorId, targetId);
+    }
+
+    function stagePathNodeIds(graph, anchorId, targetId) {
+      const nodeIds = new Set((graph.nodes || []).map((node) => node.milestone_id).filter(Boolean));
+      const edges = (graph.edges || []).filter((edge) => edge.source && edge.target);
+      edges.forEach((edge) => {
+        nodeIds.add(edge.source);
+        nodeIds.add(edge.target);
+      });
+      const selected = new Set();
+      if (!nodeIds.has(targetId)) return selected;
+      if (!nodeIds.has(anchorId)) {
+        selected.add(targetId);
+        return selected;
+      }
+
+      const outgoing = adjacencyMap(nodeIds);
+      const incoming = adjacencyMap(nodeIds);
+      edges.forEach((edge) => {
+        if (!outgoing.has(edge.source) || !incoming.has(edge.target)) return;
+        outgoing.get(edge.source).push(edge.target);
+        incoming.get(edge.target).push(edge.source);
+      });
+      const reachableFromAnchor = reachableNodeIds(anchorId, outgoing);
+      const canReachTarget = reachableNodeIds(targetId, incoming);
+      nodeIds.forEach((nodeId) => {
+        if (reachableFromAnchor.has(nodeId) && canReachTarget.has(nodeId)) selected.add(nodeId);
+      });
+      if (!selected.size) selected.add(targetId);
+      return selected;
+    }
+
+    function adjacencyMap(nodeIds) {
+      const map = new Map();
+      nodeIds.forEach((nodeId) => map.set(nodeId, []));
+      return map;
+    }
+
+    function reachableNodeIds(startId, adjacency) {
+      const visited = new Set([startId]);
+      const queue = [startId];
+      while (queue.length) {
+        const nodeId = queue.shift();
+        (adjacency.get(nodeId) || []).forEach((nextId) => {
+          if (visited.has(nextId)) return;
+          visited.add(nextId);
+          queue.push(nextId);
+        });
+      }
+      return visited;
+    }
+
+    function stageAnchorForMilestone(milestoneId, scenario) {
+      const graphNode = graphNodeForMilestone(milestoneId, scenario);
+      return graphNode ? graphNode.stage_anchor_predecessor_id || "" : "";
+    }
+
+    function graphNodeForMilestone(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      return ((scenario.milestone_graph || {}).nodes || []).find((node) => node.milestone_id === milestoneId) || null;
+    }
+
+    function stageReportForStage(stageId, scenario) {
+      if (!stageId || !scenario) return null;
+      return (scenario.stage_reports || []).find((report) => report.stage_id === stageId) || null;
+    }
+
+    function stageDefinitionForStage(stageId, scenario) {
+      if (!stageId || !scenario) return null;
+      return (scenario.stage_definitions || []).find((definition) => definition.stage_id === stageId) || null;
+    }
+
+    function stageDefinitionForMilestone(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      return (scenario.stage_definitions || []).find((definition) => definition.milestone_id === milestoneId) || null;
+    }
+
+    function milestoneSubtitle(node) {
+      if (!node) return "";
+      if (node.virtual) return node.name || "";
+      if (node.stage_anchor_predecessor_id) return `anchor ${node.stage_anchor_predecessor_id}`;
+      return "mandatory";
+    }
+
+    function graphPanelScroll() {
+      const panel = document.querySelector(".graph-panel .panel-body");
+      if (!panel) return null;
+      return { top: panel.scrollTop, left: panel.scrollLeft };
+    }
+
+    function restoreGraphPanelScroll(scroll) {
+      if (!scroll) return;
+      const panel = document.querySelector(".graph-panel .panel-body");
+      if (!panel) return;
+      panel.scrollTop = Math.max(0, scroll.top);
+      panel.scrollLeft = Math.max(0, scroll.left);
+    }
+
+    function focusStepCard(stepIndex) {
+      if (stepIndex === null || stepIndex === undefined) return;
+      const normalizedStepIndex = finiteStepIndex(stepIndex);
+      if (normalizedStepIndex === null) return;
+      const panel = document.querySelector(".trajectory-panel .panel-body");
+      const target = panel ? panel.querySelector(`[data-step-index="${normalizedStepIndex}"]`) : null;
+      if (!panel || !target) {
+        state.hiddenTrajectoryStepIndex = normalizedStepIndex;
+        renderTrajectory();
+        updatePanelScales();
+        return;
+      }
+      state.hiddenTrajectoryStepIndex = null;
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
+      const centeredTop = targetTop - (panel.clientHeight - target.clientHeight) / 2;
+      panel.scrollTo({ top: Math.max(0, centeredTop), behavior: "smooth" });
+    }
+
+    function scrollToMilestoneNode(milestoneId) {
+      if (!milestoneId) return;
+      const panel = document.querySelector(".graph-panel .panel-body");
+      const nodes = panel ? Array.from(panel.querySelectorAll(".milestone-node")) : [];
+      const target = nodes.find((node) => node.dataset.milestoneId === milestoneId);
+      if (!panel || !target) return;
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
+      const targetLeft = targetRect.left - panelRect.left + panel.scrollLeft;
+      const centeredTop = targetTop - (panel.clientHeight - targetRect.height) / 2;
+      const centeredLeft = targetLeft - (panel.clientWidth - targetRect.width) / 2;
+      panel.scrollTo({
+        top: Math.max(0, centeredTop),
+        left: Math.max(0, centeredLeft),
+        behavior: "smooth"
+      });
+    }
+
+    function scrollToStageCard(stageId) {
+      if (!stageId) return;
+      const panel = document.querySelector(".stage-panel .panel-body");
+      const target = panel ? panel.querySelector(`[data-stage-id="${stageId}"]`) : null;
+      if (!panel || !target) return;
+      const panelRect = panel.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const targetTop = targetRect.top - panelRect.top + panel.scrollTop;
+      const centeredTop = targetTop - (panel.clientHeight - targetRect.height) / 2;
+      panel.scrollTo({ top: Math.max(0, centeredTop), behavior: "smooth" });
+    }
+
+    function scrollToMatchedStep(milestoneId) {
+      const scenario = currentScenario();
+      if (!scenario) return;
+      const stepIndex = matchedStepIndexForMilestone(milestoneId, scenario);
+      if (stepIndex !== null) focusStepCard(stepIndex);
+    }
+
+    function matchedStepIndexForMilestone(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const attempts = scenario.match_attempts || [];
+      const match = attempts.find((item) => selectedAttemptMilestoneId(item) === milestoneId);
+      if (match) {
+        return finiteStepIndex(match.step_index);
+      }
+      const settlement = (scenario.stage_settlements || []).find((item) => item.milestone_id === milestoneId);
+      if (settlement) {
+        return finiteStepIndex(settlement.start_step_index);
+      }
+      const best = bestMilestoneAttempt(milestoneId, scenario);
+      return best ? finiteStepIndex(best.attempt.step_index) : null;
+    }
+
+    function finiteStepIndex(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function scrollToStepRange(settlement) {
+      if (!settlement) return;
+      focusStepCard(settlement.start_step_index);
+    }
+
+    function settlementForStage(stageId) {
+      if (!stageId) return null;
+      const scenario = currentScenario();
+      if (!scenario) return null;
+      return (scenario.stage_settlements || []).find((settlement) => (
+        settlement.stage_id === stageId ||
+        settlement.settlement_id === stageId
+      )) || null;
+    }
+
+    function milestonesForStep(step, scenario) {
+      const stepIndex = Number(step.index);
+      const stepId = step.step_id;
+      return (scenario.match_attempts || [])
+        .filter((item) => item.step_index === stepIndex || item.step_id === stepId)
+        .map(selectedAttemptMilestoneId)
+        .filter(Boolean);
+    }
+
+    function milestoneStatus(milestoneId, scenario) {
+      const report = (scenario.stage_reports || []).find((item) => item.milestone_id === milestoneId);
+      if (report && report.status) return normalizeStageStatus(report.status);
+      return stageDefinitionForMilestone(milestoneId, scenario) ? "pending" : "";
+    }
+
+    function statusBadge(status) {
+      const badge = el("span", "badge");
+      const value = status || "unknown";
+      badge.textContent = value;
+      const normalized = normalizeStageStatus(value);
+      if (normalized === "pass") badge.classList.add("ok");
+      else if (normalized === "fail") badge.classList.add("bad");
+      else if (normalized === "pending") badge.classList.add("pending");
+      else badge.classList.add("warn");
+      return badge;
+    }
+
+    function normalizeStageStatus(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "pass") return "pass";
+      if (value === "warn") return "warn";
+      if (["not_started", "missing", "pending"].includes(value)) return "pending";
+      if (["fail", "fatal", "invalid", "terminated"].includes(value)) return "fail";
+      return "";
+    }
+
+    function stageScoreSection(title, rows) {
+      if (!rows || !rows.length) return null;
+      const section = el("details", "stage-section score-section");
+      const heading = el("summary", "detail-summary");
+      heading.textContent = title;
+      section.append(heading, ...rows);
+      return section;
+    }
+
+    function dimensionRows(report) {
+      const levels = report.dimension_levels || {};
+      return Object.entries(report.dimension_scores || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => dimensionScoreRow(key, levels[key] || "cheap", Number(value)));
+    }
+
+    function weightRows(report) {
+      return Object.entries(report.next_weights || {})
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => weightScoreRow(key, Number(value)));
+    }
+
+    function averageScore(values) {
+      if (!values || typeof values !== "object") return null;
+      const numbers = Object.values(values)
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+      if (!numbers.length) return null;
+      return numbers.reduce((total, value) => total + value, 0) / numbers.length;
+    }
+
+    function dimensionLevelSummary(levels) {
+      if (!levels || typeof levels !== "object") return "unknown";
+      const counts = Object.values(levels).reduce((acc, level) => {
+        const key = String(level || "unknown");
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      const parts = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right));
+      return parts.length ? parts.map(([level, count]) => `${level}:${count}`).join(" ") : "unknown";
+    }
+
+    function policySection(report) {
+      const metadata = report.metadata || {};
+      const next = metadata.next_evaluation_policy;
+      const termination = metadata.evaluation_termination;
+      if (!next && !termination) return null;
+      return detailBlock("evaluation strategy", JSON.stringify({
+        next_evaluation_policy: next || null,
+        evaluation_termination: termination || null
+      }, null, 2));
+    }
+
+    function pendingMetadataSection(report) {
+      const metadata = report.metadata || {};
+      const keys = ["blocker", "last_reject_reason", "attempt_count", "best_score", "best_boundary_step_index", "failure_kind"];
+      const payload = {};
+      keys.forEach((key) => {
+        if (metadata[key] !== null && metadata[key] !== undefined && metadata[key] !== "") {
+          payload[key] = metadata[key];
+        }
+      });
+      return Object.keys(payload).length ? detailBlock("pending diagnostics", JSON.stringify(payload, null, 2)) : null;
+    }
+
+    function terminationSection(report) {
+      const metadata = report.metadata || {};
+      if (metadata.finish_unsettled_due_to_termination !== true) return null;
+      const termination = metadata.termination || {};
+      return detailBlock("finish not settled", terminationDetailText(termination), true);
+    }
+
+    function terminationDetailText(termination) {
+      const detail = termination.termination_detail || {};
+      const lines = [
+        `termination_code: ${formatValue(termination.termination_code)}`,
+        `termination_reason: ${formatValue(termination.termination_reason)}`
+      ];
+      const matches = Array.isArray(detail.minefield_matches) ? detail.minefield_matches : [];
+      if (matches.length) {
+        lines.push("", "minefield_matches:");
+        matches.forEach((match) => lines.push(minefieldMatchLine(match)));
+      }
+      if (!matches.length && Object.keys(detail).length) {
+        lines.push("", "termination_detail:", JSON.stringify(detail, null, 2));
+      }
+      return lines.join("\n").trim();
+    }
+
+    function minefieldMatchLine(match) {
+      if (!match) return "- minefield: None";
+      const pieces = [
+        match.minefield_id || "unknown",
+        `severity=${formatValue(match.severity)}`,
+        `score=${formatScore(match.score)}`,
+        `fatal=${formatValue(match.fatal)}`
+      ];
+      if (match.trigger_summary) pieces.push(`trigger=${match.trigger_summary}`);
+      const constraints = Array.isArray(match.constraints) ? match.constraints : [];
+      const constraintText = constraints
+        .slice(0, 2)
+        .map((constraint) => {
+          const summary = constraint.semantic_summary || (constraint.expected_rows_summary || []).join(" | ");
+          return `${constraint.constraint_id || "constraint"} ${summary}`.trim();
+        })
+        .filter(Boolean)
+        .join("; ");
+      if (constraintText) pieces.push(`constraints=${constraintText}`);
+      return `- ${pieces.join("; ")}`;
+    }
+
+    function warningSummarySection(report) {
+      const text = warningSummaryText(report);
+      return text ? detailBlock("warning reasons", text, normalizeStageStatus(report.status) === "warn") : null;
+    }
+
+    function warningSummaryText(report) {
+      if (!report || !report.metadata) return "";
+      const metadata = report.metadata;
+      const lines = [];
+      if (Array.isArray(metadata.low_score_dimensions) && metadata.low_score_dimensions.length) {
+        lines.push("low-scoring dimensions:");
+        metadata.low_score_dimensions.forEach((item) => {
+          const dimension = dimensionLabel(item.dimension || "unknown");
+          lines.push(`- ${dimension}=${formatScore(item.score)} severity=${formatValue(item.severity)}`);
+        });
+      }
+      const diagnostics = metadata.stage_quality_diagnostics || {};
+      if (Number(diagnostics.warning_count) > 0) {
+        lines.push(`quality diagnostics warning_count=${diagnostics.warning_count}`);
+      }
+      appendDiagnosticLines(lines, "tool arguments", diagnostics.tool_argument_warnings, toolArgumentWarningLine);
+      appendDiagnosticLines(lines, "tool failures", diagnostics.failed_tool_results, failedToolResultLine);
+      appendDiagnosticLines(
+        lines,
+        "empty tool results",
+        (diagnostics.empty_tool_results || []).filter((item) => item && item.severity !== "info"),
+        emptyToolResultLine
+      );
+      appendDiagnosticLines(lines, "evidence risks", diagnostics.grounding_warnings, groundingWarningLine);
+      const efficiency = diagnostics.efficiency || {};
+      if (Number(efficiency.extra_user_turns_before_first_tool_call) > 0) {
+        lines.push(`- efficiency: extra user turns before the first tool call ${efficiency.extra_user_turns_before_first_tool_call}`);
+      }
+      return lines.join("\n").trim();
+    }
+
+    function appendDiagnosticLines(lines, title, items, formatter) {
+      if (!Array.isArray(items) || !items.length) return;
+      lines.push(`${title}:`);
+      items.slice(0, 4).forEach((item) => lines.push(`- ${formatter(item)}`));
+        if (items.length > 4) lines.push(`- ${items.length - 4} more items`);
+    }
+
+    function toolArgumentWarningLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)}.${formatValue(item.argument_name)}=${shortJson(item.argument_value, 160)} (${formatValue(item.warning)})`;
+    }
+
+    function failedToolResultLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)} ${shortJson(item.exception, 240)}`;
+    }
+
+    function emptyToolResultLine(item) {
+      return `step ${formatValue(item.step_index)} ${formatValue(item.tool_name)} ${formatValue(item.result_category)} severity=${formatValue(item.severity)}`;
+    }
+
+    function groundingWarningLine(item) {
+      return `step ${formatValue(item.answer_step_index || item.tool_result_step_index)} ${formatValue(item.warning)} ${shortJson(item.answer_excerpt, 180)}`;
+    }
+
+    function failureSummarySection(report) {
+      if (!report || !["fail", "missing", "invalid"].includes(report.status)) return null;
+      const text = milestoneFailureDetailText(
+        report.metadata || null,
+        bestMilestoneAttempt(report.milestone_id, currentScenario()),
+        false
+      );
+      return text ? detailBlock("match failure summary", text, true) : null;
+    }
+
+    function milestoneFinalDiagnosticFor(milestoneId, scenario) {
+      if (!milestoneId || !scenario) return null;
+      const report = (scenario.stage_reports || []).find((item) => item.milestone_id === milestoneId);
+      const metadata = report && report.metadata;
+      return metadata && (metadata.failure_summary || metadata.failed_constraints) ? metadata : null;
+    }
+
+    function milestoneFailureDetailText(metadata, bestAttempt, includeBestAttemptDetail) {
+      const parts = [];
+      if (metadata && metadata.failure_summary) {
+        parts.push(String(metadata.failure_summary));
+      } else if (bestAttempt) {
+        parts.push(attemptFailureSummary(bestAttempt));
+      }
+      const reasons = metadata && Array.isArray(metadata.failure_reasons) ? metadata.failure_reasons : [];
+      if (reasons.length > 1) {
+        parts.push("", "failure_reasons:");
+        reasons.slice(1, 5).forEach((reason) => parts.push(`- ${String(reason)}`));
+      }
+      const failedConstraints = metadata && Array.isArray(metadata.failed_constraints) ? metadata.failed_constraints : [];
+      if (failedConstraints.length) {
+        parts.push("", "failed_constraints:");
+        failedConstraints.forEach((item) => parts.push(failedConstraintLine(item)));
+      }
+      if (metadata && metadata.semantic_review) {
+        parts.push("", "semantic_review:", semanticReviewText(metadata.semantic_review));
+      }
+      if (bestAttempt && includeBestAttemptDetail !== false) {
+        parts.push("", "best_attempt:", milestoneAttemptDetailText(bestAttempt));
+      }
+      return parts.join("\n").trim() || "None";
+    }
+
+    function attemptFailureSummary(bestAttempt) {
+      const attempt = bestAttempt.attempt || {};
+      const candidate = bestAttempt.candidate || {};
+      const score = candidate.score || {};
+      const boundary = candidate.boundary || score.boundary || {};
+      const failed = Array.isArray(score.constraint_scores)
+        ? score.constraint_scores
+            .filter((item) => item && (item.missing || Number(item.score) < 1))
+            .sort((left, right) => Number(left.score || 0) - Number(right.score || 0))
+        : [];
+      let summary = (
+        `milestone ${candidate.milestone_id || "unknown"} not matched; best candidate located at step=${formatValue(boundary.step_index || attempt.step_index)}, ` +
+        `score ${formatScore(score.score)} (status=${formatValue(score.status)}, reject_reason=${formatValue(candidate.reject_reason)}). `
+      );
+      if (failed.length) {
+        const lead = failed[0];
+        const evidence = Array.isArray(lead.evidence) && lead.evidence.length ? `; evidence:${lead.evidence[0]}` : "";
+        summary += ` main low-scoring constraint:${lead.constraint_id || "constraint"} score=${formatScore(lead.score)}${evidence}. `;
+      }
+      return summary;
+    }
+
+    function failedConstraintLine(item) {
+      if (!item) return "- constraint: None";
+      const pieces = [
+        item.constraint_id || "constraint",
+        `score=${formatScore(item.score)}`,
+        `threshold=${formatScore(item.threshold)}`
+      ];
+      if (item.goal_hint) pieces.push(String(item.goal_hint));
+      if (item.evidence && item.evidence.length) pieces.push(`evidence=${item.evidence.join(" | ")}`);
+      if (item.expected_excerpt) pieces.push(`expected=${item.expected_excerpt}`);
+      if (item.actual_excerpt) pieces.push(`actual=${item.actual_excerpt}`);
+      return `- ${pieces.join("; ")}`;
+    }
+
+    function semanticReviewText(review) {
+      if (!review) return "None";
+      const lines = [
+        `status: ${formatValue(review.status)}`,
+        `reason: ${formatValue(review.reason)}`,
+        `accepted_constraint_ids: ${formatValue((review.accepted_constraint_ids || []).join(", "))}`,
+        `rejected_constraint_ids: ${formatValue((review.rejected_constraint_ids || []).join(", "))}`
+      ];
+      const reviews = Array.isArray(review.reviews) ? review.reviews : [];
+      reviews.slice(0, 4).forEach((item) => {
+        lines.push(`- ${formatValue(item.constraint_id)} equivalent=${formatValue(item.equivalent)} confidence=${formatScore(item.confidence)} reason=${formatValue(item.reason)}`);
+      });
+      return lines.join("\n");
+    }
+
+    function pendingAttemptSection(report) {
+      if (!report || !["fail", "missing"].includes(report.status)) return null;
+      const scenario = currentScenario();
+      const best = bestMilestoneAttempt(report.milestone_id, scenario);
+      return best ? detailBlock("best match attempt", milestoneAttemptDetailText(best), true) : null;
+    }
+
+    function arrayDetailBlock(title, values) {
+      if (!Array.isArray(values) || !values.length) return null;
+      return detailBlock(title, values.map((item) => `- ${String(item)}`).join("\n"));
+    }
+
+    function constraintDefinitionLines(milestoneId, scenario) {
+      const node = graphNodeForMilestone(milestoneId, scenario);
+      if (!node || !Array.isArray(node.constraints)) return [];
+      return node.constraints.slice(0, 2).map((constraint) => {
+        const id = constraint.constraint_id || "constraint";
+        const operator = constraint.operator || "";
+        const hard = constraint.hard ? "hard" : "soft";
+        const summary = constraint.semantic_summary || (constraint.expected_rows_summary || [])[0] || "";
+        return `${id} ${operator} ${hard} ${summary}`.trim();
+      });
+    }
+
+    function dimensionScoreRow(key, level, value) {
+      const row = el("div", "score-row");
+      const name = el("span", "score-label");
+      name.textContent = dimensionLabel(key);
+      const levelBox = el("span", "score-level");
+      levelBox.textContent = level || "unknown";
+      const valueBox = el("span", "score-value");
+      valueBox.textContent = formatScore(value);
+      row.append(name, levelBox, valueBox);
+      return row;
+    }
+
+    function weightScoreRow(key, value) {
+      const row = el("div", "score-row weight-row");
+      const name = el("span", "score-label");
+      name.textContent = dimensionLabel(key);
+      const valueBox = el("span", "score-value");
+      valueBox.textContent = formatScore(value);
+      row.append(name, valueBox);
+      return row;
+    }
+
+    function dimensionLabel(key) {
+      const labels = {
+        progress: "progress",
+        state_consistency: "state consistency",
+        tool_quality: "tool quality",
+        efficiency: "efficiency",
+        safety: "safety",
+        interaction_quality: "interaction quality",
+        recovery: "recovery"
+      };
+      return labels[key] || key;
+    }
+
+    function appendPanelTitle(container, title, subtitle, extra) {
+      const head = el("div", "panel-title");
+      const text = el("div", "panel-title-text");
+      const row = el("div", "panel-title-row");
+      const h2 = el("h2");
+      h2.textContent = title;
+      const p = el("p");
+      p.textContent = subtitle || "";
+      row.append(h2);
+      if (extra) row.append(extra);
+      text.append(row, p);
+      head.append(text);
+      container.append(head);
+    }
+
+    function appendEmpty(container, message) {
+      const node = el("div", "empty");
+      node.textContent = message;
+      container.append(node);
+    }
+
+    function appendEmptyInline(container, message) {
+      const node = el("span", "metric-chip");
+      node.textContent = message;
+      container.append(node);
+    }
+
+    function detailBlock(title, text, open) {
+      const block = el("details");
+      const summary = el("summary", "detail-summary");
+      summary.textContent = title;
+      const body = el("pre", "detail-text");
+      body.textContent = text || "None";
+      block.open = Boolean(open);
+      block.append(summary, body);
+      return block;
+    }
+
+    function metric(label, value) {
+      const chip = el("span", "metric-chip");
+      const name = document.createTextNode(label);
+      const strong = el("strong");
+      strong.textContent = value === null || value === undefined || value === "" ? "None" : String(value);
+      chip.append(name, strong);
+      return chip;
+    }
+
+    function toolCallText(toolCall) {
+      const args = JSON.stringify(toolCall.arguments || {}, null, 2);
+      return `${toolCall.name || "unknown"}\n${args}`;
+    }
+
+    function toolResultText(toolResult, toolName) {
+      const lines = [];
+      if (toolName) lines.push(`tool_name: ${toolName}`);
+      lines.push(`success: ${formatValue(toolResult.success)}`);
+      if (toolResult.content) lines.push(`content: ${toolResult.content}`);
+      if (toolResult.exception) lines.push(`exception: ${toolResult.exception}`);
+      return lines.join("\n");
+    }
+
+    function toolNameForStep(step, scenario) {
+      if (!step) return "";
+      if (step.tool_call && step.tool_call.name) return String(step.tool_call.name);
+      if (step.openai_function_name) return String(step.openai_function_name);
+      if (step.tool_result) return toolNameFromRelatedCall(step, scenario);
+      return String(step.event_type || "") === "tool_call" ? toolNameFromContent(step.content) : "";
+    }
+
+    function toolNameFromRelatedCall(step, scenario) {
+      const callId = step.openai_tool_call_id || "";
+      const steps = scenario && scenario.trajectory ? scenario.trajectory.steps || [] : [];
+      if (callId) {
+        const matched = steps.find((item) => (
+          item &&
+          item.openai_tool_call_id === callId &&
+          item.tool_call &&
+          item.tool_call.name
+        ));
+        if (matched) return String(matched.tool_call.name);
+      }
+      const stepIndex = Number(step.index);
+      const previousCall = [...steps]
+        .filter((item) => item && item.tool_call && item.tool_call.name && Number(item.index) <= stepIndex)
+        .sort((left, right) => Number(right.index) - Number(left.index))[0];
+      return previousCall ? String(previousCall.tool_call.name) : "";
+    }
+
+    function toolNameFromContent(content) {
+      if (!content || typeof content !== "string") return "";
+      const match = content.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+      return match ? match[1] : "";
+    }
+
+    function stepRangeText(settlement) {
+      const start = formatValue(settlement.start_step_index);
+      const end = formatValue(settlement.end_step_index);
+      return `${start} - ${end}`;
+    }
+
+    function formatScore(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "None";
+      return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    }
+
+    function formatSeconds(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "None";
+      return `${number.toFixed(1)}s`;
+    }
+
+    function formatValue(value) {
+      if (value === null || value === undefined || value === "") return "None";
+      return String(value);
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function truncate(value, limit) {
+      const text = String(value || "");
+      return text.length > limit ? `${text.slice(0, limit)}...` : text;
+    }
+
+    function shortJson(value, limit) {
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      return truncate(text, limit || 600).replace(/\n/g, " ");
+    }
+
+    function resetSelection() {
+      state.selectedMilestoneId = null;
+      state.selectedMilestoneSize = null;
+      state.selectedStageId = null;
+      state.hiddenTrajectoryStepIndex = null;
+      state.openStageIds.clear();
+      state.closedStageIds.clear();
+    }
+
+    function setStageOpen(stageId, open) {
+      if (!stageId) return;
+      if (open) {
+        state.openStageIds.add(stageId);
+        state.closedStageIds.delete(stageId);
+      } else {
+        state.openStageIds.delete(stageId);
+        state.closedStageIds.add(stageId);
+      }
+    }
+
+    function clear(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function el(tag, className) {
+      const node = document.createElement(tag);
+      if (className) {
+        className.split(" ").filter(Boolean).forEach((name) => node.classList.add(name));
+      }
+      return node;
+    }
+  </script>
+</body>
+</html>

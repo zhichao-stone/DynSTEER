@@ -1,0 +1,9 @@
+[
+  {
+    "name": "source_direct",
+    "scenarios": [],
+    "max_tool_calls": 60,
+    "command_timeout_seconds": 600,
+    "model_temperature": 0.0
+  }
+]

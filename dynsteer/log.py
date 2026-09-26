@@ -1,0 +1,156 @@
+import json
+import logging
+import threading
+from datetime import datetime
+from pathlib import Path
+from dynsteer.model import JsonObject, JsonValue
+from dynsteer.utils import compact_text
+
+
+_LOG_BUFFER: list[JsonObject] = []
+LOG_BUFFER_LIMIT = 2000
+_LOGGER_LOCK = threading.RLock()
+_LOG_BUFFER_LOCK = threading.RLock()
+_LOG_EXTRA_TEXT_LIMIT = 160
+_LOG_EXTRA_LIST_LIMIT = 12
+_LOG_RECORD_BUILTINS = {
+    "args",
+    "asctime",
+    "created",
+    "exc_info",
+    "exc_text",
+    "filename",
+    "funcName",
+    "levelname",
+    "levelno",
+    "lineno",
+    "module",
+    "msecs",
+    "message",
+    "msg",
+    "name",
+    "pathname",
+    "process",
+    "processName",
+    "relativeCreated",
+    "stack_info",
+    "thread",
+    "threadName",
+}
+
+class StructuredLogFormatter(logging.Formatter):
+    """Format log records with compact structured extras."""
+
+    def __init__(self, fmt: str, terminal: bool = False) -> None:
+        super().__init__(fmt)
+        self._terminal = terminal
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Formats log records and adds structured extras."""
+        message = super().format(record)
+        extra = terminal_log_extra_from_record(record) if self._terminal else log_extra_from_record(record)
+        if not extra:
+            return message
+        return f"{message} {json.dumps(extra, ensure_ascii=False, sort_keys=True)}"
+
+class BufferLogHandler(logging.Handler):
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Writes log records to the memory buffer."""
+        try:
+            entry: JsonObject = {
+                "time": datetime.fromtimestamp(record.created).isoformat(timespec="seconds"),
+                "level": record.levelname,
+                "message": record.getMessage(),
+                "module": record.module,
+            }
+            entry.update(log_extra_from_record(record))
+            with _LOG_BUFFER_LOCK:
+                _LOG_BUFFER.append(entry)
+                overflow = len(_LOG_BUFFER) - LOG_BUFFER_LIMIT
+                if overflow > 0:
+                    del _LOG_BUFFER[:overflow]
+        except Exception:
+            self.handleError(record)
+
+def configure_logger(log_dir: str | Path) -> logging.Logger:
+    """Configure DynSTEER's structured English-language logging."""
+    if log_dir is None:
+        raise ValueError('log_dir cannot be empty')
+    with _LOGGER_LOCK:
+        directory = Path(log_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        logger = logging.getLogger("dynsteer")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
+        formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s")
+        terminal_formatter = StructuredLogFormatter("%(asctime)s %(levelname)s %(message)s", terminal=True)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(terminal_formatter)
+        file_path = directory / f"{datetime.now().date().isoformat()}.log"
+        file_handler = logging.FileHandler(file_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        buffer_handler = BufferLogHandler()
+        buffer_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        logger.addHandler(file_handler)
+        logger.addHandler(buffer_handler)
+        logger.info('DynSTEER log initialization completed', extra={"log_file": str(file_path)})
+        return logger
+
+def get_log_buffer() -> list[JsonObject]:
+    """Return the in-memory log buffer."""
+    with _LOG_BUFFER_LOCK:
+        return list(_LOG_BUFFER)
+
+def clear_log_buffer() -> None:
+    """Clear the in-memory log buffer."""
+    with _LOG_BUFFER_LOCK:
+        _LOG_BUFFER.clear()
+
+def log_extra_from_record(record: logging.LogRecord) -> JsonObject:
+    """Extract non-builtin extras from a LogRecord."""
+    if record is None:
+        raise ValueError('record must not be empty')
+    extra: JsonObject = {}
+    for key, value in record.__dict__.items():
+        if key.startswith("_") or key in _LOG_RECORD_BUILTINS:
+            continue
+        extra[key] = sanitize_log_value(value)
+    return extra
+
+def terminal_log_extra_from_record(record: logging.LogRecord) -> JsonObject:
+    """Extract selected extras for terminal display."""
+    if record is None:
+        raise ValueError('record must not be empty')
+    if record.levelno < logging.WARNING:
+        return {}
+    raw_extra = log_extra_from_record(record)
+    return _compact_terminal_extra(raw_extra)
+
+def sanitize_log_value(value: object) -> JsonValue:
+    """Sanitize log extras and limit their serialized size."""
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        return compact_text(value, _LOG_EXTRA_TEXT_LIMIT)
+    if isinstance(value, list):
+        return [sanitize_log_value(item) for item in value[:_LOG_EXTRA_LIST_LIMIT]]
+    if isinstance(value, dict):
+        return {str(key): sanitize_log_value(item) for key, item in list(value.items())[:_LOG_EXTRA_LIST_LIMIT]}
+    return compact_text(value, _LOG_EXTRA_TEXT_LIMIT)
+
+def _compact_terminal_extra(extra: JsonObject) -> JsonObject:
+    result: JsonObject = {}
+    for key in ("case_id", "milestone_id", "milestone_score", "milestone_status"):
+        value = extra.get(key)
+        if value is not None:
+            result[key] = value
+    for target, keys in (("diagnosis", ("diagnosis", "stage_first_diagnosis", "judge_first_diagnosis")), ("evidence", ("evidence", "stage_first_evidence", "judge_first_evidence"))):
+        value = next((extra.get(key) for key in keys if extra.get(key) is not None), None)
+        if value is not None:
+            result[target] = value
+    return result

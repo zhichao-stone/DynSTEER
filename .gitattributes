@@ -1,0 +1,2 @@
+# Keep shell entry points runnable on Linux servers.
+*.sh text eol=lf

@@ -1,0 +1,59 @@
+{
+  "experiment_id": "swebench_pro_ablation",
+  "repeats": 1,
+  "models": [
+    {
+      "model_id": "qwen-plus-2025-12-01",
+      "harness_metadata": {
+        "client": {
+          "model": "qwen-plus-2025-12-01",
+          "api_key_env": "DYNSTEER_AGENT_API_KEY",
+          "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+        }
+      },
+      "judge_profile": "fixed-judge"
+    }
+  ],
+  "methods": [
+    "default",
+    "dynsteer_replay",
+    "dynsteer_replay_static",
+    "dynsteer_replay_static_routing",
+    "dynsteer_replay_static_weighting",
+    "dynsteer_replay_no_minefields",
+    "dynsteer_replay_no_milestone_graph",
+    "dynsteer_replay_no_policy_stop"
+  ],
+  "benchmarks": [
+    {
+      "benchmark": "swebench_pro",
+      "data_root": "data/swebench_pro",
+      "case_ids": [
+        "instance_NodeBB__NodeBB-f2082d7de85eb62a70819f4f3396dd85626a0c0a-vd59a5728dfc977f44533186ace531248c2917516"
+      ],
+      "metadata": {
+        "capture_agent_usage": true
+      },
+      "milestone_generation": {
+        "generator": {
+          "provider": "openai_compatible",
+          "model": "qwen3-max-2026-01-23",
+          "api_key_env": "DYNSTEER_JUDGE_API_KEY",
+          "base_url_env": "DYNSTEER_JUDGE_BASE_URL",
+          "temperature": 0.0
+        }
+      }
+    }
+  ],
+  "judge_profiles": {
+    "fixed-judge": {
+      "provider": "openai_compatible",
+      "model": "qwen3-max-2026-01-23",
+      "api_key_env": "DYNSTEER_JUDGE_API_KEY",
+      "base_url_env": "DYNSTEER_JUDGE_BASE_URL"
+    }
+  },
+  "threshold_profiles": {
+    "default": {}
+  }
+}

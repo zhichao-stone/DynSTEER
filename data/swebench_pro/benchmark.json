@@ -1,0 +1,9 @@
+{
+  "benchmark": "swebench_pro",
+  "source_root": "../SWE-bench_Pro-os",
+  "dataset_archive": "../../swebench_pro_data.zip",
+  "tool_backend": "shell",
+  "language": "en",
+  "max_workers": 1,
+  "dockerhub_username": "your-dockerhub-namespace"
+}

@@ -1,0 +1,1 @@
+"""ToolSandbox private utility function."""

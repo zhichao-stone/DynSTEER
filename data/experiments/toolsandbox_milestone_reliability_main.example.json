@@ -1,0 +1,66 @@
+{
+  "experiment_id": "toolsandbox_milestone_reliability_main",
+  "repeats": 1,
+  "models": [
+    {
+      "model_id": "qwen-plus-2025-12-01",
+      "harness_metadata": {
+        "agent": "qwen-plus-2025-12-01",
+        "user": "qwen-plus-2025-12-01",
+        "agent_client": {
+          "model": "qwen-plus-2025-12-01",
+          "api_key_env": "DYNSTEER_AGENT_API_KEY",
+          "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+        },
+        "user_client": {
+          "model": "qwen-plus-2025-12-01",
+          "api_key_env": "DYNSTEER_USER_API_KEY",
+          "base_url_env": "DYNSTEER_USER_BASE_URL"
+        }
+      }
+    }
+  ],
+  "methods": [
+    "default"
+  ],
+  "benchmarks": [
+    {
+      "benchmark": "toolsandbox",
+      "data_root": "data/toolsandbox",
+      "case_ids": [
+        "find_days_till_holiday_insufficient_information"
+      ],
+      "metadata": {
+        "milestone_reliability": {
+          "ged_solver": "exact",
+          "ged_timeout_seconds": 60,
+          "edit_cost_profile": {
+            "profile_id": "strict_v1",
+            "node_insert": 1.0,
+            "node_delete": 1.0,
+            "edge_insert": 1.0,
+            "edge_delete": 1.0,
+            "node_label_distance": "canonical_json",
+            "edge_label_distance": "exact"
+          },
+          "fgw": false
+        }
+      },
+      "milestone_generation": {
+        "use_origin_milestone": false,
+        "target_candidate_graph_count": 2,
+        "max_candidate_batch_count": 1,
+        "generator": {
+          "provider": "openai_compatible",
+          "model": "qwen3-max-2026-01-23",
+          "api_key_env": "DYNSTEER_JUDGE_API_KEY",
+          "base_url_env": "DYNSTEER_JUDGE_BASE_URL",
+          "temperature": 0.2,
+          "timeout_seconds": 120,
+          "max_tokens": 4096,
+          "max_retries": 3
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "benchmark": "toolsandbox",
+  "source_root": "../ToolSandbox",
+  "tool_backend": "DEFAULT",
+  "language": "en",
+  "max_workers": 1
+}

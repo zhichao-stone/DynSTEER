@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+from dynsteer.model import Actor, ConstraintTarget, JsonObject, Operator
+from dynsteer.utils import json_safe, stable_json_digest
+
+
+TurnDisposition = Literal[
+    "executable", "needs_clarification", "no_action", "response_only"
+]
+
+
+@dataclass(frozen=True)
+class MilestoneGenerationConfig:
+    """Auto-generated milestone before control execution."""
+
+    use_origin_milestone: bool = True
+    target_candidate_graph_count: int = 6
+    max_candidate_batch_count: int = 4
+    generator: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.use_origin_milestone, bool):
+            raise TypeError("use_origin_milestone must be bool")
+        if isinstance(self.target_candidate_graph_count, bool) or not isinstance(
+            self.target_candidate_graph_count, int
+        ):
+            raise TypeError('target_candidate_graph_count must be an integer')
+        if not 2 <= self.target_candidate_graph_count <= 8:
+            raise ValueError('target_candidate_graph_count must be between 2 and 8')
+        if isinstance(self.max_candidate_batch_count, bool) or not isinstance(
+            self.max_candidate_batch_count, int
+        ):
+            raise TypeError('max_candidate_batch_count must be an integer')
+        if not 1 <= self.max_candidate_batch_count <= 4:
+            raise ValueError('max_candidate_batch_count must be between 1 and 4')
+        if self.target_candidate_graph_count > 2 * self.max_candidate_batch_count:
+            raise ValueError("The number of candidates can't exceed twice the number of batches.")
+        if not isinstance(self.generator, dict):
+            raise TypeError('Generator must be a JSON object')
+
+
+@dataclass(frozen=True)
+class GeneratorTurn:
+    """Describes a user rotation that was made public prior to implementation."""
+
+    turn_id: str
+    instruction: str
+    source_ref: str
+
+
+@dataclass(frozen=True)
+class PublicEvidence:
+    """Declares that a public tool of choice can be used to call evidence."""
+
+    evidence_id: str
+    target: ConstraintTarget
+    selector: str
+    operator: Operator
+    source_ref: str
+    evaluator_hint: str = "rule"
+    namespace: str | None = None
+    expected_policy: Literal["public_literal", "none"] = "public_literal"
+    role: Literal["milestone", "context", "minefield"] = "milestone"
+    matching_route: tuple[Actor, Actor] | None = None
+    metadata: JsonObject = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GeneratorTaskView:
+    """Provides the pre-execution whitelist task view to the generator."""
+
+    benchmark: str
+    task_id: str
+    case_id: str
+    language: str
+    turns: tuple[GeneratorTurn, ...]
+    public_assets: list[JsonObject]
+    public_state: JsonObject
+    simulation_state: JsonObject
+    tool_schema: JsonObject
+    tool_contracts: JsonObject
+    environment_rules: JsonObject
+    evidence_catalog: tuple[PublicEvidence, ...]
+
+    @property
+    def instruction(self) -> str:
+        return self.turns[0].instruction if self.turns else ""
+
+    def digest(self) -> str:
+        """Returns all validly generated stabilization summaries of input."""
+        return stable_json_digest(self)
+
+
+@dataclass(frozen=True)
+class GenerationReport:
+    """Document audit summaries of candidate maps generation, validation and aggregation."""
+
+    generation_status: Literal["generated", "generation_failed"]
+    turn_dispositions: JsonObject
+    target_candidate_graph_count: int
+    max_candidate_batch_count: int
+    request_count: int
+    request_success_count: int
+    returned_graph_count: int
+    parsed_graph_count: int
+    valid_graph_count: int
+    accepted_observation_count: int
+    global_unique_graph_count: int
+    within_batch_duplicate_count: int
+    rejected_graph_count: int
+    target_reached: bool
+    graph_returned: bool
+    graph_empty: bool
+    empty_reason: str | None
+    aggregated_node_count: int
+    aggregated_edge_count: int
+    minefield_count: int
+    low_sample_count: bool
+    low_diversity: bool
+    partial_graph_count: int = 0
+    fatal_parse_graph_count: int = 0
+    node_pruned_in_partial_count: int = 0
+    binding_unresolved_count: int = 0
+    repaired_graph_count: int = 0
+    repair_action_count: int = 0
+    terminal_state_projected_count: int = 0
+    state_field_repaired_count: int = 0
+    literal_derivation_count: int = 0
+    field_unresolved_count: int = 0
+    empty_after_terminal_majority_count: int = 0
+    cross_request_signature_counts: JsonObject = field(default_factory=dict)
+    repair_actions: tuple[JsonObject, ...] = ()
+    candidate_summaries: tuple[JsonObject, ...] = ()
+    aggregation_support: JsonObject = field(default_factory=dict)
+    validation_issues: tuple[JsonObject, ...] = ()
+    response_digests: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> JsonObject:
+        return json_safe(self)

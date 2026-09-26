@@ -1,0 +1,24 @@
+name: dynsteer
+
+services:
+  dynsteer:
+    image: dynsteer:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace/DynSTEER
+    user: "${DYNSTEER_HOST_UID:-1000}:${DYNSTEER_HOST_GID:-100}"
+    group_add:
+      - "${DYNSTEER_HOST_DOCKER_GID:-999}"
+    environment:
+      DYNSTEER_IN_DOCKER: "1"
+      PYTHONUNBUFFERED: "1"
+      HOME: /workspace/DynSTEER
+      UV_PROJECT_ENVIRONMENT: /workspace/DynSTEER/.venv
+      DYNSTEER_BOOTSTRAP_VENV: /opt/bootstrap-venv
+      UV_CACHE_DIR: /workspace/DynSTEER/.uv-cache
+      PATH: /workspace/DynSTEER/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - ./:/workspace/DynSTEER
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["bash", "/workspace/DynSTEER/scripts/start.sh"]

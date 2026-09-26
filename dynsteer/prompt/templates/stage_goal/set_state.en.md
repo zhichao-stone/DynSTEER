@@ -1,0 +1,1 @@
+Make or verify {namespace} state satisfies {expected}. Use structured scorer evidence for this state requirement; no separate user-facing restatement is required unless another message requirement says so.

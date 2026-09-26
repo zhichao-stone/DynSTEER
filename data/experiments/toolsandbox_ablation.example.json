@@ -1,0 +1,66 @@
+{
+  "experiment_id": "toolsandbox_ablation",
+  "repeats": 1,
+  "models": [
+    {
+      "model_id": "qwen-plus-2025-12-01",
+      "harness_metadata": {
+        "agent": "qwen-plus-2025-12-01",
+        "user": "qwen-plus-2025-12-01",
+        "agent_client": {
+          "model": "qwen-plus-2025-12-01",
+          "api_key_env": "DYNSTEER_AGENT_API_KEY",
+          "base_url_env": "DYNSTEER_AGENT_BASE_URL"
+        },
+        "user_client": {
+          "model": "qwen-plus-2025-12-01",
+          "api_key_env": "DYNSTEER_USER_API_KEY",
+          "base_url_env": "DYNSTEER_USER_BASE_URL"
+        }
+      },
+      "judge_profile": "fixed-judge"
+    }
+  ],
+  "methods": [
+    "default",
+    "dynsteer_replay",
+    "dynsteer_replay_static",
+    "dynsteer_replay_static_routing",
+    "dynsteer_replay_static_weighting",
+    "dynsteer_replay_no_minefields",
+    "dynsteer_replay_no_milestone_graph",
+    "dynsteer_replay_no_policy_stop"
+  ],
+  "benchmarks": [
+    {
+      "benchmark": "toolsandbox",
+      "data_root": "data/toolsandbox",
+      "case_ids": [
+        "add_contact_with_name_and_phone_number"
+      ],
+      "metadata": {
+        "capture_agent_usage": true
+      },
+      "milestone_generation": {
+        "generator": {
+          "provider": "openai_compatible",
+          "model": "qwen3-max-2026-01-23",
+          "api_key_env": "DYNSTEER_JUDGE_API_KEY",
+          "base_url_env": "DYNSTEER_JUDGE_BASE_URL",
+          "temperature": 0.0
+        }
+      }
+    }
+  ],
+  "judge_profiles": {
+    "fixed-judge": {
+      "provider": "openai_compatible",
+      "model": "qwen3-max-2026-01-23",
+      "api_key_env": "DYNSTEER_JUDGE_API_KEY",
+      "base_url_env": "DYNSTEER_JUDGE_BASE_URL"
+    }
+  },
+  "threshold_profiles": {
+    "default": {}
+  }
+}

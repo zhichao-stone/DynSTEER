@@ -1,0 +1,280 @@
+from dynsteer.evaluate.diagnostics import build_final_milestone_diagnostics, build_milestone_graph_summary, build_quality_diagnostics
+from dynsteer.harness.model import HarnessStageSettlement
+from dynsteer.model import Dimension, EvaluationLevel, JsonObject, MilestoneGraph, ReadyFrontierProgressWatch, ReadyMilestoneProgress, RuntimeEvaluationState, ScoringContext, StageEvaluationResult, StageStatus, StateSnapshot, TaskCase, ThresholdConfig, Trajectory
+from dynsteer.stage import stage_goal_key
+from dynsteer.utils import clamped_number
+
+class JudgeConfigurationError(RuntimeError):
+    """LLM judge is dropped when the configuration is missing or invalid."""
+
+class HarnessTeardownError(RuntimeError):
+    """If the benchmark supply fails to release the resource."""
+
+def update_ready_frontier_progress_watch(state: RuntimeEvaluationState, ready_ids: tuple[str, ...], attempt_detail: JsonObject, thresholds: ThresholdConfig, patience: int, min_delta: float) -> JsonObject | None:
+    """Updates ready frontier no progress tracking status and returns the policy termination details if necessary. Args: status: current runtime assessment status, function updates watch. Ready_ids: current ready frontier milestone id. attachment_detail:`analyze_milestone_step(...)`Details of the candidate rating generated. thresholds: stage threshold configuration to determine whether frontier has a PASS-level candidate. Stop_enabled: Whether a ready frontier no progress termination strategy is enabled. Returns: Returns the details of JSON when the termination condition has been met, otherwise returns None."""
+    normalized_ready_ids = tuple((str(milestone_id) for milestone_id in ready_ids if str(milestone_id).strip()))
+    if not normalized_ready_ids:
+        state.ready_frontier_progress_watch = None
+        return None
+    raw_candidates = attempt_detail.get("candidate_scores")
+    candidate_by_id = (
+        {
+            str(candidate["milestone_id"]): candidate
+            for candidate in raw_candidates
+            if (
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("milestone_id"), str)
+                and candidate.get("milestone_id").strip()
+            )
+        }
+        if isinstance(raw_candidates, list)
+        else {}
+    )
+    observed_candidates = {
+        milestone_id: candidate_by_id[milestone_id]
+        for milestone_id in normalized_ready_ids
+        if milestone_id in candidate_by_id
+        and isinstance(candidate_by_id[milestone_id].get("score"), dict)
+    }
+    if not observed_candidates:
+        return None
+    step_index = attempt_detail["step_index"]
+    watch = state.ready_frontier_progress_watch
+    if watch is None or watch.frontier_key != normalized_ready_ids:
+        state.ready_frontier_progress_watch = ReadyFrontierProgressWatch(
+            frontier_key=normalized_ready_ids,
+            ready_since_step_index=step_index,
+            last_observed_step_index=step_index,
+            last_frontier_improved_step_index=step_index,
+            frontier_observation_count=1,
+            milestone_progress={
+                milestone_id: _ready_milestone_progress_from_candidate(
+                    milestone_id,
+                    candidate,
+                    step_index,
+                )
+                for milestone_id, candidate in observed_candidates.items()
+            },
+        )
+        return None
+    watch.frontier_observation_count += 1
+    watch.last_observed_step_index = step_index
+    frontier_improved = False
+    for milestone_id, candidate in observed_candidates.items():
+        current = _ready_milestone_progress_from_candidate(milestone_id, candidate, step_index)
+        progress = watch.milestone_progress.get(milestone_id)
+        if progress is None:
+            watch.milestone_progress[milestone_id] = current
+            frontier_improved = True
+            continue
+        if current.best_score >= progress.best_score + min_delta:
+            progress.best_score = current.best_score
+            progress.best_status = current.best_status
+            progress.best_boundary_step_index = current.best_boundary_step_index
+            progress.last_improved_step_index = step_index
+            frontier_improved = True
+    if frontier_improved:
+        watch.last_frontier_improved_step_index = step_index
+        watch.stale_frontier_observation_count = 0
+        return None
+    watch.stale_frontier_observation_count += 1
+    if watch.stale_frontier_observation_count < patience:
+        return None
+    if any((progress.best_score >= thresholds.pass_threshold for progress in watch.milestone_progress.values())):
+        return None
+    progress_items = sorted(watch.milestone_progress.values(), key=lambda item: (-item.best_score, item.milestone_id))
+    most_promising = progress_items[0]
+    code_prefix = "milestone_no_progress" if len(watch.frontier_key) == 1 else "ready_frontier_no_progress"
+    progress_payload = {
+        milestone_id: {
+            "best_score": progress.best_score,
+            "best_status": progress.best_status,
+            "best_boundary_step_index": progress.best_boundary_step_index,
+            "last_improved_step_index": progress.last_improved_step_index,
+        }
+        for milestone_id, progress in sorted(watch.milestone_progress.items())
+    }
+    return {
+        "code": f"{code_prefix}:{most_promising.milestone_id}",
+        "ready_milestone_ids": list(watch.frontier_key),
+        "most_promising_milestone_id": most_promising.milestone_id,
+        "ready_since_step_index": watch.ready_since_step_index,
+        "last_observed_step_index": watch.last_observed_step_index,
+        "last_frontier_improved_step_index": watch.last_frontier_improved_step_index,
+        "stale_frontier_observation_count": watch.stale_frontier_observation_count,
+        "frontier_observation_count": watch.frontier_observation_count,
+        "patience": patience,
+        "min_delta": min_delta,
+        "milestone_progress": progress_payload,
+    }
+
+def ready_frontier_no_progress_termination_reason(detail: JsonObject) -> str:
+    """The reason for the termination is based on the lack of detail on the progress made by the ready frontier."""
+    code = str(detail.get("code") or "ready_frontier_no_progress")
+    milestone_id = str(detail.get("most_promising_milestone_id") or "unknown")
+    stale_count = int(detail.get("stale_frontier_observation_count") or 0)
+    patience = int(detail.get("patience") or 0)
+    ready_ids = detail.get("ready_milestone_ids")
+    ready_text = ",".join((str(item) for item in ready_ids)) if isinstance(ready_ids, list) else "unknown"
+    return f"Ready frontier showed no effective score improvement for {stale_count}/{patience} observations; stopped early: code={code}, most_promising_milestone={milestone_id}, ready={ready_text}"
+
+def runtime_diagnostics_summary(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState) -> JsonObject:
+    """Construct the milestone and quality diagnostic information for the runtime raw_summary."""
+    graph = task_case.milestone_graph
+    return {
+        "milestone_graph_summary": build_milestone_graph_summary(graph),
+        "milestone_match_attempts": list(state.match_attempts),
+        "milestone_final_diagnostics": _final_milestone_diagnostics(graph, state),
+        "runtime_quality_diagnostics": build_quality_diagnostics(list(trajectory.steps)),
+        "interventions": list(state.interventions),
+    }
+
+def selected_candidate_from_attempt(attempt: JsonObject) -> JsonObject | None:
+    """Reads the selected candidate from the runtime matching record."""
+    raw_candidates = attempt.get("candidate_scores")
+    if not isinstance(raw_candidates, list):
+        return None
+    return next((candidate for candidate in raw_candidates if isinstance(candidate, dict) and candidate.get("selected") is True), None)
+
+def blocked_milestone_termination_reason(detail: JsonObject) -> str:
+    """The cause of termination is derived from the pre-disconnection diagnosis."""
+    selected_candidate = selected_candidate_from_attempt(detail)
+    step_id = detail.get("step_id")
+    milestone_id = str(selected_candidate.get("milestone_id") if selected_candidate is not None else "unknown")
+    missing = detail.get("missing_predecessors")
+    missing_text = ",".join((str(item) for item in missing)) if isinstance(missing, list) else "unknown"
+    score = selected_candidate.get("score") if selected_candidate is not None else None
+    evidence_text = ""
+    if isinstance(score, dict):
+        evidence = score.get("evidence")
+        if isinstance(evidence, list) and evidence:
+            evidence_text = str(evidence[0])
+        else:
+            evidence_text = f"score={score.get('score')}, status={score.get('status')}"
+    predecessor_diagnostics = detail.get("predecessor_diagnostics")
+    predecessor_text = ""
+    if isinstance(predecessor_diagnostics, list) and predecessor_diagnostics:
+        predecessor_text = str(predecessor_diagnostics[0].get("best_candidate"))
+    return f"Step {step_id} matched milestone {milestone_id}, but predecessors {missing_text} were not matched; milestone evidence={evidence_text}; predecessor diagnosis={predecessor_text}"
+
+def pending_milestone_stage_results(task_case: TaskCase, state: RuntimeEvaluationState) -> list[StageEvaluationResult]:
+    """A report on the failure of the milestone generation, which is still incomplete at the end of nature."""
+    graph = task_case.milestone_graph
+    diagnostics = _final_milestone_diagnostics(graph, state)
+    milestones_by_id = {node.milestone_id: node for node in graph.nodes}
+    results: list[StageEvaluationResult] = []
+    for item in diagnostics:
+        if item.get("final_state") == "matched":
+            continue
+        milestone_id = str(item.get("milestone_id") or "unknown")
+        milestone = milestones_by_id.get(milestone_id)
+        if milestone is None:
+            raise ValueError(f"Sending milestone does not exist:{milestone_id}")
+        anchor_id = state.milestone_frontier.topology.stage_anchor_by_id[milestone_id]
+        blocker = str(item.get("blocker") or "unknown")
+        ready_ever = bool(item.get("ready_ever"))
+        attempt_count = int(item.get("attempt_count") or 0)
+        status = StageStatus.FAIL if ready_ever or attempt_count > 0 else StageStatus.MISSING
+        failure_kind = status.value
+        fallback_summary = (
+            f"milestone not completed: milestone={milestone_id}, blocker={blocker}, "
+            f"best_score={item.get('best_score')}, "
+            f"best_boundary_step_index={item.get('best_boundary_step_index')}, "
+            f"pending_predecessor_ids={item.get('pending_predecessor_ids')}"
+        )
+        failure_summary = str(item.get("failure_summary") or fallback_summary)
+        raw_reasons = item.get("failure_reasons")
+        failure_reasons = [str(reason) for reason in raw_reasons] if isinstance(raw_reasons, list) else []
+        evidence = [failure_summary, *failure_reasons[1:3]]
+        results.append(
+            StageEvaluationResult(
+                stage_id=stage_goal_key(anchor_id, milestone_id),
+                milestone_id=milestone_id,
+                status=status,
+                stage_score=0.0,
+                dimension_scores={dimension: 0.0 for dimension in Dimension},
+                dimension_levels={
+                    dimension: EvaluationLevel.CHEAP for dimension in Dimension
+                },
+                dimension_confidence={dimension: 0.9 for dimension in Dimension},
+                dimension_uncertainty={dimension: 0.1 for dimension in Dimension},
+                evidence=evidence,
+                diagnosis=[failure_summary],
+                hard_constraints_all_pass=False,
+                required_fields_missing_ratio=1.0,
+                metadata={
+                    **dict(item),
+                    "synthetic_pending_milestone": True,
+                    "failure_kind": failure_kind,
+                    "stage_anchor_milestone_id": anchor_id,
+                },
+            )
+        )
+    return results
+
+
+def _final_milestone_diagnostics(graph: MilestoneGraph, state: RuntimeEvaluationState) -> list[JsonObject]:
+    if state.final_milestone_diagnostics is None:
+        state.final_milestone_diagnostics = build_final_milestone_diagnostics(graph=graph, matched=state.matched_settlements, match_attempts=state.match_attempts, termination=state.evaluation_termination)
+    return state.final_milestone_diagnostics
+
+def scoring_context(
+    task_case: TaskCase,
+    trajectory: Trajectory,
+    matched: dict[str, HarnessStageSettlement],
+    reference_anchor_snapshots: dict[str, StateSnapshot] | None = None,
+) -> ScoringContext:
+    """Constructs the context for the runtime rating."""
+    matched_step_indexes: dict[str, int] = {}
+    matched_snapshots: dict[str, StateSnapshot] = {}
+    for milestone_id, settlement in matched.items():
+        if settlement.boundary_step_index is None:
+            continue
+        matched_step_indexes[milestone_id] = settlement.boundary_step_index
+        snapshot = trajectory.snapshot_at_or_before(settlement.boundary_step_index)
+        if snapshot is not None:
+            matched_snapshots[milestone_id] = snapshot
+    if reference_anchor_snapshots:
+        matched_snapshots.update(reference_anchor_snapshots)
+    return ScoringContext(task_case=task_case, trajectory=trajectory, matched_step_indexes=matched_step_indexes, matched_snapshots=matched_snapshots)
+
+
+def state_scoring_context(task_case: TaskCase, trajectory: Trajectory, state: RuntimeEvaluationState) -> ScoringContext:
+    if state.scoring_context_cache is None:
+        state.scoring_context_cache = scoring_context(task_case, trajectory, state.matched_settlements, state.reference_anchor_snapshots)
+    return state.scoring_context_cache
+
+
+def initial_reference_snapshots(task_case: TaskCase) -> dict[str, StateSnapshot]:
+    initial_state = task_case.initial_state
+    namespaces = initial_state.get("namespaces") if isinstance(initial_state, dict) else None
+    if not isinstance(namespaces, dict):
+        return {}
+    return {"initial": StateSnapshot(snapshot_id="initial", after_step_id="initial", after_step_index=0, namespaces={str(key): value for key, value in namespaces.items()})}
+
+def task_case_snapshot(task_case: TaskCase) -> JsonObject:
+    """A snapshot of the construction of auditable assignments."""
+    return {
+        "case_id": str(task_case.case_id),
+        "task_id": task_case.task_id,
+        "task_description": task_case.task_description,
+        "task_types": [item.value for item in task_case.task_types],
+        "scenario_name": task_case.metadata.get("scenario_name"),
+        "categories": list(task_case.metadata.get("categories", [])),
+        "runtime_initial_state_source": task_case.metadata.get(
+            "runtime_initial_state_source"
+        ),
+        "runtime_initial_state_summary": task_case.metadata.get(
+            "runtime_initial_state_summary"
+        ),
+    }
+
+def _ready_milestone_progress_from_candidate(milestone_id: str, candidate: JsonObject, step_index: int) -> ReadyMilestoneProgress:
+    score_payload = candidate["score"]
+    boundary = candidate.get("boundary")
+    boundary_step_index = None
+    if isinstance(boundary, dict):
+        raw_boundary_step_index = boundary.get("step_index")
+        if isinstance(raw_boundary_step_index, int):
+            boundary_step_index = raw_boundary_step_index
+    return ReadyMilestoneProgress(milestone_id=milestone_id, best_score=clamped_number(score_payload.get("score")), best_status=str(score_payload.get("status") or "unknown"), best_boundary_step_index=boundary_step_index, last_improved_step_index=step_index)

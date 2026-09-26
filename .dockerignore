@@ -1,0 +1,14 @@
+.git/
+.agents/
+
+.env
+.venv/
+.uv-cache/
+.dynsteer-runtime/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+logs/
+results/
+runs/
