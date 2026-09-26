@@ -51,7 +51,7 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
 
     入参：
         config: Judge profile 或 LLMConfig；为空时返回 None。
-        env: 环境变量来源；配置未显式提供 api_key/base_url 时从这里读取。
+        env: 保留兼容的调用参数；实验配置不读取环境变量凭据。
     输出：
         BaseLLM 实例；没有配置 provider 时返回 None。
     """
@@ -61,6 +61,8 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
         return build_llm(config)
     if not isinstance(config, Mapping):
         raise LLMConfigurationError("LLM 配置必须是 JSON 对象")
+    if "api_key_env" in config or "base_url_env" in config:
+        raise LLMConfigurationError("LLM 配置禁止使用 api_key_env/base_url_env")
     provider_raw = config.get("provider")
     if provider_raw is None or not str(provider_raw).strip():
         return None
@@ -68,15 +70,11 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
     model = config.get("model")
     if model is None or not str(model).strip():
         raise LLMConfigurationError("Judge profile 中 model 不能为空")
-    source = env if env is not None else os.environ
     llm_config = LLMConfig(
         provider=provider,
         model=str(model).strip(),
-        api_key=(
-            optional_str(config.get("api_key"))
-            or _config_setting(source, config, "api_key_env", "API_KEY")
-        ),
-        base_url=optional_str(config.get("base_url")) or _config_setting(source, config, "base_url_env", "BASE_URL"),
+        api_key=optional_str(config.get("api_key")),
+        base_url=optional_str(config.get("base_url")),
         timeout_seconds=parse_float_value(config.get("timeout_seconds"), "timeout_seconds", default=60.0, error_type=LLMConfigurationError),
         temperature=parse_float_value(config.get("temperature"), "temperature", default=DEFAULT_JUDGE_TEMPERATURE, error_type=LLMConfigurationError),
         max_tokens=parse_int_value(config.get("max_tokens"), "max_tokens", default=None, min_value=1, error_type=LLMConfigurationError),
@@ -85,17 +83,10 @@ def build_llm_from_config(config: Mapping[str, Any] | LLMConfig | None, env: Map
         retry_max_seconds=parse_float_value(config.get("retry_max_seconds"), "retry_max_seconds", default=8.0, min_value=0.0, error_type=LLMConfigurationError),
         seed=parse_int_value(config.get("seed"), "seed", default=None, min_value=0, error_type=LLMConfigurationError),
     )
+    if llm_config.api_key is None or llm_config.base_url is None:
+        raise LLMConfigurationError("LLM 配置必须同时提供非空 api_key 与 base_url")
     return build_llm(llm_config)
 
 def _provider_setting(source: Mapping[str, str], provider: str, setting: str) -> str | None:
     prefix = "ANTHROPIC" if provider in _ANTHROPIC_PROVIDERS else "OPENAI"
     return normalize_str_from_source(source, f"DYNSTEER_JUDGE_{setting}") or normalize_str_from_source(source, f"{prefix}_{setting}")
-
-def _config_setting(source: Mapping[str, str], config: Mapping[str, Any], key: str, setting: str) -> str | None:
-    """读取 Judge profile 指定的环境变量；未指定时回退 provider 默认环境变量。"""
-    env_name = optional_str(config.get(key))
-    if env_name is None:
-        return _provider_setting(source, str(config.get("provider") or ""), setting)
-    if not env_name.strip():
-        raise LLMConfigurationError(f"Judge profile 中 {key} 不能为空")
-    return normalize_str_from_source(source, env_name)

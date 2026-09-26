@@ -1,9 +1,10 @@
 import json
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dynsteer.adapter.base import BaseBenchmarkHarness
+from dynsteer.adapter.base import BaseBenchmarkHarness, BenchmarkDefaultResult
 from dynsteer.evaluate.evaluator import DynSTEEREvaluator
 from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.harness.model import HarnessRunConfig, HarnessRunResult
@@ -17,6 +18,8 @@ from dynsteer.metrics import (
 from dynsteer.model import (
     AgentStepTracker,
     EvaluationTerminationState,
+    Actor,
+    EventType,
     HarnessEvaluationOutput,
     JsonObject,
     RuntimeMetricsRecorder,
@@ -27,6 +30,9 @@ from dynsteer.model import (
 )
 from dynsteer.progress import CaseProgressReporter
 from dynsteer.utils import json_safe, read_json_file
+
+
+logger = logging.getLogger(__name__)
 
 def trajectory_to_json(trajectory: Trajectory) -> JsonObject:
     """把 Trajectory 转成 JSON 对象。"""
@@ -114,9 +120,82 @@ def existing_case_output(
     ):
         return None
     summary = read_json_file(summary_path, f"场景摘要: {summary_path}", dict)
+    if isinstance(summary.get("failure"), dict):
+        return None
     return HarnessEvaluationOutput(
         raw_run_dir=raw_case_dir,
         result_dir=result_dir,
+    )
+
+
+def write_failed_case_outputs(
+    config: HarnessRunConfig,
+    task_case: TaskCase,
+    *,
+    failure_type: str,
+    error: str,
+    trajectory: Trajectory | None = None,
+) -> HarnessEvaluationOutput:
+    """写出单个 case 的基础设施失败产物，保持 runs/results 结构完整。"""
+    if config is None or task_case is None:
+        raise ValueError("config 和 task_case 不能为空")
+    if not failure_type.strip() or not error.strip():
+        raise ValueError("failure_type 和 error 不能为空")
+    method = str(config.metadata.get("method") or "default")
+    reason = _infrastructure_failure_reason(failure_type)
+    failure = {"failure_type": failure_type, "error": error}
+    if trajectory is None:
+        step = TrajectoryStep(
+            step_id=f"error-{task_case.case_id}",
+            index=0,
+            event_type=EventType.ERROR,
+            actor=Actor.AGENT,
+            recipient=Actor.EVALUATOR,
+            content=reason,
+            raw=dict(failure),
+        )
+        trajectory = Trajectory(task_id=task_case.task_id, steps=[step])
+    failure_kind = "evaluation_failure" if failure_type.startswith("llm_judge_") else "infrastructure_failure"
+    termination = EvaluationTerminationState(
+        termination_code=f"{failure_kind}:{failure_type}",
+        termination_reason=reason,
+        termination_detail=dict(failure),
+    ).to_dict()
+    metadata = {
+        "benchmark": config.benchmark,
+        "experiment_id": config.metadata.get("experiment_id"),
+        "method": method,
+        "model_id": config.metadata.get("model_id"),
+        "repeat_index": config.metadata.get("repeat_index"),
+    }
+    summary = {
+        "task_id": task_case.task_id,
+        "score": None,
+        "native_score": None,
+        "score_components": {},
+        "milestone_coverage": None,
+        "runtime_metrics": {"step_count": len(trajectory.steps)},
+        "termination": termination,
+        "minefield_match_count": None,
+        "failure": dict(failure),
+        "metadata": metadata,
+    }
+    report = {**summary, "failure": dict(failure)}
+    raw_summary = {
+        **metadata,
+        "case_id": task_case.case_id,
+        "runtime_metrics": {"step_count": len(trajectory.steps)},
+        "trajectory_output": trajectory_output_summary(trajectory),
+        "termination": termination,
+        "failure": dict(failure),
+    }
+    return _write_output_payloads(
+        raw_run_dir=case_output_dir(config.runs_dir, config, task_case.case_id, method),
+        result_dir=case_output_dir(config.results_dir, config, task_case.case_id, method),
+        summary=summary,
+        report=report,
+        raw_summary=raw_summary,
+        trajectory=trajectory,
     )
 
 
@@ -194,7 +273,18 @@ def write_default_case_outputs(
             (lambda count: progress_reporter.case_advanced(case_id, count)) if progress_reporter is not None else None,
         )
         native_started = time.perf_counter()
-        default_result = harness.default_result_from_session(session)
+        try:
+            default_result = harness.default_result_from_session(session)
+        except Exception as exc:
+            logger.exception(
+                "default_native_evaluation_failed",
+                extra={"事件": "原生Default评估基础设施失败", "case_id": case_id, "error": str(exc)},
+            )
+            default_result = BenchmarkDefaultResult(
+                score=None,
+                raw={"score_source": "benchmark_native_evaluation", "native_evaluation_available": False, "failure_type": type(exc).__name__},
+                metrics={},
+            )
         native_evaluation_seconds = max(time.perf_counter() - native_started, 0.0)
         runtime_metrics = build_runtime_metrics(
             started_monotonic=metrics_recorder.started_monotonic,
@@ -205,6 +295,15 @@ def write_default_case_outputs(
             llm_calls=metrics_recorder.llm_calls,
             agent_step_count=tracker.completed_count,
         )
+        agent_usage = trajectory.metrics.get("agent_usage")
+        if isinstance(agent_usage, dict):
+            runtime_metrics["agent_usage"] = {
+                key: agent_usage.get(key)
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens", "agent_usage_available")
+            }
+            runtime_metrics["agent_usage"]["tool_call_count"] = agent_usage.get("tool_call_count")
+            runtime_metrics["agent_usage"]["stop_reason"] = agent_usage.get("stop_reason")
+        runtime_metrics["agent_usage_available"] = isinstance(agent_usage, dict) and agent_usage.get("agent_usage_available") is True
         runtime_metrics["native_evaluation_seconds"] = native_evaluation_seconds
         native_metrics = default_result.metrics if isinstance(default_result.metrics, dict) else {}
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -250,6 +349,18 @@ def write_default_case_outputs(
             termination_detail=raw_summary.pop("termination_detail", {}) or {},
         ).to_dict()
         raw_summary["termination"] = termination
+        failure_type = default_raw.get("failure_type")
+        if isinstance(failure_type, str) and failure_type:
+            termination = EvaluationTerminationState(
+                termination_code=f"infrastructure_failure:{failure_type}",
+                termination_reason=_infrastructure_failure_reason(failure_type),
+                termination_detail={
+                    "failure_type": failure_type,
+                    "error": _default_infrastructure_error(raw_summary),
+                },
+            ).to_dict()
+            raw_summary["termination"] = termination
+            default_raw["error"] = _default_infrastructure_error(raw_summary)
         summary = {
             "task_id": task_case.task_id,
             "score": default_result.score,
@@ -388,6 +499,28 @@ def _write_output_payloads(
         raw_run_dir=raw_run_dir,
         result_dir=result_dir,
     )
+
+
+def _infrastructure_failure_reason(failure_type: str) -> str:
+    reasons = {
+        "docker_image_pull_failed": "Docker镜像拉取失败，case已跳过执行",
+        "docker_image_build_failed": "Docker镜像构建失败，case已跳过执行",
+        "default_infrastructure_failure": "DEFAULT基础运行失败，case已跳过评估",
+        "llm_judge_input_length_exceeded": "LLMJudge输入超过模型长度限制，case已跳过评估",
+        "llm_judge_evaluation_failed": "LLMJudge评估失败，case已跳过评估",
+        "case_execution_failed": "case执行或评估失败",
+    }
+    return reasons.get(failure_type, f"case执行失败: {failure_type}")
+
+
+def _default_infrastructure_error(raw_summary: JsonObject) -> str:
+    for key in ("image_probe", "start_state"):
+        value = raw_summary.get(key)
+        if isinstance(value, dict):
+            error = value.get("error")
+            if isinstance(error, str) and error.strip():
+                return error
+    return "DEFAULT基础设施失败"
 
 
 def write_method_level_summaries(outputs: list[HarnessEvaluationOutput]) -> None:

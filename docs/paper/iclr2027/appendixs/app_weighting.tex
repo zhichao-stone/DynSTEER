@@ -1,0 +1,116 @@
+\section{Theoretical Design of the Dynamic Weighting Mechanism}
+\label{app:weighting_rationale}
+
+The evaluator must repeatedly direct attention toward dimensions whose recent evidence reveals either low quality or high uncertainty, while preserving positivity and comparability across stages. A normalized exponential tilt is a natural mechanism for this purpose: it turns each observed signal into a multiplicative potential rather than an ad hoc reassignment, so persistent evidence accumulates rather than gets overwritten. Starting from Eq.~\eqref{eq:weight_update}, the common factor $\exp(\alpha)$ cancels after normalization and gives
+\begin{equation}
+    w_d^{(t+1)}
+    \propto
+    w_d^{(t)}
+    \exp\!\left(-\alpha s_d^{(t)}+\beta u_d^{(t)}\right).
+    \label{eq:weight_tilt_appendix}
+\end{equation}
+Thus, each stage multiplies a dimension's weight by the exponential of the dimension-specific potential $-\alpha s_d^{(t)}+\beta u_d^{(t)}$. Lower scores increase the potential's contribution to future attention, and higher uncertainty does the same.
+
+Iterating this multiplicative rule makes the mechanism's cumulative nature explicit. Because normalization introduces only a dimension-independent constant, the ratio between any two dimensions after $T$ stages is
+\begin{equation}
+    \frac{w_d^{(T+1)}}{w_{d'}^{(T+1)}}
+    =
+    \frac{w_d^{(1)}}{w_{d'}^{(1)}}
+    \exp\!\left[
+        \alpha\sum_{t=1}^{T}\left(s_{d'}^{(t)}-s_d^{(t)}\right)
+        +
+        \beta\sum_{t=1}^{T}\left(u_d^{(t)}-u_{d'}^{(t)}\right)
+    \right].
+    \label{eq:weight_ratio_appendix}
+\end{equation}
+Consequently, a linearly growing cumulative score deficit produces an exponentially growing weight ratio. This is the soft-min form of attention: the mechanism does not merely remember the latest weak dimension, but progressively reallocates review capacity toward persistent weaknesses.
+
+To understand what such repeated tilting does to a model's aggregate score, first isolate the score component by freezing a profile $s=(s_1,\dots,s_D)$. Define the partition function, tilted distribution, and tilted score by
+\begin{equation}
+    Z(\lambda)=\sum_{d\in\mathcal{D}}e^{-\lambda s_d},
+    \qquad
+    p_d(\lambda)=\frac{e^{-\lambda s_d}}{Z(\lambda)},
+    \qquad
+    S(\lambda)=\sum_{d\in\mathcal{D}}p_d(\lambda)s_d .
+    \label{eq:tilted_score_appendix}
+\end{equation}
+The parameter $\lambda$ represents the effective score sensitivity accumulated over repeated updates. Differentiating $\log Z$ gives
+\begin{equation}
+    \frac{\partial}{\partial\lambda}\log Z(\lambda)
+    =
+    \frac{\sum_d(-s_d)e^{-\lambda s_d}}{Z(\lambda)}
+    =
+    -S(\lambda),
+\end{equation}
+and differentiating once more yields
+\begin{equation}
+    \frac{dS}{d\lambda}
+    =
+    -\frac{d^2}{d\lambda^2}\log Z(\lambda)
+    =
+    -\operatorname{Var}_{p(\lambda)}(s)
+    \le 0.
+    \label{eq:tilt_derivative_appendix}
+\end{equation}
+This equation contains both the direction and the rate of the score change. Every model's tilted score decreases as focus sharpens, but the decrease is proportional to the weighted variance of its own dimension profile. A flat profile changes little, whereas a profile with a distinct weakness changes sharply.
+
+The next question is what information this tilt exposes. Decompose model $i$'s profile into an average level and a zero-sum deviation:
+\begin{equation}
+    s_i=m_i\mathbf{1}+v_i,
+    \qquad
+    \sum_{d\in\mathcal{D}}v_{i,d}=0.
+    \label{eq:profile_decomposition_appendix}
+\end{equation}
+Uniform weighting retains only the first component:
+\begin{equation}
+    S_i^{\mathrm{avg}}
+    =
+    \frac{1}{|\mathcal{D}|}\sum_{d\in\mathcal{D}}(m_i+v_{i,d})
+    =
+    m_i.
+\end{equation}
+It therefore cancels $v_i$, even though $v_i$ records where a model succeeds and fails. In the sharp-tilt limit, only the weakest dimension receives weight, so
+\begin{equation}
+    \lim_{\lambda\to\infty}S_i(\lambda)
+    =
+    \min_{d\in\mathcal{D}}(m_i+v_{i,d})
+    =
+    m_i+\min_{d\in\mathcal{D}}v_{i,d}.
+    \label{eq:softmin_limit_appendix}
+\end{equation}
+The second term is the depth of the model's worst weakness relative to its own average. For two models $A$ and $B$, the limiting gap becomes
+\begin{equation}
+    S_A(\infty)-S_B(\infty)
+    =
+    \underbrace{(m_A-m_B)}_{\text{average-level difference}}
+    +
+    \underbrace{\left(\min_d v_{A,d}-\min_d v_{B,d}\right)}_{\text{weakness-depth difference}}.
+    \label{eq:model_gap_appendix}
+\end{equation}
+Hence the mechanism changes the comparison axis: uniform weighting compares average levels, whereas exponential tilting progressively adds the information carried by complementary failure patterns. For example, $s_A=(0.9,0.3)$ and $s_B=(0.5,0.9)$ give a uniform gap of $0.100$, but the limiting gap becomes $0.200$ even though both tilted scores decrease. Both models are pulled downward, while the model with the deeper weakness is pulled down faster.
+
+The same reasoning also clarifies when separation is guaranteed. Let $\mathcal{I}$ denote the model set and define the cross-model dispersion
+\begin{equation}
+    \operatorname{Dis}(\lambda)
+    =
+    \sum_{i\in\mathcal{I}}
+    \left(S_i(\lambda)-\bar S(\lambda)\right)^2,
+    \qquad
+    \bar S(\lambda)
+    =
+    \frac{1}{|\mathcal{I}|}\sum_{i\in\mathcal{I}}S_i(\lambda),
+\end{equation}
+where $p_i$ is the tilt in Eq.~\eqref{eq:tilted_score_appendix} applied to $s_i$. Using Eq.~\eqref{eq:tilt_derivative_appendix},
+\begin{equation}
+    \frac{d\operatorname{Dis}}{d\lambda}
+    =
+    2\sum_{i\in\mathcal{I}}
+    \left(S_i-\bar S\right)\frac{dS_i}{d\lambda}
+    =
+    -2\sum_{i\in\mathcal{I}}
+    \left(S_i-\bar S\right)\operatorname{Var}_{p_i}(s_i).
+    \label{eq:dispersion_derivative_appendix}
+\end{equation}
+Dispersion increases when models below the current tilted mean have larger internal variances, that is, when their disadvantages are concentrated in deeper weak links. If instead a high-average model also contains the deepest weakness, this derivative can become negative, and the gap can compress. The mechanism therefore guarantees a principled shift of evidence toward weak links, not unconditional divergence between all model pairs.
+
+The uncertainty term now completes the design. In Eq.~\eqref{eq:weight_ratio_appendix}, $\beta u_d^{(t)}$ contributes another dimension-specific potential: uncertain evidence receives attention before it is discarded, allowing the next review level to test an apparent weakness with stronger evidence. Once that evidence is resolved, subsequent updates respond to the refined score and uncertainty estimates. Taken together, the score tilt supplies the comparative objective—moving from average performance to weakness depth—while uncertainty controls the epistemic allocation of review capacity during that transition.

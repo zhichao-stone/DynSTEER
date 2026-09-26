@@ -6,11 +6,13 @@ from dynsteer.adapter.swebench_pro.harness import SWEBenchProHarness
 from dynsteer.adapter.toolsandbox.adapter import ToolSandboxAdapter
 from dynsteer.adapter.toolsandbox.harness import ToolSandboxHarness
 
+
 _ADAPTERS: dict[str, type[BaseBenchmarkAdapter]] = {
     "toolsandbox": ToolSandboxAdapter,
     "swebench_pro": SWEBenchProAdapter,
     "skillsbench": SkillsBenchAdapter,
 }
+
 _HARNESSES: dict[str, type[BaseBenchmarkHarness]] = {
     "toolsandbox": ToolSandboxHarness,
     "swebench_pro": SWEBenchProHarness,

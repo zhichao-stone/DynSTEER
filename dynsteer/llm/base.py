@@ -56,6 +56,8 @@ class BaseLLM(ABC):
                 elapsed_seconds = time.perf_counter() - started
                 self._record_llm_failure(elapsed_seconds, exc)
                 last_error = exc
+                if self._is_permanent_client_error(exc):
+                    break
                 if attempt >= self._config.max_retries:
                     break
                 delay = self._retry_delay(attempt)
@@ -126,6 +128,15 @@ class BaseLLM(ABC):
         """计算指数退避等待时间。"""
         delay = self._config.retry_base_seconds * 2 ** max(attempt - 1, 0)
         return min(delay, self._config.retry_max_seconds)
+
+    def _is_permanent_client_error(self, exc: Exception) -> bool:
+        """判断不需要重试的确定性 provider 客户端错误。"""
+        status_code = getattr(exc, "status_code", None)
+        if not isinstance(status_code, int):
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if not isinstance(status_code, int):
+            return False
+        return 400 <= status_code < 500 and status_code not in {408, 409, 429}
 
     def _normalize_infer_params(self, infer_params: dict[str, object], client: object) -> dict[str, object]:
         """归一化推理参数。"""

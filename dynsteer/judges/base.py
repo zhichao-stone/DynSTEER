@@ -40,7 +40,7 @@ class LLMJudge(BaseJudge):
         try:
             text = self._llm.chat(messages, response_format="json_object")
         except LLMResponseError as exc:
-            raise LLMJudgeResponseError("LLMJudge 调用 LLM 失败") from exc
+            raise LLMJudgeResponseError(f"LLMJudge 调用 LLM 失败: {exc}") from exc
         return self._parse_json_text(text)
 
     def _parse_json_text(self, text: str) -> JsonObject:

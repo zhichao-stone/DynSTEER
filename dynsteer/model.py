@@ -8,7 +8,13 @@ import time
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Union
 
 if TYPE_CHECKING:
+    from dynsteer.agent import OpenAIClientConfig, ToolAgentResult, ToolExecutionResult
     from dynsteer.harness.model import HarnessRunConfig, HarnessStageSettlement
+    from dynsteer.adapter.skillsbench.adapter import SkillsBenchTask
+    from dynsteer.adapter.skillsbench.runtime import SkillsBenchRuntime
+    from dynsteer.adapter.swebench_pro.adapter import SWEBenchProSample
+    from dynsteer.adapter.swebench_pro.evaluator import NativeEvaluationResult
+    from dynsteer.adapter.swebench_pro.runtime import SWEBenchProRuntime
 
 
 JsonValue = Union[str, int, float, bool, None, dict[str, "JsonValue"], list["JsonValue"]]
@@ -864,6 +870,43 @@ class ToolSandboxSession:
     stop_reason: str | None = None
     termination_reason: str | None = None
     usage_recorder: object | None = None
+    finished: bool = False
+
+
+@dataclass
+class SWEBenchProSession:
+    """SWE-bench Pro 源码直连执行 session。"""
+    case_id: str
+    task_id: str
+    sample: SWEBenchProSample
+    client_config: OpenAIClientConfig
+    config: HarnessRunConfig
+    raw_output_dir: Path
+    runtime: SWEBenchProRuntime | None
+    agent_result: ToolAgentResult | None
+    probe: JsonObject
+    patch: str | None
+    native_result: NativeEvaluationResult | None
+    stop_reason: str | None
+    finished: bool = False
+
+
+@dataclass
+class SkillsBenchSession:
+    """SkillsBench 源码直连执行 session。"""
+    case_id: str
+    task_id: str
+    task: SkillsBenchTask
+    client_config: OpenAIClientConfig
+    config: HarnessRunConfig
+    raw_output_dir: Path
+    start_state: JsonObject
+    runtime: SkillsBenchRuntime | None
+    agent_result: ToolAgentResult | None
+    verifier_result: ToolExecutionResult | None
+    reward: float | None
+    stop_reason: str | None
+    finished: bool = False
 
 def ensure_json_object(value: Any) -> JsonObject:
     """校验输入是否为 JSON 对象。"""

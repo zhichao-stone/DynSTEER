@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\small
+\caption{Component Ablation on a ToolSandbox Subset.}
+\label{tab:ablation_results}
+\vspace{0.15cm}
+\resizebox{0.75\textwidth}{!}{%
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuration} & \textbf{DS ($\epsilon{=}1.00$)} $\uparrow$ & \textbf{Stop Rate} & \textbf{Saved Steps} \\
+\midrule
+\textsc{Whole-Traj.} & 0.0228 & 0.00\% & --- \\
+\textsc{DynSTEER} & \textbf{0.0528} & \textbf{18.92\%} & \textbf{12.90\%} \\
+\textit{-w/o} dynamic weighting & 0.0414 & 17.92\% & 12.75\% \\
+\textit{-w/o} dynamic judge level & 0.0439 & 15.83\% & 12.58\% \\
+\textit{-w/o} dynamic & 0.0311 & 15.83\% & 12.49\% \\
+\textit{-w/o} policy stop & 0.0286 & 0.00\% & --- \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

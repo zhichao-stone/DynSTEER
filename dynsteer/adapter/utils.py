@@ -1,7 +1,6 @@
 import functools
 import importlib
 import logging
-import os
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -112,26 +111,30 @@ def load_manifest(data_root: Path, benchmark: str) -> dict[str, object]:
         return {"benchmark": benchmark, "source_root": None}
     return read_json_file(manifest_path, "benchmark.json", dict)
 
-def ensure_source_root(data_root: Path, project_root: Path, benchmark: str) -> None:
-    """把运行时覆盖路径或 benchmark.json 中的 source_root 加入 sys.path。"""
-    if project_root is None:
-        raise ValueError("project_root 不能为空")
-    raw_source_root = os.environ.get("DYNSTEER_BENCHMARK_SOURCE_ROOT")
-    source_label = "DYNSTEER_BENCHMARK_SOURCE_ROOT"
+
+def resolve_source_root(data_root: Path, project_root: Path, benchmark: str) -> Path:
+    """从 benchmark manifest 解析只读 source root。"""
+    if data_root is None or project_root is None:
+        raise ValueError("data_root 和 project_root 不能为空")
+    manifest = load_manifest(data_root, benchmark)
+    raw_source_root = manifest.get("source_root")
     if raw_source_root is None:
-        manifest = load_manifest(data_root, benchmark)
-        raw_source_root = manifest.get("source_root")
-        source_label = "benchmark.json source_root"
-    if raw_source_root is None:
-        return
+        raise ValueError(f"{benchmark} benchmark.json 必须提供 source_root")
     if not isinstance(raw_source_root, str) or not raw_source_root.strip():
-        raise ValueError(f"{source_label} 必须是非空字符串")
+        raise ValueError(f"{benchmark} benchmark.json source_root 必须是非空字符串")
     source_root = Path(raw_source_root.strip())
     if not source_root.is_absolute():
         source_root = project_root / source_root
     if not source_root.exists():
         raise FileNotFoundError(f"{benchmark} source_root 不存在: {source_root}")
-    source_text = str(source_root.resolve())
+    return source_root.resolve()
+
+
+def ensure_source_root(data_root: Path, project_root: Path, benchmark: str) -> None:
+    """把 benchmark manifest 中的 source_root 加入 sys.path。"""
+    if project_root is None:
+        raise ValueError("project_root 不能为空")
+    source_text = str(resolve_source_root(data_root, project_root, benchmark))
     if source_text not in sys.path:
         sys.path.insert(0, source_text)
 

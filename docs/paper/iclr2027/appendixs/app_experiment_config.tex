@@ -1,0 +1,44 @@
+\section{Detailed Experimental Configuration}
+\label{app:experiment_config}
+
+This appendix documents task selection, the benchmark-specific \textsc{Whole-Traj} implementation, runtime parameters, and component ablations. All experiments use the four agent backbones in Section~\ref{sec:exp_setup} and three repeats per task. DynSTEER evaluations replay the same complete source trajectories as \textsc{Whole-Traj}; a virtual stop marks a counterfactual prefix boundary and does not launch a separate rollout.
+
+\subsection{Task Selection and Filtering}
+\label{app:task_selection}
+
+\textbf{ToolSandbox.} The main experiment uses all 509 ToolSandbox scenarios backed by fully local, sandboxed execution environments rather than live RapidAPI endpoints. This selection prioritizes: (1) reproducibility, because external endpoints introduce downtime, schema drift, network latency, and rate limits; (2) inspectable state snapshots and invariant audits, which are required for stage settlement and safety analysis; and (3) hermetic execution, which avoids external data leakage and uncontrolled API cost.
+
+\textbf{SWE-bench Pro.} We start from the public test split with 731 tasks from 11 repositories and draw a repository-stratified sample of 100 tasks (Table~\ref{tab:swebench_dataset_stats}). Task containers use only local Docker images or case-level cached images. When a required image cannot be loaded, the run is an infrastructure failure rather than evidence of agent capability; we remove the affected \textsc{Whole-Traj}/DynSTEER pair before computing score, stop-rate, DS, and early-stop statistics. This leaves 39 matched tasks. The retained set preserves repository stratification at sampling time but is smaller than the complete public split, which we report as a limitation.
+
+\textbf{Component-ablation subset.} The ablation samples 100 ToolSandbox scenarios from the 509 main-experiment scenarios, stratified by task type and safety category. It uses the same four backbones, three repeats, source trajectories, and paired-comparison protocol as the main experiment.
+
+\subsection{\textsc{Whole-Traj} Implementation}
+\label{app:whole_traj_details}
+
+\textsc{Whole-Traj} is the non-stage-wise comparison paradigm: it receives the complete trajectory as one unit and does not partition evidence by dominator milestones.
+
+On ToolSandbox, it calls the benchmark-native trajectory evaluator over the recorded execution context. The evaluator compares milestone and minefield evidence exposed by the trajectory and returns a single similarity score, normalized to the common $[0,100]$ reporting scale.
+
+On SWE-bench Pro, the official benchmark protocol resolves a patch with tests but does not provide a native whole-trajectory evaluator. We therefore use an outcome-informed whole-trajectory audit. A fixed Qwen3-Max-2026-01-23 auditor (temperature $0.2$) receives the task, repository context, complete command/result trajectory, final patch, and terminal patch/test outcome. It returns one holistic score on the common reporting scale that audits execution quality conditioned on the terminal outcome. This construction provides baseline access to both the full trajectory and the benchmark's terminal evidence while preserving single-unit evaluation granularity.
+
+\subsection{Runtime Parameters}
+\label{app:runtime_parameters}
+
+ToolSandbox agents use standard ReAct prompting, a maximum of 100 messages, and a fixed Qwen-Plus simulated user. SWE-bench Pro agents use a shell tool, at most one command per turn, at most 60 tool calls, a 600-second command timeout, and model temperature $0.0$. Agent credentials are injected only into clients and are excluded from trajectories and released artifacts.
+
+Milestone graphs are generated with Qwen3-Max-2026-01-23 at temperature $0.0$, targeting 6 candidate graphs with at most 4 generation batches. 
+LLM judges use the same fixed judge model at temperature $0.2$. 
+Unless otherwise specified, stage thresholds are pass $0.80$, warn $0.60$, fail $0.40$, low dimension uncertainty $0.20$, high dimension uncertainty $0.45$, fatal-minefield threshold $0.95$, and threshold margin $0.05$. 
+Dynamic-weight sensitivities are $\alpha=\beta=1.0$, and frontier stagnation fires after 16 observations without ready-frontier progress.
+
+\subsection{Component-Ablation Definitions}
+\label{app:ablation_details}
+
+All ablations retain the same source trajectories, milestone graphs, minefield checks, and models.
+
+\begin{itemize}[leftmargin=*,itemsep=1.5pt,topsep=2pt]
+    \item \textbf{\textit{-w/o} dynamic weighting:} dimension weights remain uniform, and adaptive judge-level routing and policy stopping remain enabled.
+    \item \textbf{\textit{-w/o} dynamic judge level:} adaptive routing is disabled, and every dimension uses the fixed cheap structural judge. Dynamic weighting and policy stopping remain enabled.
+    \item \textbf{\textit{-w/o} dynamic:} both adaptive routing and dynamic weighting are disabled. Evaluation uses uniform weights and the fixed cheap judge, while policy stopping remains enabled.
+    \item \textbf{\textit{-w/o} policy stop:} review and scoring are unchanged, but all stopping criteria are suppressed. Replay covers the full source trajectory, so Saved Steps is not applicable.
+\end{itemize}

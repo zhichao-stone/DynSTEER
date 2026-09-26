@@ -86,11 +86,11 @@ ToolSandbox 等 benchmark 需要原生环境和工具集。DynSTEER 的 harness 
 
 如需强制重建 `data/<benchmark>/adapted_cases`，在命令后追加 `--force_adapt`；它会自动连带强制重跑评估 case。只想覆盖已有 case 产物时用 `--force_eval`，只想跳过 `index.json`、`scores.json` 和 `metrics.json` 时用 `--no_sum`。
 
-实验脚本会按实验配置中的 benchmark `data_root` 读取对应 `benchmark.json`，自动使用 `source_root` 安装或挂载 benchmark 源码，并使用 `max_workers` 作为默认 worker 数。`--source` 与 `--workers` 仍可作为临时覆盖项。
+实验脚本会按实验配置中的 benchmark `data_root` 读取对应 `benchmark.json`，只读使用 `source_root` 指向的本地源码，并使用 `max_workers` 作为默认 worker 数。`--workers` 仍可作为临时覆盖项；源码路径只来自 manifest，不接受脚本参数覆盖。
 
 `metrics.json.score_rank_tau` 与 `rank_tau_by_repeat` 用于审计 DEFAULT 和 replay 之间的模型排序关联；`repeat_rank_consistency` 则按评估方法分别衡量多次 repeat 的模型排名稳定性。后者包含 pairwise tau-b、完整顺序一致率、top-1 一致率和平均绝对名次位移，不应与模型平均分、成功/结构覆盖、质量分或成本合并为单一“方法总分”。
 
-脚本默认读取 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
+统一实验脚本默认读取项目根目录的 `.env`，可通过 `--env-file PATH` 指定环境变量文件，或通过 `--no-env-file` 禁用。`.env` 中的同名变量会覆盖启动前已有的 shell 环境变量；脚本后续注入的执行 profile 和运行目录仍保持最终值。实验输出目录由实验 JSON 中的 `runs_dir` 与 `results_dir` 控制，例如当前示例会写入：
 
 ```text
 runs/exp/toolsandbox_partial_main/<benchmark>/<model_id>/<method>/<case_id>
@@ -102,54 +102,51 @@ results/exp/toolsandbox_partial_main/<benchmark>/<model_id>/<method>/<case_id>
 ```bash
 uv run python main.py --exp data/experiments/toolsandbox_partial_main.json
 ```
-直接调用主入口时，benchmark 源码仍需要已能被当前环境导入；自动读取 `source_root` 和 `max_workers` 的是实验 wrapper 脚本。
-Docker 启动时，脚本会把 `benchmark.json.source_root` 指向的源码目录自动挂载到容器内与 `benchmark.json` 相同的相对路径。原始 `data/{benchmark}/benchmark.json` 不会被修改，也不需要在 `/workspace` 下创建额外软链接。
-
-Docker 镜像在 build 阶段会生成 `/opt/bootstrap-venv` 基础环境。通过 `scripts/start.sh` 启动时，脚本会自动检测宿主机当前用户的 UID/GID，并让容器以该用户运行；直接使用 Docker Compose 且未传入 UID/GID 时，默认回退到 `1000:100`。运行期 uv 虚拟环境和 cache 默认写入项目目录下的 `.venv` 与 `.uv-cache`，因此新生成的 `runs`、`results` 产物会归属当前宿主机用户，便于通过 SFTP 清理。
+直接调用 `main.py` 时，ToolSandbox 源码仍需要已能被当前环境导入；SWE-bench Pro 与 SkillsBench 会因为缺少启动脚本注入的执行 profile 而拒绝新的 default 执行。
 
 接入新的 benchmark 时，最小前置步骤如下：
 
 1. 在 `dynsteer/adapter/{benchmark}/` 下实现对应的 `adapter.py` 与 `harness.py`。
 2. 在 `dynsteer/adapter/registry.py` 的 `_ADAPTERS` 中注册新的 adapter。
 3. 在 `data/{benchmark}/benchmark.json` 中填写 `benchmark`、`source_root` 和 benchmark 需要的静态字段；若 benchmark 不支持 case 并行，可填写 `max_workers` 作为并发上限。
-4. 在 `data/{benchmark}/run_configs.json` 中填写运行配置与待评估场景。
-5. Docker 启动时传入 `--source {benchmark源码路径}`；本地非 Docker 运行时仍可手动执行 `uv add --editable {benchmark源码路径}` 和 `uv sync`。
+4. 在 `data/{benchmark}/run_configs.json` 中填写执行中性运行配置与待评估场景。
+5. 通过统一实验脚本启动，由脚本按 benchmark 创建专属 uv 环境并注入 Docker/host profile。
 
 ```powershell
 ./scripts/start.sh --benchmark toolsandbox --source ../ToolSandbox --workers 3
 ```
-# AgentCompass benchmark
+# 源码直连 benchmark
 
-AgentCompass 是可选 benchmark 依赖。只运行 DynSTEER/ToolSandbox 时使用：
+三个 benchmark 均直接读取本地源码或本地数据快照：
 
-```powershell
-uv sync --locked
+```text
+../ToolSandbox
+../SWE-bench_Pro-os
+../skillsbench
+swebench_pro_data.zip
 ```
 
-选择 `swebench_pro` 或 `skillsbench` 时，不要把 AgentCompass 安装进 DynSTEER/ToolSandbox 的主环境。启动脚本会根据 `--source` 指向的源码自动准备 `.venv-agentcompass`。DynSTEER/ToolSandbox 主环境保持：
+这些目录和 zip 对 DynSTEER 只读。启动脚本会在项目内创建 `.venv-toolsandbox`、`.venv-swebench-pro`、`.venv-skillsbench` 与 `.uv-cache`，不会向外部源码目录写入 venv、缓存、镜像或运行产物。SkillsBench 的任务 mirror 固定位于 `runs/skillsbench/` 下。
+
+首次运行 SWE-bench Pro 前先准备本地快照：
 
 ```powershell
-uv sync --locked
+uv run python scripts/prepare_swebench_pro.py
 ```
 
-脚本按固定 AgentCompass commit `04d138a1c1decd2c9caa8c2659c698d7ffb677b4` 的包声明安装其依赖。当前 AgentCompass 要求 `openai>=2.41.1`，而 DynSTEER/ToolSandbox 基础依赖固定 `openai==1.17.0`；因此两个 benchmark 环境不能混用同一个 uv 锁文件，AgentCompass 必须使用 Python 3.12+ 独立虚拟环境，DynSTEER 源码以 `--no-deps` 方式装入该环境。模型 endpoint 与密钥分别通过 `MODEL_BASE_URL`、`MODEL_API_KEY` 配置。
-
-使用固化后的跨 Benchmark 主实验配置运行：
+使用固化后的单 benchmark 配置运行。Docker 版为宿主 controller 加本地任务 Docker；非 Docker 版对 SWE/Skills 只允许适配、已有轨迹 replay 和离线汇总：
 
 ```powershell
-./scripts/start_experiment_no_docker.sh --exp data/experiments/cross_benchmark_main.json --workers 1
+./scripts/start_experiment.sh --exp data/experiments/swebench_pro_pilot.json --workers 1
+./scripts/start_experiment_no_docker.sh --exp data/experiments/swebench_pro_pilot.json --only_adapt
 ```
 
-Docker 路径使用同样的参数：
+并行跑实验时使用 `data/experiments/model_shards/{benchmark}_{实验}_{1..4}.json`。每份 shard 保留全部 model，并把 case_ids 确定性均分为互斥子集，因此不同 tmux 窗口不会构建同一个任务镜像；不要同时在两个窗口启动同一个 shard 文件。
 
-```powershell
-./scripts/start_experiment.sh --exp data/experiments/cross_benchmark_main.json --source ../AgentCompass --workers 1
+```bash
+./scripts/start_experiment.sh --exp data/experiments/model_shards/swebench_pro_main_2.json --workers 1
 ```
 
-这些脚本会创建 `.venv-agentcompass`，安装 AgentCompass 源码、以 `--no-deps` 安装 DynSTEER 源码，并补充 DynSTEER 运行所需的独立依赖；后续运行会通过环境内 stamp 复用该环境。`DYNSTEER_AGENTCOMPASS_FORCE_INSTALL=1` 可强制重装；`DYNSTEER_AGENTCOMPASS_VENV` 和 `DYNSTEER_AGENTCOMPASS_PYTHON` 可覆盖环境路径和 Python 版本。
+ToolSandbox 本身没有任务容器，两个脚本都支持完整执行；SWE/Skills 的 default 执行和 native verifier 只能通过 Docker 版脚本运行。启动前预检会输出 JSON 摘要，并在 matrix 展开前报告依赖、凭据、源码、case、Docker 或 host 能力问题。
 
-配置中的 SWE-bench Pro 和 SkillsBench case ID 已按固定 seed 固化，模型凭据仍通过环境变量提供。DynSTEER 通过 AgentCompass 加载数据、执行 agent 并采用原生评分，不需要本地 SWE-bench_Pro-os、SkillsBench 源仓库或 DynSTEER 自有官方评分脚本。
-
-AgentCompass 只接受一次 run 一个统一模型 endpoint 和密钥：`MODEL_BASE_URL` 必须能服务实验配置矩阵中的全部 model ID，`MODEL_API_KEY` 必须对这些 ID 都有效。混合多个 endpoint 的主实验前，先用 `swebench_pro_pilot.json` 或 `skillsbench_pilot.json` 这类单模型配置分别验证。
-
-上面的命令会准备 AgentCompass 基础运行时。SWE-bench Pro 的 `mini_swe_agent` 与 SkillsBench 的 `openhands` 可由 `metadata.agentcompass.auto_install_dependencies=true` 交回 AgentCompass 按需安装。运行前仍需准备 AgentCompass 数据缓存、Docker 以及 `MODEL_BASE_URL`/`MODEL_API_KEY`。
+实验 JSON、benchmark manifest 与 run config 都是执行中性配置；模型、judge 和 milestone generator 的明文 `api_key`、`base_url` 直接写在配置中。运行期不再读取模型环境变量。详细接口见 `docs/apis/source_direct_benchmarks.md`。

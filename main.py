@@ -16,6 +16,7 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.harness.runner import run_harness_configs
 from dynsteer.harness.selection import select_case_ids
 from dynsteer.model import HarnessEvaluationOutput
+from dynsteer.runtime.profile import require_native_execution_profile
 from dynsteer.log import configure_logger
 
 DEFAULT_RANDOM_SEED = 202608
@@ -77,6 +78,8 @@ def _adapt_only_configs(configs: list[HarnessRunConfig], force_adapt: bool = Fal
 def _adapt_only_experiment(config_path: Path | str, force_adapt: bool = False) -> list[Path]:
     """仅适配统一实验配置中涉及的 benchmark 数据，并返回 adapted case 路径。"""
     config = load_experiment_config(config_path)
+    if config["benchmarks"][0]["benchmark"] in {"swebench_pro", "skillsbench"}:
+        require_native_execution_profile()
     specs = expand_experiment_matrix(config)
     grouped: dict[tuple[str, str], list[ExperimentRunSpec]] = {}
     for spec in specs:

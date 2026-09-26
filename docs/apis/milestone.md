@@ -28,7 +28,7 @@ def compile_task_case(
 
 ## 2. 任务视图与隔离边界
 
-`GeneratorTaskView` 使用 `public_state`、`simulation_state` 和 `tool_contracts` 区分输入：prompt 只序列化 benchmark、task/case ID、language、turns、Agent 可见 public assets、public state、tool schema 和 evidence catalog。simulation state、tool contracts 与 environment rules 仅供 compiler 确定性校验、recovery 和 preserve 派生，禁止进入 prompt。
+`GeneratorTaskView` 使用 `public_state`、`simulation_state` 和 `tool_contracts` 区分输入：prompt 只序列化 benchmark、task/case ID、language、turns、Agent 可见 public assets、public state、tool schema、evidence catalog，以及从 contract 安全投影出的输出 selector/type/cardinality、state effect 字段和 executor argument 映射。完整 tool contracts、simulation state、environment rules、reference graph、expected rows 和 matcher 仅供 compiler 确定性校验、recovery 和 preserve 派生，禁止进入 prompt。
 
 `digest()` 对完整 view 计算摘要，因此私有契约或模拟状态变化仍会使缓存失效。
 
@@ -55,9 +55,16 @@ parser 接受 0～2 张候选以保留部分成功；超过 2 张时整批 schem
 
 `set_state` 除 effect 外还要求 executor contract 显式声明 `state_evaluator="toolsandbox_snapshot"`。当前 compiler 只编译这一种已实现的状态评分协议；仅声明 namespace/operation、但没有可评分协议的非 ToolSandbox contract 会以 `state_contract_unscorable` 失败关闭。
 
-同批相同完整图 signature 只计一票；不同批相同 signature 作为重复 observation 分别计票。节点、disposition 和 minefield 使用严格多数：`2 * support > observation_count`。edge 分母只包含同时出现两个端点的 observation：`2 * support(u,v) > eligible(u,v)`。
+候选图先执行确定性归一：无下游 consumer 的 ToolSandbox terminal 状态工具会按公开 `state_fields` 投影为 `set_state`；`MESSAGING.send` 归一为 `MESSAGING.add`；`wifi_enabled` 等唯一别名归一为契约字段；结构化日期、AM/PM 时间和数字单位 literal 允许唯一确定性派生。字段级 provenance/schema 错误只移除对应字段并记录 `field_binding_unresolved`，不会删除整个 producer；state goal 缺少必需字段时仍失败关闭。
 
-多数聚合后，compiler 强制加入 binding（在无严格多数时引入工具契约先验仲裁，若候选中有且仅有一个由契约显式支持的输出 selector 则采纳）、环境 recovery 和相邻 turn 的确定性依赖，校验 DAG，执行传递约简，并按工具 effect contract 派生 ToolSandbox preserve constraints。该聚合是经验性必经估计，不是形式化证明。
+同批相同完整图 signature 只计一票；不同批相同 signature 作为重复 observation 分别计票。同一 observation 内相同 identity 的重复节点也只计一票，`support_count <= observation_count`。
+
+operation identity 与 binding identity 分离：tool call 存在性按 `(turn_id, evidence_id)` 聚合；state goal 按 turn、namespace、operation 和字段意图聚合；动态答案按确定性 producer 类别归一，静态答案仍使用规范化文本。节点、disposition 和 minefield 使用严格多数：`2 * support > observation_count`。edge 分母只包含同时出现两个端点的 observation：`2 * support(u,v) > eligible(u,v)`。
+
+tool argument 先扫描全部支持者的字段并集，再逐字段独立聚合。动态 binding 或 literal binding 获严格多数时保留；optional 字段缺席获严格多数，或出现/缺席各半时，选择合法缺席并交给现有 dangling producer 修剪；required 字段无严格多数时保留 operation，并将 `argument_binding_status` 标记为 `unresolved`，不伪造 producer 或 literal。
+
+minefield 投票身份为 `(turn_id, evidence_id, reason_code)`，`missing_inputs` 不再参与存在性拆票。核心身份当选后，从每个 observation 至多一票的合法候选中按精确 tuple 出现次数、与 `required_dynamic_inputs` 交集大小、排序 tuple 依次择优；非 `missing_required_input` reason 固定输出空 tuple。
+多数聚合后，compiler 强制加入 state goal 字段的契约佐裁、环境 recovery 和相邻 turn 的确定性依赖，校验 DAG，执行传递约简，并按工具 effect contract 派生 ToolSandbox preserve constraints。tool argument binding 不启用契约佐裁，以免在无严格多数时伪造可执行参数。该聚合是经验性必经估计，不是形式化证明。
 
 聚合后还会执行 closure 校验：state goal 引用未保留 producer 时删除该目标；tool argument binding 无法闭合时退化为 name-only milestone；disposition 降级后清理 executable 节点和悬空 edge；此外主动执行悬空无用探针剪枝（`_prune_dangling_producers`），自动修剪出度为0、无任何参数引用、非恢复节点且写集为空的冗余只读工具。binding、recovery、turn-order edge 会在 aggregation support 中分别记录依赖依据。
 
@@ -77,13 +84,13 @@ ToolSandbox generated `set_state` 根据 operation、match、values 和 binding 
 
 只要至少一个批次顶层 JSON/schema 成功，即返回 `generation_status=generated`，即使合法候选为空。只有所有批次均调用失败或顶层 JSON/schema 失败时返回 `generation_failed`；adapter 不会把该结果保存为成功 adapted case。
 
-`GenerationReport` 记录请求数、返回/解析/合法图数、accepted observation、全局唯一 signature、同批重复、目标是否达到、聚合节点/边/minefield、candidate summaries、validation issues、aggregation support 和每批响应 digest。原始响应按 `batch_01`～`batch_04` 增量写入独立文件。
+`GenerationReport` 记录请求数、返回/解析/合法图数、accepted observation、全局唯一 signature、同批重复、目标是否达到、聚合节点/边/minefield、candidate summaries、validation issues、aggregation support 和每批响应 digest，并输出 `terminal_state_projected_count`、`state_field_repaired_count`、`literal_derivation_count`、`field_unresolved_count` 与 `empty_after_terminal_majority_count`。原始响应按 `batch_01`～`batch_04` 增量写入独立文件。这些诊断保留在逐 case `generation_report` 中；`compile_task_case` 抛出的 generation_failed 会连同 `exception_stage` 与完整 traceback 写入 case JSON，`summary.json` 不再重复汇总诊断字段。
 
 ## 7. Reliability 与实验重复
 
-canonical semantics 分别输出 `goals`、`operations`、`topology`、`minefields` 和 `preserves`。对于批量状态目标（`cardinality="all"`），根据受影响真实行数展开等量的底层操作，消除粒度抽象层级差异对操作多重集 F1 的惩罚。origin ToolSandbox snapshot goal 会根据真实 snapshot measure、状态评分 contract 和 first-user simulation state 归一为与 generated symbolic goal 相同的 namespace/operation/cardinality/match/values 公共语义；运行期 ID、timestamp 和 producer milestone ID 只保留动态占位，不进入 identity。旧 reference minefield 未保存 reason code 时，仅在其精确 tool schema 显示缺失 required arguments 时确定性归一为 `missing_required_input`，不根据 case ID 或工具名猜测。
+canonical semantics 分别输出 `goals`、`operations`、`topology`、`minefields` 和 `preserves`。对于批量状态目标（`cardinality="all"`），根据受影响真实行数展开等量的底层操作，消除粒度抽象层级差异对操作多重集 F1 的惩罚。origin ToolSandbox snapshot goal 会根据真实 snapshot measure、状态评分 contract 和 first-user simulation state 归一为与 generated symbolic goal 相同的 namespace/operation/cardinality/match/values 公共语义；运行期 ID、timestamp 和 producer milestone ID 只保留动态占位，不进入 identity。旧 reference minefield 未保存 reason code 时，仅做 contract 可证明的确定性归一：精确 tool schema 显示缺失 required arguments 时归一为 `missing_required_input`；contract `writes` 或 `state_effect` 非空时归一为 `unsafe_side_effect`；其余 fatal 调用归一为 `unsafe_tool_call`。显式 reason code 不被覆盖，也不根据 case ID、工具名或 benchmark 名称猜测。
 
-评测图论指标引入语义图描述符（`mode="semantic"`），基于规范化语义（而非字符级或字面值）构建 NetworkX 有向图，输出真实的 `semantic.ged_similarity` 与 `semantic.node_set_f1`，废弃易受字面值钝化的 Strict 图指标核心地位。汇总报告顶层单列 `safety_evaluation`（涵盖致命雷区正例召回率 `fatal_positive_recall`、漏报数 `fatal_minefield_miss_count`、误报数 `spurious_fatal_minefield_count` 及逐工具召回率），将 dispositions 移出多重集总分，单独报告 `turn_disposition_accuracy`。外部 FGW 依赖标记为已弃用（Deprecated）并安全停用。
+milestone reliability 的 `summary.json` 仅保留核心报告指标：`evaluation.tool_operation_micro`、`evaluation.tool_operation_macro`、`evaluation.fatal_minefield`、`topology.ged_similarity.mean`、`graph_return_count`、`status_counts` 与 `valid_dag_compilation_rate`。Tool operation micro 按全部 primary completed case 的逐 case TP/generated/reference 计数聚合，macro 按逐 case Precision/Recall/F1 求均值；fatal minefield 使用同一 primary 口径做 micro 聚合；DAG 返回率为 `graph_return_count / sum(status_counts.*)`。其他语义、图论、生成和使用量指标保留在逐 case JSON 或原始 response 中，仅用于排障，不进入 summary。
 
 reliability repeat 是独立执行维度。每个 repeat 使用隔离的 case 与 `llm_outputs` 路径，并把 `base_seed + repeat_index` 传入 OpenAI-compatible 请求。当前 30-case 配置使用 3 个 repeat，对应 seed `202608/202609/202610`。
 

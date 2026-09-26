@@ -1,7 +1,6 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-In this work, we propose \textbf{DynSTEER}, a dynamic stage-wise framework that advances LLM agent trajectory evaluation from passive, post-hoc terminal verification toward proactive, stage-wise execution review.
-To bridge the granularity gap, DynSTEER segments rollouts at key execution nodes and adapts its multi-tier review strategy based on stage-level results.
-It compiles a path-tolerant milestone graph from public task views to preserve diverse legal paths without reference leakage, and it supports terminating unrecoverable agent executions to curb resource waste.
-Experiments show that DynSTEER improves evaluation discriminability by 85.2\% over native evaluation, separates all model pairs with statistical significance, and saves 45.41\% of execution steps on failed rollouts, establishing a principled and cost-aware foundation for evaluating and optimizing LLM agents.
+In this work, we propose \textbf{DynSTEER}, a dynamic stage-wise framework that advances LLM agent trajectory evaluation from passive, post-hoc terminal verification toward proactive execution review.
+DynSTEER segments rollouts at key execution nodes, adapts its multi-level review strategy to stage-level results, compiles a path-tolerant milestone graph without reference leakage, and terminates unrecoverable executions.
+Across ToolSandbox and SWE-bench Pro, DynSTEER improves discriminability by 85.2\% and 164.0\% and saves 17.74\% and 8.40\% of execution steps, providing a principled and cost-aware foundation for LLM-agent evaluation and optimization.

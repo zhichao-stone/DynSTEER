@@ -770,16 +770,17 @@ def repeat_statistics(results: Sequence[ExperimentCaseResult]) -> JsonObject:
         for repeat, items in sorted(repeats.items()):
             scores = [case_score(item.score) for item in items if item.score is not None]
             repeat_scores[str(repeat)] = _average(scores)
+        valid_repeat_scores = [score for score in repeat_scores.values() if score is not None]
         output.setdefault(method, {}).setdefault(benchmark, {})[model] = {
             "repeat_count": len(repeats), "repeat_scores": repeat_scores,
-            "mean_score": _average(list(repeat_scores.values())),
-            "population_stddev": _population_stddev(list(repeat_scores.values())),
+            "mean_score": _average(valid_repeat_scores),
+            "population_stddev": _population_stddev(valid_repeat_scores),
         }
     return output
 
-def _population_stddev(values: Sequence[float]) -> float:
+def _population_stddev(values: Sequence[float]) -> float | None:
     if not values:
-        return 0.0
+        return None
     mean = sum(values) / len(values)
     return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
 
@@ -1162,8 +1163,8 @@ def _compare_score(left: float, right: float) -> int:
         return 0
     return 1 if left_score > right_score else -1
 
-def _average(values: Sequence[int | float]) -> float:
-    return float(sum(values)) / len(values) if values else 0.0
+def _average(values: Sequence[int | float]) -> float | None:
+    return float(sum(values)) / len(values) if values else None
 
 def _finite_case_score(value: object) -> float | None:
     """读取有限 case score，缺失、异常或非有限值返回空值。"""

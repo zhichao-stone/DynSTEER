@@ -25,7 +25,7 @@ _MILESTONE_FOCUS_INSTRUCTIONS: dict[TaskLanguage, dict[str, str]] = {
         "dependency_safety": (
             "Audit producer-consumer dataflow and executability. Keep independent producers strictly unordered. "
             "If the instruction lacks sufficient context to identify target records, declare response_only, "
-            "return an empty operation graph or clarification message, and register fatal minefields for unsafe side-effects."
+            "return an empty operation graph or clarification message, and register fatal minefields for unsafe tool calls."
         ),
     },
     TaskLanguage.CHINESE: {
@@ -39,7 +39,7 @@ _MILESTONE_FOCUS_INSTRUCTIONS: dict[TaskLanguage, dict[str, str]] = {
         ),
         "dependency_safety": (
             "严格核查数据流依赖与任务可执行性；独立 producer 之间绝不连边；"
-            "若公开输入不足以确定唯一操作目标，果断判定为 response_only 并输出空操作图或澄清消息，并对危险副作用注册 fatal minefield。"
+            "若公开输入不足以确定唯一操作目标，果断判定为 response_only 并输出空操作图或澄清消息，并对危险工具调用注册 fatal minefield。"
         ),
     },
 }
@@ -124,6 +124,7 @@ class MilestonePromptBuilder:
             ],
             "public_state": _public_state_prompt_json(view.public_state),
             "tool_schema": view.tool_schema,
+            "tool_output_contracts": _safe_tool_output_contracts(view),
             "evidence_catalog": json_safe(view.evidence_catalog),
         }
 
@@ -140,6 +141,49 @@ class MilestonePromptBuilder:
             focus_instruction=instructions[focus],
             task=json.dumps(self.payload, ensure_ascii=False, sort_keys=True),
         )
+
+
+def _safe_tool_output_contracts(view: GeneratorTaskView) -> JsonObject:
+    """只投影输出语法与可公开的 state effect 字段，不泄漏评估专用契约。"""
+    result: JsonObject = {}
+    for evidence in view.evidence_catalog:
+        tool_name = evidence.metadata.get("tool_name")
+        contract = view.tool_contracts.get(str(tool_name), {})
+        outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+        if not isinstance(outputs, dict):
+            continue
+        safe_outputs: JsonObject = {}
+        for name, output in outputs.items():
+            if not isinstance(output, dict):
+                continue
+            safe_outputs[str(name)] = {
+                "selector": output.get("selector"),
+                "type": output.get("type"),
+                "cardinality": output.get("cardinality", []),
+            }
+        safe_contract: JsonObject = {
+            "tool_name": tool_name,
+            "outputs": safe_outputs,
+        }
+        effect = contract.get("effect") if isinstance(contract, dict) else None
+        state_fields = contract.get("state_fields") if isinstance(contract, dict) else {}
+        if (
+            contract.get("state_evaluator") == "toolsandbox_snapshot"
+            and isinstance(effect, dict) and isinstance(state_fields, dict)
+        ):
+            safe_contract["state_effect"] = {
+                "namespace": effect.get("namespace"),
+                "operation": effect.get("operation"),
+                "fields": sorted(str(field) for field in state_fields),
+            }
+            executor_arguments = contract.get("executor_arguments", {})
+            if isinstance(executor_arguments, dict):
+                safe_contract["executor_arguments"] = {
+                    str(argument): state_field
+                    for argument, state_field in sorted(executor_arguments.items())
+                }
+        result[evidence.evidence_id] = safe_contract
+    return result
 
 
 def _public_state_prompt_json(public_state: JsonObject) -> JsonObject:

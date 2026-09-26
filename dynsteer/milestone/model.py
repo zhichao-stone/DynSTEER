@@ -120,7 +120,19 @@ class GenerationReport:
     minefield_count: int
     low_sample_count: bool
     low_diversity: bool
+    partial_graph_count: int = 0
+    fatal_parse_graph_count: int = 0
+    node_pruned_in_partial_count: int = 0
+    binding_unresolved_count: int = 0
+    repaired_graph_count: int = 0
+    repair_action_count: int = 0
+    terminal_state_projected_count: int = 0
+    state_field_repaired_count: int = 0
+    literal_derivation_count: int = 0
+    field_unresolved_count: int = 0
+    empty_after_terminal_majority_count: int = 0
     cross_request_signature_counts: JsonObject = field(default_factory=dict)
+    repair_actions: tuple[JsonObject, ...] = ()
     candidate_summaries: tuple[JsonObject, ...] = ()
     aggregation_support: JsonObject = field(default_factory=dict)
     validation_issues: tuple[JsonObject, ...] = ()

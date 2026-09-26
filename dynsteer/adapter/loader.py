@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import uuid
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,7 @@ from dynsteer.stage import (
 )
 from dynsteer.utils import (
     enum_value,
+    exclusive_file_lock,
     get_object,
     json_safe,
     normalize_actor,
@@ -83,17 +86,23 @@ def load_task_case(config: HarnessRunConfig, adapter: BaseBenchmarkAdapter, forc
     task_cases: list[TaskCase] = []
     for case_id in tqdm(case_ids, total=len(case_ids), unit="case", desc="加载/适配 benchmark 数据"):
         path = adapted_case_path(config, case_id)
-        if force_adapt or not path.exists():
-            task_case = _adapt_task_case(config, adapter, case_id)
-            save_task_case(path, task_case)
-        else:
-            data = read_json_file(path, f"TaskCase 文件: {path}", dict)
-            task_case = parse_task_case(data)
-            if task_case.case_id != case_id:
-                raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
-            task_case.metadata["adaptation_usage"] = {"generated_now": False, "cache_hit": True}
+        with exclusive_file_lock(config.data_root / ".adapted_cases.lock"):
+            if force_adapt or not path.exists():
+                task_case = _adapt_task_case(config, adapter, case_id)
+                save_task_case(path, task_case)
+            else:
+                task_case = _cached_task_case(path, case_id)
         task_cases.append(task_case)
     return task_cases
+
+
+def _cached_task_case(path: Path, case_id: str) -> TaskCase:
+    data = read_json_file(path, f"TaskCase 文件: {path}", dict)
+    task_case = parse_task_case(data)
+    if task_case.case_id != case_id:
+        raise ValueError(f"TaskCase.case_id 与文件对应 case_id 不一致: {case_id}")
+    task_case.metadata["adaptation_usage"] = {"generated_now": False, "cache_hit": True}
+    return task_case
 
 def save_task_case(path: Path, task_case: TaskCase) -> None:
     if path is None or task_case is None:
@@ -102,7 +111,12 @@ def save_task_case(path: Path, task_case: TaskCase) -> None:
     data = json_safe(task_case)
     if isinstance(data.get("metadata"), dict):
         data["metadata"].pop("adaptation_usage", None)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def refresh_task_cases_for_experiment(
     config: HarnessRunConfig,

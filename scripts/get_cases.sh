@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir="${BASH_SOURCE[0]%/*}"
-if [[ "$script_dir" == "${BASH_SOURCE[0]}" ]]; then
-    script_dir="."
-fi
-script_dir="$(cd -- "$script_dir" && pwd)"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd -- "$script_dir/.." && pwd)"
 
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$project_root/.uv-cache}"
-export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$project_root/.uv-python}"
+# shellcheck source=scripts/experiment_bootstrap.sh
+. "$script_dir/experiment_bootstrap.sh"
 
-source_path="${DYNSTEER_AGENTCOMPASS_SOURCE:-../AgentCompass}"
-data_dir="${1:-}"
-if [[ -z "$data_dir" ]]; then
-    data_dir="${DYNSTEER_AGENTCOMPASS_DATA_DIR:-data/agentcompass}"
+python_executable="$project_root/.venv-tests/Scripts/python.exe"
+[[ -x "$python_executable" ]] || python_executable="$project_root/.venv-tests/bin/python"
+if [[ ! -x "$python_executable" ]]; then
+    prepare_test_venv "$project_root"
+    python_executable="$(benchmark_python "$project_root" .venv-tests)"
 fi
 
-# shellcheck source=agentcompass_environment.sh
-source "$script_dir/agentcompass_environment.sh"
-ensure_agentcompass_environment "$project_root" "$source_path"
-
-run_command=(uv run --no-sync python get_cases.py --data-dir "$data_dir")
-cd "$project_root"
-echo "Exporting AgentCompass case lists: ${run_command[*]}"
-"${run_command[@]}"
+export UV_NO_SYNC=1
+export UV_CACHE_DIR="$project_root/.uv-cache"
+export UV_PYTHON_INSTALL_DIR="$project_root/.uv-python"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$(mixed_path "$project_root")"
+exec "$python_executable" "$(mixed_path "$project_root/scripts/get_cases.py")" "$@"

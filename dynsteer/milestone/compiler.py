@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -47,7 +49,27 @@ _DISPOSITIONS = {"executable", "needs_clarification", "no_action", "response_onl
 _NODE_KINDS = {"tool_call", "set_state", "emit_message"}
 _STATE_OPERATIONS = {"add", "update", "remove", "set"}
 _CARDINALITIES = {"one", "all"}
-_MINEFIELD_REASONS = {"missing_required_input", "tool_unavailable", "unsafe_side_effect"}
+_MINEFIELD_REASONS = {"missing_required_input", "tool_unavailable", "unsafe_side_effect", "unsafe_tool_call"}
+_STATE_FIELD_ALIASES = {
+    "wifi_enabled": "wifi",
+    "cellular_enabled": "cellular",
+    "cellular_service_enabled": "cellular",
+    "location_service_enabled": "location_service",
+    "low_battery_mode_enabled": "low_battery_mode",
+}
+_NODE_FATAL_ISSUES = {
+    "unknown_evidence", "invalid_arguments", "invalid_state_goal",
+    "state_contract_mismatch", "state_contract_unscorable",
+    "incomplete_state_goal", "state_required_input_missing",
+    "invalid_message_route", "empty_content_requirement",
+}
+_FIELD_LOCAL_ISSUES = {
+    "missing_tool_argument", "unknown_tool_argument", "invalid_value_source",
+    "unknown_public_source", "public_literal_mismatch", "invalid_output_binding",
+    "argument_enum_mismatch", "argument_type_mismatch",
+    "argument_required_property_missing", "argument_unknown_property",
+    "state_field_unknown",
+}
 _FORBIDDEN_KEYS = {
     "milestone_matcher", "minefield_matcher", "evaluation", "verifier",
     "reference_graph", "trajectory", "final_state", "simulation_state", "tool_contracts",
@@ -84,6 +106,7 @@ def compile_task_case(
     observations: list[_CanonicalGraphObservation] = []
     candidates: list[JsonObject] = []
     issues: list[JsonObject] = []
+    repair_actions: list[JsonObject] = []
     response_digests: list[str] = []
     raw_records: dict[str, JsonObject] = {}
     counters: Counter[str] = Counter()
@@ -112,16 +135,35 @@ def compile_task_case(
         counters["parsed_graph_count"] += len(parsed)
         canonical: list[_CanonicalGraphObservation] = []
         for graph_index, candidate in parsed:
-            valid, validation_issues = _validate_candidate_graph(
+            candidate, normalization_repairs = _normalize_candidate_graph(
                 candidate, view, evidence, batch_index, graph_index
             )
-            issues.extend(validation_issues)
-            if valid is None:
+            repair_actions.extend(normalization_repairs)
+            for action in normalization_repairs:
+                counters[str(action.get("action", "unknown"))] += 1
+            candidate, repairs = _repair_candidate_graph(
+                candidate, view, evidence, batch_index, graph_index
+            )
+            repair_actions.extend(repairs)
+            validation = _validate_candidate_graph(
+                candidate, view, evidence, batch_index, graph_index
+            )
+            issues.extend(validation.issues)
+            if validation.graph is None:
                 counters["rejected_graph_count"] += 1
-                candidates.append(_candidate_summary(batch_index, graph_index, "rejected", None))
+                counters["fatal_parse_graph_count"] += 1
+                candidates.append(_candidate_summary(batch_index, graph_index, "rejected", None, "fatal_parse"))
                 continue
-            counters["valid_graph_count"] += 1
-            observation = _canonicalize_candidate_graph(valid, view, batch_index, graph_index)
+            if validation.status == "valid":
+                counters["valid_graph_count"] += 1
+            else:
+                counters["partial_graph_count"] += 1
+                counters["node_pruned_in_partial_count"] += validation.pruned_node_count
+                counters["binding_unresolved_count"] += validation.unresolved_binding_count
+                counters["field_unresolved_count"] += validation.field_unresolved_count
+            observation = _canonicalize_candidate_graph(
+                validation.graph, view, batch_index, graph_index, validation.status
+            )
             canonical.append(observation)
         accepted, duplicate_count = _deduplicate_within_batch(canonical)
         counters["within_batch_duplicate_count"] += duplicate_count
@@ -135,7 +177,8 @@ def compile_task_case(
                 else "within_batch_duplicate"
             )
             candidates.append(_candidate_summary(
-                batch_index, observation.graph_index, status, observation.signature
+                batch_index, observation.graph_index, status, observation.signature,
+                observation.status,
             ))
         observations.extend(selected)
 
@@ -150,10 +193,24 @@ def compile_task_case(
             observations, view, evidence
         )
         issues.extend(aggregation_issues)
+        counters["field_unresolved_count"] += sum(
+            item.metadata.get("field_binding_status") == "unresolved"
+            for item in graph.nodes
+        )
+    issue_codes = {str(item.get("code")) for item in issues}
     empty_reason = (
         "generation_failed" if generation_failed
-        else "no_majority_goal" if not graph.nodes and not graph.minefields
-        else None
+        else "all_candidates_rejected" if not observations and counters["parsed_graph_count"]
+        else "no_observation" if not observations
+        else None if graph.nodes or graph.minefields
+        else "empty_after_binding_closure" if issue_codes & {
+            "unresolved_state_binding", "dangling_argument_binding", "node_pruned",
+        }
+        else "empty_after_state_projection" if counters["terminal_state_projection"]
+        else "empty_after_terminal_majority" if issue_codes & {
+            "orphan_support_chain", "disposition_conflict",
+        }
+        else "empty_after_aggregation"
     )
     graph.metadata.update({
         "source": "generated", "view_digest": view.digest(),
@@ -184,7 +241,26 @@ def compile_task_case(
         minefield_count=len(graph.minefields),
         low_sample_count=len(observations) < config.target_candidate_graph_count,
         low_diversity=len(signature_counts) < 2,
+        partial_graph_count=counters["partial_graph_count"],
+        fatal_parse_graph_count=counters["fatal_parse_graph_count"],
+        node_pruned_in_partial_count=counters["node_pruned_in_partial_count"],
+        binding_unresolved_count=counters["binding_unresolved_count"],
+        repaired_graph_count=len({
+            (item.get("batch_index"), item.get("graph_index"))
+            for item in repair_actions
+        }),
+        repair_action_count=len(repair_actions),
+        terminal_state_projected_count=counters["terminal_state_projection"],
+        state_field_repaired_count=counters["state_field"],
+        literal_derivation_count=sum(
+            str(item.get("code")) == "literal_derivation" for item in issues
+        ),
+        field_unresolved_count=counters["field_unresolved_count"],
+        empty_after_terminal_majority_count=int(
+            empty_reason == "empty_after_terminal_majority"
+        ),
         cross_request_signature_counts=dict(sorted(signature_counts.items())),
+        repair_actions=tuple(repair_actions),
         candidate_summaries=tuple(candidates),
         aggregation_support=support,
         validation_issues=tuple(issues),
@@ -243,9 +319,20 @@ class _CanonicalNode:
 
 
 @dataclass(frozen=True)
+class _ValidationResult:
+    graph: _CandidateGraph | None
+    status: Literal["valid", "partial", "fatal_parse"]
+    issues: tuple[JsonObject, ...] = ()
+    pruned_node_count: int = 0
+    unresolved_binding_count: int = 0
+    field_unresolved_count: int = 0
+
+
+@dataclass(frozen=True)
 class _CanonicalGraphObservation:
     batch_index: int
     graph_index: int
+    status: Literal["valid", "partial"]
     dispositions: tuple[tuple[str, TurnDisposition], ...]
     nodes: tuple[_CanonicalNode, ...]
     edges: tuple[tuple[str, str], ...]
@@ -343,115 +430,476 @@ def _parse_candidate_graph(value: object) -> _CandidateGraph:
     )
 
 
+def _normalize_candidate_graph(
+    candidate: _CandidateGraph,
+    view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence],
+    batch_index: int,
+    graph_index: int,
+) -> tuple[_CandidateGraph, list[JsonObject]]:
+    """在通用修复前执行 terminal 状态投影、operation 与 state 字段确定性归一。"""
+    repairs: list[JsonObject] = []
+    outgoing_ids = {source for source, _ in candidate.edges}
+    normalized_nodes: list[_CandidateNode] = []
+
+    def record(node_id: str, action: str, before: object, after: object, basis: str) -> None:
+        repairs.append({
+            "batch_index": batch_index, "graph_index": graph_index,
+            "node_id": node_id, "action": action,
+            "before": before, "after": after, "basis": basis,
+        })
+
+    for node in candidate.nodes:
+        if (
+            node.kind == "tool_call" and node.local_id not in outgoing_ids
+            and (projected := _project_terminal_state_node(node, view, evidence)) is not None
+        ):
+            normalized_nodes.append(projected)
+            record(
+                node.local_id, "terminal_state_projection", "tool_call", "set_state",
+                "terminal tool has unique state effect and no downstream consumer",
+            )
+            continue
+        if node.kind == "set_state":
+            state_node, state_repairs = _normalize_state_node(
+                node, view, evidence, batch_index, graph_index
+            )
+            normalized_nodes.append(state_node)
+            repairs.extend(state_repairs)
+            continue
+        normalized_nodes.append(node)
+    return _CandidateGraph(
+        candidate.dispositions, tuple(normalized_nodes), candidate.edges,
+        candidate.minefields,
+    ), repairs
+
+
+def _project_terminal_state_node(
+    node: _CandidateNode, view: GeneratorTaskView, evidence: dict[str, PublicEvidence]
+) -> _CandidateNode | None:
+    """把无输出的 terminal 状态工具确定性投影为 set_state goal。"""
+    evidence_id = str(node.data.get("evidence_id"))
+    contract = _contract_for_evidence(evidence_id, view, evidence)
+    effect = contract.get("effect")
+    state_fields = contract.get("state_fields")
+    if (
+        contract.get("state_evaluator") != "toolsandbox_snapshot"
+        or contract.get("outputs") != {}
+        or not isinstance(effect, dict) or not isinstance(state_fields, dict)
+    ):
+        return None
+    state_arguments = defaultdict(list)
+    executor_arguments = contract.get("executor_arguments", {})
+    if isinstance(executor_arguments, dict):
+        for argument, state_field in executor_arguments.items():
+            state_arguments[str(state_field)].append(str(argument))
+    argument_targets = {
+        arguments[0]: state_field
+        for state_field, arguments in state_arguments.items()
+        if len(arguments) == 1
+    }
+    match: JsonObject = {}
+    values: JsonObject = {}
+    arguments = node.data.get("arguments", {})
+    if not isinstance(arguments, dict):
+        return None
+    for argument, source in sorted(arguments.items()):
+        state_field = argument_targets.get(
+            str(argument), str(argument) if argument in state_fields else None
+        )
+        if state_field is None or state_field not in state_fields:
+            return None
+        metadata = state_fields[state_field]
+        role = metadata.get("role", "value") if isinstance(metadata, dict) else "value"
+        target = match if role == "match" else values
+        target[state_field] = source
+    return _CandidateNode(node.local_id, node.turn_id, "set_state", {
+        "local_id": node.local_id, "turn_id": node.turn_id, "kind": "set_state",
+        "namespace": effect.get("namespace"), "operation": effect.get("operation"),
+        "cardinality": "one", "match": match, "values": values,
+        "executor_evidence_id": evidence_id,
+    })
+
+
+def _normalize_state_node(
+    node: _CandidateNode, view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence], batch_index: int, graph_index: int,
+) -> tuple[_CandidateNode, list[JsonObject]]:
+    """按公开 executor 契约修复 state operation 与唯一字段别名。"""
+    repairs: list[JsonObject] = []
+    data = dict(node.data)
+    evidence_id = str(data.get("executor_evidence_id"))
+    contract = _contract_for_evidence(evidence_id, view, evidence)
+    effect = contract.get("effect") if isinstance(contract, dict) else None
+    if (
+        data.get("namespace") == "MESSAGING" and data.get("operation") == "send"
+        and isinstance(effect, dict) and effect.get("operation") == "add"
+    ):
+        before = data["operation"]
+        data["operation"] = "add"
+        repairs.append({
+            "batch_index": batch_index, "graph_index": graph_index,
+            "node_id": node.local_id, "action": "state_operation",
+            "before": before, "after": "add", "basis": "executor state effect contract",
+        })
+    state_fields = contract.get("state_fields") if isinstance(contract, dict) else {}
+    if isinstance(state_fields, dict) and state_fields:
+        for group in ("match", "values"):
+            fields = dict(data.get(group, {})) if isinstance(data.get(group, {}), dict) else {}
+            for field in list(fields):
+                repaired = _STATE_FIELD_ALIASES.get(str(field))
+                if (
+                    repaired is not None and field not in state_fields
+                    and repaired in state_fields and repaired not in fields
+                ):
+                    source = fields.pop(field)
+                    fields[repaired] = source
+                    data[group] = fields
+                    repairs.append({
+                        "batch_index": batch_index, "graph_index": graph_index,
+                        "node_id": node.local_id, "action": "state_field",
+                        "field": f"{group}.{repaired}", "before": field,
+                        "after": repaired, "basis": "unique state field alias",
+                    })
+    return replace(node, data=data), repairs
+
+
+def _repair_candidate_graph(
+    candidate: _CandidateGraph,
+    view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence],
+    batch_index: int,
+    graph_index: int,
+) -> tuple[_CandidateGraph, list[JsonObject]]:
+    """在语义校验前执行唯一可判定的 source_ref 与 output binding 修复。"""
+    repairs: list[JsonObject] = []
+    nodes_by_id = {node.local_id: node for node in candidate.nodes}
+    public_sources = {
+        *(turn.source_ref for turn in view.turns),
+        *(str(item.get("source_ref")) for item in view.public_assets),
+    }
+
+    def record(node_id: str, field: str, action: str, before: object, after: object, basis: str) -> None:
+        repairs.append({
+            "batch_index": batch_index, "graph_index": graph_index,
+            "node_id": node_id, "field": field, "action": action,
+            "before": before, "after": after, "basis": basis,
+        })
+
+    for node in candidate.nodes:
+        for group in ("arguments", "match", "values"):
+            values = node.data.get(group, {})
+            if not isinstance(values, dict):
+                continue
+            for field, source in list(values.items()):
+                if not isinstance(source, dict):
+                    continue
+                if source.get("source") == "public_literal":
+                    source_ref = source.get("source_ref")
+                    if isinstance(source_ref, str) and source_ref not in public_sources and source_ref.endswith(":0"):
+                        matches = {item for item in public_sources if item == source_ref[:-2]}
+                        if len(matches) == 1:
+                            source["source_ref"] = next(iter(matches))
+                            record(node.local_id, f"{group}.{field}", "source_ref", source_ref, source["source_ref"], "unique_zero_suffix_alias")
+                elif source.get("source") == "node_output":
+                    producer = nodes_by_id.get(str(source.get("producer_local_id")))
+                    producer_evidence = evidence.get(str(producer.data.get("evidence_id"))) if producer is not None else None
+                    contract = _contract_for_evidence(str(producer.data.get("evidence_id")), view, evidence) if producer_evidence is not None else {}
+                    outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+                    if not isinstance(outputs, dict) or not outputs:
+                        continue
+                    selectors = sorted({
+                        str(item.get("selector"))
+                        for item in outputs.values()
+                        if isinstance(item, dict) and isinstance(item.get("selector"), str)
+                    })
+                    selector = source.get("selector")
+                    repaired_selector: str | None = None
+                    if isinstance(selector, str) and selector not in selectors:
+                        normalized = re.sub(r"\[\d+\]", "", selector)
+                        if len(selectors) == 1:
+                            repaired_selector = selectors[0]
+                        elif normalized in selectors:
+                            repaired_selector = normalized
+                        elif "$" in selectors and selector in {"$.timestamp", "$.value", "$.result"}:
+                            repaired_selector = "$"
+                        if repaired_selector is not None:
+                            source["selector"] = repaired_selector
+                            record(node.local_id, f"{group}.{field}", "selector", selector, repaired_selector, "unique_output_contract")
+                    output = next((
+                        item for item in outputs.values()
+                        if isinstance(item, dict) and item.get("selector") == source.get("selector")
+                    ), None)
+                    cardinalities = (
+                        [item for item in output.get("cardinality", []) if item in _CARDINALITIES]
+                        if isinstance(output, dict) else []
+                    )
+                    if len(cardinalities) == 1 and source.get("cardinality") != cardinalities[0]:
+                        before = source.get("cardinality")
+                        source["cardinality"] = cardinalities[0]
+                        record(node.local_id, f"{group}.{field}", "cardinality", before, cardinalities[0], "unique_output_contract")
+    return candidate, repairs
+
+
 def _validate_candidate_graph(
     candidate: _CandidateGraph,
     view: GeneratorTaskView,
     evidence: dict[str, PublicEvidence],
     batch_index: int,
     graph_index: int,
-) -> tuple[_CandidateGraph | None, list[JsonObject]]:
+) -> _ValidationResult:
+    """分级校验候选图；局部错误只剔除局部节点或 binding，不再丢弃整图。"""
     issues: list[JsonObject] = []
     turn_ids = {turn.turn_id for turn in view.turns}
     turn_order = {turn.turn_id: index for index, turn in enumerate(view.turns)}
     dispositions = dict(candidate.dispositions)
-    if set(dispositions) != turn_ids:
-        issues.append(_violation("disposition_turn_mismatch", batch_index, graph_index, message="disposition 必须覆盖全部 turn"))
-    if any(value not in _DISPOSITIONS for value in dispositions.values()):
-        issues.append(_violation("invalid_disposition", batch_index, graph_index, message="disposition 值无效"))
-    node_by_id: dict[str, _CandidateNode] = {}
+    if set(dispositions) != turn_ids or any(value not in _DISPOSITIONS for value in dispositions.values()):
+        issues.append(_violation("invalid_dispositions", batch_index, graph_index, message="disposition 必须精确覆盖全部 turn"))
+        return _ValidationResult(None, "fatal_parse", tuple(issues))
+
+    kept_nodes: list[_CandidateNode] = []
+    unresolved_fields = 0
+    seen_ids: set[str] = set()
     for node in candidate.nodes:
-        if not node.local_id or node.local_id in node_by_id:
+        if not node.local_id or node.local_id in seen_ids:
             issues.append(_violation("duplicate_node_id", batch_index, graph_index, node_id=node.local_id, message="local_id 为空或重复"))
             continue
-        node_by_id[node.local_id] = node
+        seen_ids.add(node.local_id)
         if node.turn_id not in turn_ids or node.kind not in _NODE_KINDS:
             issues.append(_violation("invalid_node", batch_index, graph_index, node.turn_id, node.local_id, message="node 的 turn 或 kind 无效"))
             continue
         if node.kind in {"tool_call", "set_state"} and dispositions.get(node.turn_id) != "executable":
             issues.append(_violation("node_on_non_executable_turn", batch_index, graph_index, node.turn_id, node.local_id, message="非 executable turn 不能包含工具或状态目标"))
-        issues.extend(_validate_node(node, view, evidence, batch_index, graph_index))
-    if len(set(candidate.edges)) != len(candidate.edges):
-        issues.append(_violation("duplicate_edge", batch_index, graph_index, message="edge 重复"))
-    edge_set = set(candidate.edges)
-    # binding 本身是确定性依赖；校验 producer contract 并补齐缺失 edge。
-    for node in candidate.nodes:
+            continue
+        node_issues = _validate_node(node, view, evidence, batch_index, graph_index)
+        issues.extend(node_issues)
+        fatal_issues = [item for item in node_issues if str(item.get("code")) in _NODE_FATAL_ISSUES]
+        local_issues = [item for item in node_issues if str(item.get("code")) in _FIELD_LOCAL_ISSUES]
+        if fatal_issues:
+            continue
+        if local_issues:
+            node, _removed_fields = _remove_local_issue_fields(node, local_issues)
+            unresolved_fields += len(local_issues)
+            for item in local_issues:
+                issues.append(_violation(
+                    "field_binding_unresolved", batch_index, graph_index,
+                    node.turn_id, node.local_id, str(item.get("field")),
+                    "局部 provenance/schema 错误已降级",
+                ))
+            if node.kind == "set_state":
+                contract = _contract_for_evidence(
+                    str(node.data.get("executor_evidence_id")), view, evidence
+                )
+                state_fields = set(node.data.get("match", {})) | set(node.data.get("values", {}))
+                if not set(contract.get("required_dynamic_inputs", [])).issubset(state_fields):
+                    issues.append(_violation(
+                        "state_required_input_missing", batch_index, graph_index,
+                        node.turn_id, node.local_id,
+                        message="状态目标缺少 executor 契约要求的动态输入",
+                    ))
+                    continue
+        kept_nodes.append(node)
+
+    # 跨节点 producer binding 单独分级；无法闭合的必需字段会移除对应节点。
+    pruned_nodes: set[str] = set()
+    unresolved_bindings = 0
+    binding_edges: set[tuple[str, str]] = set()
+    node_by_id = {node.local_id: node for node in kept_nodes}
+    for node in kept_nodes:
+        if node.local_id in pruned_nodes:
+            continue
         for group in ("arguments", "match", "values"):
             values = node.data.get(group, {})
             if not isinstance(values, dict):
                 continue
-            for field, source in values.items():
+            for field, source in list(values.items()):
                 if not isinstance(source, dict) or source.get("source") != "node_output":
                     continue
-                producer_id = source.get("producer_local_id")
-                producer = node_by_id.get(str(producer_id))
-                if producer is None or producer.kind != "tool_call":
-                    issues.append(_violation("invalid_binding_producer", batch_index, graph_index, node.turn_id, node.local_id, f"{group}.{field}", "binding producer 不存在或不是 tool_call"))
-                    continue
-                if turn_order[producer.turn_id] > turn_order[node.turn_id]:
-                    issues.append(_violation(
-                        "future_turn_binding", batch_index, graph_index,
-                        node.turn_id, node.local_id, f"{group}.{field}",
-                        "binding producer 不能来自后续 turn",
-                    ))
-                    continue
-                producer_evidence = evidence.get(str(producer.data.get("evidence_id")))
-                contract = _contract_for_evidence(str(producer.data.get("evidence_id")), view, evidence) if producer_evidence else {}
+                producer_id = str(source.get("producer_local_id"))
+                producer = node_by_id.get(producer_id)
+                producer_evidence = evidence.get(str(producer.data.get("evidence_id"))) if producer is not None else None
+                contract = _contract_for_evidence(str(producer.data.get("evidence_id")), view, evidence) if producer_evidence is not None else {}
                 outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
-                output = next((item for item in outputs.values() if isinstance(item, dict) and item.get("selector") == source.get("selector")), None) if isinstance(outputs, dict) else None
-                if not isinstance(output, dict) or source.get("cardinality") not in output.get("cardinality", []):
-                    issues.append(_violation("contract_incomplete", batch_index, graph_index, node.turn_id, node.local_id, f"{group}.{field}", "producer output contract 不支持该 selector/cardinality"))
+                output = next((
+                    item for item in outputs.values() if isinstance(item, dict)
+                    and item.get("selector") == source.get("selector")
+                ), None) if isinstance(outputs, dict) else None
+                valid = (
+                    producer is not None and producer.kind == "tool_call"
+                    and producer.turn_id in turn_order
+                    and turn_order[producer.turn_id] <= turn_order[node.turn_id]
+                    and isinstance(output, dict)
+                    and source.get("cardinality") in output.get("cardinality", [])
+                    and _schema_types_compatible(
+                        output.get("type"),
+                        _binding_target_schema(node, group, str(field), view, evidence).get("type"),
+                    )
+                )
+                if valid:
+                    assert producer is not None
+                    binding_edges.add((producer.local_id, node.local_id))
                     continue
-                target_schema = _binding_target_schema(node, group, str(field), view, evidence)
-                if not _schema_types_compatible(output.get("type"), target_schema.get("type")):
-                    issues.append(_violation("binding_type_mismatch", batch_index, graph_index, node.turn_id, node.local_id, f"{group}.{field}", "producer output 类型与目标字段不兼容"))
-                    continue
-                edge_set.add((producer.local_id, node.local_id))
+                unresolved_bindings += 1
+                issues.append(_violation(
+                    "binding_unresolved", batch_index, graph_index, node.turn_id,
+                    node.local_id, f"{group}.{field}", "producer output binding 无法闭合",
+                ))
+                values.pop(field, None)
+                required_missing = False
+                if node.kind == "tool_call":
+                    schema = _tool_parameter_schema(_tool_name(evidence[str(node.data["evidence_id"])]), view)
+                    required_missing = field in schema.get("required", [])
+                else:
+                    executor_contract = _contract_for_evidence(
+                        str(node.data.get("executor_evidence_id")), view, evidence
+                    )
+                    required_missing = field in executor_contract.get("required_dynamic_inputs", [])
+                if required_missing:
+                    pruned_nodes.add(node.local_id)
+                    break
+
+    retained_nodes: list[_CandidateNode] = []
+    for node in kept_nodes:
+        if node.local_id in pruned_nodes:
+            issues.append(_violation("node_pruned", batch_index, graph_index, node.turn_id, node.local_id, message="必需 binding 无法闭合，删除该节点"))
+            continue
+        if node.kind == "set_state":
+            operation, cardinality = node.data.get("operation"), node.data.get("cardinality")
+            match, values = node.data.get("match", {}), node.data.get("values", {})
+            incomplete = (
+                operation not in _STATE_OPERATIONS
+                or cardinality not in _CARDINALITIES
+                or not isinstance(match, dict)
+                or not isinstance(values, dict)
+                or (operation in {"add", "update", "set"} and not values)
+                or (operation == "remove" and not match)
+            )
+            if incomplete:
+                issues.append(_violation("state_goal_pruned", batch_index, graph_index, node.turn_id, node.local_id, message="状态目标在局部修复后不完整"))
+                continue
+        retained_nodes.append(node)
+
+    retained_ids = {node.local_id for node in retained_nodes}
+    explicit_edges: list[tuple[str, str]] = []
     for source, target in candidate.edges:
-        if source not in node_by_id or target not in node_by_id or source == target:
+        if source not in retained_ids or target not in retained_ids or source == target:
             issues.append(_violation("invalid_edge", batch_index, graph_index, node_id=source, message="edge 端点不存在或自环"))
-    if not issues:
-        try:
-            predecessors = {node_id: [] for node_id in node_by_id}
-            successors = {node_id: [] for node_id in node_by_id}
-            for source, target in edge_set:
-                predecessors[target].append(source)
-                successors[source].append(target)
-            topological_order(predecessors, successors)
-        except ValueError:
-            issues.append(_violation("graph_cycle", batch_index, graph_index, message="候选图存在环"))
+            continue
+        if (source, target) not in explicit_edges:
+            explicit_edges.append((source, target))
+        else:
+            issues.append(_violation("duplicate_edge", batch_index, graph_index, message="edge 重复"))
+    # 节点被剪除后，先前已记录的 binding edge 可能悬空；这里一并丢弃。
+    valid_binding_edges = {
+        edge for edge in binding_edges
+        if edge[0] in retained_ids and edge[1] in retained_ids
+    }
+    ordered_edges = sorted(dict.fromkeys([*explicit_edges, *valid_binding_edges]))
+    accepted_edges = _acyclic_edges(retained_ids, ordered_edges, issues)
+
     for turn_id, disposition in dispositions.items():
         if disposition == "executable" and not any(
-            node.turn_id == turn_id and _terminal_node(node, view) for node in candidate.nodes
+            node.turn_id == turn_id and _terminal_node(node, view) for node in retained_nodes
         ):
             issues.append(_violation("missing_terminal_goal", batch_index, graph_index, turn_id, message="executable turn 缺少终端目标"))
-    for minefield in candidate.minefields:
-        contract = _contract_for_evidence(minefield.evidence_id, view, evidence)
-        if minefield.turn_id not in turn_ids or minefield.severity != "fatal" or minefield.reason_code not in _MINEFIELD_REASONS:
-            issues.append(_violation("invalid_minefield", batch_index, graph_index, minefield.turn_id, message="minefield 字段无效"))
-        elif not contract or not contract.get("writes"):
-            issues.append(_violation("minefield_contract_unverified", batch_index, graph_index, minefield.turn_id, message="minefield 无法由副作用契约核实"))
-        elif minefield.reason_code in {"tool_unavailable", "unsafe_side_effect"} and minefield.reason_code not in contract.get("fatal_reasons", []):
-            issues.append(_violation("minefield_reason_unverified", batch_index, graph_index, minefield.turn_id, message="minefield reason 未获得私有工具契约支持"))
-        elif minefield.reason_code == "missing_required_input" and not set(minefield.missing_inputs).issubset(set(contract.get("required_dynamic_inputs", []))):
-            issues.append(_violation("minefield_input_unverified", batch_index, graph_index, minefield.turn_id, message="缺失输入不属于契约必需动态输入"))
-        elif minefield.reason_code == "missing_required_input" and not minefield.missing_inputs:
-            issues.append(_violation("minefield_input_unverified", batch_index, graph_index, minefield.turn_id, message="missing_required_input 必须列出缺失输入"))
-        elif minefield.reason_code == "missing_required_input" and _minefield_inputs_available(minefield, candidate):
-            issues.append(_violation("minefield_input_available", batch_index, graph_index, minefield.turn_id, message="minefield 声称缺失的输入已存在"))
-        if any(
+
+    kept_minefields: list[_CandidateMinefield] = []
+    for raw_minefield in candidate.minefields:
+        contract = _contract_for_evidence(raw_minefield.evidence_id, view, evidence)
+        tool_name = _tool_name(evidence[raw_minefield.evidence_id])
+        reason = _normalized_minefield_reason(raw_minefield, contract, view, tool_name)
+        minefield = replace(raw_minefield, reason_code=reason) if reason is not None else raw_minefield
+        if reason == "missing_required_input":
+            unavailable = _minefield_unavailable_inputs(minefield, candidate, view, evidence)
+            minefield = replace(minefield, missing_inputs=tuple(sorted(unavailable)))
+        valid = (
+            reason is not None
+            and minefield.turn_id in turn_ids
+            and minefield.severity == "fatal"
+            and bool(contract)
+            and (
+                minefield.reason_code != "unsafe_side_effect"
+                or bool(contract.get("writes"))
+            )
+            and (
+                minefield.reason_code != "unsafe_tool_call"
+                or not contract.get("writes")
+            )
+            and not (
+                contract.get("writes")
+                and _write_operation_recoverable(minefield, view, evidence)
+            )
+            and (
+                minefield.reason_code != "missing_required_input"
+                or (
+                    bool(minefield.missing_inputs)
+                    and set(minefield.missing_inputs).issubset(
+                        _minefield_allowed_missing_inputs(contract, tool_name, view)
+                    )
+                )
+            )
+        )
+        if not valid:
+            issues.append(_violation("invalid_minefield", batch_index, graph_index, minefield.turn_id, message="minefield 无法由当前工具契约核实"))
+            continue
+        conflicts = any(
             node.turn_id == minefield.turn_id
             and (
                 node.data.get("executor_evidence_id") == minefield.evidence_id
-                or (
-                    node.data.get("evidence_id") == minefield.evidence_id
-                    and bool(contract.get("writes"))
-                )
+                or node.data.get("evidence_id") == minefield.evidence_id
             )
-            for node in candidate.nodes
-        ):
-            issues.append(_violation("minefield_terminal_conflict", batch_index, graph_index, minefield.turn_id, message="同一 terminal side effect 不能同时是 executable goal 和 fatal minefield"))
-    validated = _CandidateGraph(candidate.dispositions, candidate.nodes, tuple(sorted(edge_set)), candidate.minefields)
-    return (None if issues else validated), issues
+            for node in retained_nodes
+        )
+        if conflicts:
+            issues.append(_violation("minefield_terminal_conflict", batch_index, graph_index, minefield.turn_id, message="同一工具调用不能同时是 executable goal 和 fatal minefield"))
+            continue
+        kept_minefields.append(minefield)
+
+    original_has_semantics = bool(candidate.nodes or candidate.minefields)
+    repaired_has_semantics = bool(retained_nodes or kept_minefields)
+    if original_has_semantics and not repaired_has_semantics:
+        return _ValidationResult(
+            None, "fatal_parse", tuple(issues), len(candidate.nodes),
+            unresolved_bindings, unresolved_fields,
+        )
+    graph = _CandidateGraph(
+        candidate.dispositions, tuple(retained_nodes), tuple(accepted_edges), tuple(kept_minefields)
+    )
+    status: Literal["valid", "partial"] = "valid" if not issues else "partial"
+    return _ValidationResult(
+        graph, status, tuple(issues),
+        len(candidate.nodes) - len(retained_nodes), unresolved_bindings,
+        unresolved_fields,
+    )
+
+def _remove_local_issue_fields(
+    node: _CandidateNode, issues: list[JsonObject]
+) -> tuple[_CandidateNode, int]:
+    """把字段级 provenance/schema 错误降级为删除对应字段，而不是删除节点。"""
+    data = dict(node.data)
+    removed: set[str] = set()
+    for issue in issues:
+        field = str(issue.get("field") or "")
+        if not field:
+            continue
+        if node.kind == "tool_call" and field.startswith("arguments."):
+            parts = field.split(".", 2)
+            if len(parts) >= 2:
+                name = parts[1]
+                arguments = dict(data.get("arguments", {}))
+                if name in arguments:
+                    arguments.pop(name)
+                    data["arguments"] = arguments
+                    removed.add(f"arguments.{name}")
+        elif node.kind == "set_state":
+            name = field.split(".", 1)[0]
+            for group in ("match", "values"):
+                values = dict(data.get(group, {}))
+                if name in values:
+                    values.pop(name)
+                    data[group] = values
+                    removed.add(f"{group}.{name}")
+    return replace(node, data=data), len(removed)
 
 
 def _validate_node(
@@ -494,6 +942,14 @@ def _validate_node(
             issues.append(_violation("incomplete_state_goal", batch_index, graph_index, node.turn_id, node.local_id, message="状态目标缺少 match 或 values"))
         elif not set(contract.get("required_dynamic_inputs", [])).issubset(set(match) | set(values)):
             issues.append(_violation("state_required_input_missing", batch_index, graph_index, node.turn_id, node.local_id, message="状态目标缺少 executor 契约要求的动态输入"))
+        state_fields = contract.get("state_fields", {})
+        if isinstance(state_fields, dict) and state_fields:
+            for field in (set(match) | set(values)) - set(state_fields):
+                group = "match" if field in match else "values"
+                issues.append(_violation(
+                    "state_field_unknown", batch_index, graph_index, node.turn_id,
+                    node.local_id, f"{group}.{field}", "state 字段不在 executor 公开契约中",
+                ))
         for field, source in [*match.items(), *values.items()]:
             source_issues = _validate_value_source(
                 source, node, view, batch_index, graph_index, field
@@ -514,13 +970,52 @@ def _validate_node(
     return issues
 
 
-def _minefield_inputs_available(
-    minefield: _CandidateMinefield, candidate: _CandidateGraph
-) -> bool:
-    """判断同 turn 是否已经为 minefield 声称缺失的输入提供来源。"""
+def _minefield_allowed_missing_inputs(
+    contract: JsonObject, tool_name: str, view: GeneratorTaskView
+) -> set[str]:
+    """按写效应契约或只读工具 schema 取得可声称缺失的输入集合。"""
+    if not isinstance(contract, dict):
+        return set()
+    required = {
+        str(item) for item in contract.get("required_dynamic_inputs", [])
+        if isinstance(item, str)
+    }
+    if contract.get("writes"):
+        return required
+    schema_required = _tool_parameter_schema(tool_name, view).get("required", [])
+    return required | {
+        str(item) for item in schema_required if isinstance(item, str)
+    }
+
+
+def _normalized_minefield_reason(
+    minefield: _CandidateMinefield, contract: JsonObject,
+    view: GeneratorTaskView, tool_name: str,
+) -> str | None:
+    """按公开契约归一候选 reason，避免同类 fatal tool 被 reason 拼写拆票。"""
+    reason = minefield.reason_code
+    if reason not in _MINEFIELD_REASONS or not isinstance(contract, dict):
+        return None
+    required = _minefield_allowed_missing_inputs(contract, tool_name, view)
+    missing_valid = (
+        bool(minefield.missing_inputs)
+        and set(minefield.missing_inputs).issubset(required)
+    )
+    if reason == "missing_required_input" and not missing_valid:
+        return None if contract.get("writes") else "unsafe_tool_call"
+    if reason == "unsafe_side_effect" and not contract.get("writes"):
+        return "unsafe_tool_call"
+    if reason == "unsafe_tool_call" and contract.get("writes"):
+        return None
+    return reason
+
+
+def _minefield_unavailable_inputs(
+    minefield: _CandidateMinefield, candidate: _CandidateGraph,
+    view: GeneratorTaskView, evidence: dict[str, PublicEvidence],
+) -> set[str]:
+    """剔除候选图或任务视图已可恢复的字段，返回仍缺失的输入。"""
     missing = set(minefield.missing_inputs)
-    if not missing:
-        return False
     for node in candidate.nodes:
         if node.turn_id != minefield.turn_id:
             continue
@@ -528,7 +1023,203 @@ def _minefield_inputs_available(
             values = node.data.get(group, {})
             if isinstance(values, dict):
                 missing.difference_update(values)
-    return not missing
+    return {
+        field for field in missing
+        if not _minefield_input_recoverable(field, minefield, view, evidence)
+    }
+
+
+def _minefield_input_recoverable(
+    field: str, minefield: _CandidateMinefield,
+    view: GeneratorTaskView, evidence: dict[str, PublicEvidence],
+) -> bool:
+    """从公开任务文本和可见 producer 契约判断单个缺失输入是否可恢复。"""
+    evidence_item = evidence.get(minefield.evidence_id)
+    if evidence_item is None:
+        return False
+    tool_name = _tool_name(evidence_item)
+    schema = _tool_parameter_schema(tool_name, view)
+    properties = schema.get("properties", {})
+    target_type = properties.get(field, {}).get("type") if isinstance(properties, dict) else None
+    instructions = _minefield_recovery_instructions(view)
+    return (
+        _public_literal_field_recoverable(field, target_type, instructions)
+        or _timestamp_input_recoverable(field, target_type, view, evidence, instructions)
+        or _producer_output_recoverable(field, target_type, view, evidence, instructions)
+    )
+
+
+def _write_operation_recoverable(
+    minefield: _CandidateMinefield, view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence],
+) -> bool:
+    """写操作的契约必需输入全部可恢复时，不得把它报告为 fatal。"""
+    contract = _contract_for_evidence(minefield.evidence_id, view, evidence)
+    required = {
+        str(item) for item in contract.get("required_dynamic_inputs", [])
+        if isinstance(item, str)
+    }
+    return all(
+        _minefield_input_recoverable(field, minefield, view, evidence)
+        for field in required
+    )
+
+
+def _instruction_content_recoverable(instruction: str) -> bool:
+    """从提醒/消息类指令中确定性识别自然语言 content。"""
+    patterns = (
+        r"(?is)\bremind me to\s+(.+?)(?=\s+(?:tomorrow|next|on|at|by|in)\b|$)",
+        r"(?is)\breminder to\s+(.+?)(?=\s+(?:tomorrow|next|on|at|by|in)\b|$)",
+    )
+    return any(
+        (match := re.search(pattern, instruction)) is not None
+        and bool(match.group(1).strip(" .?!"))
+        for pattern in patterns
+    )
+
+
+def _minefield_recovery_instructions(view: GeneratorTaskView) -> tuple[str, ...]:
+    """仅用于可靠性归并，收集 agent 指令与 evaluator-only 任务指令。"""
+    return (
+        *(turn.instruction for turn in view.turns),
+        *(
+            str(item.get("value")) for item in view.public_assets
+            if isinstance(item.get("value"), str)
+            and item.get("visibility") == "evaluator_only"
+        ),
+    )
+
+
+def _public_literal_field_recoverable(
+    field: str, target_type: object, instructions: tuple[str, ...]
+) -> bool:
+    """判断结构化公开标量是否可由指令中的唯一表达式恢复。"""
+    for instruction in instructions:
+        date_components = _unique_date_components(instruction)
+        time_components = _unique_time_components(instruction)
+        if field in date_components or field in time_components:
+            return True
+        if field == "phone_number" and re.search(r"(?<!\d)\+?\d{7,15}(?!\d)", instruction):
+            return True
+        if field == "content" and _instruction_content_recoverable(instruction):
+            return True
+        if target_type in {"integer", "number"} and _numeric_unit_value(instruction, field) is not None:
+            return True
+    return False
+
+
+def _timestamp_input_recoverable(
+    field: str, target_type: object, view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence], instructions: tuple[str, ...],
+) -> bool:
+    """仅把唯一日期加时间且可见转换工具的 timestamp 视为可恢复。"""
+    if (
+        target_type != "number"
+        or not (field == "timestamp" or field.endswith("_timestamp"))
+    ):
+        return False
+    if _relative_date_recoverable(view, evidence, instructions):
+        return True
+    for instruction in instructions:
+        if not (_unique_date_components(instruction) and _unique_time_components(instruction)):
+            continue
+        for item in evidence.values():
+            tool_name = _tool_name(item)
+            contract = _contract_for_evidence(item.evidence_id, view, evidence)
+            outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+            schema = _tool_parameter_schema(tool_name, view)
+            required = {
+                str(value) for value in schema.get("required", [])
+                if isinstance(value, str)
+            }
+            if (
+                not contract.get("writes")
+                and required == {"year", "month", "day", "hour", "minute", "second"}
+                and any(
+                    isinstance(output, dict) and output.get("type") == "number"
+                    for output in outputs.values()
+                )
+            ):
+                return True
+    return False
+
+
+def _relative_date_recoverable(
+    view: GeneratorTaskView, evidence: dict[str, PublicEvidence],
+    instructions: tuple[str, ...],
+) -> bool:
+    """在当前时间和日期分解工具可见时，恢复明确的相对日期语义。"""
+    relative_date = any(
+        re.search(
+            r"(?is)\b(?:tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:in|after)\s+(?:\d+|one|two)\s+(?:day|week)s?)\b",
+            instruction,
+        ) is not None
+        for instruction in instructions
+    )
+    if not relative_date:
+        return False
+    has_current = has_datetime_info = False
+    for item in evidence.values():
+        tool_name = _tool_name(item)
+        contract = _contract_for_evidence(item.evidence_id, view, evidence)
+        outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+        schema = _tool_parameter_schema(tool_name, view)
+        required = set(schema.get("required", []))
+        numeric_output = any(
+            isinstance(output, dict) and output.get("type") == "number"
+            for output in outputs.values()
+        )
+        tokens = set(re.split(r"_", tool_name.casefold()))
+        if (
+            not contract.get("writes") and not required and numeric_output
+            and {"current", "timestamp"}.issubset(tokens)
+        ):
+            has_current = True
+        if (
+            not contract.get("writes") and required == {"timestamp"}
+            and {"year", "month", "day", "isoweekday"}.issubset(outputs)
+        ):
+            has_datetime_info = True
+    return has_current and has_datetime_info
+
+
+def _producer_output_recoverable(
+    field: str, target_type: object, view: GeneratorTaskView,
+    evidence: dict[str, PublicEvidence], instructions: tuple[str, ...],
+) -> bool:
+    """在任务语义匹配的只读 producer 输出中寻找同名或同后缀字段。"""
+    instruction_text = " ".join(instructions).casefold()
+    for item in evidence.values():
+        tool_name = _tool_name(item)
+        if not _producer_semantically_relevant(tool_name, instruction_text):
+            continue
+        contract = _contract_for_evidence(item.evidence_id, view, evidence)
+        outputs = contract.get("outputs", {}) if isinstance(contract, dict) else {}
+        schema = _tool_parameter_schema(tool_name, view)
+        required = schema.get("required", [])
+        if contract.get("writes") or not isinstance(outputs, dict) or required:
+            continue
+        for output_name, output in outputs.items():
+            compatible = (
+                isinstance(output, dict)
+                and (output_name == field or output_name.endswith(f"_{field}"))
+                and output.get("cardinality") == ["one"]
+                and _schema_types_compatible(output.get("type"), target_type)
+            )
+            if compatible:
+                return True
+    return False
+
+
+def _producer_semantically_relevant(tool_name: str, instruction_text: str) -> bool:
+    """用非通用词元重叠约束 producer 恢复，避免把无关全量搜索当成来源。"""
+    generic_tokens = {"search", "get", "find", "read", "list", "query", "with", "to", "by"}
+    tokens = {
+        token.removesuffix("s")
+        for token in re.split(r"[_]+", tool_name.casefold())
+        if token.isalpha() and token not in generic_tokens
+    }
+    return any(re.search(rf"\b{re.escape(token)}\b", instruction_text) for token in tokens)
 
 
 def _validate_tool_arguments(
@@ -570,11 +1261,24 @@ def _validate_value_source(
         if source_ref not in turn_sources and source_ref not in asset_sources and source_ref not in public_state_sources:
             return [_violation("unknown_public_source", batch_index, graph_index, node.turn_id, node.local_id, field, "public literal 来源不可见")]
         literal = parsed.value
-        if source_ref in asset_sources and asset_sources[str(source_ref)] != literal:
-            return [_violation("public_literal_mismatch", batch_index, graph_index, node.turn_id, node.local_id, field, "public literal 与来源值不一致")]
+        if source_ref in asset_sources:
+            asset_value = asset_sources[str(source_ref)]
+            literal_visible = (
+                _literal_appears_in_instruction(literal, asset_value, field)
+                if isinstance(asset_value, str) else asset_value == literal
+            )
+            if not literal_visible:
+                return [_violation("public_literal_mismatch", batch_index, graph_index, node.turn_id, node.local_id, field, "public literal 与来源值不一致")]
         if source_ref in turn_sources and not _literal_appears_in_instruction(
             literal, turn_sources[str(source_ref)], field
         ):
+            if _public_literal_derived_from_instruction(
+                literal, turn_sources[str(source_ref)], field
+            ):
+                return [_violation(
+                    "literal_derivation", batch_index, graph_index, node.turn_id,
+                    node.local_id, field, "public literal 由 instruction 结构化表达式确定性派生",
+                )]
             return [_violation("public_literal_mismatch", batch_index, graph_index, node.turn_id, node.local_id, field, "public literal 未在 instruction 中出现")]
         if source_ref in public_state_sources and public_state_sources[str(source_ref)] != literal:
             return [_violation("public_literal_mismatch", batch_index, graph_index, node.turn_id, node.local_id, field, "public literal 与 public_state 来源值不一致")]
@@ -676,46 +1380,53 @@ def _validate_schema_value(
 
 
 def _canonicalize_candidate_graph(
-    candidate: _CandidateGraph, view: GeneratorTaskView, batch_index: int, graph_index: int
+    candidate: _CandidateGraph, view: GeneratorTaskView, batch_index: int,
+    graph_index: int, status: Literal["valid", "partial"],
 ) -> _CanonicalGraphObservation:
-    base_by_id = {node.local_id: _node_identity(node, view) for node in candidate.nodes}
+    base_by_id = {
+        node.local_id: _node_identity(node, view, candidate)
+        for node in candidate.nodes
+    }
     predecessors = {node.local_id: [] for node in candidate.nodes}
     successors = {node.local_id: [] for node in candidate.nodes}
     for source, target in candidate.edges:
+        if source not in predecessors or target not in successors:
+            continue
         predecessors[target].append(source)
         successors[source].append(target)
     order, _ = topological_order(predecessors, successors)
     order_index = {local_id: index for index, local_id in enumerate(order)}
-    occurrence: Counter[str] = Counter()
     canonical_nodes: list[_CanonicalNode] = []
     local_to_key: dict[str, str] = {}
-    ordered_nodes: list[_CandidateNode] = []
     grouped: dict[str, list[_CandidateNode]] = defaultdict(list)
     for node in candidate.nodes:
         grouped[stable_json_digest(base_by_id[node.local_id])].append(node)
-    for base_digest in sorted(grouped):
-        ordered_nodes.extend(sorted(grouped[base_digest], key=lambda item: (
-            order_index[item.local_id],
-            tuple(sorted(stable_json_digest(base_by_id[source]) for source in predecessors[item.local_id])),
-            tuple(sorted(stable_json_digest(base_by_id[target]) for target in successors[item.local_id])),
-            item.local_id,
-        )))
-    for node in ordered_nodes:
-        base_digest = stable_json_digest(base_by_id[node.local_id])
-        index = occurrence[base_digest]
-        occurrence[base_digest] += 1
-        key = stable_json_digest((base_by_id[node.local_id], index))
-        local_to_key[node.local_id] = key
+
+    # 同一 observation 内相同 operation identity 只保留一个代表节点；
+    # local_nodes 仍记录全部 local ID，供动态 binding 解析 producer 使用。
+    key_by_digest = {
+        base_digest: stable_json_digest(base_by_id[nodes[0].local_id])
+        for base_digest, nodes in grouped.items()
+    }
+    for node in candidate.nodes:
+        local_to_key[node.local_id] = key_by_digest[
+            stable_json_digest(base_by_id[node.local_id])
+        ]
     local_nodes = tuple(sorted((
         node.local_id,
         local_to_key[node.local_id],
         node.turn_id,
         str(node.data.get("evidence_id") or node.data.get("executor_evidence_id") or ""),
     ) for node in candidate.nodes))
-    for node in ordered_nodes:
+    for base_digest, nodes in sorted(grouped.items()):
+        representative = min(nodes, key=lambda item: (
+            order_index[item.local_id],
+            tuple(sorted(stable_json_digest(base_by_id[source]) for source in predecessors[item.local_id])),
+            tuple(sorted(stable_json_digest(base_by_id[target]) for target in successors[item.local_id])),
+            item.local_id,
+        ))
         canonical_nodes.append(_CanonicalNode(
-            local_to_key[node.local_id], base_by_id[node.local_id], node,
-            local_nodes,
+            key_by_digest[base_digest], base_by_id[representative.local_id], representative, local_nodes,
         ))
     edges = tuple(sorted((local_to_key[source], local_to_key[target]) for source, target in candidate.edges))
     minefields = tuple(sorted(candidate.minefields, key=lambda item: (item.turn_id, item.evidence_id, item.reason_code, item.missing_inputs)))
@@ -725,47 +1436,173 @@ def _canonicalize_candidate_graph(
         "edges": edges,
         "minefields": json_safe(minefields),
     })
-    return _CanonicalGraphObservation(batch_index, graph_index, candidate.dispositions, tuple(canonical_nodes), edges, minefields, signature)
+    return _CanonicalGraphObservation(batch_index, graph_index, status, candidate.dispositions, tuple(canonical_nodes), edges, minefields, signature)
 
 
-def _node_identity(node: _CandidateNode, view: GeneratorTaskView) -> JsonObject:
+def _node_identity(
+    node: _CandidateNode, view: GeneratorTaskView,
+    candidate: _CandidateGraph | None = None,
+) -> JsonObject:
+    """提取跨候选稳定的 operation identity；字段 binding 由独立多数聚合决定。"""
     data = node.data
     if node.kind == "emit_message":
-        return {"turn_id": node.turn_id, "kind": node.kind, "sender": str(data.get("sender", "")).upper(),
-                "recipient": str(data.get("recipient", "")).upper(),
-                "content_requirement": " ".join(str(data.get("content_requirement", "")).split()).casefold()}
+        if candidate is not None and _has_dynamic_answer_producer(node, candidate, view):
+            return {
+                "turn_id": node.turn_id, "kind": node.kind,
+                "answer": _dynamic_answer_identity(node, candidate, view),
+            }
+        return {
+            "turn_id": node.turn_id, "kind": node.kind,
+            "sender": str(data.get("sender", "")).upper(),
+            "recipient": str(data.get("recipient", "")).upper(),
+            "content_requirement": " ".join(str(data.get("content_requirement", "")).split()).casefold(),
+        }
     if node.kind == "tool_call":
-        identity: JsonObject = {"turn_id": node.turn_id, "kind": node.kind, "evidence_id": str(data.get("evidence_id")), "arguments": {}}
-        arguments = identity["arguments"]
-        assert isinstance(arguments, dict)
-        for name, value in sorted(dict(data.get("arguments", {})).items()):
-            arguments[name] = _source_identity(value)
-        return identity
-    identity = {"turn_id": node.turn_id, "kind": node.kind, "namespace": str(data.get("namespace")),
-                "operation": str(data.get("operation")), "cardinality": str(data.get("cardinality")), "match": {}, "values": {}}
+        return {
+            "turn_id": node.turn_id, "kind": node.kind,
+            "evidence_id": str(data.get("evidence_id")),
+        }
+    bindings: JsonObject = {}
     for group in ("match", "values"):
-        target = identity[group]
-        assert isinstance(target, dict)
-        for name, value in sorted(dict(data.get(group, {})).items()):
-            target[name] = _source_identity(value)
-    return identity
+        target = dict(data.get(group, {})) if isinstance(data.get(group, {}), dict) else {}
+        bindings.update({
+            f"{group}.{name}": _binding_intent(value)
+            for name, value in sorted(target.items())
+        })
+    return {
+        "turn_id": node.turn_id, "kind": node.kind,
+        "namespace": str(data.get("namespace")), "operation": str(data.get("operation")),
+        "state_intents": bindings,
+    }
 
 
-def _source_identity(value: object) -> JsonValue:
+def _has_dynamic_answer_producer(
+    node: _CandidateNode, candidate: _CandidateGraph, view: GeneratorTaskView
+) -> bool:
+    """判断 emit_message 是否直接依赖工具输出或计算结果。"""
+    nodes_by_id = {item.local_id: item for item in candidate.nodes}
+    return any(
+        (producer := nodes_by_id.get(source)) is not None
+        and producer.kind == "tool_call"
+        for source, target in candidate.edges
+        if target == node.local_id
+    )
+
+
+def _dynamic_answer_identity(
+    node: _CandidateNode, candidate: _CandidateGraph, view: GeneratorTaskView
+) -> JsonObject:
+    """按确定性 producer 类别归一动态答案 identity，忽略措辞差异。"""
+    nodes_by_id = {item.local_id: item for item in candidate.nodes}
+    producers = [
+        producer for source, target in candidate.edges if target == node.local_id
+        and (producer := nodes_by_id.get(source)) is not None
+        and producer.kind == "tool_call"
+    ]
+    evidence_by_id = {item.evidence_id: item for item in view.evidence_catalog}
+    tools = sorted({
+        _tool_name(evidence_by_id[str(item.data["evidence_id"])])
+        for item in producers
+        if str(item.data.get("evidence_id")) in evidence_by_id
+    })
+    if any(tool == "timestamp_diff" for tool in tools):
+        answer_kind = "duration_answer"
+    elif any(
+        bool(contract.get("writes"))
+        for tool in tools
+        if isinstance((contract := view.tool_contracts.get(tool, {})), dict)
+    ):
+        answer_kind = "operation_confirmation"
+    else:
+        answer_kind = "tool_result_answer"
+    return {"kind": answer_kind, "producer_tools": tools}
+
+def _binding_intent(value: object) -> JsonObject:
+    """提取参与 operation 意图的稳定绑定语义，忽略动态 selector 表述。"""
     source = _value_source(value)
     if source is None:
-        return None
+        return {"mode": "invalid"}
     if source.source == "public_literal":
-        return {
-            "source": "public_literal",
-            "source_ref": source.source_ref,
-            "value": source.value,
-        }
-    return {
-        "source": "node_output",
-        "selector": source.selector,
-        "cardinality": source.cardinality,
-    }
+        return {"mode": "public"}
+    return {"mode": "dynamic"}
+
+def _public_literal_derived_from_instruction(
+    value: JsonValue, instruction: str, field: str
+) -> bool:
+    """判断标量值是否可由 instruction 中的结构化日期/时间/数量表达式唯一派生。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return False
+    field_name = field.rsplit(".", 1)[-1].casefold()
+    numeric_value: int | None
+    if isinstance(value, int):
+        numeric_value = value
+    elif isinstance(value, float) and value.is_integer():
+        numeric_value = int(value)
+    else:
+        numeric_value = int(value) if str(value).isdigit() else None
+
+    date_components = _unique_date_components(instruction)
+    if field_name in {"year", "month", "day"} and numeric_value is not None:
+        return date_components.get(field_name) == numeric_value
+    if field_name in {"hour", "minute", "second"} and numeric_value is not None:
+        return _unique_time_components(instruction).get(field_name) == numeric_value
+    if numeric_value is not None:
+        return _numeric_unit_value(instruction, field_name) == numeric_value
+    return False
+
+
+def _unique_date_components(instruction: str) -> dict[str, int]:
+    """解析唯一可判定的 ISO 或数字斜杠日期，不猜测歧义格式。"""
+    candidates: list[tuple[int, int, int]] = []
+    for match in re.finditer(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", instruction):
+        first, second, year = (int(match.group(index)) for index in (1, 2, 3))
+        for month, day in ((first, second), (second, first)):
+            try:
+                date(year, month, day)
+            except ValueError:
+                continue
+            candidates.append((year, month, day))
+    for match in re.finditer(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)", instruction):
+        year, month, day = (int(match.group(index)) for index in (1, 2, 3))
+        try:
+            date(year, month, day)
+        except ValueError:
+            continue
+        candidates.append((year, month, day))
+    unique = set(candidates)
+    if len(unique) != 1:
+        return {}
+    year, month, day = next(iter(unique))
+    return {"year": year, "month": month, "day": day}
+
+
+def _unique_time_components(instruction: str) -> dict[str, int]:
+    """解析带 AM/PM 的唯一时间；缺省 minute 与 second 为 0。"""
+    candidates: list[tuple[int, int, int]] = []
+    for match in re.finditer(
+        r"(?<!\d)(1[0-2]|0?[1-9])(?::([0-5]?\d))?\s*(am|pm)(?!\d)",
+        instruction, re.IGNORECASE,
+    ):
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        meridiem = match.group(3).casefold()
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
+        candidates.append((hour, minute, 0))
+    if len(set(candidates)) != 1:
+        return {}
+    hour, minute, second = next(iter(set(candidates)))
+    return {"hour": hour, "minute": minute, "second": second}
+
+
+def _numeric_unit_value(instruction: str, field_name: str) -> int | None:
+    """解析 `2 days` 这类数字与单位名一致的确定性数量。"""
+    singular = field_name.removesuffix("s")
+    pattern = rf"(?<!\d)(\d+)(?:\.0+)?\s+{re.escape(singular)}s?(?!\w)"
+    match = re.search(pattern, instruction, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _literal_appears_in_instruction(
@@ -919,11 +1756,20 @@ def _aggregate_and_compile(
             issues.append(_violation("disposition_conflict", message=f"{turn.turn_id} 无 disposition 严格多数", turn_id=turn.turn_id))
     node_occurrences: dict[str, list[_CanonicalNode]] = defaultdict(list)
     for observation in observations:
+        observed_keys: set[str] = set()
         for node in observation.nodes:
+            if node.key in observed_keys:
+                continue
+            observed_keys.add(node.key)
             node_occurrences[node.key].append(node)
+    # set_state 表示最终副作用，允许在候选图对半支持时保留；
+    # 普通 tool_call 仍使用严格多数，避免引入过多只读工具误报。
     kept = {
         key: values for key, values in node_occurrences.items()
-        if 2 * len(values) > n
+        if (
+            2 * len(values) > n
+            or (values[0].candidate.kind == "set_state" and 2 * len(values) >= n)
+        )
         and (
             dispositions.get(values[0].candidate.turn_id) == "executable"
             or values[0].candidate.kind == "emit_message"
@@ -1005,7 +1851,7 @@ def _aggregate_and_compile(
     issues.extend(prune_issues)
     node_ids = {item.milestone_id for item in milestones}
     compiled_edges = transitive_reduction(node_ids, [edge for edge in compiled_edges if edge[0] in node_ids and edge[1] in node_ids])
-    minefields = _compile_minefields(observations, n, evidence)
+    minefields = _compile_minefields(observations, n, evidence, view)
     fatal_tools = {
         (str(item.metadata.get("turn_id")), str(item.constraints[0].expected))
         for item in minefields
@@ -1455,9 +2301,17 @@ def _compile_node(
 ) -> Milestone | None:
     node = values[0].candidate
     milestone_id = f"m_{stable_json_digest((node.turn_id, key))[:16]}"
+    support_policy = (
+        "set_state_half"
+        if node.kind == "set_state"
+        and observation_count
+        and 2 * len(values) == observation_count
+        else "graph_ensemble_strict_majority"
+    )
     metadata: JsonObject = {
         "turn_id": node.turn_id, "canonical_key": key,
-        "necessity_basis": "graph_ensemble_majority", "support_count": len(values),
+        "necessity_basis": "graph_ensemble_majority",
+        "support_policy": support_policy, "support_count": len(values),
         "observation_count": observation_count, "support_ratio": len(values) / observation_count if observation_count else 0.0,
         "global_unique_graph_count": unique_count,
     }
@@ -1480,23 +2334,42 @@ def _compile_node(
             stage_goal_semantics={"kind": StageGoalSemanticKind.TOOL_CALL.value, "tool_name": tool_name,
                                   "arguments": semantic_arguments, "evidence_source": "trajectory_or_structured_scorer", "user_visible_required": False},
         )]
-        arguments = dict(node.data.get("arguments", {}))
-        for name, source in sorted(arguments.items()):
-            if not isinstance(source, dict):
-                continue
-            if source.get("source") == "public_literal":
-                semantic_arguments[name] = source
+        argument_values = [
+            dict(value.candidate.data.get("arguments", {}))
+            for value in values
+            if isinstance(value.candidate.data.get("arguments", {}), dict)
+        ]
+        field_names = sorted({name for arguments in argument_values for name in arguments})
+        required_fields = {
+            str(name)
+            for name in _tool_parameter_schema(tool_name, view).get("required", [])
+            if isinstance(name, str)
+        }
+
+        # operation 存在性与参数 binding 分离：先扫描全部支持者并集，
+        # 再对每个字段独立执行严格多数或合法缺席。
+        for name in field_names:
+            present_count = sum(name in arguments for arguments in argument_values)
+            binding = _majority_binding(
+                values, "arguments", name, view=view, evidence=evidence,
+                allow_contract_arbitration=False,
+            )
+            if binding is not None:
+                semantic_arguments[name] = {"source": "node_output", **binding}
                 constraints.append(Constraint(f"{milestone_id}_arg_{name}", ConstraintTarget.TOOL_CALL,
-                                              f"$.arguments.{name}", Operator.EQUALS, expected=source.get("value"), hard=True))
-            else:
-                binding = _majority_binding(values, "arguments", name, view=view, evidence=evidence)
-                if binding is not None:
-                    semantic_arguments[name] = {"source": "node_output", **binding}
-                    constraints.append(Constraint(f"{milestone_id}_arg_{name}", ConstraintTarget.TOOL_CALL,
-                                                  f"$.arguments.{name}", Operator.EQUALS,
-                                                  expected_template={"$binding": binding}, hard=True))
-                else:
-                    metadata["argument_binding_status"] = "unresolved"
+                                              f"$.arguments.{name}", Operator.EQUALS,
+                                              expected_template={"$binding": binding}, hard=True))
+                continue
+            literal = _majority_literal(values, "arguments", name)
+            if literal is not None:
+                semantic_arguments[name] = literal
+                constraints.append(Constraint(f"{milestone_id}_arg_{name}", ConstraintTarget.TOOL_CALL,
+                                              f"$.arguments.{name}", Operator.EQUALS,
+                                              expected=literal.get("value"), hard=True))
+                continue
+            if name not in required_fields and 2 * present_count <= len(values):
+                continue
+            metadata["argument_binding_status"] = "unresolved"
         return Milestone(milestone_id, f"执行 {tool_name}", f"{node.turn_id} 执行 {tool_name}", constraints,
                          matching_route=evidence_item.matching_route, metadata=metadata)
     executor_evidence_id = _majority_executor(values)
@@ -1518,10 +2391,17 @@ def _compile_node(
             if isinstance(source, dict) and source.get("source") == "node_output":
                 binding = _majority_binding(values, group, name, view=view, evidence=evidence)
                 if binding is None:
-                    return None
-                target[name] = {"source": "node_output", **binding}
+                    metadata["field_binding_status"] = "unresolved"
+                    target[name] = {"source": "unresolved_binding", "group": group}
+                else:
+                    target[name] = {"source": "node_output", **binding}
             else:
-                target[name] = source
+                literal = _majority_literal(values, group, name)
+                if literal is None:
+                    metadata["field_binding_status"] = "unresolved"
+                    target[name] = {"source": "unresolved_literal", "group": group}
+                else:
+                    target[name] = literal
     operation = str(node.data["operation"])
     measure = {"add": "addition_similarity", "update": "update_similarity", "set": "update_similarity", "remove": "removal_similarity"}[operation]
     constraint = Constraint(
@@ -1539,6 +2419,7 @@ def _majority_binding(
     name: str,
     view: GeneratorTaskView | None = None,
     evidence: dict[str, PublicEvidence] | None = None,
+    allow_contract_arbitration: bool = True,
 ) -> JsonObject | None:
     """针对参数或状态字段的动态绑定执行严格多数聚合，并在存在歧义时通过契约进行仲裁。"""
     counts: Counter[str] = Counter()
@@ -1573,7 +2454,7 @@ def _majority_binding(
         return result
 
     # 契约辅助裁决兜底: 如果无绝对多数，但候选中有契约显式支持的 selector，且唯一合法
-    if view is not None and evidence is not None and payloads:
+    if allow_contract_arbitration and view is not None and evidence is not None and payloads:
         contract_supported: list[JsonObject] = []
         for binding in payloads.values():
             prod_evidence_id = binding.get("producer_evidence_id")
@@ -1590,6 +2471,28 @@ def _majority_binding(
             return result
 
     return None
+
+
+def _majority_literal(
+    values: list[_CanonicalNode], group: str, name: str
+) -> JsonObject | None:
+    """对同一 operation 下的公开 literal binding 执行严格多数聚合。"""
+    counts: Counter[str] = Counter()
+    payloads: dict[str, JsonObject] = {}
+    for value in values:
+        source = dict(value.candidate.data.get(group, {})).get(name)
+        if not isinstance(source, dict) or source.get("source") != "public_literal":
+            continue
+        payload = {
+            "source": "public_literal",
+            "source_ref": source.get("source_ref"),
+            "value": source.get("value"),
+        }
+        digest = stable_json_digest(payload)
+        counts[digest] += 1
+        payloads[digest] = payload
+    winner = next((digest for digest, count in counts.items() if 2 * count > len(values)), None)
+    return payloads[winner] if winner is not None else None
 
 
 def _majority_executor(values: list[_CanonicalNode]) -> str | None:
@@ -1636,7 +2539,10 @@ def _binding_edges(
             for name in dict(value.candidate.data.get(group, {}))
         }
         for group, name in sorted(field_names):
-            binding = _majority_binding(values, group, name, view=view, evidence=evidence)
+            binding = _majority_binding(
+                values, group, name, view=view, evidence=evidence,
+                allow_contract_arbitration=group != "arguments",
+            )
             if binding is None:
                 continue
             producer_id = binding.get("source_milestone_id")
@@ -1671,26 +2577,75 @@ def _acyclic_edges(node_ids: set[str], edges: list[tuple[str, str]], issues: lis
 
 
 def _compile_minefields(
-    observations: list[_CanonicalGraphObservation], n: int, evidence: dict[str, PublicEvidence]
+    observations: list[_CanonicalGraphObservation], n: int,
+    evidence: dict[str, PublicEvidence], view: GeneratorTaskView,
 ) -> list[Minefield]:
-    counts: Counter[_CandidateMinefield] = Counter(item for observation in observations for item in set(observation.minefields))
+    """先按 fatal tool identity 投票，再按契约确定 reason。"""
+    support_counts: Counter[tuple[str, str]] = Counter()
+    reason_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    input_counts: dict[tuple[str, str], Counter[tuple[str, ...]]] = defaultdict(Counter)
+    for observation in observations:
+        candidates_by_core: dict[tuple[str, str], set[_CandidateMinefield]] = defaultdict(set)
+        for item in set(observation.minefields):
+            core = (item.turn_id, item.evidence_id)
+            candidates_by_core[core].add(item)
+        for core, candidates in candidates_by_core.items():
+            support_counts[core] += 1
+            for item in candidates:
+                reason_counts[core][item.reason_code] += 1
+                if item.reason_code == "missing_required_input":
+                    input_counts[core][item.missing_inputs] += 1
+
     result: list[Minefield] = []
-    for item, support in sorted(counts.items(), key=lambda pair: (pair[0].turn_id, pair[0].evidence_id)):
-        if 2 * support <= n:
-            continue
-        evidence_item = evidence[item.evidence_id]
+    for core, support in sorted(support_counts.items()):
+        turn_id, evidence_id = core
+        evidence_item = evidence[evidence_id]
         tool_name = _tool_name(evidence_item)
-        minefield_id = f"mf_{stable_json_digest(item)[:16]}"
+        contract = _contract_for_evidence(evidence_id, view, evidence)
+        writes = bool(contract.get("writes"))
+        support_policy = "write_half" if writes else "readonly_third"
+        # readonly fatal 更稀疏；写工具错误仍保持半数支持以控制副作用误报。
+        support_multiple = 2 if writes else 3
+        if support * support_multiple < n:
+            continue
+        required = _minefield_allowed_missing_inputs(contract, tool_name, view)
+        valid_missing = {
+            item for item in input_counts[core]
+            if item and set(item).issubset(required)
+        }
+        if valid_missing:
+            reason_code = "missing_required_input"
+            counts = input_counts[core]
+            max_count = max(counts[item] for item in valid_missing)
+            winners = [item for item in valid_missing if counts[item] == max_count]
+            missing_inputs = min(
+                winners,
+                key=lambda item: (-len(set(item) & required), item),
+            )
+        elif contract.get("writes") and reason_counts[core]["unsafe_side_effect"]:
+            reason_code, missing_inputs = "unsafe_side_effect", ()
+        elif not contract.get("writes") and reason_counts[core]["unsafe_tool_call"]:
+            reason_code, missing_inputs = "unsafe_tool_call", ()
+        else:
+            continue
+        reason_support_count = reason_counts[core][reason_code]
+        # 最终 reason 也必须有稳定支持，避免孤立候选造成 fatal 误报。
+        if reason_support_count < 2:
+            continue
+        minefield_id = f"mf_{stable_json_digest((core, reason_code, missing_inputs))[:16]}"
         result.append(Minefield(
-            minefield_id, f"禁止 {tool_name}", f"{item.turn_id} 中 {item.reason_code}", "fatal",
+            minefield_id, f"禁止 {tool_name}", f"{turn_id} 中 {reason_code}", "fatal",
             [Constraint(f"{minefield_id}_trigger", evidence_item.target, evidence_item.selector,
                         evidence_item.operator, expected=tool_name, hard=True, evaluator_hint=evidence_item.evaluator_hint)],
             MinefieldPenalty("fixed", 1.0),
-            {"turn_id": item.turn_id, "evidence_id": item.evidence_id, "reason_code": item.reason_code,
-             "missing_inputs": list(item.missing_inputs), "support_count": support, "observation_count": n},
+            {"turn_id": turn_id, "evidence_id": evidence_id, "reason_code": reason_code,
+             "missing_inputs": list(missing_inputs), "support_count": support,
+             "observation_count": n, "support_policy": support_policy,
+             "reason_support_count": reason_support_count,
+             "reason_support_policy": "min_two_observations",
+             "reason_support_counts": dict(reason_counts[core])},
         ))
     return result
-
 
 def _terminal_node(node: _CandidateNode, view: GeneratorTaskView) -> bool:
     if node.kind in {"set_state", "emit_message"}:
@@ -1747,8 +2702,14 @@ def _empty_graph(view: GeneratorTaskView, reason: str) -> MilestoneGraph:
     return MilestoneGraph(metadata={"source": "generated", "view_digest": view.digest(), "empty_reason": reason})
 
 
-def _candidate_summary(batch_index: int, graph_index: int, status: str, signature: str | None) -> JsonObject:
-    return {"batch_index": batch_index, "graph_index": graph_index, "status": status, "signature": signature}
+def _candidate_summary(
+    batch_index: int, graph_index: int, status: str,
+    signature: str | None, candidate_status: str = "valid",
+) -> JsonObject:
+    return {
+        "batch_index": batch_index, "graph_index": graph_index, "status": status,
+        "candidate_status": candidate_status, "signature": signature,
+    }
 
 
 def _assert_no_forbidden_generation_inputs(value: object, path: str = "payload") -> None:

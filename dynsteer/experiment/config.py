@@ -11,13 +11,14 @@ from dynsteer.experiment.model import (
 )
 from dynsteer.harness.config import (
     evaluation_strategy_from_mapping,
+    RUN_CONFIG_CONTROL_FIELDS,
     load_benchmark_manifest_metadata,
     milestone_generation_from_mapping,
     threshold_config_from_mapping,
 )
 from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.model import JsonObject, ThresholdConfig
-from dynsteer.utils import optional_str, read_json_file, required_str
+from dynsteer.utils import assert_execution_neutral, optional_str, read_json_file, required_str
 
 
 def load_experiment_config(path: Path | str) -> JsonObject:
@@ -28,6 +29,9 @@ def load_experiment_config(path: Path | str) -> JsonObject:
     if not str(config_path).strip():
         raise ValueError("实验配置路径不能为空")
     data = read_json_file(config_path, "实验配置", dict)
+    assert_execution_neutral(data, "实验配置")
+    experiment_id = required_str(data, "experiment_id", "实验配置")
+    _assert_single_benchmark(data)
     data["_config_path"] = str(config_path.resolve())
     return data
 
@@ -76,6 +80,7 @@ def expand_experiment_matrix(config: Mapping[str, Any]) -> list[ExperimentRunSpe
             model_data = _spec_mapping(model_spec, "model_id")
             model_id = required_str(model_data, "model_id", "实验配置")
             model_metadata = _metadata(model_data)
+            _validate_model_client(benchmark, model_data, model_id)
 
             for method_spec in methods:
                 method_data = _spec_mapping(method_spec, "method")
@@ -128,6 +133,7 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
     """把实验 run spec 转换为当前 harness 可用的 HarnessRunConfig。"""
     if spec is None:
         raise ValueError("spec 不能为空")
+    metadata = {**_runtime_metadata(spec), **spec.to_metadata()}
     return HarnessRunConfig(
         benchmark=spec.benchmark,
         data_root=spec.data_root,
@@ -136,8 +142,20 @@ def build_harness_config(spec: ExperimentRunSpec) -> HarnessRunConfig:
         results_dir=spec.results_dir,
         use_milestone_graph=spec.strategy.use_milestone_graph,
         milestone_generation=spec.milestone_generation,
-        metadata=spec.to_metadata(),
+        metadata=metadata,
     )
+
+
+def _runtime_metadata(spec: ExperimentRunSpec) -> JsonObject:
+    raw_specs = read_json_file(spec.data_root / "run_configs.json", "run_configs.json", list)
+    if not raw_specs or not isinstance(raw_specs[0], dict):
+        raise ValueError("run_configs.json 至少需要包含一个 JSON 对象")
+    metadata = {str(key): value for key, value in raw_specs[0].items() if key not in RUN_CONFIG_CONTROL_FIELDS}
+    metadata.update(load_benchmark_manifest_metadata(spec.benchmark, spec.data_root))
+    for key in ("agent_client", "user_client", "client"):
+        if key in raw_specs[0]:
+            metadata[key] = raw_specs[0][key]
+    return metadata
 
 
 def _list_specs(config: Mapping[str, Any], key: str, default: list[object] | None = None) -> list[object]:
@@ -210,19 +228,42 @@ def _judge_config(profiles: dict[str, JsonObject], profile_name: str | None) -> 
     if profile_name not in profiles:
         raise ValueError(f"judge profile 不存在: {profile_name}")
     profile = dict(profiles[profile_name])
-    for forbidden in ("api_key", "base_url"):
-        if forbidden in profile:
-            raise ValueError(f"judge profile 禁止配置 {forbidden}")
-    api_key_env = optional_str(profile.get("api_key_env"))
-    if api_key_env is None:
-        raise ValueError("judge profile 必须提供非空 api_key_env")
-    profile["api_key_env"] = api_key_env
-    base_url_env = optional_str(profile.get("base_url_env"))
-    if "base_url_env" in profile:
-        if base_url_env is None:
-            raise ValueError("judge profile 的 base_url_env 不能为空")
-        profile["base_url_env"] = base_url_env
+    for key in ("provider", "model", "api_key", "base_url"):
+        if optional_str(profile.get(key)) is None:
+            raise ValueError(f"judge profile 必须提供非空 {key}")
+    if not str(profile["base_url"]).startswith("https://"):
+        raise ValueError("judge profile base_url 必须以 https:// 开头")
     return profile
+
+
+def _validate_model_client(benchmark: str, model_data: Mapping[str, Any], model_id: str) -> None:
+    if benchmark in {"swebench_pro", "skillsbench"}:
+        harness_metadata = model_data.get("harness_metadata")
+        client = harness_metadata.get("client") if isinstance(harness_metadata, dict) else None
+        if not isinstance(client, dict):
+            raise ValueError(f"模型 {model_id} 缺少 harness_metadata.client")
+        if optional_str(client.get("model")) != model_id:
+            raise ValueError(f"模型 {model_id} 的 harness_metadata.client.model 必须与 model_id 一致")
+        for key in ("api_key", "base_url"):
+            if optional_str(client.get(key)) is None:
+                raise ValueError(f"模型 {model_id} 的 harness_metadata.client.{key} 不能为空")
+        if not str(client["base_url"]).startswith("https://"):
+            raise ValueError(f"模型 {model_id} 的 base_url 必须以 https:// 开头")
+        return
+    if benchmark != "toolsandbox":
+        return
+    harness_metadata = model_data.get("harness_metadata")
+    agent_client = harness_metadata.get("agent_client") if isinstance(harness_metadata, dict) else None
+    if not isinstance(agent_client, dict) or optional_str(agent_client.get("api_key")) is None:
+        raise ValueError(f"ToolSandbox 模型 {model_id} 缺少 harness_metadata.agent_client.api_key")
+
+
+def _assert_single_benchmark(config: Mapping[str, Any]) -> None:
+    benchmarks = config.get("benchmarks")
+    if not isinstance(benchmarks, list) or len(benchmarks) != 1 or not isinstance(benchmarks[0], dict):
+        raise ValueError("每份实验配置只能包含一个 benchmark spec")
+    if optional_str(benchmarks[0].get("benchmark")) is None:
+        raise ValueError("benchmarks[0].benchmark 不能为空")
 
 
 def _case_ids(value: object) -> tuple[str, ...] | None:
@@ -233,6 +274,8 @@ def _case_ids(value: object) -> tuple[str, ...] | None:
     case_ids = tuple((str(item).strip() for item in value))
     if any(not item for item in case_ids):
         raise ValueError("case_ids/scenarios 不能包含空字符串")
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("case_ids/scenarios 不能包含重复项")
     return case_ids or None
 
 

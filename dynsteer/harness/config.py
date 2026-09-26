@@ -8,6 +8,7 @@ from dynsteer.harness.model import HarnessRunConfig
 from dynsteer.milestone.model import MilestoneGenerationConfig
 from dynsteer.model import EvaluationLevel, JsonObject, ThresholdConfig
 from dynsteer.utils import (
+    assert_execution_neutral,
     normalize_client_config,
     optional_str,
     parse_int_value,
@@ -16,10 +17,12 @@ from dynsteer.utils import (
 )
 
 DEFAULT_READY_FRONTIER_PATIENCE = 8
-_CLIENT_CONFIG_KEYS = ("agent_client", "user_client")
-_RUN_CONFIG_CONTROL_FIELDS = {
+_CLIENT_CONFIG_KEYS = ("agent_client", "user_client", "client")
+RUN_CONFIG_CONTROL_FIELDS = {
     "scenarios",
     "ready_frontier_patience",
+    "stop_on_ready_frontier_no_progress",
+    "ready_frontier_min_delta",
     "thresholds",
     "strategy",
     "name",
@@ -50,6 +53,7 @@ def load_benchmark_manifest_metadata(benchmark: str, data_root: Path) -> JsonObj
         raise ValueError("data_root 不能为空")
     normalized_benchmark = benchmark.strip().lower()
     manifest: dict[str, Any] = read_json_file(data_root / "benchmark.json", "benchmark.json", dict)
+    assert_execution_neutral(manifest, "benchmark.json")
     manifest_benchmark = required_str(manifest, "benchmark", "benchmark.json").lower()
     if manifest_benchmark != normalized_benchmark:
         raise ValueError(f"benchmark.json 中的 benchmark 必须是 {normalized_benchmark}")
@@ -72,6 +76,14 @@ def load_benchmark_manifest_metadata(benchmark: str, data_root: Path) -> JsonObj
     )
     if manifest_max_workers is not None:
         metadata["benchmark_max_workers"] = manifest_max_workers
+    if normalized_benchmark == "swebench_pro":
+        metadata["dataset_archive"] = required_str(manifest, "dataset_archive", "benchmark.json")
+        metadata["dockerhub_username"] = required_str(manifest, "dockerhub_username", "benchmark.json")
+    elif normalized_benchmark == "skillsbench":
+        condition = required_str(manifest, "condition", "benchmark.json")
+        if condition not in {"with-skills", "without-skills"}:
+            raise ValueError("benchmark.json condition 只支持 with-skills/without-skills")
+        metadata["condition"] = condition
     return metadata
 
 
@@ -190,24 +202,31 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
     if not raw_specs:
         raise ValueError("run_configs.json 至少需要包含一组运行配置")
     configs: list[HarnessRunConfig] = []
+    config_benchmark = benchmark.strip().lower()
     ready_frontier_patience = load_ready_frontier_patience_from_env()
     for index, raw_spec in enumerate(raw_specs):
         if not isinstance(raw_spec, dict):
             raise ValueError(f"run_configs.json 第 {index} 项必须是 JSON 对象")
+        assert_execution_neutral(raw_spec, f"run_configs.json 第 {index} 项")
         thresholds = threshold_config_from_mapping(raw_spec.get("thresholds") if isinstance(raw_spec.get("thresholds"), dict) else None)
         strategy = evaluation_strategy_from_mapping(raw_spec.get("strategy") if isinstance(raw_spec.get("strategy"), dict) else None)
         milestone_generation = milestone_generation_from_mapping(
             raw_spec.get("milestone_generation")
         )
-        metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key not in _RUN_CONFIG_CONTROL_FIELDS}
+        metadata: JsonObject = {str(key): value for key, value in raw_spec.items() if key not in RUN_CONFIG_CONTROL_FIELDS}
         metadata.update({key: normalize_client_config(raw_spec.get(key), f"run_configs.json 第 {index} 项的 {key}") for key in _CLIENT_CONFIG_KEYS if key in raw_spec})
         metadata.update(manifest_metadata)
         metadata["language"] = language
         if manifest_max_workers is not None:
             metadata["benchmark_max_workers"] = manifest_max_workers
-        if required_str(manifest_metadata, "benchmark", "benchmark metadata") == "toolsandbox":
+        if config_benchmark == "toolsandbox":
             metadata["agent"] = required_str(raw_spec, "agent", f"run_configs.json 第 {index} 项")
             metadata["user"] = required_str(raw_spec, "user", f"run_configs.json 第 {index} 项")
+        elif config_benchmark in {"swebench_pro", "skillsbench"}:
+            _validate_source_direct_runtime(raw_spec, f"run_configs.json 第 {index} 项")
+            metadata["max_tool_calls"] = int(raw_spec["max_tool_calls"])
+            metadata["command_timeout_seconds"] = int(raw_spec["command_timeout_seconds"])
+            metadata["model_temperature"] = float(raw_spec["model_temperature"])
         metadata.setdefault("tool_backend", tool_backend)
         metadata["run_config_index"] = index
         name = optional_str(raw_spec.get("name"))
@@ -218,7 +237,7 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
         stop_on_ready = raw_spec.get("stop_on_ready_frontier_no_progress", True)
         configs.append(
             HarnessRunConfig(
-                benchmark=benchmark.strip().lower(),
+                benchmark=config_benchmark,
                 data_root=data_root,
                 case_ids=_case_ids_from_spec(raw_spec, index),
                 runs_dir=runs_dir,
@@ -231,6 +250,17 @@ def load_harness_run_configs(benchmark: str, data_root: Path, runs_dir: Path, re
             )
         )
     return configs
+
+
+def _validate_source_direct_runtime(raw_spec: dict[str, Any], label: str) -> None:
+    try:
+        max_tool_calls = int(raw_spec["max_tool_calls"])
+        timeout = int(raw_spec["command_timeout_seconds"])
+        temperature = float(raw_spec["model_temperature"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} 的 source-direct 运行参数不合法") from exc
+    if max_tool_calls <= 0 or timeout <= 0 or not 0 <= temperature <= 2:
+        raise ValueError(f"{label} 的 max_tool_calls/command_timeout_seconds/model_temperature 超出范围")
 
 
 def _evaluation_level(value: object, default: EvaluationLevel) -> EvaluationLevel:

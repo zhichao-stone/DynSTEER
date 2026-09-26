@@ -18,6 +18,7 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{tcolorbox}
+\usepackage{tikz}
 
 \title{DynSTEER: Dynamic Stage-wise Trajectory Evaluation and Execution-time Review for Agents}
 
@@ -41,7 +42,7 @@ $^6$ The Hong Kong University of Science and Technology (Guangzhou)
 }
 
 % \arxiv enables author display while keeping headers blank (no ICLR conference header)
-\arxiv
+% \arxiv
 %\iclrfinalcopy % Uncomment for official camera-ready conference version
 \newcommand{\fix}{\marginpar{FIX}}
 \newcommand{\new}{\marginpar{NEW}}
@@ -73,8 +74,12 @@ $^6$ The Hong Kong University of Science and Technology (Guangzhou)
 \newpage
 \appendix
 \input{appendixs/app_dataset_stats}
+\input{appendixs/app_experiment_config}
 \input{appendixs/app_algorithms}
+\input{appendixs/app_weighting}
 \input{appendixs/app_case_studies}
 \input{appendixs/app_prompts}
+\newpage
+\input{appendixs/llm_use_statement}
 
 \end{document}

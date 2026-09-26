@@ -139,14 +139,14 @@ ToolSandbox 鐨勫師鐢熷伐鍏枫€乺ole 鍜?execution environment 閫氳�
 ## 闄勫姞璇存槑
 
 `data/{benchmark}/benchmark.json` 閲岀殑 `max_workers` 鐜板湪鏄彲閫夊瓧娈碉紱缂哄け鏃朵笉浼氬啓鍏?`benchmark_max_workers`銆俆oolSandbox 鐨?`agent_client` / `user_client` 杩樻敮鎸?`max_retries`銆乣retry_base_seconds` 鍜?`retry_max_seconds`锛岀敤浜庡師鐢?`respond()` 鐨勯噸璇曟帶鍒躲€?
-# AgentCompass Default harness
+# 源码直连 Default harness
 
 | benchmark | 执行方式 | snapshots | 首版方法 |
 |---|---|---|---|
-| `swebench_pro` | 单次 `advance_case()` 完成 AgentCompass 整任务执行与原生评分 | `[]` | Default |
-| `skillsbench` | 单次 `advance_case()` 完成 AgentCompass 整任务执行与原生评分 | `[]` | Default |
+| `swebench_pro` | 共享 OpenAI tool agent 在官方 Docker 镜像内执行 bash，生成 patch 后调用源码 evaluator | `[]` | Default |
+| `skillsbench` | 共享 OpenAI tool agent 在任务 Docker 镜像内执行 bash，verifier/test.sh 产生 reward | `[]` | Default |
 
-完整配置、安全边界和 ACTF 映射参见 `docs/apis/agentcompass.md`。
+完整数据准备、runtime 与评分接口参见 `docs/apis/source_direct_benchmarks.md`。
 
 ## Guided harness 接口
 

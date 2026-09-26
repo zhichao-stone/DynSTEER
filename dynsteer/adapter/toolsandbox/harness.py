@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -137,7 +138,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
             "native_evaluation_skipped": True,
             "case_id": session.case_id,
             "termination_reason": session.termination_reason,
-            "termination_detail": session.stop_reason,
+            "termination_detail": {"stop_reason": session.stop_reason},
         }
 
     def default_result_from_session(self, session: object) -> BenchmarkDefaultResult:
@@ -296,7 +297,7 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
         agent_type = self._role_impl_type(config.metadata.get("agent"))
         user_type = self._role_impl_type(config.metadata.get("user"))
         agent_client_config = config.metadata.get("agent_client")
-        user_client_config = config.metadata.get("user_client")
+        user_client_config = config.metadata.get("user_client") or agent_client_config
         agent_factory = get_agent_factory(agent_type, agent_client_config, usage_recorder) or getattr(cli_utils, "AGENT_TYPE_TO_FACTORY").get(agent_type)
         user_factory = get_user_factory(user_type, user_client_config) or getattr(cli_utils, "USER_TYPE_TO_FACTORY").get(user_type)
         if agent_factory is None or user_factory is None:
@@ -415,6 +416,19 @@ class ToolSandboxHarness(BaseBenchmarkHarness):
                     "case_id": session.case_id,
                     "role": role_name,
                     "recipient": enum_name(recipient),
+                },
+            )
+        except json.JSONDecodeError as exc:
+            session.finished = True
+            session.termination_reason = "agent_invalid_tool_call"
+            session.stop_reason = f"Agent tool call 参数不是合法 JSON: {exc}"
+            logger.error(
+                "ToolSandbox agent 返回非法 tool call JSON，按受控失败终止",
+                extra={
+                    "case_id": session.case_id,
+                    "role": role_name,
+                    "recipient": enum_name(recipient),
+                    "error": str(exc),
                 },
             )
         except Exception:

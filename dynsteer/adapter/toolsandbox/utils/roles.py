@@ -1,6 +1,5 @@
 import importlib
 import logging
-import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -208,23 +207,15 @@ def _role_impl_name(role_impl_type: object) -> str:
         raise ValueError("role_impl_type 名称不能为空")
     return raw_name.rsplit(".", 1)[-1] if "." in raw_name else raw_name
 
-def _env_value(name: str) -> str | None:
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("环境变量名称不能为空")
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    value = value.strip()
-    return value or None
-
-def _client_kwargs(config: Mapping[str, Any], api_key_env: str, base_url_env: str, default_api_key: str | None=None) -> dict[str, object]:
-    api_key = config.get("api_key") or _env_value(config.get("api_key_env") or api_key_env) or default_api_key
+def _client_kwargs(config: Mapping[str, Any]) -> dict[str, object]:
+    api_key = config.get("api_key")
     if api_key is None:
-        raise ValueError(f"环境变量 {api_key_env} 未配置")
+        raise ValueError("ToolSandbox client_config.api_key 不能为空")
     kwargs: dict[str, object] = {"api_key": api_key}
-    base_url = config.get("base_url") or _env_value(config.get("base_url_env") or base_url_env)
-    if base_url is not None:
-        kwargs["base_url"] = base_url
+    base_url = config.get("base_url")
+    if base_url is None:
+        raise ValueError("ToolSandbox client_config.base_url 不能为空")
+    kwargs["base_url"] = base_url
     timeout_seconds = config.get("timeout_seconds")
     if timeout_seconds is not None:
         kwargs["timeout"] = timeout_seconds
@@ -232,17 +223,16 @@ def _client_kwargs(config: Mapping[str, Any], api_key_env: str, base_url_env: st
 
 def _openai_client_from_config(
     client_config: Mapping[str, Any],
-    default_api_key: str | None=None,
     usage_recorder: ProviderUsageRecorder | None=None,
 ) -> object:
-    kwargs = _client_kwargs(client_config, "OPENAI_API_KEY", "OPENAI_BASE_URL", default_api_key)
+    kwargs = _client_kwargs(client_config)
     if usage_recorder is not None:
         return OpenAI(http_client=OpenAIHttpxClient(event_hooks={"response": [usage_recorder.record_openai_response]}), **kwargs)
     return OpenAI(**kwargs)
 
 
 def _anthropic_client_from_config(client_config: Mapping[str, Any], usage_recorder: ProviderUsageRecorder | None=None) -> object:
-    kwargs = _client_kwargs(client_config, "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+    kwargs = _client_kwargs(client_config)
     if usage_recorder is not None:
         return anthropic.Anthropic(http_client=AnthropicHttpxClient(event_hooks={"response": [usage_recorder.record_anthropic_response]}), **kwargs)
     return anthropic.Anthropic(**kwargs)
@@ -277,7 +267,7 @@ def _environment_role_type(
             setattr(self, _DYNSTEER_CLIENT_CONFIG_KWARG, normalized_client_config)
             if mode == "openai_server":
                 super().__init__(*args, **kwargs)
-                setattr(self, client_attr, _openai_client_from_config(normalized_client_config, default_api_key="EMPTY", usage_recorder=usage_recorder))
+                setattr(self, client_attr, _openai_client_from_config(normalized_client_config, usage_recorder=usage_recorder))
                 return
             if mode == "pass":
                 super().__init__(*args, **kwargs)

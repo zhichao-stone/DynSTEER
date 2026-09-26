@@ -123,6 +123,7 @@ class ExperimentCaseResult:
     minefield_match_count: int | None = None
     termination_code: str | None = None
     termination_detail: JsonObject = field(default_factory=dict)
+    failure: JsonObject | None = None
     interventions: tuple[JsonObject, ...] = ()
     strata: JsonObject = field(default_factory=dict)
     adaptation_cost: JsonObject = field(default_factory=dict)
@@ -138,6 +139,7 @@ class ExperimentCaseResult:
             "minefield_match_count": self.minefield_match_count,
             "termination_code": self.termination_code,
             "termination_detail": dict(self.termination_detail),
+            "failure": dict(self.failure) if self.failure is not None else None,
             "interventions": [dict(item) for item in self.interventions],
             "strata": dict(self.strata),
             "adaptation_cost": dict(self.adaptation_cost),

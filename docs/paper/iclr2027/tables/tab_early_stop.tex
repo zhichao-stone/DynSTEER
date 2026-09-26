@@ -1,20 +1,26 @@
 \begin{table*}[t]
 \centering
 \small
-\caption{\textbf{Counterfactual Savings via Adaptive Early Termination on ToolSandbox.} Breakdown of all 1{,}223 replay policy stops, using the same run denominator as Table~\ref{tab:main_results}; only the matched suffix after each virtual stop is assumed avoidable.}
+\caption{\textbf{Execution-Time Early-Stop Statistics on ToolSandbox and SWE-bench Pro.} Stopped-Run Share is the criterion's share of all DynSTEER policy stops in the matched population. Unique-Task Share divides distinct tasks triggering a criterion by the benchmark's matched task population. Saved Steps reports the criterion-level avoided steps as a percentage of total Whole-Traj full-trajectory steps. Criterion-level values need not be additive because a task can trigger multiple criteria.}
 \label{tab:early_stop}
 \vspace{0.1cm}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{lcccc}
+\begin{tabular}{llccc}
 \toprule
-\textbf{Termination Criterion} & \textbf{Halted Runs} & \textbf{Unique Tasks} & \textbf{Mean Stop Progress} & \textbf{Saved Progress} \\
+\textbf{Benchmark} & \textbf{Termination Criterion} & \textbf{Stopped-Run Share} & \textbf{Unique-Task Share} & \textbf{Saved Steps} \\
 \midrule
-Stage Low-Score Policy (\textsc{Score}) & 234 & 64 & 63.76\% & 36.24\% \\
-Frontier Stagnation (\textsc{Deadlock}) & 285 & 125 & 65.87\% & 34.13\% \\
-Fatal Minefield Interception (\textsc{Minefield}) & 704 & 97 & 46.98\% & 53.02\% \\
+\multirow{3}{*}{SWE-bench Pro}
+ & Persistent Low Quality (\textsc{Score}) & 8.33\% & 5.13\% & 1.00\% \\
+ & Frontier Stagnation & 66.67\% & 12.82\% & 4.86\% \\
+ & Fatal Minefield Interception (\textsc{Minefield}) & 25.00\% & 7.69\% & 2.53\% \\
+\cmidrule(lr){2-5}
+ & All DynSTEER policy stops & 100.00\% & 17.95\% & 8.40\% \\
 \midrule
-All Replay Policy Stops & 1{,}223 & 270 & 54.59\% & 45.41\% \\
+\multirow{3}{*}{ToolSandbox}
+ & Persistent Low Quality (\textsc{Score}) & 15.32\% & 12.57\% & 0.87\% \\
+ & Frontier Stagnation & 23.30\% & 24.56\% & 4.53\% \\
+ & Fatal Minefield Interception (\textsc{Minefield}) & 57.56\% & 19.06\% & 12.34\% \\
+\cmidrule(lr){2-5}
+ & All DynSTEER policy stops & 100.00\% & 53.05\% & 17.74\% \\
 \bottomrule
-\end{tabular}%
-}
+\end{tabular}
 \end{table*}

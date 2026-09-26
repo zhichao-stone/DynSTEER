@@ -1,12 +1,23 @@
 import json
 import hashlib
+import gzip
+import os
+import time
+import sys
 from pathlib import Path
 import re
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, BinaryIO, Iterator
+import docker
 from dynsteer.model import Actor, JsonObject, JsonValue, MISSING, Dimension
+
+try:
+    import fcntl
+except ImportError:
+    import msvcrt
 
 
 _ACTOR_ALIASES = {
@@ -17,6 +28,143 @@ _ACTOR_ALIASES = {
     "ENVIRONMENT": Actor.ENVIRONMENT,
     "EVALUATOR": Actor.EVALUATOR,
 }
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    """\u4ee5\u8de8\u8fdb\u7a0b\u6587\u4ef6\u9501\u4e32\u884c\u5316\u5171\u4eab\u4ea7\u7269\u5199\u5165\u3002"""
+    if path is None or not str(path).strip():
+        raise ValueError("lock path \u4e0d\u80fd\u4e3a\u7a7a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    with path.open("r+b") as stream:
+        _lock_stream(stream)
+        try:
+            yield
+        finally:
+            _unlock_stream(stream)
+
+
+def _lock_stream(stream: BinaryIO) -> None:
+    while True:
+        try:
+            if "msvcrt" in globals():
+                msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.lockf(stream, fcntl.LOCK_EX)
+            return
+        except OSError:
+            time.sleep(0.2)
+
+
+def _unlock_stream(stream: BinaryIO) -> None:
+    stream.seek(0)
+    if "msvcrt" in globals():
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.lockf(stream, fcntl.LOCK_UN)
+
+
+def docker_event_text(event: object) -> str:
+    """将 Docker API 的流式事件转换成稳定的单行或多行文本。"""
+    if event is None:
+        return ""
+    if not isinstance(event, dict):
+        return _clean_docker_text(str(event))
+    if "error" in event or isinstance(event.get("errorDetail"), dict):
+        detail = event.get("errorDetail")
+        message = detail.get("message") if isinstance(detail, dict) else None
+        return _clean_docker_text(str(message or event.get("error") or "unknown docker error"))
+    if "stream" in event:
+        lines = [_clean_docker_text(str(line)) for line in str(event["stream"]).splitlines()]
+        return "\n".join(line for line in lines if line)
+    if "status" in event:
+        status = _clean_docker_text(str(event.get("status") or ""))
+        progress = _clean_docker_text(str(event.get("progress") or ""))
+        layer = _clean_docker_text(str(event.get("id") or ""))
+        text = progress or status
+        if layer and status and not text.startswith(layer):
+            text = f"{layer}: {text}"
+        return text
+    if "aux" in event:
+        aux = event.get("aux")
+        if isinstance(aux, dict) and aux.get("ID"):
+            return _clean_docker_text(f"image {aux['ID']}")
+    return _clean_docker_text(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+
+class DockerProgressPrinter:
+    """把 Docker 流式事件压缩输出到 stderr，避免干扰预检 JSON。"""
+
+    def __init__(self, title: str, *, single_line: bool = False) -> None:
+        if title is None or not title.strip():
+            raise ValueError("Docker 进度标题不能为空")
+        self.title = title.strip()
+        self.single_line = single_line
+        self._line_length = 0
+
+    def start(self, message: str) -> None:
+        self._write_line(message)
+
+    def event(self, event: object) -> None:
+        for text in docker_event_text(event).splitlines():
+            if not text:
+                continue
+            if self.single_line and sys.stderr.isatty():
+                self._replace_line(text)
+            elif _is_docker_milestone(text):
+                self._write_line(text)
+
+    def finish(self, message: str) -> None:
+        self._finish_dynamic_line()
+        self._write_line(message)
+
+    def fail(self, message: str) -> None:
+        self._finish_dynamic_line()
+        self._write_line(f"ERROR: {message}")
+
+    def _write_line(self, message: str) -> None:
+        self._finish_dynamic_line()
+        print(f"[docker] {self.title}: {message}", file=sys.stderr, flush=True)
+
+    def _replace_line(self, text: str) -> None:
+        text = _shorten_docker_text(text)
+        padding = " " * max(self._line_length - len(text), 0)
+        print(f"\r{text}{padding}", file=sys.stderr, end="", flush=True)
+        self._line_length = len(text)
+
+    def _finish_dynamic_line(self) -> None:
+        if self._line_length:
+            print(file=sys.stderr, flush=True)
+            self._line_length = 0
+
+
+def _clean_docker_text(value: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", value).strip()
+
+
+def _shorten_docker_text(value: str) -> str:
+    return value if len(value) <= 160 else f"{value[:157]}..."
+
+
+def _is_docker_milestone(text: str) -> bool:
+    lowered = text.lower()
+    return lowered.startswith("step ") or any(
+        marker in lowered
+        for marker in (
+            "pulling from",
+            "pull complete",
+            "digest:",
+            "status:",
+            "successfully built",
+            "successfully tagged",
+            "writing image",
+            "naming to",
+            "exporting layers",
+            "done",
+            "error",
+        )
+    )
 
 
 def record_raw_response(
@@ -213,13 +361,19 @@ def optional_str(value: object, default: str | None=None) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else default
 
 
+FORBIDDEN_EXECUTION_FIELDS = frozenset({
+    "docker", "use_docker", "execution_mode", "environment",
+    "sandbox", "backend", "agent" + "compass",
+})
+
+
 _CLIENT_CONFIG_FIELDS = {
-    "api_key", "api_key_env",
-    "base_url", "base_url_env",
+    "api_key",
+    "base_url",
     "max_retries",
     "timeout_seconds", "retry_base_seconds", "retry_max_seconds",
 }
-_CLIENT_CONFIG_TEXT_FIELDS = {"api_key", "api_key_env", "base_url", "base_url_env"}
+_CLIENT_CONFIG_TEXT_FIELDS = {"api_key", "base_url"}
 _CLIENT_CONFIG_INT_FIELDS = {"max_retries"}
 _CLIENT_CONFIG_FLOAT_FIELDS = {"timeout_seconds", "retry_base_seconds", "retry_max_seconds"}
 
@@ -247,7 +401,72 @@ def normalize_client_config(value: object, label: str="client_config") -> JsonOb
         normalized_value = _normalize_client_config_value(key, raw_value, label)
         if normalized_value is not None:
             config[key] = normalized_value
+    if config and ("api_key" not in config or "base_url" not in config):
+        raise ValueError(f"{label} 必须同时提供非空 api_key 与 base_url")
     return config
+
+
+def safe_name(value: str) -> str:
+    """生成可安全用于镜像、容器与文件名的短名称。"""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("name 不能为空")
+    return "".join(char if char.isalnum() or char in "._-" else "-" for char in value.lower())[:100]
+
+
+def docker_image_archive_path(base_dir: Path, image: str, label: str | None = None) -> Path:
+    """按镜像引用和业务标签生成稳定的压缩备份路径。"""
+    if not str(base_dir).strip():
+        raise ValueError("base_dir 不能为空")
+    if not str(image).strip():
+        raise ValueError("image 不能为空")
+    digest = hashlib.sha256(image.encode("utf-8")).hexdigest()[:12]
+    return base_dir / f"{safe_name(label or image)}-{digest}.tar.gz"
+
+
+def load_image_archive(client: docker.DockerClient, image: str, archive: Path) -> None:
+    """从镜像压缩包载入并校验目标 tag。"""
+    if not archive.is_file():
+        raise FileNotFoundError(archive)
+    with archive.open("rb") as archive_stream:
+        for event in client.api.load_image(archive_stream, quiet=True):
+            if isinstance(event, dict):
+                error = event.get("error")
+                if not error and isinstance(event.get("errorDetail"), dict):
+                    error = event["errorDetail"].get("message")
+                if error:
+                    raise RuntimeError(f"镜像压缩包载入失败: {error}")
+    try:
+        client.images.get(image)
+    except docker.errors.ImageNotFound as exc:
+        raise RuntimeError(f"镜像压缩包缺少目标 tag {image}: {archive}") from exc
+
+
+def save_image_archive(client: docker.DockerClient, image: str, archive: Path) -> None:
+    """流式压缩保存镜像，先写临时文件保证原子替换。"""
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    temporary = archive.with_name(f".{archive.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("wb") as raw_stream:
+            with gzip.GzipFile(fileobj=raw_stream, mode="wb", compresslevel=1) as compressed_stream:
+                for chunk in client.images.get(image).save(named=True):
+                    compressed_stream.write(chunk)
+        temporary.replace(archive)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def assert_execution_neutral(value: object, label: str="配置") -> None:
+    """递归拒绝会显式选择执行环境的配置字段。"""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key)
+            if name in FORBIDDEN_EXECUTION_FIELDS:
+                raise ValueError(f"{label} 包含禁用执行环境字段: {name}")
+            assert_execution_neutral(item, f"{label}.{name}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            assert_execution_neutral(item, f"{label}[{index}]")
 
 
 def compact_text(value: object, limit: int=160) -> str:
@@ -352,7 +571,7 @@ def unknown_fields(data: JsonObject, known: set[str]) -> JsonObject:
 def json_safe(value: object) -> JsonValue:
     """将常见 Python 对象转换为 JSON 安全值。"""
     if value is None or isinstance(value, (str, int, float, bool)):
-        return value
+        return _safe_scalar(value)
     if isinstance(value, Path):
         return str(value)
     if is_dataclass(value) and (not isinstance(value, type)):
@@ -365,6 +584,13 @@ def json_safe(value: object) -> JsonValue:
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     return str(value)
+
+
+def _safe_scalar(value: object) -> object:
+    if isinstance(value, str) and value.startswith("sk-"):
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        return f"sha256:{digest}"
+    return value
 
 
 def canonical_json(value: object) -> str:

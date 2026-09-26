@@ -4,7 +4,7 @@ from dynsteer.model import JsonObject
 
 
 def toolsandbox_tool_contracts(agent_to_execution: dict[str, str] | None = None) -> JsonObject:
-    """返回由 ToolSandbox 工具实现核实的输出和副作用契约。"""
+    """返回由 ToolSandbox 工具实现核实的输出、副作用和状态字段契约。"""
     contracts: JsonObject = {}
     for name, fields in {
         "search_contacts": {"person_id": "string", "name": "string", "phone_number": "string", "relationship": "string", "is_self": "boolean"},
@@ -29,17 +29,52 @@ def toolsandbox_tool_contracts(agent_to_execution: dict[str, str] | None = None)
         contracts[name] = {"outputs": {
             "value": {"selector": "$", "type": "boolean", "cardinality": ["one"]}
         }, "writes": []}
-    for name, namespace, operation, required, executor_arguments in (
-        ("add_contact", "CONTACT", "add", ("name", "phone_number"), {}),
-        ("modify_contact", "CONTACT", "update", ("person_id",), {}),
-        ("remove_contact", "CONTACT", "remove", ("person_id",), {}),
-        ("add_reminder", "REMINDER", "add", ("content", "reminder_timestamp"), {}),
-        ("modify_reminder", "REMINDER", "update", ("reminder_id",), {}),
-        ("remove_reminder", "REMINDER", "remove", ("reminder_id",), {}),
+
+    # state_fields 是可安全暴露给生成器的字段名与类型；role 只用于把工具参数
+    # 确定性投影为 set_state.match / values，不包含初始状态或期望行。
+    for name, namespace, operation, required, executor_arguments, state_fields in (
+        (
+            "add_contact", "CONTACT", "add", ("name", "phone_number"), {},
+            {"name": ("string", "value"), "phone_number": ("string", "value")},
+        ),
+        (
+            "modify_contact", "CONTACT", "update", ("person_id",), {},
+            {
+                "person_id": ("string", "match"), "name": ("string", "value"),
+                "phone_number": ("string", "value"), "relationship": ("string", "value"),
+            },
+        ),
+        (
+            "remove_contact", "CONTACT", "remove", ("person_id",), {},
+            {"person_id": ("string", "match")},
+        ),
+        (
+            "add_reminder", "REMINDER", "add", ("content", "reminder_timestamp"), {},
+            {
+                "content": ("string", "value"), "reminder_timestamp": ("number", "value"),
+                "latitude": ("number", "value"), "longitude": ("number", "value"),
+            },
+        ),
+        (
+            "modify_reminder", "REMINDER", "update", ("reminder_id",), {},
+            {
+                "reminder_id": ("string", "match"), "content": ("string", "value"),
+                "reminder_timestamp": ("number", "value"), "latitude": ("number", "value"),
+                "longitude": ("number", "value"),
+            },
+        ),
+        (
+            "remove_reminder", "REMINDER", "remove", ("reminder_id",), {},
+            {"reminder_id": ("string", "match")},
+        ),
         (
             "send_message_with_phone_number", "MESSAGING", "add",
             ("recipient_phone_number", "content"),
             {"phone_number": "recipient_phone_number", "content": "content"},
+            {
+                "recipient_phone_number": ("string", "value"),
+                "content": ("string", "value"),
+            },
         ),
     ):
         contracts[name] = {
@@ -48,6 +83,10 @@ def toolsandbox_tool_contracts(agent_to_execution: dict[str, str] | None = None)
             "executor_arguments": executor_arguments,
             "effect": {"namespace": namespace, "operation": operation},
             "state_evaluator": "toolsandbox_snapshot",
+            "state_fields": {
+                field: {"type": field_type, "role": role}
+                for field, (field_type, role) in state_fields.items()
+            },
         }
     for name, field in (
         ("set_wifi_status", "wifi"),
@@ -61,6 +100,7 @@ def toolsandbox_tool_contracts(agent_to_execution: dict[str, str] | None = None)
             "executor_arguments": {"on": field},
             "effect": {"namespace": "SETTING", "operation": "set"},
             "state_evaluator": "toolsandbox_snapshot",
+            "state_fields": {field: {"type": "boolean", "role": "value"}},
         }
     if not agent_to_execution:
         return contracts
@@ -99,12 +139,8 @@ def toolsandbox_environment_rules(agent_to_execution: dict[str, str] | None = No
     }
     rules["wifi_required_for_network_search"] = {
         "applies_to_tools": [
-            "search_holiday",
-            "search_lat_lon",
-            "search_location_around_lat_lon",
-            "search_weather_around_lat_lon",
-            "search_stock",
-            "convert_currency",
+            "search_holiday", "search_lat_lon", "search_location_around_lat_lon",
+            "search_weather_around_lat_lon", "search_stock", "convert_currency",
         ],
         "applies_when_arguments": {},
         "state_path": "SETTING.wifi",

@@ -1,7 +1,7 @@
 \section{Prompt Templates for Milestone Generation and Stage Judges}
 \label{app:prompts}
 
-This section documents the primary prompt templates used across DynSTEER's pipeline, formatted in structured boxed environments.
+This section documents excerpts from the primary English prompt templates used by DynSTEER. The excerpts follow the implementation files closely; in long rule lists, only representative head/tail rules are shown and omitted rules are denoted by \ldots{}.
 
 \begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
 \textbf{Prompt Template 1: Milestone Graph Candidate Generation Prompt} \\[-6pt]
@@ -14,13 +14,33 @@ You generate candidate milestone goal graphs, not step-by-step trajectories. A n
 This is candidate batch \texttt{\{batch\_index\}}. Focus code: \texttt{\{focus\_code\}}. \\
 Batch focus: \texttt{\{focus\_instruction\}}
 
-\textbf{Core Requirements:}
+Return exactly 2 complete, standalone candidate graphs for the current task.
+
+\textbf{Independence and diversity rules:}
 \begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
-  \item Return standalone candidate graphs for the current task based strictly on the public task view \texttt{\{task\_view\}}.
-  \item Each graph must define its own milestones, dependency edges, dynamic bindings, and fatal minefields.
-  \item Seek genuine diversity: explore distinct valid tools, direct public state lookups, or alternative precedence orders.
-  \item Output must strictly follow the JSON schema specifying nodes, edges, dependencies, and minefield operations.
+  \item Each graph must define its own dispositions, nodes, edges, and minefields. Local IDs have graph-local scope only.
+  \item Do not share a node table, refer to a node in the other graph, or encode graph 2 as a base/delta/patch of graph 1.
+  \item Seek genuine diversity between two complete judgments: a different visible tool, direct use of public information, a valid bulk state goal, a different necessary dependency, or a justified executability judgment.
+  \item \ldots{}
+  \item If no genuine alternative is supported, the two graphs may be equivalent. Completeness and correctness take priority over artificial difference.
 \end{itemize}
+
+\textbf{Current public task JSON:} \texttt{\{task\}}
+
+\textbf{Required semantics (excerpt):}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item \textbf{Turns and dispositions:} Every graph's \texttt{dispositions} object must contain exactly every turn ID from \texttt{turns}, with no missing or extra key. Each value must be exactly one of \texttt{executable}, \texttt{needs\_clarification}, \texttt{no\_action}, or \texttt{response\_only}. \ldots{} Every \texttt{executable} turn must contain a final goal: a \texttt{set\_state} or an \texttt{emit\_message}.
+  \item \textbf{Necessity, feasibility, and goals:} Keep only milestones that are necessary under this graph's complete judgment. A producer is necessary only when a retained consumer needs its dynamic output or when its observed value is indispensable to the final answer or target selection. \ldots{} When information is insufficient, mark only the real terminal tool or critical producer needed by the user request; never guess the target object.
+  \item \textbf{Node schemas and provenance:} The only allowed node kinds are \texttt{tool\_call}, \texttt{set\_state}, and \texttt{emit\_message}. A \texttt{tool\_call} node has exactly \texttt{local\_id}, \texttt{turn\_id}, \texttt{kind}, \texttt{evidence\_id}, and \texttt{arguments}. Every dynamic value uses a \texttt{public\_literal} or \texttt{node\_output} binding rather than a raw scalar. \ldots{} Never hard-code or copy a dynamic UUID, row ID, timestamp, coordinate, token, or tool-produced value as \texttt{public\_literal} unless that exact value is explicitly visible in a permitted current source.
+  \item \textbf{Edges:} Add an edge only for a true non-commutable data, prerequisite, or goal dependency. \ldots{} No self-loop, duplicate edge, missing endpoint, or cycle is allowed.
+  \item \textbf{Minefields:} A minefield marks a fatal wrong tool call that must not occur for the stated turn. Use only severity \texttt{fatal} and the four listed reason codes. \ldots{} A candidate may legally have empty \texttt{nodes} and \texttt{edges}.
+  \item \textbf{Exact response shape:} Return one JSON object with exactly one top-level key, \texttt{graphs}; \texttt{graphs} must contain exactly 2 graph objects. Every graph object has exactly \texttt{dispositions}, \texttt{nodes}, \texttt{edges}, and \texttt{minefields}. Return raw valid JSON only.
+\end{itemize}
+
+\textbf{Final response skeleton:} \\
+\texttt{\{"graphs":[\{"dispositions":\{\},"nodes":[],} \\
+\texttt{"edges":[],"minefields":[]\},\{"dispositions":\{\},"nodes":[],} \\
+\texttt{"edges":[],"minefields":[]\}]\}}
 \end{tcolorbox}
 
 \begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
@@ -28,37 +48,61 @@ Batch focus: \texttt{\{focus\_instruction\}}
 \rule{\textwidth}{0.4pt}
 \small
 \textbf{System Role:} \\
-You are a strict task-trajectory evaluator. Evaluate only the supplied task, stage interval, constraint checks, and trajectory steps. Do not invent external facts.
+You are a strict task-trajectory evaluator. Evaluate only the supplied task, stage interval, constraint\_checks, and trajectory steps. Do not invent external facts.
 
-\textbf{Context Inputs:}
+\textbf{Context fields:}
 \begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
-  \item \texttt{stage\_goal}: Success condition for the current dominator-bounded stage interval.
-  \item \texttt{rubrics}: Target dimensions to score simultaneously (e.g., correctness, efficiency, safety, tool compliance).
-  \item \texttt{steps}: Observed actions and tool returns strictly within the stage evidence window $\mathcal{W}(m^*)$.
+  \item \texttt{stage\_goal} is the current stage success condition; \texttt{task.task\_description} is only task background.
+  \item \texttt{rubrics} contains only the dimensions to score in this pass; \texttt{dimension\_scores} must contain only those dimensions.
+  \item \texttt{steps} are the primary behavioral evidence. Cite step index, actor, event\_type, tool\_call, tool\_result, or raw sender/recipient.
+  \item \texttt{constraint\_checks} are auxiliary structured scorer evidence and must not replace auditing steps.
+  \item \texttt{interval} provides the evaluated step range, status, milestone\_score, and milestone evidence.
+  \item \texttt{required\_output} defines the exact JSON output shape. Do not output \texttt{stage\_score}; code computes it from \texttt{dimension\_scores}.
 \end{itemize}
 
-\textbf{Evaluation Instructions:}
+\textbf{Evaluation objective:}
 \begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
-  \item Determine whether this stage satisfies \texttt{stage\_goal} within the supplied interval.
-  \item Score each target dimension from 0.0 to 1.0 based on explicit behavioral evidence.
-  \item Provide concise diagnostic justifications citing specific step indices and tool call names.
-  \item Output format: Strict JSON mapping dimension names to score, confidence, and diagnostic rationale.
+  \item Decide whether this stage satisfies \texttt{stage\_goal} within the supplied interval.
+  \item Score only the dimensions present in \texttt{rubrics} from 0 to 1.
+  \item Ground every score in evidence and distinguish completed, partially completed, merely claimed, and unsupported work.
 \end{itemize}
+
+\textbf{Evidence rules (excerpt):}
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item Every evidence item must reference a step index, \texttt{interval.evidence} item, or \texttt{constraint\_checks} item.
+  \item If a judgment cannot be grounded in Context, explain the evidence gap in diagnosis and lower the relevant dimension score.
+  \item For \texttt{state\_snapshot} evidence, \texttt{constraint\_checks} may serve as state evidence; user-facing communication quality must still be audited from steps.
+  \item \ldots{}
+  \item Do not use external facts or assumptions outside Context.
+\end{itemize}
+
+Return exactly one JSON object matching \texttt{required\_output}. Do not wrap it in prose.
+
+\textbf{Context:} \texttt{\{context\_json\}}
 \end{tcolorbox}
 
 \begin{tcolorbox}[colback=gray!4,colframe=black!75,arc=4pt,boxrule=0.8pt,left=8pt,right=8pt,top=6pt,bottom=6pt]
-\textbf{Prompt Template 3: Expensive Judge Specialist Prompt (Tool Quality Dimension)} \\[-6pt]
+\textbf{Prompt Template 3: Common Skeleton of Expensive Specialist Judge Prompts} \\[-6pt]
 \rule{\textwidth}{0.4pt}
 \small
-\textbf{Specialist Objective:} \\
-You are the specialist LLM-Judge for the \texttt{tool\_quality} dimension. Score only tool-use quality.
+The implementation stores one specialist prompt per dimension under \texttt{judge/expensive/\{dimension\}.en.md}. After substituting the dimension name, all prompts share the following skeleton; the omitted portions are populated from the corresponding dimension file.
 
-\textbf{Detailed Forensic Focus:}
+\textbf{Specialist Objective:} \\
+You are the specialist LLM-Judge for the \texttt{\{dimension\}} dimension. Score only \texttt{\{dimension\_specific\_focus\}}.
+
+\textbf{Focus on:}
 \begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1pt]
-  \item Whether the agent selected the optimal tools for the active stage goal.
-  \item Whether tool arguments are complete, accurate, and type-conforming without hallucinations.
-  \item Whether return values, exceptions, and empty results were correctly parsed and handled rather than ignored.
-  \item Penalize redundant retry loops, irrelevant exploratory calls, and unhandled tool exceptions.
-  \item Output: Calibrated continuous score in $[0, 1]$, confidence score, and forensic audit trace.
+  \item Dimension-specific forensic criteria from \texttt{judge/expensive/\{dimension\}.en.md}; omitted here.
 \end{itemize}
+
+\textbf{Evaluation steps:}
+\begin{enumerate}[leftmargin=*,itemsep=1pt,topsep=1pt]
+  \item Dimension-specific evidence-audit steps; omitted here.
+  \item \ldots{}
+  \item The \texttt{dimension\_scores} field may contain only \texttt{\{dimension\}}.
+\end{enumerate}
+
+Use \texttt{Context.rubrics.\{dimension\}} as the score anchor. Return exactly one JSON object matching \texttt{required\_output}.
+
+\textbf{Context:} \texttt{\{context\_json\}}
 \end{tcolorbox}

@@ -2,15 +2,15 @@
 \label{app:algorithms}
 
 \subsection{DynSTEER Execution-Time Stage Evaluation and Control Algorithm}
-Algorithm~\ref{alg:dynsteer} formalizes the complete execution-time stage evaluation, dominator evidence window extraction, uncertainty-adaptive judge routing, and early termination protocol, matching our implementation in \texttt{dynsteer/evaluate/evaluator.py} and \texttt{policy.py}.
+Algorithm~\ref{alg:dynsteer} formalizes the complete execution-time stage evaluation, dominator evidence window extraction, uncertainty-adaptive judge-level adaptation, and early termination protocol, matching our implementation in \texttt{dynsteer/evaluate/evaluator.py} and \texttt{policy.py}.
 
 \begin{algorithm}[t]
 \caption{DynSTEER Execution-Time Stage Evaluation and Control}
 \label{alg:dynsteer}
 \begin{algorithmic}[1]
-\REQUIRE Public task view $V_{\text{public}}$, candidate count $C$, stop thresholds $\Theta$
+\REQUIRE Task inputs $V_{\text{task}}$, candidate count $C$, stop thresholds $\Theta$
 \ENSURE Final evaluation report $\mathcal{R}$, termination status
-\STATE $\{G_1, \dots, G_C\} \leftarrow \text{SynthesizeCandidates}(V_{\text{public}}, C)$
+\STATE $\{G_1, \dots, G_C\} \leftarrow \text{SynthesizeCandidates}(V_{\text{task}}, C)$
 \STATE $G \leftarrow \text{ValidateAndAggregate}(\{G_1, \dots, G_C\})$ \COMMENT{Milestone DAG $G = (M, E, \mathcal{K}, \mathcal{M}_{\text{fatal}})$}
 \STATE $M_{\text{settled}} \leftarrow \emptyset, \; t \leftarrow 0, \; \mathcal{R} \leftarrow \emptyset, \; \mathbf{w}_1 \leftarrow \text{InitWeights}(), \; \text{Level}^{(1)} \leftarrow J_{\text{cheap}}$
 \FOR{each event $e_k$ in agent execution rollout}
@@ -36,6 +36,15 @@ Algorithm~\ref{alg:dynsteer} formalizes the complete execution-time stage evalua
 \RETURN $\text{FinalizeReport}(\mathcal{R}, M_{\text{settled}})$
 \end{algorithmic}
 \end{algorithm}
+
+\subsection{Candidate Contract Validation}
+\label{app:contract_validation}
+
+Before consensus, we check every candidate deterministically; no LLM is consulted during this filtering step. \textbf{Schema validation} rejects malformed graphs and unknown operations: each milestone must have a unique identifier, a well-formed success condition, and a canonical tool name present in $\mathcal{A}$; minefield descriptors must likewise reference available destructive operations. It also checks that edge endpoints, dependency declarations, and output-field references exist.
+
+\textbf{Structural validation} verifies that the directed precedence relation is finite, free of self-loops and cycles, and consistent with milestone reachability. Edges that duplicate an existing dependency are collapsed before aggregation, while genuinely distinct precedence constraints are retained.
+
+\textbf{Binding validation} requires every dynamic parameter binding to name a milestone that can execute earlier in the same candidate, an output field declared by that milestone, and a target parameter whose schema accepts the referenced type. Literal arguments are checked against required keys and declared types. Thus, hallucinated APIs, malformed payloads, cyclic plans, and dangling or type-incompatible bindings are removed before majority consensus.
 
 \subsection{Blueprint Consensus Aggregation Details}
 The blueprint aggregation pipeline synthesizes multiple candidate graphs $\{G_1, \dots, G_C\}$ into a canonical Milestone DAG $G = (M, E, \mathcal{K}, \mathcal{M}_{\text{fatal}})$. 

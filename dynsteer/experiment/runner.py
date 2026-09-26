@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from functools import partial
@@ -19,10 +20,18 @@ from dynsteer.evaluate.state_summary import apply_runtime_initial_state
 from dynsteer.experiment.config import build_harness_config, expand_experiment_matrix, load_experiment_config
 from dynsteer.experiment.metrics import write_metric_tables
 from dynsteer.experiment.model import ExperimentCaseResult, ExperimentMethod, ExperimentRunSpec
+from dynsteer.experiment.reuse import reuse_experiment_outputs
 from dynsteer.harness.model import HarnessRunConfig
-from dynsteer.harness.outputs import write_case_outputs, write_default_case_outputs, write_replay_case_outputs
+from dynsteer.harness.outputs import (
+    write_case_outputs,
+    write_default_case_outputs,
+    write_failed_case_outputs,
+    write_replay_case_outputs,
+)
 from dynsteer.harness.runner import effective_max_workers, prepare_task_cases
+from dynsteer.judges.base import LLMJudgeResponseError
 from dynsteer.model import HarnessEvaluationOutput, JsonObject, TaskCase
+from dynsteer.runtime.profile import require_native_execution_profile
 from dynsteer.utils import as_number, json_safe, read_json_file
 
 
@@ -32,6 +41,7 @@ DefaultOutputKey = tuple[str, str, str, int, str]
 DefaultOutputCache = dict[DefaultOutputKey, HarnessEvaluationOutput]
 DefaultCaseItem = tuple[DefaultOutputKey, TaskCase]
 DefaultCaseEntry = tuple[DefaultOutputKey, TaskCase, HarnessEvaluationOutput]
+logger = logging.getLogger(__name__)
 
 class ExperimentCaseExecutionError(RuntimeError):
     """单个 experiment case 运行失败时抛出。"""
@@ -61,9 +71,13 @@ def run_experiment(
 ) -> list[ExperimentCaseResult]:
     """执行统一实验矩阵并写出结果。"""
     config = load_experiment_config(config_path)
+    if config["benchmarks"][0]["benchmark"] in {"swebench_pro", "skillsbench"}:
+        require_native_execution_profile()
     clear_named_scenarios_cache()
     specs = expand_experiment_matrix(config)
     effective_force_eval = bool(force_eval or force_adapt)
+    if not effective_force_eval:
+        reuse_experiment_outputs(config, specs)
 
     harness_configs = [build_harness_config(spec) for spec in specs]
     static_cases: dict[tuple[object, ...], tuple[list[TaskCase], HarnessRunConfig]] = {}
@@ -108,7 +122,12 @@ def run_experiment(
 
         if spec.method != ExperimentMethod.DEFAULT:
             if spec.method in {ExperimentMethod.DYNSTEER_EVALUATE, ExperimentMethod.DYNSTEER_EVALUATE_GUIDED}:
-                runner = partial(_run_evaluate_case_entry, spec=spec, force_eval=effective_force_eval)
+                runner = partial(
+                    _run_evaluate_case_entry,
+                    spec=spec,
+                    default_outputs=default_outputs,
+                    force_eval=effective_force_eval,
+                )
             else:
                 runner = partial(
                     _run_replay_case_entry,
@@ -170,7 +189,14 @@ def _run_default_case_entry(item: DefaultCaseItem, *, spec: ExperimentRunSpec, f
         task_case, harness, config = _prepare_for_run_case(spec, task_case)
         output = write_default_case_outputs(config=config, harness=harness, task_case=task_case, force_eval=force_eval)
     except Exception as exc:
-        raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
+        cause = exc.cause if isinstance(exc, ExperimentCaseExecutionError) else exc
+        _log_case_failure(spec, task_case.case_id, cause)
+        output = write_failed_case_outputs(
+            build_harness_config(spec),
+            task_case,
+            failure_type=_docker_failure_type(spec, cause),
+            error=f"{type(cause).__name__}: {cause}",
+        )
     return key, task_case, output
 
 
@@ -185,7 +211,23 @@ def _run_replay_case_entry(
     key = _default_output_key(spec, task_case)
     cached = default_outputs.get(key)
     if cached is None:
-        raise ExperimentCaseExecutionError(spec, task_case.case_id, KeyError(f"缺少 default output: {key}"))
+        _log_case_failure(spec, task_case.case_id, KeyError(f"缺少 default output: {key}"))
+        return _failed_case_result(
+            spec,
+            task_case,
+            failure_type="case_execution_failed",
+            error=f"缺少 default output: {key}",
+        )
+    default_failure = _output_failure(cached)
+    if default_failure is not None:
+        _log_case_failure(spec, task_case.case_id, RuntimeError(default_failure[1]))
+        return _failed_case_result(
+            spec,
+            task_case,
+            failure_type="default_infrastructure_failure",
+            error=default_failure[1],
+        )
+    trajectory = None
     try:
         task_case, harness, config = _prepare_for_run_case(spec, task_case)
         trajectory_path = cached.raw_run_dir / "trajectory.json"
@@ -196,18 +238,38 @@ def _run_replay_case_entry(
         evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
         output = write_replay_case_outputs(config=config, evaluator=evaluator, task_case=task_case, trajectory=trajectory, harness=harness, force_eval=force_eval)
     except Exception as exc:
-        raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
+        cause = exc.cause if isinstance(exc, ExperimentCaseExecutionError) else exc
+        _log_case_failure(spec, task_case.case_id, cause)
+        return _failed_case_result_from_exception(spec, task_case, cause, trajectory=trajectory)
     return _case_result_from_output(spec, task_case, output)
 
 
-def _run_evaluate_case_entry(task_case: TaskCase, *, spec: ExperimentRunSpec, force_eval: bool) -> ExperimentCaseResult:
+def _run_evaluate_case_entry(
+    task_case: TaskCase,
+    *,
+    spec: ExperimentRunSpec,
+    default_outputs: DefaultOutputCache,
+    force_eval: bool,
+) -> ExperimentCaseResult:
     """执行单个在线 evaluate case。"""
+    cached_default = default_outputs.get(_default_output_key(spec, task_case))
+    default_failure = _output_failure(cached_default) if cached_default is not None else None
+    if default_failure is not None:
+        _log_case_failure(spec, task_case.case_id, RuntimeError(default_failure[1]))
+        return _failed_case_result(
+            spec,
+            task_case,
+            failure_type="default_infrastructure_failure",
+            error=default_failure[1],
+        )
     try:
         task_case, harness, config = _prepare_for_run_case(spec, task_case)
         evaluator = DynSTEEREvaluator.from_config(config, strategy=spec.strategy)
         output = write_case_outputs(config=config, harness=harness, evaluator=evaluator, task_case=task_case, force_eval=force_eval)
     except Exception as exc:
-        raise ExperimentCaseExecutionError(spec, task_case.case_id, exc) from exc
+        cause = exc.cause if isinstance(exc, ExperimentCaseExecutionError) else exc
+        _log_case_failure(spec, task_case.case_id, cause)
+        return _failed_case_result_from_exception(spec, task_case, cause)
     return _case_result_from_output(spec, task_case, output)
 
 
@@ -299,6 +361,7 @@ def _case_result_from_output(
     termination = summary.get("termination")
     termination_code = termination.get("code") if isinstance(termination, dict) else None
     termination_detail = termination.get("detail") if isinstance(termination, dict) else None
+    failure = summary.get("failure")
     raw_interventions = raw_summary.get("interventions")
     if raw_interventions is not None and not isinstance(raw_interventions, list):
         raise ValueError("summary.interventions 必须是数组")
@@ -326,6 +389,7 @@ def _case_result_from_output(
         minefield_match_count=minefield_match_count if isinstance(minefield_match_count, int) else None,
         termination_code=str(termination_code) if termination_code else None,
         termination_detail=dict(termination_detail) if isinstance(termination_detail, dict) else {},
+        failure=dict(failure) if isinstance(failure, dict) else None,
         interventions=tuple(dict(item) for item in raw_interventions or []),
         strata=strata,
         adaptation_cost=dict(task_case.metadata.get("adaptation_cost", {})),
@@ -337,5 +401,92 @@ def _case_result_from_output(
             "summary_path": str(output.result_dir / "summary.json"),
             "report_path": str(output.result_dir / "report.json"),
             "trajectory_path": str(output.raw_run_dir / "trajectory.json"),
+        },
+    )
+
+
+def _failed_case_result(
+    spec: ExperimentRunSpec,
+    task_case: TaskCase,
+    *,
+    failure_type: str,
+    error: str,
+    trajectory: Trajectory | None = None,
+) -> ExperimentCaseResult:
+    output = write_failed_case_outputs(
+        build_harness_config(spec),
+        task_case,
+        failure_type=failure_type,
+        error=error,
+        trajectory=trajectory,
+    )
+    return _case_result_from_output(spec, task_case, output)
+
+
+def _failed_case_result_from_exception(
+    spec: ExperimentRunSpec,
+    task_case: TaskCase,
+    cause: Exception,
+    trajectory: Trajectory | None = None,
+) -> ExperimentCaseResult:
+    return _failed_case_result(
+        spec,
+        task_case,
+        failure_type=_case_failure_type(spec, cause),
+        error=f"{type(cause).__name__}: {cause}",
+        trajectory=trajectory,
+    )
+
+
+def _case_failure_type(spec: ExperimentRunSpec, cause: Exception) -> str:
+    """识别评估失败类型，LLMJudge错误优先于通用基础设施分类。"""
+    if isinstance(cause, LLMJudgeResponseError):
+        current: BaseException | None = cause
+        while current is not None:
+            if "Range of input length should be" in str(current):
+                return "llm_judge_input_length_exceeded"
+            current = current.__cause__
+        return "llm_judge_evaluation_failed"
+    return _docker_failure_type(spec, cause)
+
+
+def _docker_failure_type(spec: ExperimentRunSpec, cause: Exception) -> str:
+    text = f"{type(cause).__name__}: {cause}"
+    if spec.benchmark == "swebench_pro" and (
+        "本地镜像缓存缺失" in text or "本地镜像缓存不可用" in text or "Docker镜像拉取失败" in text or "ImageNotFound" in text or "pull" in text.lower()
+    ):
+        return "docker_image_pull_failed"
+    if spec.benchmark == "skillsbench" and (
+        "BuildError" in text or "Docker镜像构建失败" in text or "build" in text.lower()
+    ):
+        return "docker_image_build_failed"
+    return "case_execution_failed"
+
+
+def _output_failure(output: HarnessEvaluationOutput) -> tuple[str, str] | None:
+    summary = read_json_file(output.result_dir / "summary.json", "case summary", dict)
+    termination = summary.get("termination")
+    detail = termination.get("detail") if isinstance(termination, dict) else {}
+    if not isinstance(detail, dict):
+        return None
+    failure_type = detail.get("failure_type")
+    error = detail.get("error")
+    if isinstance(failure_type, str) and failure_type and isinstance(error, str) and error:
+        return failure_type, error
+    return None
+
+
+def _log_case_failure(spec: ExperimentRunSpec, case_id: str, cause: Exception) -> None:
+    logger.error(
+        "实验case执行失败，已降级为失败结果",
+        extra={
+            "事件": "实验case执行失败",
+            "experiment_id": spec.experiment_id,
+            "benchmark": spec.benchmark,
+            "method": spec.method.value,
+            "model_id": spec.model_id,
+            "repeat_index": spec.repeat_index,
+            "case_id": case_id,
+            "error": str(cause),
         },
     )

@@ -207,7 +207,15 @@ def _minefield_identity(
         elif required and (arguments is None or not arguments):
             reason_code = "missing_required_input"
         else:
-            reason_code = "unsafe_side_effect"
+            contract = view.tool_contracts.get(tool_name, {}) if view is not None else {}
+            writes = contract.get("writes", []) if isinstance(contract, dict) else []
+            state_effect = contract.get("state_effect", []) if isinstance(contract, dict) else []
+            reason_code = (
+                "unsafe_side_effect"
+                if (isinstance(writes, list) and writes)
+                or (isinstance(state_effect, (list, dict)) and state_effect)
+                else "unsafe_tool_call"
+            )
     return canonical_json({
         "tool_name": tool_name, "severity": "fatal", "reason_code": reason_code,
     }) if tool_name else None

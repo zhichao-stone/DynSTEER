@@ -1,13 +1,17 @@
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate DynSTEER on the ToolSandbox benchmark with 4 agent models, 3 repeats, and 509 scenarios, yielding 6{,}108 source trajectories and as many paired replay evaluations. The experiments address three central research questions: (1) \textbf{RQ1 (Section~\ref{sec:exp_rq1}):} Does stage-wise dynamic evaluation provide superior error focus and model discriminability over native terminal evaluation? (2) \textbf{RQ2 (Section~\ref{sec:exp_rq2}):} Can milestone graphs compiled from public task views reliably capture necessary goals while accommodating diverse solution paths? (3) \textbf{RQ3 (Section~\ref{sec:exp_rq3}):} How effectively does execution-time early stopping identify and remove wasteful execution prefixes?
+We evaluate DynSTEER on ToolSandbox and SWE-bench Pro using the same set of instruction-tuned agent backbones. The experiments address four central research questions.
+\textbf{RQ1}: whether stage-wise dynamic evaluation provides superior error focus and model discriminability over whole-trajectory evaluation.
+\textbf{RQ2}: how much dynamic judge levels, dynamic dimension weighting, and execution-time early stopping contribute to discriminability and efficiency.
+\textbf{RQ3}: whether milestone graphs compiled from task inputs reliably capture necessary goals while accommodating diverse solution paths.
+\textbf{RQ4}: how effectively execution-time early stopping identifies and removes wasteful execution prefixes.
 
 \subsection{Experimental Setup}
 \label{sec:exp_setup}
-\textbf{Benchmark Environment and Evaluated Models.} We conduct our evaluation on \textbf{ToolSandbox}~\citep{gu2024toolsandbox}, featuring state snapshots, dynamic argument types, and safety minefield invariants (dataset statistics in Appendix~\ref{app:dataset_stats}). We evaluate four instruction-tuned LLMs as agent backbones: \textbf{DeepSeek-V4-Pro}, \textbf{DeepSeek-V4-Flash}~\citep{deepseekai2024deepseekv3}, \textbf{Qwen3-Max-2026-01-23}, and \textbf{Qwen-Plus-2025-12-01}~\citep{yang2024qwen25}, under standard ReAct prompting~\citep{yao2023react}.
+\textbf{Benchmark Environments and Evaluated Models.} We evaluate on two benchmarks. \textbf{ToolSandbox}~\citep{gu2024toolsandbox} is a stateful tool-use benchmark that scores complete trajectories through milestone and minefield checks. \textbf{SWE-bench Pro}~\citep{deng2025swebenchpro} is a repository-level software-engineering benchmark that requires multi-file edits and test-based resolution. Appendix~\ref{app:dataset_stats} reports the dataset statistics, and Appendix~\ref{app:experiment_config} details task filtering, baseline implementation, runtime parameters, and ablation variants. We evaluate \textbf{DeepSeek-V4-Pro}, \textbf{DeepSeek-V4-Flash}~\citep{deepseekai2024deepseekv3}\footnote{The experiments use the post-2026-07-31 version of DeepSeek-V4-Flash.}, \textbf{Qwen3-Max-2026-01-23}, and \textbf{Qwen-Plus-2025-12-01}~\citep{yang2024qwen25} under standard ReAct prompting~\citep{yao2023react}.
 
-\textbf{Comparative Paradigms.} Each agent backbone is evaluated under two comparative paradigms: first, \textbf{\textsc{Default}}, using the native benchmark verifier based on terminal environment state; and second, \textbf{\textsc{DynSTEER-Replay}}, replaying the same source trajectory under our stage-wise evaluation, dominator review, and adaptive judging ladder. Replay records a virtual stop when early termination fires; it does not execute a separate live rollout. Consequently, all early-stop savings in this paper are paired counterfactual savings relative to the matching Default prefix.
+\textbf{Comparative Paradigms.} For controlled comparison, \textbf{\textsc{Whole-Traj}} and \textbf{\textsc{DynSTEER}} are evaluated on the same source trajectory. \textsc{Whole-Traj} treats the complete trajectory as one evaluation unit, whereas DynSTEER applies dynamic stage-wise evaluation to the same recorded trajectory. The details are specified in Appendix~\ref{app:experiment_config}.
 
 \textbf{Evaluation Metrics.} We assess performance across three dimensions:
 \begin{itemize}[leftmargin=*,itemsep=1.5pt,topsep=1pt]
@@ -16,34 +20,70 @@ We evaluate DynSTEER on the ToolSandbox benchmark with 4 agent models, 3 repeats
         \text{DS}(\epsilon) = \left( \frac{\sigma_{\text{pop}}}{\mu} \right) \cdot \sqrt{\frac{N_{\text{sig}}(\epsilon)}{\binom{M}{2}}}, \quad N_{\text{sig}}(\epsilon) = \sum_{1 \le i < j \le M} \mathbb{I}\left( |\bar{s}_{m_i} - \bar{s}_{m_j}| > \epsilon \right)
         \label{eq:ds}
     \end{equation}
-    where $\mu$ is the population mean score across models, $\sigma_{\text{pop}}$ is the standard deviation across model means, where their ratio represents the Coefficient of Variation that penalizes metric compression, and $N_{\text{sig}}(\epsilon)$ is the number of statistically distinguishable model pairs at margin $\epsilon$.
-    \item \textbf{Milestone Graph Quality:} We compute Tool Operation Micro-F1 and Macro-F1 to measure semantic tool coverage, Fatal Minefield F1 for safety-critical action detection, and Graph Edit Distance similarity, or GED, for structural topology alignment.
-    \item \textbf{Efficiency and Early Termination:} For stopped replay run $i$, we pair it with the complete Default trajectory from the same model, repeat, and case, align its virtual stop to the recorded execution-timing batches, and define stop progress $p_i=b_i^{\text{stop}}/b_i^{\text{full}}$ and saved progress $q_i=1-p_i$. For each model, the \textbf{replay stop rate} in Table~\ref{tab:main_results} divides replay-detected stops by the replay trajectories in that model's evaluation population and includes quality failures, frontier stagnation, and fatal minefields. Table~\ref{tab:early_stop} therefore conditions on the stopped-run population identified by this definition rather than a separately selected subset.
-\end{itemize}
+    where $\mu$ and $\sigma_{\text{pop}}$ are the mean score and standard deviation across models, and $N_{\text{sig}}(\epsilon)$ is the number of statistically distinguishable model pairs at margin $\epsilon$. For readability, we normalize agent scores to $[0, 100]$ and report all DS results with $\epsilon = 1.00$.
+    \item \textbf{Milestone Graph Quality:} On ToolSandbox, we compute Tool Operation Micro-F1 and Macro-F1 to measure semantic tool coverage, Fatal Minefield F1 for safety-critical action detection, and Graph Edit Distance (GED)-based similarity~\citep{sanfeliu1983distance} for structural topology alignment.
+    \item \textbf{Efficiency and Early Termination:} For each model, \textbf{Saved Steps} is the percentage of matched Whole-Traj full-trajectory steps avoided by DynSTEER policy stops; non-stopped runs contribute zero savings. \textbf{Stop Rate} divides policy stops by the matched evaluation population and includes persistent low quality, frontier stagnation, and fatal minefields.\end{itemize}
 
 \subsection{RQ1: Stage-wise Dynamic Evaluation, Error Focus, and Model Discriminability}
 \label{sec:exp_rq1}
 
 \input{tables/tab_main_results}
 
-Table~\ref{tab:main_results} compares performance between native terminal evaluation (\textsc{Default}) and DynSTEER.
+\textbf{Discrimination and efficiency.} DynSTEER substantially enlarges the measurable capability margin: DS increases from 0.0270 to \textbf{0.0500} on ToolSandbox and from 0.0324 to \textbf{0.0857} on SWE-bench Pro, yielding relative gains of 85.2\% and 164.0\%. 
+This change separates all six model pairs and raises the standard deviation of model means from 2.24 to 3.45 and from 2.34 to 5.87, respectively.  
+The pattern is consistent with stage-wise review rather than whole-trajectory scoring: DynSTEER traces frontier progress and assigns lower stage-level evidence where an agent repeatedly fails tool-state transitions, violates safety constraints, or stalls without progress. 
+Consequently, weak process behavior is no longer hidden behind an ultimately resolved outcome, and stronger models recover visibly from weaker ones in the score distribution.
+Because comparisons are paired on identical source trajectories, these gains reflect evaluator sensitivity to process quality rather than differences in the evaluated rollouts. 
+DynSTEER also removes 17.74\% and 8.40\% of Whole-Traj execution steps, achieving sharper discrimination while reducing evaluation execution cost.
 
-\textbf{Model Discriminability.} On \textsc{Default}, 22.63\% of all runs receive an exact 1.0 score, reflecting severe score saturation. At $\epsilon = 0.01$, \textsc{Default} achieves a DS of 0.0270, separating 5 of 6 pairwise model comparisons (83.33\%). In contrast, \textsc{DynSTEER} achieves a DS of \textbf{0.0500}, representing an \textbf{85.2\% relative improvement}, and discriminates all 6 out of 6 model pairs (100.0\% separation) with statistical significance at $p < 0.01$ under paired Wilcoxon signed-rank tests. Across individual models, DeepSeek-V4-Flash scores $0.7338 \pm 0.0026$, clearly separated from DeepSeek-V4-Pro ($0.7111 \pm 0.0021$), Qwen-Plus ($0.6615 \pm 0.0096$), and Qwen3-Max ($0.6503 \pm 0.0094$).
+\textbf{Saved Steps vary substantially across backbones.} 
+% On SWE-bench Pro, DeepSeek-V4-Flash saves 12.19\%, DeepSeek-V4-Pro saves 10.78\%, Qwen3-Max saves 6.64\%, and Qwen-Plus saves 2.38\% (Table~\ref{tab:main_results}). On ToolSandbox, Qwen-Plus saves 22.14\%, and Qwen3-Max saves 21.54\%, followed by DeepSeek-V4-Pro at 16.06\% and DeepSeek-V4-Flash at 11.44\%. 
+Across benchmarks, model-level savings range from 11.44--22.14\% on ToolSandbox to 2.38--12.19\% on SWE-bench Pro. 
+The narrower and lower SWE-bench Pro range reflects fewer policy stops in the smaller repository-level population, although individual stopped prefixes can still consume substantial execution budget.
+These results demonstrate that DynSTEER removes prefixes judged unrecoverable without collapsing model separation.
 
-\textbf{Process Quality Penalization and Error Localization.} While \textsc{Default} yields a population mean of $0.7582$, \textsc{DynSTEER} yields a calibrated mean of $0.6892$ with higher inter-model variance (shifting from 0.0224 to 0.0345), effectively penalizing redundant API retries, parameter hallucinations, and hazardous side-effects that stumble into a correct final state. In blind human auditing across 60 sampled trajectories with divergent labels, DynSTEER correctly pinpointed the first critical error with 91.7\% agreement with expert annotators, whereas terminal verification found zero intermediate errors (qualitative case studies in Appendix~\ref{app:case_studies}).
+\textbf{Stability and rank consistency.} The mean repeat-level standard deviation decreases from 0.66 to 0.59 on ToolSandbox and from 6.41 to 3.24 on SWE-bench Pro. 
+Within each benchmark, DynSTEER preserves five of six pairwise model orders on ToolSandbox (Kendall $\tau=0.67$) and four of six on SWE-bench Pro ($\tau=0.33$); DeepSeek-V4-Flash remains first in both cases. 
+In summary, DynSTEER offers greater model discriminability and more stable results across repeated evaluations.
 
-\subsection{RQ2: Blueprint Compilation Reliability and Path Tolerance}
+\subsection{RQ2: Component Contributions to Discriminability and Early Stopping}
 \label{sec:exp_rq2}
+
+\input{tables/tab_ablation_results}
+
+To answer RQ2, we conduct a component ablation on a ToolSandbox subset stratified by task type and safety category, and the sampling protocol and ablated variants are detailed in Appendix~\ref{app:experiment_config}.
+As shown in Table~\ref{tab:ablation_results}, removing any dynamic component or the early-stopping mechanism hurts the performance relative to full DynSTEER. 
+Nevertheless, every ablated DynSTEER configuration remains more discriminative than \textsc{Whole-Traj}. 
+This uniform improvement over whole-trajectory scoring indicates that stage-wise organization itself helps separate models and expose deficiency patterns, while the dynamic components further enlarge that margin. 
+
+\textbf{Early stopping has the largest single-component impact.} Disabling policy stopping reduces DS from 0.0528 to 0.0286. A plausible reason is that early stopping converts an unrecoverable execution prefix into decisive failure evidence. This binary signal complements graded stage scores: without it, a long routine suffix can dilute the score distribution and make systematically weak executions resemble recoverable noise.
+
+\textbf{Dynamic weighting and judge levels contribute complementary separation signals.} Dynamically adjusting dimension weights within stage evaluation makes models easier to distinguish: it reallocates evidence toward low-scoring or high-uncertainty dimensions and prevents uniform averaging from canceling complementary weaknesses. 
+Dynamic judge levels nevertheless provide strong discriminability: relative to stage-only evaluation (\textit{-w/o} dynamic), retaining judge-level escalation under \textit{-w/o} dynamic weighting raises DS from 0.0311 to 0.0414. 
+The early-stop statistics further separate the two mechanisms: \textit{-w/o} dynamic weighting attains a higher Stop Rate and Saved Steps than \textit{-w/o} dynamic judge level. This suggests that stronger review of poorly executed dimensions is more likely to expose problems and assign low scores promptly, allowing the agent to stop before additional wasted steps accumulate.
+
+\subsection{RQ3: Milestone Graph Generation Reliability}
+\label{sec:exp_rq3}
 
 \input{tables/tab_milestone_gen}
 
-Table~\ref{tab:milestone_gen} summarizes the semantic accuracy, structural distance, and safety alignment of generated milestone DAGs against canonical expert annotations. DynSTEER's multi-candidate synthesis and strict-majority consensus achieve an \textbf{86.0\% Tool Operation Micro-F1} (81.7\% precision, 90.7\% recall) and an \textbf{86.7\% Fatal Minefield F1} (86.0\% recall), reliably identifying irreversible operations from public API specifications alone. Transitive reduction retains alternative parallel branches without penalizing valid exploratory variations (e.g., searching by contact name rather than date), achieving a 100\% valid DAG compilation rate with consistent topological alignment.
+Table~\ref{tab:milestone_gen} summarizes the semantic accuracy, structural distance, and safety alignment of generated milestone graphs against canonical expert annotations.
+DynSTEER's multi-candidate synthesis and strict-majority consensus achieve an \textbf{82.9\% Tool Operation Micro-F1} with 84.0\% precision and 81.9\% recall, and an \textbf{87.3\% Tool Operation Macro-F1}, extending reliable tool coverage beyond frequent operations to tail tools.
+Fatal Minefield Detection reaches an \textbf{82.7\% F1} with 91.8\% precision and 75.3\% recall, preferentially preserving irreversible operations from available task inputs.
+Transitive reduction retains alternative parallel branches without penalizing valid exploratory variations, such as searching by contact name rather than date, achieving a 100\% valid DAG compilation rate with stronger topological alignment.
 
-\subsection{RQ3: Counterfactual Early-Stop Savings and Judge Efficiency}
-\label{sec:exp_rq3}
+These expert-referenced results support using the compiled milestone graph as a principled basis for stage partitioning. The Macro-F1 (87.3\%) and GED similarity (0.789) show that the compiled graphs capture tail tools and fine-grained topology, while the remaining 75.3\% minefield recall indicates that some irreversible operations are still omitted. Nevertheless, the perfect valid-DAG rate and branch-preserving transitive reduction indicate that compilation yields stable checkpoints without collapsing alternative valid plans across diverse execution strategies.
 
-\input{tables/tab_early_stop}
+\subsection{RQ4: Early-Stop Behavior and Counterfactual Savings}
+\label{sec:exp_rq4}
 
-\textbf{Execution-Time Early Termination.} DynSTEER monitors complementary stopping criteria, detailed in Table~\ref{tab:early_stop}: (1) \textbf{Stage Low-Score Policy (\textsc{Score})} fires when stage scores remain below $\theta_{\text{fail}}$ (234 runs across 64 unique tasks); (2) \textbf{Frontier Stagnation (\textsc{Deadlock})} fires after $N_{\text{stag}}$ observations without ready-frontier progress (285 runs across 125 unique tasks); and (3) \textbf{Fatal Minefield Interception (\textsc{Minefield})} fires on irreversible hazardous actions (704 runs across 97 unique tasks). The total is exactly the 1{,}223 policy stops already counted in Table~\ref{tab:main_results}. Because unique tasks can hit more than one criterion, the category-level task counts do not add to 270.
+\input{figures/fig_early_stop}
 
-\textbf{Counterfactual Prefix Savings and Judge Hierarchy.} These replay events stop at 54.59\% of the paired full trajectory on average and would remove 45.41\% of the remaining execution steps. Minefield interception is earlier and saves a larger fraction of the remaining suffix than quality or deadlock stops, while \textsc{Score} stops are conservative on short trajectories. We report savings as normalized progress rather than a wall-clock net benefit: replay judging latency runs on a different clock than environment execution, and the old gross-versus-net comparison mixed these clocks. Concurrently, adaptive judge routing substantially reduces heavy deliberation while preserving ranking correlation ($\tau = 0.667$) with all-expensive judging; Appendix~\ref{app:case_studies} illustrates auditable stop decisions.
+\textbf{Failure modes analysis.} Figure~\ref{fig:early_stop}(a) shows that Fatal Minefield Interception dominates ToolSandbox stopped runs at 57.56\%, and Figure~\ref{fig:early_stop}(c) shows its 12.34\% contribution to the aggregate 17.74\% Saved Steps. 
+Its unique-task share is only 19.06\%, whereas Frontier Stagnation covers the largest unique-task share (24.56\%) but saves only 4.53\%. 
+Thus, ToolSandbox failures often occur early as unsafe or invalid calls on interactive tasks.
+
+On SWE-bench Pro, Frontier Stagnation dominates stopped runs at 66.67\% and unique-task coverage at 12.82\%, whereas Fatal Minefield Interception accounts for 25.00\% and 7.69\%, respectively (Figure~\ref{fig:early_stop}(a,b)). Frontier Stagnation contributes the largest saving, 4.86\% of the aggregate 8.40\%, reflecting prolonged repository exploration and repair loops before a terminal test result. Persistent Low Quality remains conservative, saving 1.00\% on SWE-bench Pro and 0.87\% on ToolSandbox.
+
+\textbf{Common task-level stagnation.} Despite these distributional differences, Frontier Stagnation has the largest unique-task coverage on both benchmarks: 12.82\% on SWE-bench Pro and 24.56\% on ToolSandbox (Figure~\ref{fig:early_stop}(b)). Its stopped-run share and contribution to savings still differ across datasets, but the pattern is consistent: stagnation arises in more distinct tasks than in either Persistent Low Quality or Fatal Minefield Interception. This indicates that the most prevalent risk is not confined to immediate safety violations or uniformly poor execution. Instead, agents on both benchmarks frequently enter extended progress vacuums in which local actions continue without advancing the task frontier, making frontier-aware execution-time review valuable in both tool-use and repository-level settings.
+In addition, Appendix~\ref{app:case_studies} presents cases illustrating auditable stop decisions.

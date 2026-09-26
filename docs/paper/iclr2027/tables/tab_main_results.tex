@@ -1,25 +1,39 @@
 \begin{table*}[t]
 \centering
 \small
-\caption{\textbf{Main Evaluation Results on ToolSandbox.} Performance comparison between native benchmark evaluation (\textsc{Default}) and \textsc{DynSTEER-Replay}. Each replay stop rate uses 1{,}527 trajectories per model and counts quality, stagnation, and minefield stops.}
+\caption{Main Evaluation Results on ToolSandbox and SWE-bench Pro.}
 \label{tab:main_results}
 \vspace{0.15cm}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{llccccc}
 \toprule
-\textbf{Evaluator} & \textbf{Model} & \textbf{Mean Score} $\uparrow$ & \textbf{Std Dev} & \textbf{Replay Stop Rate} & \textbf{Signif. Pairs} & \textbf{DS ($\epsilon{=}0.01$)} $\uparrow$ \\
+\textbf{Benchmark} & \textbf{Evaluator} & \textbf{Model} & \textbf{Mean Score} $\uparrow$ & \textbf{Stop Rate} & \textbf{DS ($\epsilon{=}1.00$)} $\uparrow$ & \textbf{Saved Steps} $\uparrow$ \\
 \midrule
-\multirow{4}{*}{\textsc{Default}} 
- & DeepSeek-V4-Flash   & 0.7880 & 0.0043 & 0.00\% & \multirow{4}{*}{5 / 6 (83.3\%)} & \multirow{4}{*}{0.0270} \\
- & DeepSeek-V4-Pro     & 0.7718 & 0.0014 & 0.00\% & & \\
- & Qwen3-Max-2026-01   & 0.7368 & 0.0100 & 0.00\% & & \\
- & Qwen-Plus-2025-12   & 0.7362 & 0.0109 & 0.00\% & & \\
+\multirow{8}{*}{SWE-bench Pro}
+& \multirow{4}{*}{\textsc{Whole-Traj.}}
+ & DeepSeek-V4-Flash & $69.54 \pm 8.60$ & 0.00\% & \multirow{4}{*}{0.0324} & 0.00\% \\
+ & & DeepSeek-V4-Pro & $63.64 \pm 8.93$ & 0.00\% & & 0.00\% \\
+ & & Qwen3-Max-2026-01 & $66.10 \pm 4.15$ & 0.00\% & & 0.00\% \\
+ & & Qwen-Plus-2025-12 & $64.03 \pm 3.96$ & 0.00\% & & 0.00\% \\
+\cmidrule(lr){2-7}
+& \multirow{4}{*}{\textsc{DynSTEER}}
+ & DeepSeek-V4-Flash & $77.40 \pm 5.50$ & 6.12\% & \multirow{4}{*}{\textbf{0.0857}} & 12.19\% \\
+ & & DeepSeek-V4-Pro & $69.90 \pm 0.62$ & 9.00\% & & 10.78\% \\
+ & & Qwen3-Max-2026-01 & $64.93 \pm 3.98$ & 11.00\% & & 6.64\% \\
+ & & Qwen-Plus-2025-12 & $61.87 \pm 2.87$ & 7.07\% & & 2.38\% \\
 \midrule
-\multirow{4}{*}{\textsc{DynSTEER}} 
- & DeepSeek-V4-Flash   & 0.7338 & 0.0026 & 16.63\% & \multirow{4}{*}{\textbf{6 / 6 (100.0\%)}} & \multirow{4}{*}{\textbf{0.0500}} \\
- & DeepSeek-V4-Pro     & 0.7111 & 0.0021 & 17.68\% & & \\
- & Qwen3-Max-2026-01   & 0.6503 & 0.0094 & 27.24\% & & \\
- & Qwen-Plus-2025-12   & 0.6615 & 0.0096 & 18.53\% & & \\
+\multirow{8}{*}{ToolSandbox}
+& \multirow{4}{*}{\textsc{Whole-Traj.}}
+ & DeepSeek-V4-Flash & $78.80 \pm 0.43$ & 0.00\% & \multirow{4}{*}{0.0270} & 0.00\% \\
+ & & DeepSeek-V4-Pro & $77.18 \pm 0.14$ & 0.00\% & & 0.00\% \\
+ & & Qwen3-Max-2026-01 & $73.68 \pm 1.00$ & 0.00\% & & 0.00\% \\
+ & & Qwen-Plus-2025-12 & $73.62 \pm 1.09$ & 0.00\% & & 0.00\% \\
+\cmidrule(lr){2-7}
+& \multirow{4}{*}{\textsc{DynSTEER}}
+ & DeepSeek-V4-Flash & $73.38 \pm 0.26$ & 16.63\% & \multirow{4}{*}{\textbf{0.0500}} & 11.44\% \\
+ & & DeepSeek-V4-Pro & $71.11 \pm 0.21$ & 17.68\% & & 16.06\% \\
+ & & Qwen3-Max-2026-01 & $65.03 \pm 0.94$ & 27.24\% & & 21.54\% \\
+ & & Qwen-Plus-2025-12 & $66.15 \pm 0.96$ & 18.53\% & & 22.14\% \\
 \bottomrule
 \end{tabular}%
 }
